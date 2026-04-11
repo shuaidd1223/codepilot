@@ -8,7 +8,6 @@ import platform
 import shutil
 import subprocess
 import sys
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -289,6 +288,82 @@ TASK_PROMPT_TEMPLATE = """\
 """
 
 
+TASK_BREAKDOWN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "complexity": {"type": "string", "enum": ["simple", "complex"]},
+        "should_split": {"type": "boolean"},
+        "tasks": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
+                    "goal": {"type": "string"},
+                    "acceptance_criteria": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 2,
+                    },
+                    "builder_notes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "reviewer_notes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "notes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": [
+                    "title",
+                    "priority",
+                    "goal",
+                    "acceptance_criteria",
+                    "builder_notes",
+                    "reviewer_notes",
+                    "files",
+                    "notes",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["summary", "complexity", "should_split", "tasks"],
+    "additionalProperties": False,
+}
+
+
+TASK_BREAKDOWN_PROMPT_TEMPLATE = """\
+你是一个资深技术负责人，负责把一个高层目标拆成可以自动执行的工程任务。
+
+要求：
+1. 先判断需求是 simple 还是 complex。
+2. simple: 输出 1 个任务，should_split=false。
+3. complex: 输出 2 到 {max_tasks} 个子任务，should_split=true，默认按线性顺序执行。
+4. 每个任务都要足够具体，能直接交给代码代理执行。
+5. 优先拆出“先修基础设施，再做能力”的顺序。
+6. 只输出符合 schema 的 JSON，不要输出 Markdown，不要解释。
+7. files 只写真实可能涉及的相对路径；不确定就少写，不要乱写。
+8. acceptance_criteria、builder_notes、reviewer_notes、notes 都要有实际内容。
+
+高层目标：
+{title}
+
+{project_context}
+"""
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 项目上下文收集
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -470,7 +545,7 @@ def _run_api_provider(
 # 主入口函数
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _normalize_agent_name(name: str) -> str:
+def normalize_agent_name(name: str) -> str:
     """规范化 agent 名称，尝试找到匹配的 provider."""
     name = name.lower().strip()
 
@@ -548,7 +623,7 @@ def generate_task_content(
         生成的 Markdown 内容
     """
     # 规范化 agent 名称
-    normalized = _normalize_agent_name(agent)
+    normalized = normalize_agent_name(agent)
 
     # 收集上下文
     ctx = _collect_project_context(project_path)
@@ -617,7 +692,7 @@ def check_provider_availability(agent: str) -> tuple[bool, str]:
     Returns:
         (is_available, message)
     """
-    normalized = _normalize_agent_name(agent)
+    normalized = normalize_agent_name(agent)
 
     if normalized in CLI_PROVIDERS:
         provider = CLI_PROVIDERS[normalized]
@@ -639,3 +714,123 @@ def check_provider_availability(agent: str) -> tuple[bool, str]:
 
     else:
         return False, f"未知的 agent: {agent}"
+
+
+_normalize_agent_name = normalize_agent_name
+
+
+def _run_claude_schema_prompt(prompt: str, schema: dict, timeout: int = 180) -> dict:
+    """Use Claude CLI to produce schema-constrained JSON output."""
+    provider = CLI_PROVIDERS["claude"]
+    exe = provider.find_executable()
+    if not exe:
+        raise RuntimeError("未找到 claude CLI，无法执行自动拆分")
+
+    cmd = [
+        str(exe),
+        "-p",
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(schema, ensure_ascii=False),
+        "--permission-mode",
+        "plan",
+    ]
+    result = subprocess.run(
+        cmd,
+        input=prompt,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or "").strip() or "(无 stderr)"
+        raise RuntimeError(f"Claude 任务拆分失败 (退出码 {result.returncode}):\n{err}")
+
+    output = (result.stdout or "").strip()
+    if not output:
+        raise RuntimeError("Claude 任务拆分返回空内容")
+
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Claude 任务拆分返回了非法 JSON: {exc}") from exc
+
+    if isinstance(payload, dict):
+        if isinstance(payload.get("structured_output"), dict):
+            return payload["structured_output"]
+        if isinstance(payload.get("result"), dict):
+            return payload["result"]
+        return payload
+
+    raise RuntimeError("Claude 任务拆分返回了非对象 JSON")
+
+
+def build_task_markdown_from_plan(task: dict) -> str:
+    """Convert a structured task plan item into task markdown."""
+    acceptance = "\n".join(f"- {item}" for item in task.get("acceptance_criteria", []))
+    builder_notes = "\n".join(f"- {item}" for item in task.get("builder_notes", []))
+    reviewer_notes = "\n".join(f"- {item}" for item in task.get("reviewer_notes", []))
+    files = "\n".join(f"- {item}" for item in task.get("files", [])) or "- （待确认）"
+    notes = "\n".join(f"- {item}" for item in task.get("notes", [])) or "- 无"
+
+    return "\n".join(
+        [
+            f"# {task['title']}",
+            "",
+            "## 任务目标",
+            "",
+            task.get("goal", "").strip(),
+            "",
+            "## 验收标准",
+            "",
+            acceptance or "- 待补充",
+            "",
+            "## Builder 职责",
+            "",
+            builder_notes or "- 待补充",
+            "",
+            "## Reviewer 职责",
+            "",
+            reviewer_notes or "- 待补充",
+            "",
+            "## 涉及文件",
+            "",
+            files,
+            "",
+            "## 备注",
+            "",
+            notes,
+        ]
+    )
+
+
+def generate_task_breakdown(
+    title: str,
+    project_path: str = "",
+    planner: str = "claude",
+    max_tasks: int = 5,
+) -> dict:
+    """Generate a structured subtask breakdown for a high-level goal."""
+    max_tasks = max(1, min(max_tasks, 8))
+    normalized = normalize_agent_name(planner)
+    context = _collect_project_context(project_path)
+    prompt = TASK_BREAKDOWN_PROMPT_TEMPLATE.format(
+        title=title,
+        project_context=context,
+        max_tasks=max_tasks,
+    )
+
+    if normalized not in {"claude", "claude-node", "claude-sonnet", "claude-opus", "claude-haiku"}:
+        normalized = "claude"
+
+    breakdown = _run_claude_schema_prompt(prompt, TASK_BREAKDOWN_SCHEMA)
+    tasks = breakdown.get("tasks") or []
+    if not tasks:
+        raise RuntimeError("任务拆分结果为空")
+    breakdown["tasks"] = tasks[:max_tasks]
+    breakdown.setdefault("complexity", "simple" if len(breakdown["tasks"]) <= 1 else "complex")
+    breakdown.setdefault("should_split", len(breakdown["tasks"]) > 1)
+    return breakdown

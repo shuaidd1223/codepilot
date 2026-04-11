@@ -47,6 +47,18 @@ class DispatchConfig:
 
 
 @dataclass
+class AutomationConfig:
+    """[automation] 自动规划和执行配置."""
+    planner: str = "claude"
+    executor: str = "builtin"
+    auto_execute: bool = True
+    confirm_before_execute: bool = False
+    auto_commit: bool = True
+    max_tasks: int = 5
+    max_retries: int = 3
+
+
+@dataclass
 class ProviderAPIConfig:
     """单个 Provider 的 API 配置."""
     enabled: bool = True
@@ -63,6 +75,7 @@ class AgentsConfig:
     project: ProjectConfig = field(default_factory=ProjectConfig)
     shell: ShellConfig = field(default_factory=ShellConfig)
     dispatch: DispatchConfig = field(default_factory=DispatchConfig)
+    automation: AutomationConfig = field(default_factory=AutomationConfig)
     notifications: dict = field(default_factory=dict)
 
     # AI Providers 配置
@@ -87,6 +100,7 @@ class AgentsConfig:
         proj = data.get("project", {})
         agents = data.get("agents", {})
         dispatch = data.get("dispatch", {})
+        automation = data.get("automation", {})
         notifications = data.get("notifications", {})
         shell = data.get("shell", {})
         providers = data.get("providers", {})
@@ -122,6 +136,15 @@ class AgentsConfig:
                 dispatch_path=dispatch.get("dispatch_path", ""),
                 interval_seconds=dispatch.get("interval_seconds", 600),
                 stale_minutes=dispatch.get("stale_minutes", 30),
+            ),
+            automation=AutomationConfig(
+                planner=automation.get("planner", "claude"),
+                executor=automation.get("executor", "builtin"),
+                auto_execute=automation.get("auto_execute", True),
+                confirm_before_execute=automation.get("confirm_before_execute", False),
+                auto_commit=automation.get("auto_commit", True),
+                max_tasks=automation.get("max_tasks", 5),
+                max_retries=automation.get("max_retries", 3),
             ),
             notifications=notifications,
             providers=providers_config,
@@ -261,6 +284,21 @@ interval_seconds = 600
 # 任务过期时间（分钟），超时未完成自动重置
 stale_minutes = 30
 
+[automation]
+# 纯文本需求模式默认使用 Claude 规划、Codex 执行
+planner = "claude"
+executor = "builtin"
+# 输入需求后是否直接开始执行
+auto_execute = true
+# 若为 true，则规划完成后先确认再执行
+confirm_before_execute = false
+# 内置执行器成功后是否自动提交
+auto_commit = true
+# 复杂需求最多拆分出的子任务数
+max_tasks = 5
+# 每个子任务失败后的最大重试次数
+max_retries = 3
+
 [providers]
 # AI Provider API 配置（可选，不配置则使用环境变量）
 
@@ -326,6 +364,15 @@ claude_cmd = "claude"
 dispatch_path = ""
 interval_seconds = 600
 stale_minutes = 30
+
+[automation]
+planner = "claude"
+executor = "builtin"
+auto_execute = true
+confirm_before_execute = false
+auto_commit = true
+max_tasks = 5
+max_retries = 3
 
 [notifications]
 webhook_url = ""

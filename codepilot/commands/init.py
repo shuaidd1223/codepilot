@@ -12,7 +12,7 @@ from codepilot import config, db as db_module
 from codepilot.db import register_project
 
 
-@click.command()
+@click.command("init")
 @click.argument("path", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--name", "-n", "project_name", help="项目名称（默认取目录名）")
 @click.option("--no-config", is_flag=True, help="不生成 AGENTS.toml，只注册到数据库")

@@ -11,12 +11,18 @@ keywords = ["automation", "workflow", "claude", "codex", "ai"]
 dependencies = [
     "click>=8.1.0",
     "rich>=13.0.0",
+    "pydantic>=2.7.0",
+    "tomli>=2.0.1; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
+]
+ai = [
+    "openai>=1.30.0",
+    "anthropic>=0.40.0",
 ]
 
 [project.scripts]

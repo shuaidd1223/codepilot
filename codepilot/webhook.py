@@ -4,43 +4,22 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from codepilot.config import load_config
+
 
 def _get_webhook_config(project_path: str) -> dict:
-    """从 AGENTS.toml 读取 webhook 配置."""
-    toml_path = Path(project_path) / "AGENTS.toml"
+    """Read webhook settings from config plus environment overrides."""
     config = {"webhook_url": "", "enabled": False}
+    toml_path = Path(project_path) / "AGENTS.toml"
+    cfg = load_config(toml_path) if toml_path.exists() else None
+    if cfg:
+        config["webhook_url"] = cfg.webhook_url or cfg.notifications.get("webhook_url", "")
+        config["enabled"] = bool(cfg.notifications_enabled or cfg.notifications.get("enabled", False))
 
-    if not toml_path.exists():
-        return config
-
-    try:
-        content = toml_path.read_text(encoding="utf-8")
-        in_notifications = False
-        for line in content.splitlines():
-            line = line.strip()
-            if line.startswith("[notifications]"):
-                in_notifications = True
-                continue
-            if line.startswith("[") and not line.startswith("[notifications]"):
-                in_notifications = False
-            if in_notifications and "=" in line:
-                key, val = line.split("=", 1)
-                key = key.strip()
-                val = val.strip().strip('"').strip("'")
-                if key in config:
-                    if key == "enabled":
-                        config[key] = val.lower() in ("true", "1", "yes")
-                    else:
-                        config[key] = val
-    except Exception:
-        pass
-
-    # 环境变量覆盖
     if os.environ.get("CODEPILOT_WEBHOOK_URL"):
         config["webhook_url"] = os.environ["CODEPILOT_WEBHOOK_URL"]
         config["enabled"] = True

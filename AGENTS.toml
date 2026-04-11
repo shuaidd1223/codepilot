@@ -22,6 +22,21 @@ interval_seconds = 600
 # 任务过期时间（分钟），超时未完成自动重置
 stale_minutes = 30
 
+[automation]
+# 纯文本需求默认使用 Claude 规划、内置 Codex 执行
+planner = "claude"
+executor = "builtin"
+# 输入需求后默认直接执行；如果只想先规划，可命令行加 --no-execute
+auto_execute = true
+# 若为 true，则每次规划后先询问是否执行
+confirm_before_execute = false
+# 内置执行器成功后自动提交当前任务
+auto_commit = true
+# 复杂需求最多拆成多少个子任务
+max_tasks = 5
+# 每个子任务最多重试次数
+max_retries = 3
+
 [notifications]
 # 飞书/企微 Webhook URL
 webhook_url = ""

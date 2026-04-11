@@ -1,4 +1,4 @@
-"""SQLite 数据库层：连接管理、建表、CRUD 操作."""
+"""SQLite database access for projects, tasks, and task logs."""
 
 from __future__ import annotations
 
@@ -6,36 +6,52 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# 数据库路径：~/.codepilot/tasks.db
 DB_PATH = Path.home() / ".codepilot" / "tasks.db"
 
 
 def _get_db_path() -> Path:
-    """获取数据库路径（项目根目录的 tasks.db）."""
-    db_dir = Path(__file__).parent.parent
-    db_dir.mkdir(parents=True, exist_ok=True)
-    return db_dir / "tasks.db"
+    """Return the effective database path and ensure its parent directory exists."""
+    raw_path = Path(os.environ.get("CODEPILOT_DB_PATH", str(DB_PATH)))
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    return raw_path
 
 
 @contextmanager
 def get_conn():
-    """获取数据库连接的上下文管理器."""
+    """Yield a SQLite connection with common pragmas enabled."""
     conn = sqlite3.connect(_get_db_path())
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     try:
         yield conn
     finally:
         conn.close()
 
 
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    if not _has_column(conn, table, column):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db() -> None:
-    """初始化数据库表结构."""
+    """Create tables and run lightweight migrations."""
     with get_conn() as conn:
-        conn.executescript("""
+        conn.executescript(
+            """
             CREATE TABLE IF NOT EXISTS projects (
                 name            TEXT PRIMARY KEY,
                 path            TEXT NOT NULL UNIQUE,
@@ -62,6 +78,8 @@ def init_db() -> None:
                 worktree_path   TEXT,
                 error_message   TEXT,
                 delivery_record TEXT,
+                retry_count     INTEGER NOT NULL DEFAULT 0,
+                max_retries     INTEGER NOT NULL DEFAULT 3,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 started_at      TEXT,
                 completed_at    TEXT
@@ -69,7 +87,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS task_logs (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id     INTEGER NOT NULL REFERENCES tasks(id),
+                task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
                 agent       TEXT,
                 phase       TEXT NOT NULL,
                 output      TEXT,
@@ -82,12 +100,13 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_task_logs_task_id ON task_logs(task_id);
-        """)
+            """
+        )
 
+        _ensure_column(conn, "tasks", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "tasks", "max_retries", "INTEGER NOT NULL DEFAULT 3")
+        conn.commit()
 
-# ─────────────────────────────────────────────────────────
-# Projects CRUD
-# ─────────────────────────────────────────────────────────
 
 def register_project(
     name: str,
@@ -97,9 +116,9 @@ def register_project(
     worktree_base: Optional[str] = None,
     config_file: Optional[str] = None,
 ) -> dict:
-    """注册一个新项目到数据库."""
+    """Register or update a project."""
     with get_conn() as conn:
-        cur = conn.execute(
+        conn.execute(
             """
             INSERT OR REPLACE INTO projects
                 (name, path, base_branch, default_mode, worktree_base, config_file)
@@ -112,34 +131,48 @@ def register_project(
 
 
 def get_project(name: str) -> Optional[dict]:
-    """根据名称获取项目."""
+    """Fetch a project by name."""
     with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM projects WHERE name = ?", (name,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM projects WHERE name = ?", (name,)).fetchone()
         return dict(row) if row else None
 
 
 def list_projects() -> list[dict]:
-    """列出所有已注册项目."""
+    """Return all registered projects."""
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
-        return [dict(r) for r in rows]
+        return [dict(row) for row in rows]
+
+
+def find_project_by_path(path: str | Path) -> Optional[dict]:
+    """Find the deepest registered project that contains the given path."""
+    target = Path(path).resolve()
+    matches: list[tuple[int, dict]] = []
+    for project in list_projects():
+        project_path = Path(project["path"]).resolve()
+        try:
+            target.relative_to(project_path)
+        except ValueError:
+            continue
+        matches.append((len(project_path.parts), project))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0], reverse=True)
+    return matches[0][1]
 
 
 def delete_project(name: str) -> bool:
-    """删除项目（同时删除关联任务和日志）."""
+    """Delete a project and its related tasks."""
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM projects WHERE name = ?", (name,))
-        conn.execute("DELETE FROM task_logs WHERE task_id IN (SELECT id FROM tasks WHERE project = ?)", (name,))
+        conn.execute(
+            "DELETE FROM task_logs WHERE task_id IN (SELECT id FROM tasks WHERE project = ?)",
+            (name,),
+        )
         conn.execute("DELETE FROM tasks WHERE project = ?", (name,))
         conn.commit()
         return cur.rowcount > 0
 
-
-# ─────────────────────────────────────────────────────────
-# Tasks CRUD
-# ─────────────────────────────────────────────────────────
 
 def create_task(
     project: str,
@@ -149,8 +182,9 @@ def create_task(
     priority: str = "P2",
     depends_on: Optional[list[int]] = None,
     project_path: Optional[str] = None,
+    max_retries: int = 3,
 ) -> dict:
-    """创建新任务."""
+    """Create a task."""
     if not project_path:
         proj = get_project(project)
         project_path = proj["path"] if proj else ""
@@ -159,8 +193,8 @@ def create_task(
         cur = conn.execute(
             """
             INSERT INTO tasks
-                (project, title, content, agent, priority, depends_on, project_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (project, title, content, agent, priority, depends_on, project_path, max_retries)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project,
@@ -170,6 +204,7 @@ def create_task(
                 priority,
                 json.dumps(depends_on) if depends_on else None,
                 project_path,
+                max_retries,
             ),
         )
         conn.commit()
@@ -178,7 +213,7 @@ def create_task(
 
 
 def get_task(task_id: int) -> Optional[dict]:
-    """根据 ID 获取任务."""
+    """Fetch a task by id."""
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         return dict(row) if row else None
@@ -188,7 +223,7 @@ def list_tasks(
     project: Optional[str] = None,
     status: Optional[str] = None,
 ) -> list[dict]:
-    """列出任务，支持按项目和状态过滤."""
+    """List tasks with optional filters."""
     sql = "SELECT * FROM tasks WHERE 1=1"
     params: list = []
     if project:
@@ -201,21 +236,37 @@ def list_tasks(
 
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(row) for row in rows]
 
 
 def update_task(task_id: int, **fields) -> Optional[dict]:
-    """更新任务字段，只更新提供的字段."""
+    """Update a task with the provided field values."""
     allowed = {
-        "status", "branch_name", "worktree_path", "error_message",
-        "delivery_record", "started_at", "completed_at",
-        "builder", "reviewer",
+        "title",
+        "content",
+        "agent",
+        "priority",
+        "depends_on",
+        "status",
+        "branch_name",
+        "worktree_path",
+        "error_message",
+        "delivery_record",
+        "started_at",
+        "completed_at",
+        "builder",
+        "reviewer",
+        "project_path",
+        "retry_count",
+        "max_retries",
     }
-    updates = {k: v for k, v in fields.items() if k in allowed}
+    updates = {key: value for key, value in fields.items() if key in allowed}
+    if "depends_on" in updates and isinstance(updates["depends_on"], list):
+        updates["depends_on"] = json.dumps(updates["depends_on"]) if updates["depends_on"] else None
     if not updates:
         return get_task(task_id)
 
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    set_clause = ", ".join(f"{column} = ?" for column in updates)
     values = list(updates.values()) + [task_id]
 
     with get_conn() as conn:
@@ -224,8 +275,25 @@ def update_task(task_id: int, **fields) -> Optional[dict]:
     return get_task(task_id)
 
 
+def increment_task_retry(task_id: int, error_message: str) -> dict:
+    """Increment retry counter and move the task to backlog or failed."""
+    task = get_task(task_id)
+    if not task:
+        raise ValueError(f"Task {task_id} does not exist")
+
+    retry_count = int(task.get("retry_count") or 0) + 1
+    max_retries = int(task.get("max_retries") or 3)
+    next_status = "failed" if retry_count >= max_retries else "backlog"
+    return update_task(
+        task_id,
+        retry_count=retry_count,
+        status=next_status,
+        error_message=error_message,
+    )
+
+
 def next_backlog_task(project: str) -> list[dict]:
-    """获取下一个待执行任务（按优先级排序，忽略有未完成依赖的任务）."""
+    """Return the next runnable backlog task for a project."""
     with get_conn() as conn:
         rows = conn.execute(
             """
@@ -237,9 +305,9 @@ def next_backlog_task(project: str) -> list[dict]:
                   OR t.depends_on = ''
                   OR NOT EXISTS (
                       SELECT 1 FROM tasks t2, json_each(t.depends_on) j
-                      WHERE j.value = CAST(t2.id AS TEXT)
+                      WHERE CAST(j.value AS INTEGER) = t2.id
                         AND t2.project = t.project
-                        AND t2.status NOT IN ('done', 'failed')
+                        AND t2.status != 'done'
                   )
               )
             ORDER BY
@@ -248,40 +316,37 @@ def next_backlog_task(project: str) -> list[dict]:
                     WHEN 'P1' THEN 2
                     WHEN 'P2' THEN 3
                     WHEN 'P3' THEN 4
+                    ELSE 5
                 END,
                 t.created_at ASC
             LIMIT 1
             """,
             (project,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(row) for row in rows]
 
 
 def get_task_stats(project: str) -> dict:
-    """获取项目的任务统计."""
+    """Return aggregate task counts for a project."""
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT status, COUNT(*) as count
+            SELECT status, COUNT(*) AS count
             FROM tasks
             WHERE project = ?
             GROUP BY status
             """,
             (project,),
         ).fetchall()
-        stats = {r["status"]: r["count"] for r in rows}
-        return {
-            "backlog": stats.get("backlog", 0),
-            "in_progress": stats.get("in_progress", 0),
-            "done": stats.get("done", 0),
-            "failed": stats.get("failed", 0),
-            "total": sum(stats.values()),
-        }
+    stats = {row["status"]: row["count"] for row in rows}
+    return {
+        "backlog": stats.get("backlog", 0),
+        "in_progress": stats.get("in_progress", 0),
+        "done": stats.get("done", 0),
+        "failed": stats.get("failed", 0),
+        "total": sum(stats.values()),
+    }
 
-
-# ─────────────────────────────────────────────────────────
-# Task Logs CRUD
-# ─────────────────────────────────────────────────────────
 
 def create_task_log(
     task_id: int,
@@ -293,7 +358,7 @@ def create_task_log(
     finished_at: Optional[str] = None,
     duration: Optional[int] = None,
 ) -> dict:
-    """创建任务执行日志."""
+    """Create a task execution log row."""
     with get_conn() as conn:
         cur = conn.execute(
             """
@@ -303,17 +368,17 @@ def create_task_log(
             """,
             (task_id, agent, phase, output, exit_code, started_at, finished_at, duration),
         )
-        conn.commit()
         log_id = cur.lastrowid
-    row = conn.execute("SELECT * FROM task_logs WHERE id = ?", (log_id,)).fetchone()
-    return dict(row)
+        row = conn.execute("SELECT * FROM task_logs WHERE id = ?", (log_id,)).fetchone()
+        conn.commit()
+        return dict(row)
 
 
 def list_task_logs(task_id: int) -> list[dict]:
-    """获取任务的所有执行日志."""
+    """List logs for a task."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM task_logs WHERE task_id = ? ORDER BY started_at",
+            "SELECT * FROM task_logs WHERE task_id = ? ORDER BY started_at, id",
             (task_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(row) for row in rows]
