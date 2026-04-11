@@ -1,0 +1,28 @@
+# CodePilot 项目配置文件
+# 此文件可选；工具也可通过数据库管理项目
+
+[project]
+# 项目标识名（用于 codepilot 命令 --project 参数）
+name = "codepilot-dev"
+# Git 主分支
+base_branch = "dev"
+# 默认 AI 模式: codex / claude / dual
+default_mode = "dual"
+# Worktree 隔离目录，空值则自动推导到 ~/.codepilot/worktrees/<project>/
+worktree_base = ""
+
+[agents]
+# AI Agent 命令
+codex_cmd = "codex"
+claude_cmd = "claude"
+
+[dispatch]
+# 调度间隔（秒）
+interval_seconds = 600
+# 任务过期时间（分钟），超时未完成自动重置
+stale_minutes = 30
+
+[notifications]
+# 飞书/企微 Webhook URL
+webhook_url = ""
+enabled = false

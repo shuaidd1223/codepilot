@@ -1,0 +1,34 @@
+[project]
+name = "codepilot"
+version = "0.1.0"
+description = "全局编程工作流自动化 CLI 工具"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Developer" }]
+keywords = ["automation", "workflow", "claude", "codex", "ai"]
+
+dependencies = [
+    "click>=8.1.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+codepilot = "codepilot.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["codepilot*"]
+
+[tool.setuptools.package-dir]
+"" = "."
