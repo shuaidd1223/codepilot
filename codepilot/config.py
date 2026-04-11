@@ -26,7 +26,7 @@ class ProjectConfig:
     """[project] 项目配置."""
     name: str = ""
     base_branch: str = "dev"
-    default_mode: str = "dual"
+    default_mode: str = "codex"
     worktree_base: Optional[str] = None
 
 
@@ -49,7 +49,7 @@ class DispatchConfig:
 @dataclass
 class AutomationConfig:
     """[automation] 自动规划和执行配置."""
-    planner: str = "claude"
+    planner: str = "codex"
     executor: str = "builtin"
     auto_execute: bool = True
     confirm_before_execute: bool = False
@@ -84,7 +84,7 @@ class AgentsConfig:
     # 兼容旧格式的别名
     project_name: str = ""
     base_branch: str = "dev"
-    default_mode: str = "dual"
+    default_mode: str = "codex"
     worktree_base: Optional[str] = None
     codex_cmd: str = "codex"
     claude_cmd: str = "claude"
@@ -124,7 +124,7 @@ class AgentsConfig:
             project=ProjectConfig(
                 name=proj.get("name", ""),
                 base_branch=proj.get("base_branch", "dev"),
-                default_mode=proj.get("default_mode", "dual"),
+                default_mode=proj.get("default_mode", "codex"),
                 worktree_base=proj.get("worktree_base"),
             ),
             shell=ShellConfig(
@@ -138,7 +138,7 @@ class AgentsConfig:
                 stale_minutes=dispatch.get("stale_minutes", 30),
             ),
             automation=AutomationConfig(
-                planner=automation.get("planner", "claude"),
+                planner=automation.get("planner", "codex"),
                 executor=automation.get("executor", "builtin"),
                 auto_execute=automation.get("auto_execute", True),
                 confirm_before_execute=automation.get("confirm_before_execute", False),
@@ -151,7 +151,7 @@ class AgentsConfig:
             # 兼容字段
             project_name=proj.get("name", ""),
             base_branch=proj.get("base_branch", "dev"),
-            default_mode=proj.get("default_mode", "dual"),
+            default_mode=proj.get("default_mode", "codex"),
             worktree_base=proj.get("worktree_base"),
             codex_cmd=agents.get("codex_cmd", "codex"),
             claude_cmd=agents.get("claude_cmd", "claude"),
@@ -255,11 +255,8 @@ DEFAULT_TEMPLATE = """\
 name = "{name}"
 # Git 主分支
 base_branch = "dev"
-# 默认 AI 模式: cli / api / dual
-#   cli   - 仅使用命令行 AI (claude/codex)
-#   api   - 仅使用 API AI (GPT-4/Claude/混元等)
-#   dual  - Builder + Reviewer 双代理模式
-default_mode = "dual"
+# 默认任务智能体
+default_mode = "codex"
 # Worktree 隔离目录，空值则自动推导到 ~/.codepilot/worktrees/<project>/
 worktree_base = ""
 
@@ -285,8 +282,8 @@ interval_seconds = 600
 stale_minutes = 30
 
 [automation]
-# 纯文本需求模式默认使用 Claude 规划、Codex 执行
-planner = "claude"
+# 纯文本需求模式默认使用 Codex 规划和执行
+planner = "codex"
 executor = "builtin"
 # 输入需求后是否直接开始执行
 auto_execute = true
@@ -353,7 +350,7 @@ LEGACY_TEMPLATE = """\
 [project]
 name = "{name}"
 base_branch = "dev"
-default_mode = "dual"
+default_mode = "codex"
 worktree_base = ""
 
 [agents]
@@ -366,7 +363,7 @@ interval_seconds = 600
 stale_minutes = 30
 
 [automation]
-planner = "claude"
+planner = "codex"
 executor = "builtin"
 auto_execute = true
 confirm_before_execute = false

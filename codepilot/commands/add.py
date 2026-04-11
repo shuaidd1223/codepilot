@@ -11,8 +11,14 @@ from pathlib import Path
 import click
 
 from codepilot import db
-from codepilot.ai import generate_task_content, list_available_providers, check_provider_availability
+from codepilot.ai import (
+    check_provider_availability,
+    generate_task_content,
+    list_available_providers,
+    normalize_agent_name,
+)
 from codepilot.commands.status import _resolve_project
+from codepilot.output import echo
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -26,7 +32,7 @@ def _resolve_project_strict(ctx, param, value):
     db.init_db()
     proj = db.get_project(value)
     if not proj:
-        click.echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
+        echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
         raise click.Abort()
     return value
 
@@ -34,20 +40,26 @@ def _resolve_project_strict(ctx, param, value):
 def _resolve_agent(ctx, param, value):
     """解析 agent 参数，提供友好的错误提示."""
     if not value:
-        return "claude"
+        return "codex"
 
-    # 检查 provider 是否可用
-    available, msg = check_provider_availability(value)
+    normalized = normalize_agent_name(value)
+    project_path = None
+    if ctx is not None and getattr(ctx, "params", None):
+        project_name = ctx.params.get("project")
+        project_info = db.get_project(project_name) if project_name else None
+        project_path = project_info.get("path") if project_info else None
+    available, msg = check_provider_availability(normalized, project_path=project_path)
     if not available:
-        click.echo(f"[yellow]警告: {msg}[/yellow]")
-        click.echo("[dim]  可用 providers:[/dim]")
         providers = list_available_providers()
-        for cli in providers.get("cli", [])[:5]:
-            click.echo(f"[dim]    CLI: {cli}[/dim]")
-        for api in providers.get("api", [])[:10]:
-            click.echo(f"[dim]    API: {api}[/dim]")
+        hint_lines = []
+        for cli in providers.get("cli", [])[:4]:
+            hint_lines.append(f"CLI: {cli}")
+        for api in providers.get("api", [])[:6]:
+            hint_lines.append(f"API: {api}")
+        hint = "；可选示例：" + "；".join(hint_lines) if hint_lines else ""
+        raise click.BadParameter(msg + hint)
 
-    return value
+    return normalized
 
 
 def _parse_batch_file(file_path: Path) -> list[dict]:
@@ -109,7 +121,8 @@ AGENT_CHOICES = [
 @click.option("--title", "-t", help="任务标题（单条模式）")
 @click.option(
     "--agent", "-a",
-    default="claude",
+    default="codex",
+    callback=_resolve_agent,
     help="AI Provider (CLI: claude/codex | API: openai-gpt4/claude-sonnet/hunyuan/deepseek 等)"
 )
 @click.option("--priority", type=click.Choice(["P0", "P1", "P2", "P3"]), default="P2",
@@ -206,16 +219,11 @@ def _single_add(
     """添加单个任务."""
     if no_ai:
         content = ""
-        click.echo("[yellow]跳过 AI 生成，内容为空[/yellow]")
+        echo("[yellow]跳过 AI 生成，内容为空[/yellow]")
     else:
-        click.echo(f"[cyan]调用 {agent} 生成任务内容...[/cyan]")
-        try:
-            content = generate_task_content(title, project_path=proj_path, agent=agent)
-            click.echo("[green][OK] AI 生成完成[/green]")
-        except RuntimeError as e:
-            click.echo(f"[red][X] {e}[/red]")
-            click.echo("[yellow]  使用空白内容创建任务[/yellow]")
-            content = ""
+        echo(f"[cyan]调用 {agent} 生成任务内容...[/cyan]")
+        content = generate_task_content(title, project_path=proj_path, agent=agent)
+        echo("[green][OK] AI 生成完成[/green]")
 
     task = db.create_task(
         project=project,
@@ -232,7 +240,7 @@ def _single_add(
         click.echo(json.dumps(task, ensure_ascii=False, indent=2))
         return
 
-    click.echo(f"[green]+ 任务 #{task_id} 已创建[/green]")
+    echo(f"[green]+ 任务 #{task_id} 已创建[/green]")
     click.echo(f"  项目:     {project}")
     click.echo(f"  标题:     {title}")
     click.echo(f"  Agent:    {agent}")
@@ -257,23 +265,24 @@ def _batch_add(
     json_mode: bool,
 ):
     """批量添加任务."""
-    click.echo(f"[cyan]批量导入: {batch_file}[/cyan]")
+    echo(f"[cyan]批量导入: {batch_file}[/cyan]")
     items = _parse_batch_file(batch_file)
 
     if not items:
-        click.echo("[yellow]文件中没有找到有效任务[/yellow]")
+        echo("[yellow]文件中没有找到有效任务[/yellow]")
         return
 
-    click.echo(f"[cyan]将导入 {len(items)} 个任务...[/cyan]\n")
+    echo(f"[cyan]将导入 {len(items)} 个任务...[/cyan]")
+    click.echo()
 
     results = []
     for i, item in enumerate(items, 1):
         item_title = item.get("title") or item.get("name") or str(item)
         item_priority = item.get("priority", priority)
-        item_agent = item.get("agent", agent)
+        item_agent = _resolve_agent(None, None, item.get("agent", agent))
         item_dep = dep_list  # 批量模式下使用共同的依赖
 
-        click.echo(f"[dim]{i}/{len(items)}[/dim] {item_title} ", nl=False)
+        echo(f"[dim]{i}/{len(items)}[/dim] {item_title} ", nl=False)
         if no_ai:
             content = ""
         else:
@@ -293,11 +302,12 @@ def _batch_add(
             depends_on=item_dep,
         )
         results.append(task)
-        click.echo(f"[green]+ #{task['id']}[/green]")
+        echo(f"[green]+ #{task['id']}[/green]")
 
     if json_mode:
         click.echo(json.dumps({"imported": results, "count": len(results)},
                               ensure_ascii=False, indent=2))
         return
 
-    click.echo(f"\n[green][OK] 成功导入 {len(results)} 个任务[/green]")
+    echo()
+    echo(f"[green][OK] 成功导入 {len(results)} 个任务[/green]")

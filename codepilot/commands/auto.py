@@ -9,10 +9,16 @@ from typing import Optional
 import click
 
 from codepilot import db
-from codepilot.ai import build_task_markdown_from_plan, generate_task_breakdown
+from codepilot.ai import (
+    build_task_markdown_from_plan,
+    check_provider_availability,
+    generate_task_breakdown,
+    normalize_agent_name,
+)
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands.run import run_backlog
 from codepilot.config import find_config, load_config
+from codepilot.output import echo
 
 
 def _json_mode(ctx: click.Context, json_mode: bool) -> bool:
@@ -24,6 +30,12 @@ def _json_mode(ctx: click.Context, json_mode: bool) -> bool:
 def _root_options(ctx: click.Context) -> dict:
     root = ctx.find_root()
     return root.obj if root and root.obj else {}
+
+
+def _should_fallback_codex_planning(exc: Exception) -> bool:
+    """Only fall back to a single Codex task on planner timeouts."""
+    message = str(exc).lower()
+    return "超时" in str(exc) or "timed out" in message or "timeout" in message
 
 
 def resolve_project_for_prompt(project: Optional[str] = None, cwd: Optional[Path] = None) -> dict:
@@ -42,15 +54,22 @@ def resolve_project_for_prompt(project: Optional[str] = None, cwd: Optional[Path
         cfg = load_config(config_path)
         project_root = config_path.parent.resolve()
         matched = db.find_project_by_path(project_root)
-        if matched:
-            return matched
-
         project_name = (cfg.project_name or cfg.project.name or project_root.name) if cfg else project_root.name
+        if matched and Path(matched["path"]).resolve() == project_root:
+            return db.register_project(
+                name=matched["name"],
+                path=str(project_root),
+                base_branch=(cfg.base_branch if cfg else matched.get("base_branch", "dev")),
+                default_mode=(cfg.default_mode if cfg else matched.get("default_mode", "codex")),
+                worktree_base=(cfg.worktree_base if cfg else matched.get("worktree_base")),
+                config_file=str(config_path),
+            )
+
         return db.register_project(
             name=project_name,
             path=str(project_root),
             base_branch=(cfg.base_branch if cfg else "dev"),
-            default_mode=(cfg.default_mode if cfg else "dual"),
+            default_mode=(cfg.default_mode if cfg else "codex"),
             worktree_base=(cfg.worktree_base if cfg else None),
             config_file=str(config_path),
         )
@@ -64,7 +83,7 @@ def resolve_project_for_prompt(project: Optional[str] = None, cwd: Optional[Path
             name=current_dir.name,
             path=str(current_dir),
             base_branch="main",
-            default_mode="dual",
+            default_mode="codex",
             config_file=None,
         )
 
@@ -99,7 +118,7 @@ def _resolve_effective_options(
 ) -> dict:
     cfg = _project_config(project_info)
     return {
-        "planner": planner or (cfg.automation.planner if cfg else "claude"),
+        "planner": planner or (cfg.automation.planner if cfg else "codex"),
         "executor": executor or (cfg.automation.executor if cfg else "builtin"),
         "auto_commit": (cfg.automation.auto_commit if auto_commit is None and cfg else (True if auto_commit is None else auto_commit)),
         "max_tasks": max_tasks or (cfg.automation.max_tasks if cfg else 5),
@@ -109,11 +128,49 @@ def _resolve_effective_options(
     }
 
 
+def _resolve_task_agent(project_info: dict, agent: Optional[str], executor: str) -> str:
+    """Resolve task agent and fail early with a human-readable message when unavailable."""
+    cfg = _project_config(project_info)
+    default_agent = (
+        cfg.project.default_mode
+        if cfg and cfg.project and cfg.project.default_mode
+        else project_info.get("default_mode") or "codex"
+    )
+    raw_agent = (agent or default_agent).strip()
+    normalized = normalize_agent_name(raw_agent)
+
+    if normalized == "dual":
+        if executor == "builtin":
+            available, message = check_provider_availability("dual", project_path=project_info["path"])
+            if not available:
+                raise click.ClickException(message)
+        return "dual"
+
+    available, message = check_provider_availability(normalized, project_path=project_info["path"])
+    if not available:
+        raise click.ClickException(message)
+
+    if executor == "builtin" and normalized not in {
+        "codex",
+        "claude",
+        "claude-node",
+        "claude-sonnet",
+        "claude-opus",
+        "claude-haiku",
+    }:
+        raise click.ClickException(
+            f"内置执行器暂时不支持 `{raw_agent}`。请改用 codex、claude、claude-node 或 dual。"
+        )
+
+    return normalized
+
+
 def run_requirement_workflow(
     *,
     project_info: dict,
     title: str,
-    planner: str = "claude",
+    planner: str = "codex",
+    task_agent: Optional[str] = None,
     priority: str = "P2",
     max_tasks: int = 5,
     execute: Optional[bool] = None,
@@ -142,14 +199,49 @@ def run_requirement_workflow(
     auto_commit = effective["auto_commit"]
     max_tasks = effective["max_tasks"]
     max_retries = effective["max_retries"]
+    task_agent = _resolve_task_agent(project_info, task_agent, executor)
 
-    click.echo(f"[cyan]收到需求：{title}[/cyan]")
-    breakdown = generate_task_breakdown(
-        title=title,
-        project_path=project_path,
-        planner=planner,
-        max_tasks=max_tasks,
-    )
+    echo(f"[cyan]收到需求：{title}[/cyan]")
+    try:
+        breakdown = generate_task_breakdown(
+            title=title,
+            project_path=project_path,
+            planner=planner,
+            max_tasks=max_tasks,
+        )
+    except Exception as exc:
+        if normalize_agent_name(planner) == "codex" and _should_fallback_codex_planning(exc):
+            echo("[yellow]Codex 规划没有及时完成，已降级为单任务直接执行。[/yellow]")
+            breakdown = {
+                "summary": "Codex 规划未完成，已降级为单任务执行",
+                "complexity": "simple",
+                "should_split": False,
+                "tasks": [
+                    {
+                        "title": title,
+                        "priority": priority,
+                        "goal": title,
+                        "acceptance_criteria": [
+                            "完成当前需求的核心实现，主流程可以实际运行。",
+                            "运行必要验证并在结果中说明是否通过。",
+                        ],
+                        "builder_notes": [
+                            "先阅读相关代码，优先处理最影响可用性的阻塞点。",
+                            "如果问题过大，先用最小可行改动把主链路跑通。",
+                        ],
+                        "reviewer_notes": [
+                            "检查是否真的跑通主流程，而不只是修改文案或配置。",
+                            "确认验证步骤和潜在回归风险已经说明。",
+                        ],
+                        "files": [],
+                        "notes": [
+                            f"本次为 Codex 规划失败后的降级执行。原始原因：{exc}",
+                        ],
+                    }
+                ],
+            }
+        else:
+            raise click.ClickException(str(exc)) from exc
 
     complexity = breakdown.get("complexity") or ("simple" if len(breakdown["tasks"]) <= 1 else "complex")
     should_split = breakdown.get("should_split")
@@ -163,7 +255,7 @@ def run_requirement_workflow(
             project=project_name,
             title=item["title"],
             content=build_task_markdown_from_plan(item),
-            agent="dual",
+            agent=task_agent,
             priority=item.get("priority") or priority,
             depends_on=[previous_task_id] if previous_task_id else None,
             project_path=project_path,
@@ -179,6 +271,7 @@ def run_requirement_workflow(
         "summary": breakdown.get("summary", ""),
         "complexity": complexity,
         "should_split": should_split,
+        "task_agent": task_agent,
         "tasks": created_tasks,
         "will_execute": will_execute,
     }
@@ -196,18 +289,20 @@ def run_requirement_workflow(
         return payload
 
     label = "复杂任务" if should_split else "简单任务"
-    click.echo(f"[green][OK] 已识别为{label}[/green]  complexity={complexity}")
+    echo(f"[green][OK] 已识别为{label}[/green]  complexity={complexity}")
     if breakdown.get("summary"):
         click.echo(f"  摘要: {breakdown['summary']}")
     for task in created_tasks:
         dep = f" depends_on=#{json.loads(task['depends_on'])[0]}" if task.get("depends_on") else ""
-        click.echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]{dep}")
+        click.echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]  agent={task_agent}{dep}")
 
     if not will_execute:
-        click.echo("\n[dim]已完成规划，未自动执行[/dim]")
+        echo()
+        echo("[dim]已完成规划，未自动执行[/dim]")
         return payload
 
-    click.echo("\n[cyan]开始自动执行...[/cyan]")
+    echo()
+    echo("[cyan]开始自动执行...[/cyan]")
     stats = run_backlog(
         project_name,
         once=False,
@@ -216,7 +311,7 @@ def run_requirement_workflow(
         auto_commit=auto_commit,
     )
     payload["run"] = stats
-    click.echo(
+    echo(
         f"\n[dim]Workflow 完成: processed={stats['processed']} done={stats['done']} "
         f"failed={stats['failed']} requeued={stats['requeued']}[/dim]"
     )
@@ -231,6 +326,7 @@ def _chat_help() -> str:
             "  /exit               退出会话",
             "  /status             查看当前项目任务看板",
             "  /project <name>     切换项目",
+            "  /agent <name>       切换默认任务智能体（如 codex / claude / dual）",
             "  /execute on|off     切换默认是否自动执行",
             "  /plan               只规划下一条需求，不执行",
             "  /run                自动执行下一条需求",
@@ -242,6 +338,7 @@ def run_chat_session(
     *,
     project: Optional[str] = None,
     planner: Optional[str] = None,
+    task_agent: Optional[str] = None,
     execute: Optional[bool] = None,
     executor: Optional[str] = None,
     auto_commit: Optional[bool] = None,
@@ -259,18 +356,21 @@ def run_chat_session(
         max_retries=max_retries,
     )
     default_execute = effective["auto_execute"] if execute is None else execute
+    default_agent = _resolve_task_agent(project_info, task_agent, effective["executor"])
 
-    click.echo(
+    echo(
         f"[cyan]CodePilot Chat[/cyan]  项目: {project_info['name']}  "
-        f"planner={effective['planner']} executor={effective['executor']}"
+        f"planner={effective['planner']} executor={effective['executor']} agent={default_agent}"
     )
-    click.echo("[dim]直接输入需求文本即可。输入 /help 查看会话命令。[/dim]\n")
+    echo("[dim]直接输入需求文本即可。输入 /help 查看会话命令。[/dim]")
+    echo()
 
     while True:
         try:
             raw = click.prompt("codepilot", prompt_suffix="> ", default="", show_default=False)
         except (EOFError, KeyboardInterrupt):
-            click.echo("\n[dim]会话已结束[/dim]")
+            echo()
+            echo("[dim]会话已结束[/dim]")
             return
 
         text = raw.strip()
@@ -282,7 +382,7 @@ def run_chat_session(
             cmd = parts[0].lower()
 
             if cmd == "/exit":
-                click.echo("[dim]会话已结束[/dim]")
+                echo("[dim]会话已结束[/dim]")
                 return
             if cmd == "/help":
                 click.echo(_chat_help())
@@ -297,7 +397,7 @@ def run_chat_session(
                 continue
             if cmd == "/project":
                 if len(parts) < 2:
-                    click.echo("[yellow]用法: /project <name>[/yellow]")
+                    echo("[yellow]用法: /project <name>[/yellow]")
                     continue
                 project_info = resolve_project_for_prompt(parts[1])
                 effective = _resolve_effective_options(
@@ -308,45 +408,64 @@ def run_chat_session(
                     max_tasks=max_tasks,
                     max_retries=max_retries,
                 )
-                click.echo(f"[green][OK] 已切换项目[/green] {project_info['name']}")
+                default_agent = _resolve_task_agent(project_info, default_agent, effective["executor"])
+                echo(f"[green][OK] 已切换项目[/green] {project_info['name']}")
+                continue
+            if cmd == "/agent":
+                if len(parts) < 2:
+                    echo("[yellow]用法: /agent <name>[/yellow]")
+                    continue
+                try:
+                    default_agent = _resolve_task_agent(project_info, parts[1], effective["executor"])
+                except click.ClickException as exc:
+                    echo(f"[red]{exc.format_message()}[/red]")
+                    continue
+                echo(f"[green][OK] 默认任务智能体已设置为 {default_agent}[/green]")
                 continue
             if cmd == "/execute":
                 if len(parts) < 2 or parts[1].lower() not in {"on", "off"}:
-                    click.echo("[yellow]用法: /execute on|off[/yellow]")
+                    echo("[yellow]用法: /execute on|off[/yellow]")
                     continue
                 default_execute = parts[1].lower() == "on"
-                click.echo(f"[green][OK] 自动执行已设置为 {default_execute}[/green]")
+                echo(f"[green][OK] 自动执行已设置为 {default_execute}[/green]")
                 continue
             if cmd == "/plan":
                 default_execute = False
-                click.echo("[green][OK] 下一条需求将只规划不执行[/green]")
+                echo("[green][OK] 下一条需求将只规划不执行[/green]")
                 continue
             if cmd == "/run":
                 default_execute = True
-                click.echo("[green][OK] 下一条需求将自动执行[/green]")
+                echo("[green][OK] 下一条需求将自动执行[/green]")
                 continue
 
-            click.echo("[yellow]未知会话命令[/yellow]")
+            echo("[yellow]未知会话命令[/yellow]")
             click.echo(_chat_help())
             continue
 
-        run_requirement_workflow(
-            project_info=project_info,
-            title=text,
-            planner=effective["planner"],
-            execute=default_execute,
-            executor=effective["executor"],
-            auto_commit=effective["auto_commit"],
-            max_tasks=effective["max_tasks"],
-            max_retries=effective["max_retries"],
-        )
+        try:
+            run_requirement_workflow(
+                project_info=project_info,
+                title=text,
+                planner=effective["planner"],
+                task_agent=default_agent,
+                execute=default_execute,
+                executor=effective["executor"],
+                auto_commit=effective["auto_commit"],
+                max_tasks=effective["max_tasks"],
+                max_retries=effective["max_retries"],
+            )
+        except click.ClickException as exc:
+            echo(f"[red]{exc.format_message()}[/red]")
+        except Exception as exc:
+            echo(f"[red]{exc}[/red]")
         click.echo()
 
 
 @click.command("auto")
 @click.option("--project", "-p", callback=_resolve_project_strict, help="项目名称")
 @click.option("--title", "-t", required=True, help="高层目标或任务标题")
-@click.option("--planner", default="claude", help="用于拆分任务的规划器，默认 claude")
+@click.option("--planner", default="codex", help="用于拆分任务的规划器，默认 codex")
+@click.option("--agent", "task_agent", default=None, help="创建出来的任务默认使用哪个智能体，如 codex / claude / dual")
 @click.option("--priority", type=click.Choice(["P0", "P1", "P2", "P3"]), default="P2", help="默认优先级")
 @click.option("--max-tasks", type=int, default=5, help="最多拆分出的子任务数量")
 @click.option("--plan-only", is_flag=True, help="只拆分入队，不自动执行")
@@ -365,6 +484,7 @@ def auto(
     project: str,
     title: str,
     planner: str,
+    task_agent: Optional[str],
     priority: str,
     max_tasks: int,
     plan_only: bool,
@@ -376,24 +496,31 @@ def auto(
     """Split one high-level goal and optionally execute it."""
     json_mode = _json_mode(ctx, json_mode)
     project_info = resolve_project_for_prompt(project)
-    run_requirement_workflow(
-        project_info=project_info,
-        title=title,
-        planner=planner,
-        priority=priority,
-        max_tasks=max_tasks,
-        execute=False if plan_only else True,
-        executor=executor,
-        auto_commit=auto_commit,
-        max_retries=max_retries,
-        json_mode=json_mode,
-    )
+    try:
+        run_requirement_workflow(
+            project_info=project_info,
+            title=title,
+            planner=planner,
+            task_agent=task_agent,
+            priority=priority,
+            max_tasks=max_tasks,
+            execute=False if plan_only else True,
+            executor=executor,
+            auto_commit=auto_commit,
+            max_retries=max_retries,
+            json_mode=json_mode,
+        )
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @click.command("go")
 @click.argument("requirement", nargs=-1, required=False)
 @click.option("--project", help="项目名称；不指定则自动识别当前项目")
-@click.option("--planner", default=None, help="规划器；默认读取配置或使用 claude")
+@click.option("--planner", default=None, help="规划器；默认读取配置或使用 codex")
+@click.option("--agent", "task_agent", default=None, help="创建出来的任务默认使用哪个智能体，如 codex / claude / dual")
 @click.option("--priority", type=click.Choice(["P0", "P1", "P2", "P3"]), default="P2", help="默认优先级")
 @click.option("--max-tasks", type=int, default=0, help="最大拆分任务数；0 表示读取配置")
 @click.option("--execute/--no-execute", default=None, help="是否立即执行；默认跟随配置")
@@ -412,6 +539,7 @@ def go(
     requirement: tuple[str, ...],
     project: Optional[str],
     planner: Optional[str],
+    task_agent: Optional[str],
     priority: str,
     max_tasks: int,
     execute: Optional[bool],
@@ -429,6 +557,7 @@ def go(
     root_obj = _root_options(ctx)
     project = project or root_obj.get("direct_project")
     planner = planner or root_obj.get("planner")
+    task_agent = task_agent or root_obj.get("agent")
     if execute is None:
         execute = root_obj.get("execute")
     executor = executor or root_obj.get("executor")
@@ -440,23 +569,30 @@ def go(
         max_retries = root_obj.get("max_retries", 0)
 
     project_info = resolve_project_for_prompt(project)
-    run_requirement_workflow(
-        project_info=project_info,
-        title=text,
-        planner=planner or "claude",
-        priority=priority,
-        max_tasks=max_tasks or 5,
-        execute=execute,
-        executor=executor or "auto",
-        auto_commit=auto_commit if auto_commit is not None else True,
-        max_retries=max_retries or 3,
-        json_mode=json_mode,
-    )
+    try:
+        run_requirement_workflow(
+            project_info=project_info,
+            title=text,
+            planner=planner or "codex",
+            task_agent=task_agent,
+            priority=priority,
+            max_tasks=max_tasks or 5,
+            execute=execute,
+            executor=executor or "auto",
+            auto_commit=auto_commit if auto_commit is not None else True,
+            max_retries=max_retries or 3,
+            json_mode=json_mode,
+        )
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @click.command("chat")
 @click.option("--project", help="项目名称；不指定则自动识别当前项目")
-@click.option("--planner", default=None, help="规划器；默认读取配置或使用 claude")
+@click.option("--planner", default=None, help="规划器；默认读取配置或使用 codex")
+@click.option("--agent", "task_agent", default=None, help="默认创建任务时使用哪个智能体，如 codex / claude / dual")
 @click.option("--execute/--no-execute", default=None, help="默认是否自动执行；默认跟随配置")
 @click.option(
     "--executor",
@@ -467,9 +603,12 @@ def go(
 @click.option("--auto-commit/--no-auto-commit", default=None, help="是否自动提交；默认跟随配置")
 @click.option("--max-tasks", type=int, default=0, help="最大拆分任务数；0 表示读取配置")
 @click.option("--max-retries", type=int, default=0, help="最大重试次数；0 表示读取配置")
+@click.pass_context
 def chat(
+    ctx: click.Context,
     project: Optional[str],
     planner: Optional[str],
+    task_agent: Optional[str],
     execute: Optional[bool],
     executor: Optional[str],
     auto_commit: Optional[bool],
@@ -477,9 +616,24 @@ def chat(
     max_retries: int,
 ):
     """Start an interactive natural-language session."""
+    root_obj = _root_options(ctx)
+    project = project or root_obj.get("direct_project")
+    planner = planner or root_obj.get("planner")
+    task_agent = task_agent or root_obj.get("agent")
+    if execute is None:
+        execute = root_obj.get("execute")
+    executor = executor or root_obj.get("executor")
+    if auto_commit is None:
+        auto_commit = root_obj.get("auto_commit")
+    if not max_tasks:
+        max_tasks = root_obj.get("max_tasks", 0)
+    if not max_retries:
+        max_retries = root_obj.get("max_retries", 0)
+
     run_chat_session(
         project=project,
         planner=planner,
+        task_agent=task_agent,
         execute=execute,
         executor=executor,
         auto_commit=auto_commit,

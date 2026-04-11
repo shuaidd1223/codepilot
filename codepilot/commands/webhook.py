@@ -7,6 +7,7 @@ import json
 import click
 
 from codepilot import db
+from codepilot.output import echo
 
 
 @click.command()
@@ -20,13 +21,16 @@ def webhook(port: int):
 
     当前状态：打印服务信息，实际 HTTP 服务待实现.
     """
-    click.echo(f"[cyan]CodePilot Webhook Server[/cyan]  端口: {port}\n")
+    echo(f"[cyan]CodePilot Webhook Server[/cyan]  端口: {port}")
+    click.echo()
     click.echo("Webhook 路由:")
     click.echo("  POST /tasks   添加任务  body: {project, title, content}")
     click.echo("  GET  /health  健康检查")
     click.echo()
-    click.echo("[yellow]HTTP 服务待实现（可选：FastAPI / http.server）[/yellow]")
-    click.echo("\n[dim]当前可用方式：codepilot add 命令直接添加任务[/dim]\n")
+    echo("[yellow]HTTP 服务待实现（可选：FastAPI / http.server）[/yellow]")
+    echo()
+    echo("[dim]当前可用方式：codepilot add 命令直接添加任务[/dim]")
+    click.echo()
 
     # TODO: 实际 HTTP 服务（使用标准库 http.server 或 FastAPI）
     # 示例路由：

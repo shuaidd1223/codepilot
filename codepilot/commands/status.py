@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from codepilot import db
+from codepilot.output import echo
 
 
 def _resolve_project(ctx: click.Context, param: str, value: str | None) -> str | None:
@@ -18,7 +19,7 @@ def _resolve_project(ctx: click.Context, param: str, value: str | None) -> str |
     db.init_db()
     proj = db.get_project(value)
     if not proj:
-        click.echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
+        echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
         raise click.Abort()
     return value
 
@@ -51,7 +52,7 @@ def _show_project_status(project: str, verbose: bool, json_mode: bool):
     """显示单个项目的看板。"""
     proj = db.get_project(project)
     if not proj:
-        click.echo(f"[red]错误：项目 '{project}' 未注册[/red]")
+        echo(f"[red]错误：项目 '{project}' 未注册[/red]")
         click.echo("  运行 codepilot init 先注册项目")
         return
 
@@ -121,7 +122,7 @@ def _show_all_projects_status(verbose: bool, json_mode: bool):
     """显示所有项目的汇总看板。"""
     projects = db.list_projects()
     if not projects:
-        click.echo("[yellow]没有已注册的项目[/yellow]")
+        echo("[yellow]没有已注册的项目[/yellow]")
         return
 
     if json_mode:

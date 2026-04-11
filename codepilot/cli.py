@@ -38,6 +38,7 @@ class NaturalLanguageGroup(click.Group):
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="以 JSON 格式输出（全局选项）")
 @click.option("--project", "direct_project", help="纯文本模式下使用的项目名，不指定则自动识别")
 @click.option("--planner", default=None, help="纯文本模式下的规划器，默认读取配置")
+@click.option("--agent", default=None, help="纯文本模式下创建任务时使用的智能体，如 codex / claude / dual")
 @click.option("--execute/--no-execute", default=None, help="纯文本模式下是否立即执行，默认读取配置")
 @click.option(
     "--executor",
@@ -54,6 +55,7 @@ def main(
     json_mode: bool,
     direct_project: str | None,
     planner: str | None,
+    agent: str | None,
     execute: bool | None,
     executor: str | None,
     auto_commit: bool | None,
@@ -65,6 +67,7 @@ def main(
     ctx.obj["json_mode"] = json_mode
     ctx.obj["direct_project"] = direct_project
     ctx.obj["planner"] = planner
+    ctx.obj["agent"] = agent
     ctx.obj["execute"] = execute
     ctx.obj["executor"] = executor
     ctx.obj["auto_commit"] = auto_commit

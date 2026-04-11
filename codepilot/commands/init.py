@@ -10,6 +10,7 @@ import click
 
 from codepilot import config, db as db_module
 from codepilot.db import register_project
+from codepilot.output import echo
 
 
 @click.command("init")
@@ -34,7 +35,7 @@ def init_(
     # 检查是否已注册
     existing = db_module.get_project(project_name)
     if existing:
-        click.echo(f"[yellow]项目 '{project_name}' 已注册，路径: {existing['path']}[/yellow]")
+        echo(f"[yellow]项目 '{project_name}' 已注册，路径: {existing['path']}[/yellow]")
         if not no_config:
             _update_config(path / "AGENTS.toml", project_name)
         return
@@ -45,11 +46,11 @@ def init_(
         name=project_name,
         path=project_path,
         base_branch="dev",
-        default_mode="dual",
+        default_mode="codex",
         config_file=config_path,
     )
 
-    click.echo(f"[green]+ 项目 '{project_name}' 注册成功[/green]")
+    echo(f"[green]+ 项目 '{project_name}' 注册成功[/green]")
     click.echo(f"  路径: {project_path}")
 
     if not no_config:
@@ -61,7 +62,7 @@ def _update_config(config_file: Path, project_name: str) -> None:
     """生成或更新 AGENTS.toml 配置文件."""
     config_file = config_file.resolve()
     if config_file.exists():
-        click.echo(f"[dim]  已存在 AGENTS.toml，跳过生成[/dim]")
+        echo(f"[dim]  已存在 AGENTS.toml，跳过生成[/dim]")
         return
 
     content = config.DEFAULT_TEMPLATE.format(name=project_name)

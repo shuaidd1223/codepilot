@@ -12,6 +12,7 @@ import click
 
 from codepilot import db
 from codepilot.commands.run import run_backlog
+from codepilot.output import echo
 
 
 def _resolve_project(ctx, param, value):
@@ -20,7 +21,7 @@ def _resolve_project(ctx, param, value):
     db.init_db()
     proj = db.get_project(value)
     if not proj:
-        click.echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
+        echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
         raise click.Abort()
     return value
 
@@ -100,13 +101,14 @@ def daemon(
     """Continuously poll backlog and run tasks in-process."""
     db.init_db()
     if not _acquire_lock():
-        click.echo("[red]已有 daemon 实例运行中，退出[/red]")
+        echo("[red]已有 daemon 实例运行中，退出[/red]")
         return
 
     try:
         _run_loop(project, interval, verbose, shell, executor, auto_commit)
     except KeyboardInterrupt:
-        click.echo("\n[yellow]守护进程收到停止信号，退出[/yellow]")
+        echo()
+        echo("[yellow]守护进程收到停止信号，退出[/yellow]")
     finally:
         _release_lock()
 
@@ -119,11 +121,12 @@ def _run_loop(
     executor: str,
     auto_commit: bool,
 ) -> None:
-    click.echo(
+    echo(
         f"[cyan]CodePilot Daemon[/cyan]  项目: {project or 'all'}  间隔: {interval}s  "
         f"执行器: {executor}\n"
     )
-    click.echo("[yellow]守护进程运行中，按 Ctrl+C 停止[/yellow]\n")
+    echo("[yellow]守护进程运行中，按 Ctrl+C 停止[/yellow]")
+    click.echo()
 
     while True:
         stats = _get_combined_stats(project)
@@ -131,12 +134,12 @@ def _run_loop(
 
         if stats["backlog"] == 0:
             if verbose:
-                click.echo(f"[{timestamp}] [dim]空闲，backlog: 0[/dim]")
+                echo(f"[dim][{timestamp}] 空闲，backlog: 0[/dim]")
             time.sleep(interval)
             continue
 
-        click.echo(
-            f"[{timestamp}] [green]backlog: {stats['backlog']}[/green]  "
+        echo(
+            f"[bold][{timestamp}][/bold] [green]backlog: {stats['backlog']}[/green]  "
             f"[blue]in-progress: {stats['in_progress']}[/blue]"
         )
 
@@ -152,8 +155,8 @@ def _run_loop(
                 auto_commit=auto_commit,
             )
             if verbose:
-                click.echo(
-                    f"[{timestamp}] [dim]{target}: processed={result['processed']} "
+                echo(
+                    f"[dim][{timestamp}] {target}: processed={result['processed']} "
                     f"done={result['done']} failed={result['failed']} "
                     f"requeued={result['requeued']}[/dim]"
                 )

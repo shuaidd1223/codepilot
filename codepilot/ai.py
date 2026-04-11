@@ -8,9 +8,11 @@ import platform
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
+
+from codepilot.config import find_config, load_config
 
 # API 支持库（可选导入）
 try:
@@ -59,22 +61,61 @@ class APIProvider:
     base_url: str = ""  # 自定义 API 端点
     max_tokens: int = 4096
     temperature: float = 0.7
+    api_env_vars: tuple[str, ...] = ()
+
+    def requires_api_key(self) -> bool:
+        """Whether this provider needs an API key."""
+        if self.base_url.startswith(("http://localhost", "http://127.0.0.1")):
+            return False
+        return True
+
+    def resolve_api_key(self) -> str:
+        """Resolve API key from explicit config or supported environment variables."""
+        if self.api_key:
+            return self.api_key
+        for env_var in self.api_env_vars:
+            value = os.environ.get(env_var, "").strip()
+            if value:
+                return value
+        if not self.requires_api_key():
+            return "local-provider"
+        return ""
 
     def build_client(self):
         """构建 API 客户端."""
+        api_key = self.resolve_api_key()
+
         if self.provider_type == "openai":
             if not OPENAI_AVAILABLE:
-                raise RuntimeError("请安装 openai: pip install openai")
+                raise RuntimeError(
+                    f"当前无法使用 {self.name}，因为本机没有安装 openai 依赖。"
+                    "请先执行: pip install openai"
+                )
+            if self.requires_api_key() and not api_key:
+                env_names = " / ".join(self.api_env_vars) or "对应的 API Key 环境变量"
+                raise RuntimeError(
+                    f"当前无法使用 {self.name}，因为还没有配置 API Key。"
+                    f"请先设置 {env_names}。"
+                )
             client = openai.OpenAI(
-                api_key=self.api_key or os.environ.get("OPENAI_API_KEY", ""),
+                api_key=api_key,
                 base_url=self.base_url or None,
             )
             return client, "chat.completions"
         elif self.provider_type == "anthropic":
             if not ANTHROPIC_AVAILABLE:
-                raise RuntimeError("请安装 anthropic: pip install anthropic")
+                raise RuntimeError(
+                    f"当前无法使用 {self.name}，因为本机没有安装 anthropic 依赖。"
+                    "请先执行: pip install anthropic"
+                )
+            if self.requires_api_key() and not api_key:
+                env_names = " / ".join(self.api_env_vars) or "对应的 API Key 环境变量"
+                raise RuntimeError(
+                    f"当前无法使用 {self.name}，因为还没有配置 API Key。"
+                    f"请先设置 {env_names}。"
+                )
             client = anthropic.Anthropic(
-                api_key=self.api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
+                api_key=api_key,
                 base_url=self.base_url or None,
             )
             return client, "messages"
@@ -136,18 +177,21 @@ API_PROVIDERS: dict[str, APIProvider] = {
         provider_type="openai",
         model="gpt-4-turbo-preview",
         max_tokens=4096,
+        api_env_vars=("OPENAI_API_KEY",),
     ),
     "openai-gpt4o": APIProvider(
         name="OpenAI GPT-4o",
         provider_type="openai",
         model="gpt-4o",
         max_tokens=4096,
+        api_env_vars=("OPENAI_API_KEY",),
     ),
     "openai-gpt35": APIProvider(
         name="OpenAI GPT-3.5 Turbo",
         provider_type="openai",
         model="gpt-3.5-turbo",
         max_tokens=2048,
+        api_env_vars=("OPENAI_API_KEY",),
     ),
     # Claude via API
     "claude-opus": APIProvider(
@@ -155,18 +199,21 @@ API_PROVIDERS: dict[str, APIProvider] = {
         provider_type="anthropic",
         model="claude-opus-4-20241120",
         max_tokens=4096,
+        api_env_vars=("ANTHROPIC_API_KEY",),
     ),
     "claude-sonnet": APIProvider(
         name="Claude 3.5 Sonnet",
         provider_type="anthropic",
         model="claude-sonnet-4-20250514",
         max_tokens=4096,
+        api_env_vars=("ANTHROPIC_API_KEY",),
     ),
     "claude-haiku": APIProvider(
         name="Claude 3 Haiku",
         provider_type="anthropic",
         model="claude-3-5-haiku-20240307",
         max_tokens=2048,
+        api_env_vars=("ANTHROPIC_API_KEY",),
     ),
     # 腾讯云混元大模型
     "hunyuan": APIProvider(
@@ -175,6 +222,7 @@ API_PROVIDERS: dict[str, APIProvider] = {
         model="hunyuan",
         base_url="https://hunyuan.cloud.tencent.com",
         max_tokens=4096,
+        api_env_vars=("HUNYUAN_API_KEY",),
     ),
     # 智谱 GLM
     "zhipu-glm4": APIProvider(
@@ -183,6 +231,7 @@ API_PROVIDERS: dict[str, APIProvider] = {
         model="glm-4",
         base_url="https://open.bigmodel.cn/api/paas/v4",
         max_tokens=4096,
+        api_env_vars=("ZHIPU_API_KEY",),
     ),
     # 百度文心一言
     "wenxin": APIProvider(
@@ -191,6 +240,7 @@ API_PROVIDERS: dict[str, APIProvider] = {
         model="ernie-4.0-8k-latest",
         base_url="https://qianfan.baidubce.com/v2",
         max_tokens=4096,
+        api_env_vars=("ERNIE_API_KEY",),
     ),
     # 阿里通义千问
     "qwen": APIProvider(
@@ -199,6 +249,7 @@ API_PROVIDERS: dict[str, APIProvider] = {
         model="qwen-plus",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         max_tokens=4096,
+        api_env_vars=("DASHSCOPE_API_KEY",),
     ),
     # DeepSeek
     "deepseek": APIProvider(
@@ -207,6 +258,7 @@ API_PROVIDERS: dict[str, APIProvider] = {
         model="deepseek-chat",
         base_url="https://api.deepseek.com",
         max_tokens=4096,
+        api_env_vars=("DEEPSEEK_API_KEY",),
     ),
     # 本地 Ollama
     "ollama": APIProvider(
@@ -215,6 +267,7 @@ API_PROVIDERS: dict[str, APIProvider] = {
         model="llama3",
         base_url="http://localhost:11434/v1",
         max_tokens=4096,
+        api_env_vars=(),
     ),
     # Groq（免费高配额）
     "groq": APIProvider(
@@ -223,7 +276,14 @@ API_PROVIDERS: dict[str, APIProvider] = {
         model="llama-3.1-70b-versatile",
         base_url="https://api.groq.com/openai/v1",
         max_tokens=4096,
+        api_env_vars=("GROQ_API_KEY",),
     ),
+}
+
+
+CLI_COMMAND_ENV_VARS: dict[str, str] = {
+    "codex": "CODEPILOT_CODEX_CMD",
+    "claude": "CODEPILOT_CLAUDE_CMD",
 }
 
 
@@ -235,7 +295,7 @@ API_PROVIDERS: dict[str, APIProvider] = {
 class AgentConfig:
     """Agent 运行配置."""
     builder: str = "codex"  # CLI name 或 API provider key
-    reviewer: str = "claude"
+    reviewer: str = "codex"
     mode: str = "dual"  # "cli" | "api" | "dual"
     # API 密钥（可以从环境变量覆盖）
     api_keys: dict[str, str] = field(default_factory=dict)
@@ -436,6 +496,49 @@ def _get_node_modules_path() -> str:
     return str(Path(node).parent / "node_modules")
 
 
+def _load_project_config(project_path: str | Path | None = None):
+    """Load AGENTS.toml from an explicit project path or the current working tree."""
+    config_path: Optional[Path] = None
+    if project_path:
+        candidate = Path(project_path).resolve()
+        if candidate.is_file():
+            config_path = candidate
+        else:
+            direct = candidate / "AGENTS.toml"
+            config_path = direct if direct.is_file() else find_config(candidate)
+    else:
+        config_path = find_config()
+    return load_config(config_path) if config_path else None
+
+
+def _configured_cli_command(provider_key: str, project_path: str | Path | None = None) -> str:
+    """Resolve CLI command overrides from env vars or AGENTS.toml."""
+    env_var = CLI_COMMAND_ENV_VARS.get(provider_key)
+    if env_var:
+        env_value = os.environ.get(env_var, "").strip()
+        if env_value:
+            return env_value
+
+    cfg = _load_project_config(project_path)
+    if not cfg:
+        return ""
+    if provider_key == "codex":
+        return (cfg.codex_cmd or "").strip()
+    if provider_key == "claude":
+        return (cfg.claude_cmd or "").strip()
+    return ""
+
+
+def resolve_cli_provider(provider_key: str, project_path: str | Path | None = None) -> CLIProvider:
+    """Return the effective CLI provider with project-local command overrides applied."""
+    provider = CLI_PROVIDERS[provider_key]
+    config_key = "claude" if provider_key == "claude" else provider_key
+    override = _configured_cli_command(config_key, project_path)
+    if override and override != provider.cmd:
+        return replace(provider, cmd=override)
+    return provider
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI 执行器
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -548,6 +651,8 @@ def _run_api_provider(
 def normalize_agent_name(name: str) -> str:
     """规范化 agent 名称，尝试找到匹配的 provider."""
     name = name.lower().strip()
+    if name == "dual":
+        return "dual"
 
     # 直接匹配
     if name in CLI_PROVIDERS or name in API_PROVIDERS:
@@ -555,7 +660,6 @@ def normalize_agent_name(name: str) -> str:
 
     # 别名映射
     aliases = {
-        "dual": "claude",  # 默认用 claude
         "gpt4": "openai-gpt4",
         "gpt-4": "openai-gpt4",
         "gpt4o": "openai-gpt4o",
@@ -596,14 +700,13 @@ def normalize_agent_name(name: str) -> str:
         if api_key.replace("-", "") in name.replace("-", "").replace("_", ""):
             return api_key
 
-    # 默认返回 claude
-    return "claude"
+    return name
 
 
 def generate_task_content(
     title: str,
     project_path: str = "",
-    agent: str = "claude",
+    agent: str = "codex",
     api_keys: Optional[dict[str, str]] = None,
 ) -> str:
     """
@@ -624,6 +727,12 @@ def generate_task_content(
     """
     # 规范化 agent 名称
     normalized = normalize_agent_name(agent)
+    available, message = check_provider_availability(normalized, project_path=project_path)
+    if not available:
+        raise RuntimeError(message)
+    if normalized == "dual":
+        # 双代理模式用于执行阶段；生成任务内容时统一交给 Codex。
+        normalized = "codex"
 
     # 收集上下文
     ctx = _collect_project_context(project_path)
@@ -647,7 +756,7 @@ def generate_task_content(
         return _run_api_provider(provider, prompt)
 
     elif normalized in CLI_PROVIDERS:
-        provider = CLI_PROVIDERS[normalized]
+        provider = resolve_cli_provider(normalized, project_path)
 
         # Claude Node 特殊处理
         if normalized == "claude-node":
@@ -685,7 +794,7 @@ def list_available_providers() -> dict[str, list[str]]:
     }
 
 
-def check_provider_availability(agent: str) -> tuple[bool, str]:
+def check_provider_availability(agent: str, project_path: str | Path | None = None) -> tuple[bool, str]:
     """
     检查 provider 是否可用。
 
@@ -694,60 +803,160 @@ def check_provider_availability(agent: str) -> tuple[bool, str]:
     """
     normalized = normalize_agent_name(agent)
 
+    if normalized == "dual":
+        codex_ok, codex_msg = check_provider_availability("codex", project_path=project_path)
+        claude_ok, claude_msg = check_provider_availability("claude", project_path=project_path)
+        if codex_ok and claude_ok:
+            return True, "可用: dual 模式将使用 codex 负责实现、claude 负责审查"
+        missing = []
+        if not codex_ok:
+            missing.append(codex_msg)
+        if not claude_ok:
+            missing.append(claude_msg)
+        return False, "当前无法使用 dual 模式：" + "；".join(missing)
+
     if normalized in CLI_PROVIDERS:
-        provider = CLI_PROVIDERS[normalized]
+        provider = resolve_cli_provider(normalized, project_path)
         exe = provider.find_executable()
-        if exe:
-            return True, f"可用: {exe}"
-        else:
-            return False, f"未找到可执行文件: {provider.cmd}"
+        if not exe:
+            return False, f"当前无法使用 {provider.name}，因为本机没有找到 `{provider.cmd}` 命令。"
+
+        if normalized == "claude-node":
+            cli_js = Path(_get_node_modules_path()) / "@anthropic-ai" / "claude-code" / "cli.js"
+            if not cli_js.exists():
+                return False, (
+                    "当前无法使用 Claude Code (Node)，因为没有找到全局安装的 "
+                    "`@anthropic-ai/claude-code`。请先执行: npm install -g @anthropic-ai/claude-code"
+                )
+
+        return True, f"可用: {provider.name}"
 
     elif normalized in API_PROVIDERS:
         provider = API_PROVIDERS[normalized]
-        api_key = provider.api_key or os.environ.get(
-            f"{provider.provider_type.upper()}_API_KEY", ""
-        )
-        if api_key:
-            return True, f"可用 (API Key 已配置)"
-        else:
-            return True, f"可用 (请设置 API Key 或环境变量)"
+        if provider.provider_type == "openai" and not OPENAI_AVAILABLE:
+            return False, f"当前无法使用 {provider.name}，因为本机没有安装 openai 依赖。"
+        if provider.provider_type == "anthropic" and not ANTHROPIC_AVAILABLE:
+            return False, f"当前无法使用 {provider.name}，因为本机没有安装 anthropic 依赖。"
+
+        api_key = provider.resolve_api_key()
+        if provider.requires_api_key() and not api_key:
+            env_names = " / ".join(provider.api_env_vars) or "对应的 API Key 环境变量"
+            return False, f"当前无法使用 {provider.name}，因为还没有配置 API Key。请先设置 {env_names}。"
+
+        return True, f"可用: {provider.name}"
 
     else:
-        return False, f"未知的 agent: {agent}"
+        return False, f"没有找到名为 `{agent}` 的智能体。请改用 codepilot providers 查看可用列表。"
 
 
 _normalize_agent_name = normalize_agent_name
 
 
-def _run_claude_schema_prompt(prompt: str, schema: dict, timeout: int = 180) -> dict:
+def _extract_error_hint(raw: str) -> str:
+    """Condense stderr / exception text into one readable line."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+
+    def _from_payload(payload: dict) -> str:
+        value = payload.get("result") or payload.get("message")
+        if isinstance(payload.get("error"), dict):
+            value = payload["error"].get("message") or value
+        elif isinstance(payload.get("error"), str):
+            value = payload.get("error") or value
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return ""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in lines:
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                extracted = _from_payload(payload)
+                if extracted:
+                    text = extracted
+                    break
+        else:
+            text = line
+            break
+
+    text = text.replace("You've hit your limit", "当前账号额度已用完")
+    text = text.replace("resets", "重置时间")
+    text = text.replace("·", "，")
+    return text[:220]
+
+
+def _run_claude_schema_prompt(
+    prompt: str,
+    schema: dict,
+    *,
+    planner: str = "codex",
+    project_path: str = "",
+    timeout: int = 240,
+) -> dict:
     """Use Claude CLI to produce schema-constrained JSON output."""
-    provider = CLI_PROVIDERS["claude"]
+    normalized = normalize_agent_name(planner)
+    model_alias = None
+    provider_key = normalized
+    if normalized in {"claude-sonnet", "claude-opus", "claude-haiku"}:
+        provider_key = "claude"
+        model_alias = normalized.split("-", 1)[1]
+    elif normalized not in {"claude", "claude-node"}:
+        raise RuntimeError("当前自动拆分只支持 Claude 或 Codex 作为规划器。")
+
+    provider = resolve_cli_provider(provider_key, project_path)
     exe = provider.find_executable()
     if not exe:
-        raise RuntimeError("未找到 claude CLI，无法执行自动拆分")
+        raise RuntimeError(f"当前无法使用 {provider.name} 进行任务拆分。请先安装对应 CLI，或改用 codex。")
 
-    cmd = [
-        str(exe),
-        "-p",
-        "--output-format",
-        "json",
-        "--json-schema",
-        json.dumps(schema, ensure_ascii=False),
-        "--permission-mode",
-        "plan",
-    ]
-    result = subprocess.run(
-        cmd,
-        input=prompt,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
+    cmd = [str(exe)]
+    if provider_key == "claude-node":
+        cli_js = Path(_get_node_modules_path()) / "@anthropic-ai" / "claude-code" / "cli.js"
+        if not cli_js.exists():
+            raise RuntimeError(
+                "当前无法使用 Claude Code (Node) 进行任务拆分，因为没有找到全局安装的 "
+                "`@anthropic-ai/claude-code`。请先执行: npm install -g @anthropic-ai/claude-code"
+            )
+        cmd.append(str(cli_js))
+
+    cmd.extend(
+        [
+            "-p",
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(schema, ensure_ascii=False),
+            "--permission-mode",
+            "plan",
+        ]
     )
+    if model_alias:
+        cmd.extend(["--model", model_alias])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"{provider.name} 在任务拆分阶段超时了，{timeout} 秒内没有返回结果。"
+            "可以稍后重试，或改用 codex 作为规划器。"
+        ) from exc
+
     if result.returncode != 0:
-        err = (result.stderr or "").strip() or "(无 stderr)"
-        raise RuntimeError(f"Claude 任务拆分失败 (退出码 {result.returncode}):\n{err}")
+        hint = _extract_error_hint(result.stderr or result.stdout)
+        suffix = f"原因：{hint}" if hint else "请检查 Claude CLI 当前是否可用。"
+        raise RuntimeError(f"{provider.name} 没有成功完成任务拆分。{suffix}")
 
     output = (result.stdout or "").strip()
     if not output:
@@ -756,7 +965,9 @@ def _run_claude_schema_prompt(prompt: str, schema: dict, timeout: int = 180) -> 
     try:
         payload = json.loads(output)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Claude 任务拆分返回了非法 JSON: {exc}") from exc
+        raise RuntimeError(
+            f"{provider.name} 返回的任务拆分结果不是有效 JSON，暂时无法继续自动规划。"
+        ) from exc
 
     if isinstance(payload, dict):
         if isinstance(payload.get("structured_output"), dict):
@@ -765,7 +976,84 @@ def _run_claude_schema_prompt(prompt: str, schema: dict, timeout: int = 180) -> 
             return payload["result"]
         return payload
 
-    raise RuntimeError("Claude 任务拆分返回了非对象 JSON")
+    raise RuntimeError(f"{provider.name} 返回的任务拆分结果格式不正确，暂时无法继续自动规划。")
+
+
+def _run_codex_schema_prompt(
+    prompt: str,
+    schema: dict,
+    *,
+    project_path: str = "",
+    timeout: int = 240,
+) -> dict:
+    """Use Codex CLI with a JSON schema output contract."""
+    available, message = check_provider_availability("codex", project_path=project_path)
+    if not available:
+        raise RuntimeError(message)
+    exe = resolve_cli_provider("codex", project_path).find_executable()
+    if not exe:
+        raise RuntimeError("当前无法使用 Codex 进行任务拆分，因为本机没有找到 `codex` 命令。")
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="codepilot-plan-") as temp_dir:
+        temp = Path(temp_dir)
+        schema_path = temp / "schema.json"
+        output_path = temp / "result.json"
+        schema_path.write_text(json.dumps(schema, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        cmd = [str(exe)]
+        if project_path:
+            cmd.extend(["-C", project_path])
+        cmd.extend(
+            [
+                "exec",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--output-schema",
+                str(schema_path),
+                "-o",
+                str(output_path),
+                "-",
+            ]
+        )
+
+        try:
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Codex 在任务拆分阶段超时了，{timeout} 秒内没有返回结果。"
+                "可以稍后重试，或改用 claude 作为规划器。"
+            ) from exc
+
+        if result.returncode != 0:
+            hint = _extract_error_hint(result.stderr or result.stdout)
+            suffix = f"原因：{hint}" if hint else "请检查 Codex CLI 当前是否可用。"
+            raise RuntimeError(f"Codex 没有成功完成任务拆分。{suffix}")
+
+        output = output_path.read_text(encoding="utf-8", errors="replace").strip() if output_path.exists() else ""
+        if not output:
+            output = (result.stdout or "").strip()
+        if not output:
+            raise RuntimeError("Codex 没有返回任务拆分结果，暂时无法继续自动规划。")
+
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Codex 返回的任务拆分结果不是有效 JSON，暂时无法继续自动规划。") from exc
+
+    if isinstance(payload, dict):
+        return payload
+
+    raise RuntimeError("Codex 返回的任务拆分结果格式不正确，暂时无法继续自动规划。")
 
 
 def build_task_markdown_from_plan(task: dict) -> str:
@@ -810,7 +1098,7 @@ def build_task_markdown_from_plan(task: dict) -> str:
 def generate_task_breakdown(
     title: str,
     project_path: str = "",
-    planner: str = "claude",
+    planner: str = "codex",
     max_tasks: int = 5,
 ) -> dict:
     """Generate a structured subtask breakdown for a high-level goal."""
@@ -823,10 +1111,23 @@ def generate_task_breakdown(
         max_tasks=max_tasks,
     )
 
-    if normalized not in {"claude", "claude-node", "claude-sonnet", "claude-opus", "claude-haiku"}:
-        normalized = "claude"
-
-    breakdown = _run_claude_schema_prompt(prompt, TASK_BREAKDOWN_SCHEMA)
+    if normalized in {"claude", "claude-node", "claude-sonnet", "claude-opus", "claude-haiku"}:
+        breakdown = _run_claude_schema_prompt(
+            prompt,
+            TASK_BREAKDOWN_SCHEMA,
+            planner=normalized,
+            project_path=project_path,
+        )
+    elif normalized == "codex":
+        breakdown = _run_codex_schema_prompt(
+            prompt,
+            TASK_BREAKDOWN_SCHEMA,
+            project_path=project_path,
+        )
+    else:
+        raise RuntimeError(
+            f"当前自动拆分暂时不支持规划器 `{planner}`。请改用 claude 或 codex。"
+        )
     tasks = breakdown.get("tasks") or []
     if not tasks:
         raise RuntimeError("任务拆分结果为空")

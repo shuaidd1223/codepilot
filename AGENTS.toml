@@ -6,8 +6,8 @@
 name = "codepilot-dev"
 # Git 主分支
 base_branch = "dev"
-# 默认 AI 模式: codex / claude / dual
-default_mode = "dual"
+# 默认任务智能体
+default_mode = "codex"
 # Worktree 隔离目录，空值则自动推导到 ~/.codepilot/worktrees/<project>/
 worktree_base = ""
 
@@ -23,8 +23,8 @@ interval_seconds = 600
 stale_minutes = 30
 
 [automation]
-# 纯文本需求默认使用 Claude 规划、内置 Codex 执行
-planner = "claude"
+# 纯文本需求默认使用 Codex 规划和执行
+planner = "codex"
 executor = "builtin"
 # 输入需求后默认直接执行；如果只想先规划，可命令行加 --no-execute
 auto_execute = true

@@ -8,6 +8,7 @@ import click
 
 from codepilot import db
 from codepilot.commands.status import _resolve_project
+from codepilot.output import echo
 
 
 # ── done ──────────────────────────────────────────────────────────────────────
@@ -20,7 +21,7 @@ def done(task_id: int, message: str):
     db.init_db()
     task = db.get_task(task_id)
     if not task:
-        click.echo(f"[red]任务 #{task_id} 不存在[/red]")
+        echo(f"[red]任务 #{task_id} 不存在[/red]")
         return
 
     from datetime import datetime
@@ -28,7 +29,7 @@ def done(task_id: int, message: str):
     if message:
         updates["delivery_record"] = message
     db.update_task(task_id, **updates)
-    click.echo(f"[green][OK] 任务 #{task_id} 已标记为 done[/green]  {task['title']}")
+    echo(f"[green][OK] 任务 #{task_id} 已标记为 done[/green]  {task['title']}")
 
 
 # ── edit ───────────────────────────────────────────────────────────────────────
@@ -52,7 +53,7 @@ def edit(task_id: int, title: str | None, priority: str | None,
     db.init_db()
     task = db.get_task(task_id)
     if not task:
-        click.echo(f"[red]任务 #{task_id} 不存在[/red]")
+        echo(f"[red]任务 #{task_id} 不存在[/red]")
         return
 
     updates = {}
@@ -69,11 +70,11 @@ def edit(task_id: int, title: str | None, priority: str | None,
         updates["depends_on"] = json.dumps(dep_list) if dep_list else None
 
     if not updates:
-        click.echo("[yellow]没有指定要修改的字段[/yellow]")
+        echo("[yellow]没有指定要修改的字段[/yellow]")
         return
 
     db.update_task(task_id, **updates)
-    click.echo(f"[green][OK] 任务 #{task_id} 已更新[/green]")
+    echo(f"[green][OK] 任务 #{task_id} 已更新[/green]")
     for k, v in updates.items():
         click.echo(f"  {k}: {v}")
 
@@ -87,7 +88,7 @@ def rm(task_ids: tuple[int, ...], force: bool):
     """删除一个或多个任务。"""
     db.init_db()
     if not task_ids:
-        click.echo("[yellow]未指定任务 ID[/yellow]")
+        echo("[yellow]未指定任务 ID[/yellow]")
         return
 
     tasks = []
@@ -96,18 +97,18 @@ def rm(task_ids: tuple[int, ...], force: bool):
         if t:
             tasks.append(t)
         else:
-            click.echo(f"[yellow]任务 #{tid} 不存在，已跳过[/yellow]")
+            echo(f"[yellow]任务 #{tid} 不存在，已跳过[/yellow]")
 
     if not tasks:
         return
 
-    click.echo(f"[cyan]将删除以下 {len(tasks)} 个任务：[/cyan]")
+    echo(f"[cyan]将删除以下 {len(tasks)} 个任务：[/cyan]")
     for t in tasks:
         click.echo(f"  #{t['id']}  {t['title']}  [{t['status']}]")
 
     if not force:
         if not click.confirm("\n确认删除？"):
-            click.echo("[yellow]已取消[/yellow]")
+            echo("[yellow]已取消[/yellow]")
             return
 
     with db.get_conn() as conn:
@@ -116,7 +117,7 @@ def rm(task_ids: tuple[int, ...], force: bool):
             conn.execute("DELETE FROM tasks WHERE id = ?", (t["id"],))
         conn.commit()
 
-    click.echo(f"[green][OK] 已删除 {len(tasks)} 个任务[/green]")
+    echo(f"[green][OK] 已删除 {len(tasks)} 个任务[/green]")
 
 
 # ── find ────────────────────────────────────────────────────────────────────────
@@ -168,7 +169,7 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
         if json_mode:
             click.echo(json.dumps({"tasks": [], "count": 0}, ensure_ascii=False, indent=2))
         else:
-            click.echo("[yellow]没有找到匹配的任务[/yellow]")
+            echo("[yellow]没有找到匹配的任务[/yellow]")
         return
 
     if json_mode:
@@ -176,7 +177,8 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
                               ensure_ascii=False, indent=2))
         return
 
-    click.echo(f"[cyan]找到 {len(rows)} 个任务：[/cyan]\n")
+    echo(f"[cyan]找到 {len(rows)} 个任务：[/cyan]")
+    click.echo()
     for r in rows:
         status_color = {
             "backlog": "dim",
@@ -185,9 +187,11 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
             "failed": "red",
         }.get(r["status"], "dim")
 
-        click.echo(f"  #{r['id']}  [bold]{r['title']}[/bold]  "
-                   f"[{status_color}]{r['status']}[/{status_color}]  "
-                   f"{r['priority']}  {r['project']}")
+        echo(
+            f"  #{r['id']}  [bold]{r['title']}[/bold]  "
+            f"[{status_color}]{r['status']}[/{status_color}]  "
+            f"{r['priority']}  {r['project']}"
+        )
         if keyword and r["content"]:
             snippet = r["content"][:80].replace("\n", " ")
             click.echo(f"    -> {snippet}...")
