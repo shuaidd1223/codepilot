@@ -33,6 +33,7 @@ CodePilot 是一个本地工程工作流 CLI，用来把自然语言需求转换
 - 支持查看实时日志、停止任务、自动回收卡住任务
 - 支持打包成单文件二进制，并安装到系统命令路径
 - 支持把现有二进制整理成标准发布目录
+- 支持输出供其他 AI 直接调用的命令清单和使用手册
 
 ## 快速开始
 
@@ -71,6 +72,40 @@ codepilot logs <task_id>
 ```bash
 codepilot stop <task_id>
 ```
+
+## 给其他 AI 用
+
+如果你希望把 CodePilot 暴露给其他 AI、Agent 或自动化系统直接调用，当前已经内置了机器可读和 AI 友好的入口。
+
+输出机器可读的命令清单：
+
+```bash
+codepilot ai manifest
+```
+
+输出 Markdown 调用手册：
+
+```bash
+codepilot ai guide
+```
+
+输出短提示词：
+
+```bash
+codepilot ai prompt
+```
+
+仓库根目录还提供了一份静态手册：
+
+- `AI_MANIFEST.json`
+- `AI_USAGE.zh-CN.md`
+
+推荐做法：
+
+1. 用 `codepilot ai manifest` 获取命令和工作流清单
+2. 用 `codepilot status -p <项目名> --json` 拉结构化状态
+3. 用 `codepilot "需求文本"` 直接把高层需求交给 CodePilot
+4. 用 `codepilot logs <task_id>` 和 `codepilot stop <task_id>` 做运行期排障
 
 ## 二进制打包
 
@@ -168,6 +203,8 @@ dist/release/codepilot-<version>
 - `SHA256SUMS.txt`：二进制和压缩包校验值
 - `<platform>/`：平台对应原始二进制和安装脚本
 - `README.zh-CN.md`：中文安装说明
+- `AI_USAGE.zh-CN.md`：给其他 AI 的调用手册
+- `AI_MANIFEST.json`：机器可读的命令清单
 - `SUMMARY.zh-CN.md`：发布摘要和交付建议
 - Windows: `codepilot-<version>-<platform>.zip`
 - Linux: `codepilot-<version>-<platform>.tar.gz`
@@ -177,7 +214,7 @@ dist/release/codepilot-<version>
 - `release.json` 是否可解析
 - `SHA256SUMS.txt` 是否存在且格式正确
 - 发布目录中的二进制、压缩包、安装脚本是否齐全
-- `README.zh-CN.md` 和 `SUMMARY.zh-CN.md` 是否存在
+- `README.zh-CN.md`、`AI_USAGE.zh-CN.md`、`AI_MANIFEST.json` 和 `SUMMARY.zh-CN.md` 是否存在
 - 校验值是否和清单一致
 
 `binary prepare` 会执行：

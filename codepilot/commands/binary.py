@@ -150,6 +150,8 @@ def binary_release(
     click.echo(f"  manifest: {result.manifest_path}")
     click.echo(f"  checksums: {result.checksum_path}")
     click.echo(f"  guide: {result.guide_path}")
+    click.echo(f"  ai guide: {result.ai_guide_path}")
+    click.echo(f"  ai manifest: {result.ai_manifest_path}")
     click.echo(f"  summary: {result.summary_path}")
     for artifact in result.artifacts:
         click.echo(f"  - {artifact.platform_tag}: {artifact.archive_path.name} ({artifact.archive_format})")
@@ -235,6 +237,8 @@ def binary_prepare(
     click.echo(f"  manifest: {release.manifest_path}")
     click.echo(f"  checksums: {release.checksum_path}")
     click.echo(f"  guide: {release.guide_path}")
+    click.echo(f"  ai guide: {release.ai_guide_path}")
+    click.echo(f"  ai manifest: {release.ai_manifest_path}")
     click.echo(f"  summary: {release.summary_path}")
     for artifact in release.artifacts:
         click.echo(f"  - {artifact.platform_tag}: {artifact.archive_path.name} ({artifact.archive_format})")

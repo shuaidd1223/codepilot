@@ -7,6 +7,7 @@ import click
 from codepilot import __version__
 from codepilot.db import init_db
 import codepilot.commands.add as add_cmd
+import codepilot.commands.ai as ai_cmd
 import codepilot.commands.auto as auto_cmd
 import codepilot.commands.binary as binary_cmd
 import codepilot.commands.daemon as daemon_cmd
@@ -87,6 +88,7 @@ def main(
 
 
 main.add_command(init_cmd.init_)
+main.add_command(ai_cmd.ai)
 main.add_command(binary_cmd.binary)
 main.add_command(release_cmd.release)
 main.add_command(status_cmd.status)

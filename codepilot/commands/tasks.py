@@ -137,7 +137,7 @@ def rm(task_ids: tuple[int, ...], force: bool):
 
 # ── find ────────────────────────────────────────────────────────────────────────
 
-@click.command(context_settings={"allow_interspersed_args": False})
+@click.command()
 @click.argument("keyword", required=False)
 @click.option("--project", "-p", callback=_resolve_project, help="限定项目")
 @click.option("--status", "-s",

@@ -7,6 +7,7 @@ from zipfile import ZipFile
 import click
 from click.testing import CliRunner
 
+from codepilot.agent_support import ai_guide_markdown, command_manifest
 from codepilot import binary as binary_mod
 from codepilot import db
 from codepilot import ai as ai_mod
@@ -932,6 +933,83 @@ def test_root_command_without_args_shows_help_in_non_interactive_mode():
     assert "Usage:" in result.output
 
 
+def test_ai_manifest_command_outputs_machine_readable_json():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "manifest"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["name"] == "CodePilot"
+    assert any(command["name"] == "status" for command in payload["commands"])
+    assert any(item["command"] == f"{payload['command_name']} ai manifest" for item in payload["structured_outputs"])
+
+
+def test_ai_manifest_command_allows_version_and_command_override():
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["ai", "manifest", "--version", "9.9.9", "--command-name", "mypilot", "--binary-name", "mypilot"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    release_bundle = next(item for item in payload["commands"] if item["name"] == "release_bundle")
+    assert payload["version"] == "9.9.9"
+    assert payload["command_name"] == "mypilot"
+    assert payload["structured_outputs"][0]["command"] == "mypilot ai manifest"
+    assert payload["commands"][0]["syntax"] == "mypilot init <path>"
+    assert "dist/binary/linux-x86_64/mypilot" in release_bundle["examples"][1]
+
+
+def test_repo_ai_manifest_file_stays_in_sync():
+    manifest_path = Path(__file__).resolve().parents[1] / "AI_MANIFEST.json"
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert payload == command_manifest()
+
+
+def test_repo_ai_usage_file_stays_in_sync():
+    guide_path = Path(__file__).resolve().parents[1] / "AI_USAGE.zh-CN.md"
+
+    assert guide_path.read_text(encoding="utf-8") == ai_guide_markdown()
+
+
+def test_ai_guide_command_outputs_markdown_usage():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "guide"])
+
+    assert result.exit_code == 0
+    assert "# CodePilot AI 调用手册" in result.output
+    assert "codepilot status -p <项目名> --json" in result.output
+    assert "codepilot ai manifest" in result.output
+
+
+def test_ai_prompt_command_outputs_short_agent_prompt():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "prompt"])
+
+    assert result.exit_code == 0
+    assert "codepilot \"需求文本\"" in result.output
+    assert "codepilot release prepare --version <版本号>" in result.output
+
+
+def test_find_json_accepts_options_after_keyword(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    db.create_task("demo", "needle task", content="contains needle")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["find", "needle", "-p", "demo", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["count"] == 1
+    assert payload["tasks"][0]["title"] == "needle task"
+
+
 def test_run_command_renders_plain_text_without_markup():
     runner = CliRunner()
     result = runner.invoke(main, ["run"])
@@ -1078,6 +1156,8 @@ def test_create_release_bundle_generates_manifest_checksums_and_archives(tmp_pat
     assert result.checksum_path.exists()
     assert result.guide_path.exists()
     assert result.summary_path.exists()
+    assert result.ai_guide_path.exists()
+    assert result.ai_manifest_path.exists()
     assert len(result.artifacts) == 1
     artifact = result.artifacts[0]
     assert artifact.staged_path.exists()
@@ -1094,7 +1174,32 @@ def test_create_release_bundle_generates_manifest_checksums_and_archives(tmp_pat
     assert "windows-x86_64/codepilot.exe" in checksums.replace("\\", "/")
     assert artifact.archive_path.name in checksums
     assert "发布说明" in result.guide_path.read_text(encoding="utf-8")
+    assert "AI 调用手册" in result.ai_guide_path.read_text(encoding="utf-8")
+    assert json.loads(result.ai_manifest_path.read_text(encoding="utf-8"))["name"] == "CodePilot"
     assert "发布摘要" in result.summary_path.read_text(encoding="utf-8")
+
+
+def test_create_release_bundle_ai_manifest_matches_release_version_and_name(tmp_path):
+    binary_path = tmp_path / "pilot.exe"
+    binary_path.write_text("binary", encoding="utf-8")
+
+    result = binary_mod.create_release_bundle(
+        project_root=tmp_path,
+        artifacts=[("windows-x86_64", binary_path)],
+        output_dir=tmp_path / "release-custom",
+        version="1.2.3",
+        name="mypilot",
+    )
+
+    payload = json.loads(result.ai_manifest_path.read_text(encoding="utf-8"))
+    release_prepare = next(item for item in payload["commands"] if item["name"] == "release_prepare")
+    release_bundle = next(item for item in payload["commands"] if item["name"] == "release_bundle")
+
+    assert payload["version"] == "1.2.3"
+    assert payload["command_name"] == "mypilot"
+    assert payload["structured_outputs"][0]["command"] == "mypilot ai manifest"
+    assert release_prepare["syntax"] == "mypilot release prepare --version <版本号>"
+    assert "dist/binary/linux-x86_64/mypilot" in release_bundle["examples"][1]
 
 
 def test_binary_release_command_packages_existing_builds(tmp_path, monkeypatch):
@@ -1112,9 +1217,13 @@ def test_binary_release_command_packages_existing_builds(tmp_path, monkeypatch):
     assert (release_dir / "release.json").exists()
     assert (release_dir / "SHA256SUMS.txt").exists()
     assert (release_dir / "README.zh-CN.md").exists()
+    assert (release_dir / "AI_USAGE.zh-CN.md").exists()
+    assert (release_dir / "AI_MANIFEST.json").exists()
     assert (release_dir / "SUMMARY.zh-CN.md").exists()
     assert (release_dir / "windows-x86_64" / "install-codepilot.cmd").exists()
     assert "guide:" in result.output
+    assert "ai guide:" in result.output
+    assert "ai manifest:" in result.output
     assert "summary:" in result.output
 
 

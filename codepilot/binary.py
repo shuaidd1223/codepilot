@@ -18,6 +18,7 @@ from typing import Optional
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from codepilot import __version__
+from codepilot.agent_support import ai_guide_markdown, manifest_json
 
 
 @dataclass
@@ -63,6 +64,8 @@ class ReleaseResult:
     checksum_path: Path
     guide_path: Path
     summary_path: Path
+    ai_guide_path: Path
+    ai_manifest_path: Path
     artifacts: list[ReleaseArtifact]
 
 
@@ -315,8 +318,11 @@ def _release_guide_text(name: str, version: str, artifacts: list[tuple[str, Path
         "",
         "- `release.json`: 发布元数据清单",
         "- `SHA256SUMS.txt`: 所有二进制和压缩包的校验值",
+        "- `AI_MANIFEST.json`: 给其他 AI 的机器可读命令清单",
+        "- `AI_USAGE.zh-CN.md`: 给其他 AI 的 Markdown 调用手册",
         "- `<platform>/`: 平台对应的原始二进制和安装脚本",
-        "- `codepilot-<version>-<platform>.zip`: 可直接分发的压缩包",
+        "- Windows: `codepilot-<version>-<platform>.zip`",
+        "- Linux: `codepilot-<version>-<platform>.tar.gz`",
         "",
         "## 安装方式",
         "",
@@ -328,7 +334,7 @@ def _release_guide_text(name: str, version: str, artifacts: list[tuple[str, Path
         "",
         "### Linux",
         "",
-        "1. 解压 `codepilot-<version>-linux-x86_64.zip`",
+        "1. 解压 `codepilot-<version>-linux-x86_64.tar.gz`",
         "2. 执行 `chmod +x install-codepilot.sh codepilot`",
         "3. 执行 `./install-codepilot.sh`",
         "4. 重新打开终端后执行 `codepilot --help` 验证",
@@ -380,6 +386,7 @@ def _release_summary_text(name: str, version: str, artifacts: list[ReleaseArtifa
             "",
             "- 对外分发时优先发送压缩包，不要直接发送裸二进制。",
             "- 分发时附带 `README.zh-CN.md` 和 `SHA256SUMS.txt`。",
+            "- 如果接收方是其他 AI 或自动化系统，优先读取 `AI_MANIFEST.json` 和 `AI_USAGE.zh-CN.md`。",
             "- 用户安装后可执行 `codepilot --help` 验证命令是否可用。",
         ]
     )
@@ -467,6 +474,8 @@ def _write_release_archive(
     staged_path: Path,
     script_path: Path,
     guide_path: Path,
+    ai_guide_path: Path,
+    ai_manifest_path: Path,
 ) -> None:
     """Create the platform archive with binary, installer, and Chinese guide."""
     if archive_format == "zip":
@@ -474,6 +483,8 @@ def _write_release_archive(
             bundle.write(staged_path, arcname=f"{folder_name}/{staged_path.name}")
             bundle.write(script_path, arcname=f"{folder_name}/{script_path.name}")
             bundle.write(guide_path, arcname=f"{folder_name}/README.zh-CN.md")
+            bundle.write(ai_guide_path, arcname=f"{folder_name}/AI_USAGE.zh-CN.md")
+            bundle.write(ai_manifest_path, arcname=f"{folder_name}/AI_MANIFEST.json")
         return
 
     if archive_format == "tar.gz":
@@ -481,6 +492,8 @@ def _write_release_archive(
             bundle.add(staged_path, arcname=f"{folder_name}/{staged_path.name}")
             bundle.add(script_path, arcname=f"{folder_name}/{script_path.name}")
             bundle.add(guide_path, arcname=f"{folder_name}/README.zh-CN.md")
+            bundle.add(ai_guide_path, arcname=f"{folder_name}/AI_USAGE.zh-CN.md")
+            bundle.add(ai_manifest_path, arcname=f"{folder_name}/AI_MANIFEST.json")
         return
 
     raise RuntimeError(f"不支持的压缩格式：{archive_format}")
@@ -571,6 +584,13 @@ def create_release_bundle(
     }
     guide_path = release_dir / "README.zh-CN.md"
     guide_path.write_text(_release_guide_text(name, release_version, normalized_artifacts), encoding="utf-8")
+    ai_guide_path = release_dir / "AI_USAGE.zh-CN.md"
+    ai_guide_path.write_text(ai_guide_markdown(command_name=name), encoding="utf-8")
+    ai_manifest_path = release_dir / "AI_MANIFEST.json"
+    ai_manifest_path.write_text(
+        manifest_json(version=release_version, command_name=name, binary_name=name),
+        encoding="utf-8",
+    )
 
     for platform_tag, source_path in normalized_artifacts:
         if not source_path.exists():
@@ -597,6 +617,8 @@ def create_release_bundle(
             staged_path=staged_path,
             script_path=script_path,
             guide_path=guide_path,
+            ai_guide_path=ai_guide_path,
+            ai_manifest_path=ai_manifest_path,
         )
 
         binary_sha = _sha256_file(staged_path)
@@ -644,6 +666,8 @@ def create_release_bundle(
         checksum_path=checksum_path,
         guide_path=guide_path,
         summary_path=summary_path,
+        ai_guide_path=ai_guide_path,
+        ai_manifest_path=ai_manifest_path,
         artifacts=packaged,
     )
 
@@ -701,6 +725,17 @@ def verify_release_bundle(release_dir: str | Path) -> VerificationResult:
     guide_path = root / "README.zh-CN.md"
     if not guide_path.exists():
         issues.append("缺少 README.zh-CN.md")
+    ai_guide_path = root / "AI_USAGE.zh-CN.md"
+    if not ai_guide_path.exists():
+        issues.append("缺少 AI_USAGE.zh-CN.md")
+    ai_manifest_path = root / "AI_MANIFEST.json"
+    if not ai_manifest_path.exists():
+        issues.append("缺少 AI_MANIFEST.json")
+    else:
+        try:
+            json.loads(ai_manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            issues.append(f"AI_MANIFEST.json 无法解析: {exc}")
     summary_path = root / "SUMMARY.zh-CN.md"
     if not summary_path.exists():
         issues.append("缺少 SUMMARY.zh-CN.md")
@@ -747,6 +782,8 @@ def verify_release_bundle(release_dir: str | Path) -> VerificationResult:
                     f"{folder_name}/{staged.name}",
                     f"{folder_name}/{install_script.name}",
                     f"{folder_name}/README.zh-CN.md",
+                    f"{folder_name}/AI_USAGE.zh-CN.md",
+                    f"{folder_name}/AI_MANIFEST.json",
                 }
                 missing = sorted(member for member in expected_members if member not in members)
                 if missing:
