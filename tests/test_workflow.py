@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from zipfile import ZipFile
 
 import click
 from click.testing import CliRunner
@@ -949,6 +950,22 @@ def test_binary_default_install_dir_windows(monkeypatch, tmp_path):
     assert install_dir == (tmp_path / "LocalAppData" / "Programs" / "CodePilot" / "bin").resolve()
 
 
+def test_update_project_version_updates_pyproject_and_init(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    package_dir = tmp_path / "codepilot"
+    package_dir.mkdir()
+    init_file = package_dir / "__init__.py"
+    pyproject.write_text('[project]\nname = "codepilot"\nversion = "0.1.0"\n', encoding="utf-8")
+    init_file.write_text('__version__ = "0.1.0"\n', encoding="utf-8")
+
+    previous, current = binary_mod.update_project_version(tmp_path, "0.2.0")
+
+    assert previous == "0.1.0"
+    assert current == "0.2.0"
+    assert 'version = "0.2.0"' in pyproject.read_text(encoding="utf-8")
+    assert '__version__ = "0.2.0"' in init_file.read_text(encoding="utf-8")
+
+
 def test_binary_resolve_install_source_prefers_latest_build(tmp_path, monkeypatch):
     dist_dir = tmp_path / "dist" / "binary" / "windows-x86_64"
     dist_dir.mkdir(parents=True)
@@ -1026,3 +1043,301 @@ def test_binary_where_command_prints_default_dir(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert str((tmp_path / "custom-bin").resolve()) in result.output
+
+
+def test_resolve_release_inputs_uses_dist_binaries_by_default(tmp_path, monkeypatch):
+    win_dir = tmp_path / "dist" / "binary" / "windows-x86_64"
+    linux_dir = tmp_path / "dist" / "binary" / "linux-x86_64"
+    win_dir.mkdir(parents=True)
+    linux_dir.mkdir(parents=True)
+    (win_dir / "codepilot.exe").write_text("exe", encoding="utf-8")
+    (linux_dir / "codepilot").write_text("bin", encoding="utf-8")
+
+    resolved = binary_mod.resolve_release_inputs(project_root=tmp_path)
+
+    assert resolved == [
+        ("linux-x86_64", (linux_dir / "codepilot").resolve()),
+        ("windows-x86_64", (win_dir / "codepilot.exe").resolve()),
+    ]
+
+
+def test_create_release_bundle_generates_manifest_checksums_and_archives(tmp_path):
+    binary_path = tmp_path / "codepilot.exe"
+    binary_path.write_text("binary", encoding="utf-8")
+    output_dir = tmp_path / "release"
+
+    result = binary_mod.create_release_bundle(
+        project_root=tmp_path,
+        artifacts=[("windows-x86_64", binary_path)],
+        output_dir=output_dir,
+        version="1.2.3",
+    )
+
+    assert result.release_dir == output_dir.resolve()
+    assert result.manifest_path.exists()
+    assert result.checksum_path.exists()
+    assert result.guide_path.exists()
+    assert result.summary_path.exists()
+    assert len(result.artifacts) == 1
+    artifact = result.artifacts[0]
+    assert artifact.staged_path.exists()
+    assert artifact.archive_path.exists()
+    assert artifact.archive_format == "zip"
+    install_script = output_dir / "windows-x86_64" / "install-codepilot.cmd"
+    assert install_script.exists()
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["version"] == "1.2.3"
+    assert manifest["artifacts"][0]["platform"] == "windows-x86_64"
+    assert manifest["artifacts"][0]["archive_format"] == "zip"
+    assert "install_script" in manifest["artifacts"][0]
+    checksums = result.checksum_path.read_text(encoding="utf-8")
+    assert "windows-x86_64/codepilot.exe" in checksums.replace("\\", "/")
+    assert artifact.archive_path.name in checksums
+    assert "发布说明" in result.guide_path.read_text(encoding="utf-8")
+    assert "发布摘要" in result.summary_path.read_text(encoding="utf-8")
+
+
+def test_binary_release_command_packages_existing_builds(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    win_dir = tmp_path / "dist" / "binary" / "windows-x86_64"
+    win_dir.mkdir(parents=True)
+    (win_dir / "codepilot.exe").write_text("exe", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["binary", "release", "--version", "9.9.9"])
+
+    assert result.exit_code == 0
+    release_dir = tmp_path / "dist" / "release" / "codepilot-9.9.9"
+    assert release_dir.exists()
+    assert (release_dir / "release.json").exists()
+    assert (release_dir / "SHA256SUMS.txt").exists()
+    assert (release_dir / "README.zh-CN.md").exists()
+    assert (release_dir / "SUMMARY.zh-CN.md").exists()
+    assert (release_dir / "windows-x86_64" / "install-codepilot.cmd").exists()
+    assert "guide:" in result.output
+    assert "summary:" in result.output
+
+
+def test_verify_release_bundle_passes_for_valid_release(tmp_path):
+    binary_path = tmp_path / "codepilot.exe"
+    binary_path.write_text("binary", encoding="utf-8")
+    release = binary_mod.create_release_bundle(
+        project_root=tmp_path,
+        artifacts=[("windows-x86_64", binary_path)],
+        output_dir=tmp_path / "release",
+        version="1.0.0",
+    )
+
+    verification = binary_mod.verify_release_bundle(release.release_dir)
+
+    assert verification.issues == []
+    assert verification.checked_files == 2
+
+
+def test_binary_verify_command_fails_on_broken_checksum(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    binary_path = tmp_path / "codepilot.exe"
+    binary_path.write_text("binary", encoding="utf-8")
+    release = binary_mod.create_release_bundle(
+        project_root=tmp_path,
+        artifacts=[("windows-x86_64", binary_path)],
+        output_dir=tmp_path / "dist" / "release" / "codepilot-1.0.0",
+        version="1.0.0",
+    )
+    release.checksum_path.write_text("broken line\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["binary", "verify", "--release-dir", str(release.release_dir)])
+
+    assert result.exit_code != 0
+    assert "校验失败" in result.output
+
+
+def test_verify_release_bundle_fails_when_archive_missing_expected_files(tmp_path):
+    binary_path = tmp_path / "codepilot.exe"
+    binary_path.write_text("binary", encoding="utf-8")
+    release = binary_mod.create_release_bundle(
+        project_root=tmp_path,
+        artifacts=[("windows-x86_64", binary_path)],
+        output_dir=tmp_path / "release",
+        version="1.0.0",
+    )
+    archive_path = release.artifacts[0].archive_path
+    with ZipFile(archive_path, "w") as bundle:
+        bundle.writestr("broken/file.txt", "x")
+
+    verification = binary_mod.verify_release_bundle(release.release_dir)
+
+    assert any("压缩包缺少预期文件" in issue or "压缩包校验不匹配" in issue for issue in verification.issues)
+
+
+def test_binary_release_build_current_merges_new_artifact(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    win_dir = tmp_path / "dist" / "binary" / "windows-x86_64"
+    win_dir.mkdir(parents=True)
+    existing = win_dir / "codepilot.exe"
+    existing.write_text("old", encoding="utf-8")
+
+    built_dir = tmp_path / "dist" / "binary" / "linux-x86_64"
+    built_dir.mkdir(parents=True)
+    built_binary = built_dir / "codepilot"
+    built_binary.write_text("new", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "codepilot.commands.binary.build_binary",
+        lambda **kwargs: binary_mod.BuildResult(
+            binary_path=built_binary.resolve(),
+            dist_dir=built_dir.resolve(),
+            build_dir=(tmp_path / "build").resolve(),
+            platform_tag="linux-x86_64",
+        ),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["binary", "release", "--build-current", "--version", "2.0.0"])
+
+    assert result.exit_code == 0
+    release_dir = tmp_path / "dist" / "release" / "codepilot-2.0.0"
+    assert (release_dir / "windows-x86_64" / "codepilot.exe").exists()
+    assert (release_dir / "linux-x86_64" / "codepilot").exists()
+
+
+def test_binary_release_build_current_works_without_existing_artifacts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    built_dir = tmp_path / "dist" / "binary" / "windows-x86_64"
+    built_dir.mkdir(parents=True)
+    built_binary = built_dir / "codepilot.exe"
+    built_binary.write_text("fresh", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "codepilot.commands.binary.build_binary",
+        lambda **kwargs: binary_mod.BuildResult(
+            binary_path=built_binary.resolve(),
+            dist_dir=built_dir.resolve(),
+            build_dir=(tmp_path / "build").resolve(),
+            platform_tag="windows-x86_64",
+        ),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["binary", "release", "--build-current", "--version", "3.0.0"])
+
+    assert result.exit_code == 0
+    release_dir = tmp_path / "dist" / "release" / "codepilot-3.0.0"
+    assert (release_dir / "windows-x86_64" / "codepilot.exe").exists()
+
+
+def test_create_release_bundle_uses_tar_gz_for_linux(tmp_path):
+    binary_path = tmp_path / "codepilot"
+    binary_path.write_text("binary", encoding="utf-8")
+
+    result = binary_mod.create_release_bundle(
+        project_root=tmp_path,
+        artifacts=[("linux-x86_64", binary_path)],
+        output_dir=tmp_path / "release-linux",
+        version="1.0.0",
+    )
+
+    artifact = result.artifacts[0]
+    assert artifact.archive_format == "tar.gz"
+    assert artifact.archive_path.name.endswith(".tar.gz")
+    assert (result.release_dir / "linux-x86_64" / "install-codepilot.sh").exists()
+
+
+def test_binary_prepare_command_updates_version_and_verifies_release(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    package_dir = tmp_path / "codepilot"
+    package_dir.mkdir()
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "codepilot"\nversion = "0.1.0"\n', encoding="utf-8")
+    (package_dir / "__init__.py").write_text('__version__ = "0.1.0"\n', encoding="utf-8")
+
+    built_dir = tmp_path / "dist" / "binary" / "windows-x86_64"
+    built_dir.mkdir(parents=True)
+    built_binary = built_dir / "codepilot.exe"
+    built_binary.write_text("fresh", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "codepilot.commands.binary.build_binary",
+        lambda **kwargs: binary_mod.BuildResult(
+            binary_path=built_binary.resolve(),
+            dist_dir=built_dir.resolve(),
+            build_dir=(tmp_path / "build").resolve(),
+            platform_tag="windows-x86_64",
+        ),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["binary", "prepare", "--version", "1.2.0"])
+
+    assert result.exit_code == 0
+    assert "版本已更新" in result.output
+    assert 'version = "1.2.0"' in (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+    assert '__version__ = "1.2.0"' in (package_dir / "__init__.py").read_text(encoding="utf-8")
+    assert (tmp_path / "dist" / "release" / "codepilot-1.2.0" / "release.json").exists()
+    assert "发布目录校验通过" in result.output
+
+
+def test_binary_prepare_rolls_back_version_when_build_fails(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    package_dir = tmp_path / "codepilot"
+    package_dir.mkdir()
+    pyproject = tmp_path / "pyproject.toml"
+    init_file = package_dir / "__init__.py"
+    pyproject.write_text('[project]\nname = "codepilot"\nversion = "0.1.0"\n', encoding="utf-8")
+    init_file.write_text('__version__ = "0.1.0"\n', encoding="utf-8")
+
+    monkeypatch.setattr("codepilot.commands.binary.build_binary", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("build failed")))
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["binary", "prepare", "--version", "2.0.0"])
+
+    assert result.exit_code != 0
+    assert 'version = "0.1.0"' in pyproject.read_text(encoding="utf-8")
+    assert '__version__ = "0.1.0"' in init_file.read_text(encoding="utf-8")
+
+
+def test_release_prepare_alias_invokes_prepare(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    package_dir = tmp_path / "codepilot"
+    package_dir.mkdir()
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "codepilot"\nversion = "0.1.0"\n', encoding="utf-8")
+    (package_dir / "__init__.py").write_text('__version__ = "0.1.0"\n', encoding="utf-8")
+
+    built_dir = tmp_path / "dist" / "binary" / "windows-x86_64"
+    built_dir.mkdir(parents=True)
+    built_binary = built_dir / "codepilot.exe"
+    built_binary.write_text("fresh", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "codepilot.commands.binary.build_binary",
+        lambda **kwargs: binary_mod.BuildResult(
+            binary_path=built_binary.resolve(),
+            dist_dir=built_dir.resolve(),
+            build_dir=(tmp_path / "build").resolve(),
+            platform_tag="windows-x86_64",
+        ),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["release", "prepare", "--version", "1.3.0"])
+
+    assert result.exit_code == 0
+    assert (tmp_path / "dist" / "release" / "codepilot-1.3.0" / "release.json").exists()
+
+
+def test_release_verify_alias_invokes_verify(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    binary_path = tmp_path / "codepilot.exe"
+    binary_path.write_text("binary", encoding="utf-8")
+    release = binary_mod.create_release_bundle(
+        project_root=tmp_path,
+        artifacts=[("windows-x86_64", binary_path)],
+        output_dir=tmp_path / "dist" / "release" / "codepilot-1.0.0",
+        version="1.0.0",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["release", "verify", "--release-dir", str(release.release_dir)])
+
+    assert result.exit_code == 0
+    assert "发布目录校验通过" in result.output

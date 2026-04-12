@@ -8,9 +8,17 @@ import click
 
 from codepilot.binary import (
     build_binary,
+    create_release_bundle,
     default_install_dir,
     install_binary,
+    read_project_version,
+    restore_project_version,
+    resolve_release_dir,
+    resolve_release_inputs,
     resolve_install_source,
+    update_project_version,
+    verify_release_bundle,
+    _merge_release_inputs,
 )
 from codepilot.output import echo
 
@@ -86,3 +94,156 @@ def binary_install(binary_path: Path | None, target_dir: Path | None, name: str,
 def binary_where():
     """显示默认的二进制安装目录。"""
     click.echo(str(default_install_dir()))
+
+
+@binary.command("release")
+@click.option(
+    "--artifact",
+    "artifacts",
+    multiple=True,
+    help="要打包到发布目录的二进制，格式: 平台=路径，例如 windows-x86_64=dist/binary/windows-x86_64/codepilot.exe",
+)
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="发布目录，默认 dist/release/codepilot-<version>")
+@click.option("--version", default=None, help="发布版本号，默认读取当前 package 版本")
+@click.option("--name", default="codepilot", help="发布包名称")
+@click.option("--build-current/--no-build-current", default=False, help="发布前先原生构建当前平台二进制")
+@click.option("--clean/--no-clean", default=True, help="重新生成发布目录前先清空旧目录")
+def binary_release(
+    artifacts: tuple[str, ...],
+    output_dir: Path | None,
+    version: str | None,
+    name: str,
+    build_current: bool,
+    clean: bool,
+):
+    """整理已构建产物为标准发布目录，并生成 zip 和 SHA256。"""
+    project_root = Path.cwd()
+    try:
+        resolved = []
+        if artifacts:
+            resolved = resolve_release_inputs(project_root=project_root, name=name, artifact_specs=list(artifacts))
+        else:
+            try:
+                resolved = resolve_release_inputs(project_root=project_root, name=name, artifact_specs=[])
+            except RuntimeError:
+                resolved = []
+        if build_current:
+            built = build_binary(project_root=project_root, name=name, clean=clean)
+            resolved = _merge_release_inputs(resolved, (built.platform_tag, built.binary_path))
+        if not resolved:
+            raise RuntimeError(
+                "当前没有可发布的二进制产物。"
+                "请先运行 `codepilot binary build`，或改用 `codepilot binary release --build-current`。"
+            )
+        result = create_release_bundle(
+            project_root=project_root,
+            artifacts=resolved,
+            output_dir=output_dir,
+            version=version,
+            name=name,
+            clean=clean,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    echo(f"[green][OK] 发布目录已生成[/green]  {result.release_dir}")
+    click.echo(f"  manifest: {result.manifest_path}")
+    click.echo(f"  checksums: {result.checksum_path}")
+    click.echo(f"  guide: {result.guide_path}")
+    click.echo(f"  summary: {result.summary_path}")
+    for artifact in result.artifacts:
+        click.echo(f"  - {artifact.platform_tag}: {artifact.archive_path.name} ({artifact.archive_format})")
+
+
+@binary.command("verify")
+@click.option("--release-dir", type=click.Path(exists=False, file_okay=False, dir_okay=True, path_type=Path), default=None, help="要校验的发布目录；不指定则使用最新一次发布")
+def binary_verify(release_dir: Path | None):
+    """校验发布目录中的清单、校验值和文件完整性。"""
+    project_root = Path.cwd()
+    try:
+        target = resolve_release_dir(project_root, release_dir)
+        result = verify_release_bundle(target)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if result.issues:
+        echo(f"[red][X] 发布目录校验失败[/red]  {result.release_dir}")
+        for issue in result.issues:
+            click.echo(f"  - {issue}")
+        raise click.ClickException("发布目录存在校验问题。")
+
+    echo(f"[green][OK] 发布目录校验通过[/green]  {result.release_dir}")
+    click.echo(f"  manifest: {result.manifest_path}")
+    click.echo(f"  checksums: {result.checksum_path}")
+    click.echo(f"  checked_files: {result.checked_files}")
+
+
+@binary.command("prepare")
+@click.option("--version", "target_version", required=True, help="目标版本号，例如 0.1.1")
+@click.option(
+    "--artifact",
+    "artifacts",
+    multiple=True,
+    help="额外加入发布目录的其他平台二进制，格式: 平台=路径",
+)
+@click.option("--name", default="codepilot", help="发布包名称")
+@click.option("--clean/--no-clean", default=True, help="构建和发布前先清理旧产物目录")
+@click.option("--build-current/--no-build-current", default=True, help="自动构建当前平台二进制")
+@click.option("--verify/--no-verify", default=True, help="发布完成后自动校验发布目录")
+def binary_prepare(
+    target_version: str,
+    artifacts: tuple[str, ...],
+    name: str,
+    clean: bool,
+    build_current: bool,
+    verify: bool,
+):
+    """同步版本号并准备一个可交付的本地发布目录。"""
+    project_root = Path.cwd()
+    previous = ""
+    current = ""
+    version_updated = False
+    try:
+        previous, current = update_project_version(project_root, target_version)
+        version_updated = True
+        resolved = []
+        if artifacts:
+            resolved = resolve_release_inputs(project_root=project_root, name=name, artifact_specs=list(artifacts))
+        if build_current:
+            built = build_binary(project_root=project_root, name=name, clean=clean)
+            resolved = _merge_release_inputs(resolved, (built.platform_tag, built.binary_path))
+        if not resolved:
+            resolved = resolve_release_inputs(project_root=project_root, name=name, artifact_specs=[])
+        release = create_release_bundle(
+            project_root=project_root,
+            artifacts=resolved,
+            version=current,
+            name=name,
+            clean=clean,
+        )
+        verification = verify_release_bundle(release.release_dir) if verify else None
+    except RuntimeError as exc:
+        if version_updated and previous:
+            try:
+                restore_project_version(project_root, previous)
+            except RuntimeError:
+                pass
+        raise click.ClickException(str(exc)) from exc
+
+    echo(f"[green][OK] 版本已更新[/green]  {previous} -> {current}")
+    echo(f"[green][OK] 发布目录已准备好[/green]  {release.release_dir}")
+    click.echo(f"  manifest: {release.manifest_path}")
+    click.echo(f"  checksums: {release.checksum_path}")
+    click.echo(f"  guide: {release.guide_path}")
+    click.echo(f"  summary: {release.summary_path}")
+    for artifact in release.artifacts:
+        click.echo(f"  - {artifact.platform_tag}: {artifact.archive_path.name} ({artifact.archive_format})")
+
+    if verification:
+        if verification.issues:
+            echo(f"[red][X] 发布目录校验失败[/red]  {verification.release_dir}")
+            for issue in verification.issues:
+                click.echo(f"  - {issue}")
+            raise click.ClickException("版本已更新，但发布目录校验失败。")
+        echo(f"[green][OK] 发布目录校验通过[/green]  {verification.release_dir}")
+        click.echo(f"  checked_files: {verification.checked_files}")

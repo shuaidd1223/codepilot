@@ -12,6 +12,7 @@ import codepilot.commands.binary as binary_cmd
 import codepilot.commands.daemon as daemon_cmd
 import codepilot.commands.init as init_cmd
 import codepilot.commands.providers as providers_cmd
+import codepilot.commands.release as release_cmd
 import codepilot.commands.run as run_cmd
 import codepilot.commands.status as status_cmd
 import codepilot.commands.tasks as tasks_cmd
@@ -87,6 +88,7 @@ def main(
 
 main.add_command(init_cmd.init_)
 main.add_command(binary_cmd.binary)
+main.add_command(release_cmd.release)
 main.add_command(status_cmd.status)
 main.add_command(add_cmd.add)
 main.add_command(auto_cmd.auto)
