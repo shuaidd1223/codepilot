@@ -233,6 +233,45 @@ def load_config(config_path: Optional[Path] = None) -> Optional[AgentsConfig]:
         return None
 
 
+def resolve_config_path(
+    project_path: Optional[str | Path] = None,
+    *,
+    config_file: Optional[str | Path] = None,
+) -> Optional[Path]:
+    """Resolve the effective AGENTS.toml path from an explicit file or project path."""
+    if config_file:
+        candidate = Path(config_file).expanduser()
+        if candidate.is_file():
+            return candidate.resolve()
+        if candidate.is_dir():
+            direct = candidate / CONFIG_FILENAME
+            if direct.is_file():
+                return direct.resolve()
+
+    if project_path is None:
+        return find_config()
+
+    candidate = Path(project_path).expanduser()
+    if candidate.is_file():
+        return candidate.resolve()
+
+    direct = candidate / CONFIG_FILENAME
+    if direct.is_file():
+        return direct.resolve()
+
+    return find_config(candidate)
+
+
+def load_project_config(
+    project_path: Optional[str | Path] = None,
+    *,
+    config_file: Optional[str | Path] = None,
+) -> Optional[AgentsConfig]:
+    """Load AGENTS.toml using either a stored config file path or a project root."""
+    resolved = resolve_config_path(project_path, config_file=config_file)
+    return load_config(resolved) if resolved else None
+
+
 def find_project_root(config_path: Optional[Path] = None) -> Optional[Path]:
     """根据配置文件路径找到项目根目录."""
     if config_path is None:

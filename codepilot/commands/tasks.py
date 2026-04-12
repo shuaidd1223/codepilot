@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import click
 
 from codepilot import db
 from codepilot.commands.status import _resolve_project
 from codepilot.output import echo
+from codepilot.runtime import clear_task_runtime, is_process_alive, request_task_stop, stop_process_tree
 
 
 # ── done ──────────────────────────────────────────────────────────────────────
@@ -28,7 +30,7 @@ def done(task_id: int, message: str):
     updates = {"status": "done", "completed_at": datetime.now().isoformat()}
     if message:
         updates["delivery_record"] = message
-    db.update_task(task_id, **updates)
+    clear_task_runtime(task_id, stop_requested=0, stop_reason=None, **updates)
     echo(f"[green][OK] 任务 #{task_id} 已标记为 done[/green]  {task['title']}")
 
 
@@ -41,7 +43,7 @@ def done(task_id: int, message: str):
                type=click.Choice(["P0", "P1", "P2", "P3"], case_sensitive=False),
                help="修改优先级")
 @click.option("--status", "-s",
-               type=click.Choice(["backlog", "in_progress", "done", "failed"], case_sensitive=False),
+               type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled"], case_sensitive=False),
                help="修改状态")
 @click.option("--agent", "-a",
                type=click.Choice(["dual", "builder", "reviewer", "claude", "codex"], case_sensitive=False),
@@ -62,7 +64,20 @@ def edit(task_id: int, title: str | None, priority: str | None,
     if priority:
         updates["priority"] = priority.upper()
     if status:
-        updates["status"] = status.lower()
+        normalized_status = status.lower()
+        updates["status"] = normalized_status
+        if normalized_status != "in_progress":
+            updates.update(
+                {
+                    "run_phase": None,
+                    "heartbeat_at": None,
+                    "active_pid": None,
+                    "current_log_path": None,
+                    "last_output": None,
+                    "stop_requested": 0,
+                    "stop_reason": None,
+                }
+            )
     if agent:
         updates["agent"] = agent.lower()
     if depends is not None:
@@ -126,7 +141,7 @@ def rm(task_ids: tuple[int, ...], force: bool):
 @click.argument("keyword", required=False)
 @click.option("--project", "-p", callback=_resolve_project, help="限定项目")
 @click.option("--status", "-s",
-              type=click.Choice(["backlog", "in_progress", "done", "failed"], case_sensitive=False),
+              type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled"], case_sensitive=False),
               help="按状态过滤")
 @click.option("--priority", "--pri",
               type=click.Choice(["P0", "P1", "P2", "P3"], case_sensitive=False),
@@ -185,6 +200,7 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
             "in_progress": "blue",
             "done": "green",
             "failed": "red",
+            "cancelled": "magenta",
         }.get(r["status"], "dim")
 
         echo(
@@ -195,4 +211,95 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
         if keyword and r["content"]:
             snippet = r["content"][:80].replace("\n", " ")
             click.echo(f"    -> {snippet}...")
+        click.echo()
+
+
+# ── stop ───────────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("task_id", type=int)
+@click.option("--message", "-m", default="", help="停止原因")
+def stop(task_id: int, message: str):
+    """停止一个正在运行的任务。"""
+    db.init_db()
+    task = db.get_task(task_id)
+    if not task:
+        echo(f"[red]任务 #{task_id} 不存在[/red]")
+        return
+
+    if task["status"] != "in_progress":
+        echo(f"[yellow]任务 #{task_id} 当前不是运行中状态，无需停止[/yellow]")
+        return
+
+    reason = message.strip() or f"任务 #{task_id} 已收到手动停止请求"
+    request_task_stop(task_id, reason)
+
+    pid = task.get("active_pid")
+    if pid:
+        stop_process_tree(pid)
+
+    refreshed = db.get_task(task_id) or task
+    if refreshed.get("active_pid") and is_process_alive(refreshed.get("active_pid")) and refreshed.get("status") == "in_progress":
+        echo(f"[yellow]已向任务 #{task_id} 发送停止请求，等待执行器收尾[/yellow]")
+        return
+
+    from datetime import datetime
+
+    clear_task_runtime(
+        task_id,
+        status="cancelled",
+        completed_at=refreshed.get("completed_at") or datetime.now().isoformat(),
+        error_message=reason,
+        stop_requested=0,
+        stop_reason=None,
+    )
+    echo(f"[yellow]任务 #{task_id} 已停止[/yellow]  {task['title']}")
+
+
+# ── logs ───────────────────────────────────────────────────────────────────────
+
+def _render_log_text(text: str, tail: int) -> str:
+    if not text:
+        return ""
+    lines = text.splitlines()
+    return "\n".join(lines[-tail:]) if tail > 0 else text
+
+
+@click.command()
+@click.argument("task_id", type=int)
+@click.option("--tail", "-n", type=int, default=80, help="仅显示最后 N 行")
+@click.option("--full", is_flag=True, help="显示完整日志")
+def logs(task_id: int, tail: int, full: bool):
+    """查看任务日志；运行中的任务优先显示实时日志。"""
+    db.init_db()
+    task = db.get_task(task_id)
+    if not task:
+        echo(f"[red]任务 #{task_id} 不存在[/red]")
+        return
+
+    live_log = task.get("current_log_path")
+    if task.get("status") == "in_progress" and live_log and Path(live_log).exists():
+        echo(f"[cyan]实时日志[/cyan]  {live_log}")
+        text = Path(live_log).read_text(encoding="utf-8", errors="replace")
+        click.echo(text if full else _render_log_text(text, tail))
+        return
+
+    task_logs = db.list_task_logs(task_id)
+    if not task_logs:
+        snippet = task.get("last_output") or ""
+        if snippet:
+            echo(f"[cyan]最近输出[/cyan]")
+            click.echo(snippet if full else _render_log_text(snippet, tail))
+        else:
+            echo("[yellow]这个任务还没有可用日志[/yellow]")
+        return
+
+    for entry in task_logs:
+        echo(
+            f"[cyan]{entry['phase']}[/cyan]  agent={entry.get('agent') or '-'}  "
+            f"exit={entry.get('exit_code') if entry.get('exit_code') is not None else '-'}"
+        )
+        text = entry.get("output") or ""
+        if text:
+            click.echo(text if full else _render_log_text(text, tail))
         click.echo()

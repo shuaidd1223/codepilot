@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -22,8 +23,18 @@ from codepilot.ai import (
     resolve_cli_provider,
 )
 from codepilot.commands.status import _resolve_project
-from codepilot.config import load_config
+from codepilot.config import load_project_config
 from codepilot.output import echo
+from codepilot.runtime import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    clear_task_runtime,
+    get_stop_request,
+    list_live_tasks,
+    reap_stalled_tasks,
+    stop_process_tree,
+    tail_text,
+    update_task_runtime,
+)
 from codepilot.webhook import notify_task_status
 
 
@@ -47,6 +58,10 @@ class ExecutionResult:
     review_output: str = ""
     summary: str = ""
     executor: str = "dispatch"
+
+
+class TaskCancelled(RuntimeError):
+    """Raised when a running task is explicitly stopped."""
 
 
 def detect_best_shell(preferred: Optional[str] = None) -> ShellInfo:
@@ -98,9 +113,10 @@ def build_script_command(shell: ShellInfo, script_path: Path, script_args: list[
     return cmd, f"cmd {script_path.name}"
 
 
-def _project_config(project_path: str | None):
-    config_path = Path(project_path).resolve() / "AGENTS.toml" if project_path else None
-    return load_config(config_path if config_path and config_path.exists() else None)
+def _project_config(project_ref: str | dict | None):
+    if isinstance(project_ref, dict):
+        return load_project_config(project_ref.get("path"), config_file=project_ref.get("config_file"))
+    return load_project_config(project_ref)
 
 
 def _find_dispatch_script(project_path: str | None = None) -> Optional[Path]:
@@ -194,6 +210,87 @@ def _run_command(
     return result.returncode, output
 
 
+def _run_command_live(
+    cmd: list[str],
+    *,
+    task_id: int,
+    phase: str,
+    log_path: Path,
+    cwd: Optional[Path] = None,
+    timeout: int = 3600,
+    input_text: Optional[str] = None,
+) -> tuple[int, str]:
+    """Run a long-lived command while updating heartbeat and honoring stop requests."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8", errors="replace") as handle:
+        popen_kwargs = {
+            "cwd": str(cwd) if cwd else None,
+            "stdout": handle,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.PIPE if input_text is not None else None,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
+
+        process = subprocess.Popen(cmd, **popen_kwargs)
+        if input_text is not None and process.stdin:
+            process.stdin.write(input_text)
+            process.stdin.close()
+
+        update_task_runtime(task_id, phase=phase, pid=process.pid, log_path=log_path, last_output="")
+        started = time.monotonic()
+        last_heartbeat = 0.0
+
+        try:
+            while True:
+                requested, reason = get_stop_request(task_id)
+                if requested:
+                    stop_process_tree(process.pid)
+                    update_task_runtime(
+                        task_id,
+                        phase=phase,
+                        pid=process.pid,
+                        log_path=log_path,
+                        last_output=tail_text(log_path),
+                    )
+                    raise TaskCancelled(reason or f"任务 #{task_id} 已停止")
+
+                if time.monotonic() - started > timeout:
+                    stop_process_tree(process.pid)
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+
+                exit_code = process.poll()
+                now = time.monotonic()
+                if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
+                    update_task_runtime(
+                        task_id,
+                        phase=phase,
+                        pid=process.pid if exit_code is None else None,
+                        log_path=log_path,
+                        last_output=tail_text(log_path),
+                    )
+                    last_heartbeat = now
+
+                if exit_code is not None:
+                    handle.flush()
+                    update_task_runtime(
+                        task_id,
+                        phase=phase,
+                        pid=None,
+                        log_path=log_path,
+                        last_output=tail_text(log_path),
+                    )
+                    return exit_code, log_path.read_text(encoding="utf-8", errors="replace").strip()
+
+                time.sleep(0.2)
+        finally:
+            if process.stdin:
+                process.stdin.close()
+
+
 def _git_current_branch(project_path: Path) -> str:
     code, output = _run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
     if code == 0 and output.strip():
@@ -223,8 +320,15 @@ def _builtin_runtime_dir(project: dict) -> Path:
     return output_dir
 
 
-def _builtin_preflight_error(project_path: Path, auto_commit: bool) -> str:
+def _builtin_preflight_error(project_path: Path, auto_commit: bool, agent_mode: str = "codex") -> str:
     """Return a human-readable reason why builtin execution should not start yet."""
+    review_requires_git = normalize_agent_name(agent_mode or "dual") == "codex"
+    if review_requires_git and not _git_is_repo(project_path):
+        return (
+            "当前内置 reviewer（Codex review）需要 Git 仓库来审查未提交改动。"
+            "当前项目还不是 Git 仓库，本次跳过执行且不消耗重试次数。"
+            "请先执行 git init 并完成首次提交，或改用 dual / claude 再执行。"
+        )
     if auto_commit and not _git_is_repo(project_path):
         return (
             "内置执行器默认会在成功后自动提交，但当前项目还不是 Git 仓库。"
@@ -309,13 +413,20 @@ def _build_review_prompt(task: dict) -> str:
     )
 
 
-def _extract_review_verdict(review_output: str) -> str:
+def _extract_review_verdict(review_output: str, reviewer_agent: str = "") -> str:
+    verdict_pattern = re.compile(r"VERDICT\s*:\s*(PASS|FAIL)\b", re.IGNORECASE)
     for line in reversed(review_output.splitlines()):
-        marker = line.strip().upper()
-        if marker == "VERDICT: PASS":
-            return "pass"
-        if marker == "VERDICT: FAIL":
+        match = verdict_pattern.search(line)
+        if match:
+            return match.group(1).lower()
+
+    normalized = reviewer_agent.lower().strip()
+    if normalized.startswith("codex"):
+        if re.search(r"(?mi)^\s*review comments?\s*:\s*$", review_output):
             return "fail"
+        if re.search(r"(?mi)^\s*-\s*\[[A-Z0-9]+\]", review_output):
+            return "fail"
+        return "pass" if review_output.strip() else "unknown"
     return "unknown"
 
 
@@ -346,15 +457,20 @@ def _run_builtin_phase(
     prompt: str,
     output_path: Path,
     timeout: int,
+    config_ref: str | Path | None = None,
 ) -> tuple[str, int, str]:
     """Execute one builtin phase with the requested agent."""
     runner, model = _resolve_builtin_phase_agent(task.get("agent", "dual"), phase)
-    available, message = check_provider_availability(runner, project_path=project_path)
+    task_id = int(task.get("id") or 0)
+    provider_ref = config_ref or project_path
+    available, message = check_provider_availability(runner, project_path=provider_ref)
     if not available:
         raise RuntimeError(message)
 
+    console_log = output_path.with_suffix(".console.log")
+
     if runner == "codex":
-        exe = resolve_cli_provider("codex", project_path).find_executable()
+        exe = resolve_cli_provider("codex", provider_ref).find_executable()
         if not exe:
             raise RuntimeError("当前无法使用 Codex，因为本机没有找到 `codex` 命令。")
 
@@ -364,6 +480,7 @@ def _run_builtin_phase(
             cmd.append("--uncommitted")
             cmd.extend(
                 [
+                    "--ephemeral",
                     "--dangerously-bypass-approvals-and-sandbox",
                     "-o",
                     str(output_path),
@@ -372,18 +489,30 @@ def _run_builtin_phase(
         else:
             cmd.extend(
                 [
+                    "--skip-git-repo-check",
+                    "--ephemeral",
                     "--dangerously-bypass-approvals-and-sandbox",
                     "-o",
                     str(output_path),
                     prompt,
                 ]
             )
-        exit_code, console = _run_command(cmd, cwd=project_path, timeout=timeout)
+        if task_id:
+            exit_code, console = _run_command_live(
+                cmd,
+                task_id=task_id,
+                phase=phase,
+                log_path=console_log,
+                cwd=project_path,
+                timeout=timeout,
+            )
+        else:
+            exit_code, console = _run_command(cmd, cwd=project_path, timeout=timeout)
         output = _read_output_file(output_path) or console
         label = "codex-review" if phase == "reviewer" else "codex"
         return label, exit_code, output
 
-    provider = resolve_cli_provider(runner, project_path)
+    provider = resolve_cli_provider(runner, provider_ref)
     exe = provider.find_executable()
     if not exe:
         raise RuntimeError(message)
@@ -402,7 +531,18 @@ def _run_builtin_phase(
     if model:
         cmd.extend(["--model", model])
 
-    exit_code, console = _run_command(cmd, cwd=project_path, timeout=timeout, input_text=prompt)
+    if task_id:
+        exit_code, console = _run_command_live(
+            cmd,
+            task_id=task_id,
+            phase=phase,
+            log_path=console_log,
+            cwd=project_path,
+            timeout=timeout,
+            input_text=prompt,
+        )
+    else:
+        exit_code, console = _run_command(cmd, cwd=project_path, timeout=timeout, input_text=prompt)
     label = runner if phase == "builder" else f"{runner}-review"
     return label, exit_code, console
 
@@ -410,7 +550,8 @@ def _run_builtin_phase(
 def _run_builtin_executor(task: dict, project: dict, task_file: Path, auto_commit: bool = True) -> ExecutionResult:
     """Execute a task directly with Codex CLI and review the result."""
     project_path = Path(project["path"])
-    preflight_error = _builtin_preflight_error(project_path, auto_commit)
+    config_ref = project.get("config_file") or project_path
+    preflight_error = _builtin_preflight_error(project_path, auto_commit, task.get("agent", "codex"))
     if preflight_error:
         raise RuntimeError(preflight_error)
 
@@ -427,6 +568,7 @@ def _run_builtin_executor(task: dict, project: dict, task_file: Path, auto_commi
     review_out = Path(review_raw)
 
     builder_started = datetime.now()
+    echo(f"[dim]  阶段: builder[/dim]")
     builder_agent, builder_exit, builder_output = _run_builtin_phase(
         task=task,
         project_path=project_path,
@@ -434,12 +576,14 @@ def _run_builtin_executor(task: dict, project: dict, task_file: Path, auto_commi
         prompt=_build_builtin_prompt(task, task_file),
         output_path=builder_out,
         timeout=3600,
+        config_ref=config_ref,
     )
     _write_task_log(task["id"], builder_agent, "builder", builder_output, builder_exit, builder_started)
     if builder_exit != 0:
         return ExecutionResult(exit_code=builder_exit, output=builder_output, executor="builtin")
 
     review_started = datetime.now()
+    echo(f"[dim]  阶段: reviewer[/dim]")
     review_agent, review_exit, review_output = _run_builtin_phase(
         task=task,
         project_path=project_path,
@@ -447,6 +591,7 @@ def _run_builtin_executor(task: dict, project: dict, task_file: Path, auto_commi
         prompt=_build_review_prompt(task),
         output_path=review_out,
         timeout=1800,
+        config_ref=config_ref,
     )
     _write_task_log(task["id"], review_agent, "reviewer", review_output, review_exit, review_started)
     if review_exit != 0:
@@ -458,13 +603,21 @@ def _run_builtin_executor(task: dict, project: dict, task_file: Path, auto_commi
             executor="builtin",
         )
 
-    verdict = _extract_review_verdict(review_output)
+    verdict = _extract_review_verdict(review_output, review_agent)
     if verdict == "fail":
         return ExecutionResult(
             exit_code=2,
             output=builder_output,
             review_output=review_output,
             summary="review 未通过",
+            executor="builtin",
+        )
+    if verdict != "pass":
+        return ExecutionResult(
+            exit_code=2,
+            output=builder_output,
+            review_output=review_output,
+            summary="review 结果不明确",
             executor="builtin",
         )
 
@@ -493,11 +646,17 @@ def _run_dispatch(project: dict, task_file: Path, agent_mode: str, shell: ShellI
     if dry_run:
         script_args.append("-DryRun")
 
-    if _is_powershell_script(dispatch_path):
-        cmd, _ = build_script_command(shell, dispatch_path, script_args)
-    else:
-        cmd, _ = build_script_command(shell, dispatch_path, script_args)
-    return _run_command(cmd, timeout=3600)
+    cmd, _ = build_script_command(shell, dispatch_path, script_args)
+    runtime_dir = _builtin_runtime_dir(project)
+    log_path = runtime_dir / f"task-{Path(task_file).stem}-dispatch.log"
+    task_id = int(task_file.stem.split("-", 1)[0])
+    return _run_command_live(
+        cmd,
+        task_id=task_id,
+        phase="dispatch",
+        log_path=log_path,
+        timeout=3600,
+    )
 
 
 def _handle_failure(task: dict, error_message: str, stop_on_failure: bool = False) -> tuple[dict, bool]:
@@ -523,9 +682,22 @@ def run_backlog(
     if not proj:
         raise RuntimeError(f"项目 '{project}' 未注册，请先运行 codepilot init")
 
+    reaped = reap_stalled_tasks(project)
+    for task in reaped:
+        echo(f"[yellow]已回收卡住任务 #{task['id']}：{task['title']}[/yellow]")
+
+    live_tasks = list_live_tasks(project)
+    if live_tasks:
+        current = live_tasks[0]
+        echo(
+            f"[yellow]项目当前已有运行中的任务 #{current['id']}，阶段={current.get('run_phase') or '-'}，"
+            f"pid={current.get('active_pid') or '-'}。本次不再启动新任务。[/yellow]"
+        )
+        return {"processed": 0, "done": 0, "failed": 0, "requeued": 0, "cancelled": 0, "executor": executor}
+
     project_path = Path(proj["path"])
-    config = _project_config(str(project_path))
-    preferred_shell = shell if shell != "auto" else (config.shell.preferred or "")
+    config = _project_config(proj)
+    preferred_shell = shell if shell != "auto" else ((config.shell.preferred if config else "") or "")
     shell_info = detect_best_shell(preferred_shell if preferred_shell != "auto" else None)
 
     dispatch_path = _find_dispatch_script(str(project_path))
@@ -537,7 +709,14 @@ def run_backlog(
     if resolved_executor == "dispatch":
         echo(f"[dim]使用 Shell: {shell_info.version_hint}[/dim]")
 
-    stats = {"processed": 0, "done": 0, "failed": 0, "requeued": 0, "executor": resolved_executor}
+    stats = {
+        "processed": 0,
+        "done": 0,
+        "failed": 0,
+        "requeued": 0,
+        "cancelled": 0,
+        "executor": resolved_executor,
+    }
 
     for _ in range(limit):
         tasks = db.next_backlog_task(project)
@@ -549,7 +728,7 @@ def run_backlog(
         task_id = task["id"]
         preflight_error = ""
         if resolved_executor == "builtin":
-            preflight_error = _builtin_preflight_error(project_path, auto_commit)
+            preflight_error = _builtin_preflight_error(project_path, auto_commit, task.get("agent", "codex"))
         if preflight_error:
             db.update_task(task_id, status="backlog", error_message=preflight_error)
             echo(f"[yellow]{preflight_error}[/yellow]")
@@ -566,6 +745,13 @@ def run_backlog(
             started_at=datetime.now().isoformat(),
             branch_name=_git_current_branch(project_path),
             worktree_path=str(project_path),
+            stop_requested=0,
+            stop_reason=None,
+            run_phase="pending",
+            heartbeat_at=datetime.now().isoformat(),
+            active_pid=None,
+            current_log_path=None,
+            last_output="",
         )
 
         echo(f"[cyan]-> 执行任务 #{task_id}[/cyan]  {task['title']}")
@@ -573,7 +759,7 @@ def run_backlog(
         click.echo(f"  任务文件: {task_file}")
 
         if dry_run:
-            db.update_task(task_id, status="backlog", started_at=None)
+            clear_task_runtime(task_id, status="backlog", started_at=None, stop_requested=0, stop_reason=None)
             echo("[dim]  [DryRun 模式，跳过实际执行][/dim]")
             click.echo()
             stats["processed"] += 1
@@ -589,6 +775,23 @@ def run_backlog(
                 result = ExecutionResult(exit_code=exit_code, output=output, executor="dispatch")
             else:
                 result = _run_builtin_executor(task, proj, task_file, auto_commit=auto_commit)
+        except TaskCancelled as exc:
+            clear_task_runtime(
+                task_id,
+                status="cancelled",
+                completed_at=datetime.now().isoformat(),
+                error_message=str(exc),
+                delivery_record="",
+                stop_requested=0,
+                stop_reason=None,
+            )
+            echo(f"[yellow]任务 #{task_id} 已停止[/yellow]")
+            notify_task_status(str(project_path), task_id, task["title"], "cancelled", str(exc))
+            stats["cancelled"] += 1
+            stats["processed"] += 1
+            if once:
+                break
+            continue
         except Exception as exc:
             updated, should_stop = _handle_failure(task, str(exc), stop_on_failure=(resolved_executor == "builtin"))
             echo(f"[red]执行出错: {exc}[/red]")
@@ -603,12 +806,14 @@ def run_backlog(
             continue
 
         if result.exit_code == 0:
-            db.update_task(
+            clear_task_runtime(
                 task_id,
                 status="done",
                 completed_at=datetime.now().isoformat(),
                 error_message="",
                 delivery_record=result.summary or result.review_output or result.output,
+                stop_requested=0,
+                stop_reason=None,
             )
             echo(f"[green][OK] 任务 #{task_id} 完成[/green]")
             notify_task_status(str(project_path), task_id, task["title"], "done")
@@ -701,5 +906,5 @@ def run(
 
     echo(
         f"\n[dim]Run 完成: processed={stats['processed']} done={stats['done']} "
-        f"failed={stats['failed']} requeued={stats['requeued']}[/dim]"
+        f"failed={stats['failed']} requeued={stats['requeued']} cancelled={stats['cancelled']}[/dim]"
     )

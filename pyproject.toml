@@ -20,6 +20,9 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
 ]
+build = [
+    "pyinstaller>=6.10.0",
+]
 ai = [
     "openai>=1.30.0",
     "anthropic>=0.40.0",
@@ -38,3 +41,6 @@ include = ["codepilot*"]
 
 [tool.setuptools.package-dir]
 "" = "."
+
+[tool.setuptools.package-data]
+"codepilot" = ["templates/*.md"]

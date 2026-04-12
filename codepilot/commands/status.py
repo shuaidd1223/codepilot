@@ -10,6 +10,7 @@ from rich.table import Table
 
 from codepilot import db
 from codepilot.output import echo
+from codepilot.runtime import runtime_summary
 
 
 def _resolve_project(ctx: click.Context, param: str, value: str | None) -> str | None:
@@ -76,6 +77,7 @@ def _show_project_status(project: str, verbose: bool, json_mode: bool):
         f"in-progress: [blue]{stats['in_progress']}[/blue]  "
         f"done: [green]{stats['done']}[/green]  "
         f"failed: [red]{stats['failed']}[/red]  "
+        f"cancelled: [magenta]{stats['cancelled']}[/magenta]  "
         f"total: {stats['total']}\n"
     )
 
@@ -84,6 +86,7 @@ def _show_project_status(project: str, verbose: bool, json_mode: bool):
         "in_progress": ("进行中", "blue"),
         "done": ("已完成", "green"),
         "failed": ("失败", "red"),
+        "cancelled": ("已取消", "magenta"),
     }
 
     for status_key, (label, color) in status_labels.items():
@@ -97,9 +100,13 @@ def _show_project_status(project: str, verbose: bool, json_mode: bool):
         table.add_column("标题", style="white")
         table.add_column("优先级", width=5)
         table.add_column("Agent", width=6)
+        if status_key == "in_progress":
+            table.add_column("运行态", style="dim", min_width=24)
         if verbose:
             table.add_column("创建时间", style="dim")
             table.add_column("分支", style="dim")
+            if status_key == "in_progress":
+                table.add_column("最后输出", style="dim", min_width=24)
 
         for t in tasks:
             title = (t["title"][:60] + "...") if len(t["title"]) > 60 else t["title"]
@@ -109,9 +116,14 @@ def _show_project_status(project: str, verbose: bool, json_mode: bool):
                 t["priority"],
                 t["agent"],
             ]
+            if status_key == "in_progress":
+                row.append(runtime_summary(t))
             if verbose:
                 row.append(t.get("created_at", "")[:19] if t.get("created_at") else "")
                 row.append(t.get("branch_name") or "-")
+                if status_key == "in_progress":
+                    last_output = (t.get("last_output") or "").replace("\n", " ").strip()
+                    row.append((last_output[:80] + "...") if len(last_output) > 80 else (last_output or "-"))
             table.add_row(*row)
 
         console.print(table)
@@ -151,6 +163,7 @@ def _show_all_projects_status(verbose: bool, json_mode: bool):
             f"backlog: [yellow]{stats['backlog']}[/yellow]  "
             f"in-progress: [blue]{stats['in_progress']}[/blue]  "
             f"done: [green]{stats['done']}[/green]  "
-            f"failed: [red]{stats['failed']}[/red]"
+            f"failed: [red]{stats['failed']}[/red]  "
+            f"cancelled: [magenta]{stats['cancelled']}[/magenta]"
         )
     console.print()

@@ -80,6 +80,13 @@ def init_db() -> None:
                 delivery_record TEXT,
                 retry_count     INTEGER NOT NULL DEFAULT 0,
                 max_retries     INTEGER NOT NULL DEFAULT 3,
+                run_phase       TEXT,
+                heartbeat_at    TEXT,
+                active_pid      INTEGER,
+                current_log_path TEXT,
+                last_output     TEXT,
+                stop_requested  INTEGER NOT NULL DEFAULT 0,
+                stop_reason     TEXT,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 started_at      TEXT,
                 completed_at    TEXT
@@ -105,6 +112,13 @@ def init_db() -> None:
 
         _ensure_column(conn, "tasks", "retry_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "tasks", "max_retries", "INTEGER NOT NULL DEFAULT 3")
+        _ensure_column(conn, "tasks", "run_phase", "TEXT")
+        _ensure_column(conn, "tasks", "heartbeat_at", "TEXT")
+        _ensure_column(conn, "tasks", "active_pid", "INTEGER")
+        _ensure_column(conn, "tasks", "current_log_path", "TEXT")
+        _ensure_column(conn, "tasks", "last_output", "TEXT")
+        _ensure_column(conn, "tasks", "stop_requested", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "tasks", "stop_reason", "TEXT")
         conn.commit()
 
 
@@ -259,6 +273,13 @@ def update_task(task_id: int, **fields) -> Optional[dict]:
         "project_path",
         "retry_count",
         "max_retries",
+        "run_phase",
+        "heartbeat_at",
+        "active_pid",
+        "current_log_path",
+        "last_output",
+        "stop_requested",
+        "stop_reason",
     }
     updates = {key: value for key, value in fields.items() if key in allowed}
     if "depends_on" in updates and isinstance(updates["depends_on"], list):
@@ -289,6 +310,13 @@ def increment_task_retry(task_id: int, error_message: str) -> dict:
         retry_count=retry_count,
         status=next_status,
         error_message=error_message,
+        run_phase=None,
+        heartbeat_at=None,
+        active_pid=None,
+        current_log_path=None,
+        last_output=None,
+        stop_requested=0,
+        stop_reason=None,
     )
 
 
@@ -344,6 +372,7 @@ def get_task_stats(project: str) -> dict:
         "in_progress": stats.get("in_progress", 0),
         "done": stats.get("done", 0),
         "failed": stats.get("failed", 0),
+        "cancelled": stats.get("cancelled", 0),
         "total": sum(stats.values()),
     }
 

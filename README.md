@@ -23,6 +23,41 @@ codepilot "实现自动拆分和自动执行工作流"
 codepilot chat
 ```
 
+## Build a native binary
+
+Build a single-file binary for the current OS:
+
+```bash
+pip install .[build]
+codepilot binary build
+```
+
+Build and install it into a user-local command directory:
+
+```bash
+codepilot binary build --install
+```
+
+Install an existing binary and register `codepilot` on the user PATH:
+
+```bash
+codepilot binary install --binary ./dist/binary/linux-x86_64/codepilot
+codepilot binary install --binary .\\dist\\binary\\windows-x86_64\\codepilot.exe
+```
+
+Show the default install directory:
+
+```bash
+codepilot binary where
+```
+
+Notes:
+
+- Windows and Linux binaries must be built natively on each OS. This command does not cross-compile.
+- `binary install` writes into a user-local directory and updates the user PATH when needed.
+- On Windows the default target is `%LOCALAPPDATA%\\Programs\\CodePilot\\bin`.
+- On Linux the default target is `~/.local/bin`.
+
 ## Notes
 
 - The default project config now uses `default_mode = "codex"` and `planner = "codex"` in `AGENTS.toml`.

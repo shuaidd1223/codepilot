@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
-from codepilot.config import find_config, load_config
+from codepilot.config import load_project_config
 
 # API 支持库（可选导入）
 try:
@@ -498,17 +498,7 @@ def _get_node_modules_path() -> str:
 
 def _load_project_config(project_path: str | Path | None = None):
     """Load AGENTS.toml from an explicit project path or the current working tree."""
-    config_path: Optional[Path] = None
-    if project_path:
-        candidate = Path(project_path).resolve()
-        if candidate.is_file():
-            config_path = candidate
-        else:
-            direct = candidate / "AGENTS.toml"
-            config_path = direct if direct.is_file() else find_config(candidate)
-    else:
-        config_path = find_config()
-    return load_config(config_path) if config_path else None
+    return load_project_config(project_path)
 
 
 def _configured_cli_command(provider_key: str, project_path: str | Path | None = None) -> str:
@@ -896,6 +886,7 @@ def _run_claude_schema_prompt(
     *,
     planner: str = "codex",
     project_path: str = "",
+    config_ref: str | Path | None = None,
     timeout: int = 240,
 ) -> dict:
     """Use Claude CLI to produce schema-constrained JSON output."""
@@ -908,7 +899,8 @@ def _run_claude_schema_prompt(
     elif normalized not in {"claude", "claude-node"}:
         raise RuntimeError("当前自动拆分只支持 Claude 或 Codex 作为规划器。")
 
-    provider = resolve_cli_provider(provider_key, project_path)
+    provider_ref = config_ref or project_path
+    provider = resolve_cli_provider(provider_key, provider_ref)
     exe = provider.find_executable()
     if not exe:
         raise RuntimeError(f"当前无法使用 {provider.name} 进行任务拆分。请先安装对应 CLI，或改用 codex。")
@@ -984,13 +976,15 @@ def _run_codex_schema_prompt(
     schema: dict,
     *,
     project_path: str = "",
+    config_ref: str | Path | None = None,
     timeout: int = 240,
 ) -> dict:
     """Use Codex CLI with a JSON schema output contract."""
-    available, message = check_provider_availability("codex", project_path=project_path)
+    provider_ref = config_ref or project_path
+    available, message = check_provider_availability("codex", project_path=provider_ref)
     if not available:
         raise RuntimeError(message)
-    exe = resolve_cli_provider("codex", project_path).find_executable()
+    exe = resolve_cli_provider("codex", provider_ref).find_executable()
     if not exe:
         raise RuntimeError("当前无法使用 Codex 进行任务拆分，因为本机没有找到 `codex` 命令。")
 
@@ -1009,6 +1003,7 @@ def _run_codex_schema_prompt(
             [
                 "exec",
                 "--skip-git-repo-check",
+                "--ephemeral",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--output-schema",
                 str(schema_path),
@@ -1100,6 +1095,7 @@ def generate_task_breakdown(
     project_path: str = "",
     planner: str = "codex",
     max_tasks: int = 5,
+    config_ref: str | Path | None = None,
 ) -> dict:
     """Generate a structured subtask breakdown for a high-level goal."""
     max_tasks = max(1, min(max_tasks, 8))
@@ -1117,12 +1113,14 @@ def generate_task_breakdown(
             TASK_BREAKDOWN_SCHEMA,
             planner=normalized,
             project_path=project_path,
+            config_ref=config_ref,
         )
     elif normalized == "codex":
         breakdown = _run_codex_schema_prompt(
             prompt,
             TASK_BREAKDOWN_SCHEMA,
             project_path=project_path,
+            config_ref=config_ref,
         )
     else:
         raise RuntimeError(

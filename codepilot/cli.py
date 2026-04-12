@@ -8,6 +8,7 @@ from codepilot import __version__
 from codepilot.db import init_db
 import codepilot.commands.add as add_cmd
 import codepilot.commands.auto as auto_cmd
+import codepilot.commands.binary as binary_cmd
 import codepilot.commands.daemon as daemon_cmd
 import codepilot.commands.init as init_cmd
 import codepilot.commands.providers as providers_cmd
@@ -85,6 +86,7 @@ def main(
 
 
 main.add_command(init_cmd.init_)
+main.add_command(binary_cmd.binary)
 main.add_command(status_cmd.status)
 main.add_command(add_cmd.add)
 main.add_command(auto_cmd.auto)
@@ -98,6 +100,8 @@ main.add_command(tasks_cmd.done)
 main.add_command(tasks_cmd.edit)
 main.add_command(tasks_cmd.rm)
 main.add_command(tasks_cmd.find)
+main.add_command(tasks_cmd.stop)
+main.add_command(tasks_cmd.logs)
 
 
 if __name__ == "__main__":

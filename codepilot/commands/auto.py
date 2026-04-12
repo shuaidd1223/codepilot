@@ -17,7 +17,7 @@ from codepilot.ai import (
 )
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands.run import run_backlog
-from codepilot.config import find_config, load_config
+from codepilot.config import find_config, load_config, load_project_config
 from codepilot.output import echo
 
 
@@ -91,8 +91,12 @@ def resolve_project_for_prompt(project: Optional[str] = None, cwd: Optional[Path
 
 
 def _project_config(project_info: dict):
-    config_path = Path(project_info["path"]) / "AGENTS.toml"
-    return load_config(config_path if config_path.exists() else None)
+    return load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+
+
+def _provider_context(project_info: dict) -> str:
+    """Prefer an explicitly stored AGENTS.toml path when resolving CLI providers."""
+    return project_info.get("config_file") or project_info["path"]
 
 
 def _should_execute(project_info: dict, execute: Optional[bool]) -> bool:
@@ -139,14 +143,16 @@ def _resolve_task_agent(project_info: dict, agent: Optional[str], executor: str)
     raw_agent = (agent or default_agent).strip()
     normalized = normalize_agent_name(raw_agent)
 
+    provider_context = _provider_context(project_info)
+
     if normalized == "dual":
         if executor == "builtin":
-            available, message = check_provider_availability("dual", project_path=project_info["path"])
+            available, message = check_provider_availability("dual", project_path=provider_context)
             if not available:
                 raise click.ClickException(message)
         return "dual"
 
-    available, message = check_provider_availability(normalized, project_path=project_info["path"])
+    available, message = check_provider_availability(normalized, project_path=provider_context)
     if not available:
         raise click.ClickException(message)
 
@@ -208,6 +214,7 @@ def run_requirement_workflow(
             project_path=project_path,
             planner=planner,
             max_tasks=max_tasks,
+            config_ref=_provider_context(project_info),
         )
     except Exception as exc:
         if normalize_agent_name(planner) == "codex" and _should_fallback_codex_planning(exc):

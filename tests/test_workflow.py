@@ -6,8 +6,10 @@ from pathlib import Path
 import click
 from click.testing import CliRunner
 
+from codepilot import binary as binary_mod
 from codepilot import db
 from codepilot import ai as ai_mod
+from codepilot import runtime as runtime_mod
 from codepilot.cli import main
 from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
@@ -181,6 +183,20 @@ max_retries = 2
     assert project["default_mode"] == "codex"
 
 
+def test_project_config_does_not_leak_from_workspace_when_project_has_no_agents_toml(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+
+    auto_cfg = auto_cmd._project_config(db.get_project("demo"))
+    run_cfg = run_cmd._project_config(db.get_project("demo"))
+
+    assert auto_cfg is None
+    assert run_cfg is None
+
+
 def test_resolve_project_for_prompt_does_not_overwrite_parent_project(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     parent = tmp_path / "parent"
@@ -345,8 +361,9 @@ def test_go_command_wraps_runtime_error_as_click_exception(tmp_path, monkeypatch
 def test_generate_task_breakdown_uses_codex_planner(monkeypatch):
     captured = {}
 
-    def fake_run_codex_schema_prompt(prompt, schema, *, project_path="", timeout=240):
+    def fake_run_codex_schema_prompt(prompt, schema, *, project_path="", config_ref=None, timeout=240):
         captured["project_path"] = project_path
+        captured["config_ref"] = config_ref
         captured["timeout"] = timeout
         return {
             "summary": "ok",
@@ -377,6 +394,7 @@ def test_generate_task_breakdown_uses_codex_planner(monkeypatch):
 
     assert breakdown["tasks"][0]["title"] == "step 1"
     assert captured["project_path"] == "D:/demo"
+    assert captured["config_ref"] is None
 
 
 def test_run_requirement_workflow_falls_back_to_single_codex_task(tmp_path, monkeypatch):
@@ -406,6 +424,65 @@ def test_run_requirement_workflow_falls_back_to_single_codex_task(tmp_path, monk
     assert payload["should_split"] is False
     assert len(payload["tasks"]) == 1
     assert payload["tasks"][0]["agent"] == "codex"
+
+
+def test_run_requirement_workflow_uses_registered_config_file_for_provider_resolution(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    config_root = tmp_path / "config-root"
+    project_path.mkdir()
+    config_root.mkdir()
+    config_file = config_root / "AGENTS.toml"
+    config_file.write_text(
+        """
+[project]
+name = "demo"
+default_mode = "codex"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    db.register_project("demo", str(project_path), default_mode="codex", config_file=str(config_file))
+    project = db.get_project("demo")
+    captured = {}
+
+    def fake_check_provider(agent, project_path=None):
+        captured["provider_path"] = project_path
+        return True, f"ok:{agent}"
+
+    monkeypatch.setattr(auto_cmd, "check_provider_availability", fake_check_provider)
+    monkeypatch.setattr(
+        auto_cmd,
+        "generate_task_breakdown",
+        lambda **kwargs: captured.update({"config_ref": kwargs.get("config_ref")}) or {
+            "summary": "ok",
+            "tasks": [
+                {
+                    "title": "step 1",
+                    "priority": "P1",
+                    "goal": "do step 1",
+                    "acceptance_criteria": ["a"],
+                    "builder_notes": ["code 1"],
+                    "reviewer_notes": ["review 1"],
+                    "files": ["a.py"],
+                    "notes": ["note 1"],
+                }
+            ],
+        },
+    )
+
+    payload = auto_cmd.run_requirement_workflow(
+        project_info=project,
+        title="让工具自己优化自己",
+        planner="codex",
+        execute=False,
+        executor="builtin",
+        auto_commit=False,
+    )
+
+    assert payload["tasks"][0]["agent"] == "codex"
+    assert captured["provider_path"] == str(config_file)
+    assert captured["config_ref"] == str(config_file)
 
 
 def test_run_requirement_workflow_does_not_fallback_on_non_timeout_codex_error(tmp_path, monkeypatch):
@@ -512,7 +589,53 @@ def test_run_builtin_phase_codex_review_omits_prompt(monkeypatch, tmp_path):
     assert exit_code == 0
     assert output == ""
     assert "--uncommitted" in captured["cmd"]
+    assert "--ephemeral" in captured["cmd"]
     assert "请做审查" not in captured["cmd"]
+
+
+def test_extract_review_verdict_uses_codex_review_markers():
+    fail_output = """
+The change breaks behavior.
+
+Review comment:
+
+- [P1] Keep add returning a sum
+""".strip()
+
+    pass_output = "The only change adds a comment and does not affect behavior."
+
+    assert run_cmd._extract_review_verdict(fail_output, "codex-review") == "fail"
+    assert run_cmd._extract_review_verdict(pass_output, "codex-review") == "pass"
+    assert run_cmd._extract_review_verdict("**VERDICT: FAIL**", "claude-review") == "fail"
+
+
+def test_run_builtin_executor_fails_when_review_verdict_is_unknown(monkeypatch, tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    task_file = project_path / "task.md"
+    task_file.write_text("demo", encoding="utf-8")
+
+    phases = iter(
+        [
+            ("codex", 0, "builder ok"),
+            ("claude-review", 0, "没有输出 verdict"),
+        ]
+    )
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(run_cmd, "_run_builtin_phase", lambda **kwargs: next(phases))
+    monkeypatch.setattr(run_cmd, "_write_task_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "_git_auto_commit", lambda *args, **kwargs: "deadbee")
+
+    result = run_cmd._run_builtin_executor(
+        {"id": 7, "title": "demo", "agent": "dual"},
+        {"path": str(project_path)},
+        task_file,
+        auto_commit=False,
+    )
+
+    assert result.exit_code == 2
+    assert result.summary == "review 结果不明确"
 
 
 def test_builtin_runtime_dir_is_outside_project(tmp_path):
@@ -626,6 +749,8 @@ codex_cmd = "{fake_codex.as_posix()}"
     assert exit_code == 0
     assert output == ""
     assert Path(captured["cmd"][0]) == fake_codex
+    assert "--skip-git-repo-check" in captured["cmd"]
+    assert "--ephemeral" in captured["cmd"]
 
 
 def test_run_backlog_builtin_non_git_repo_requeues_without_retry(tmp_path, monkeypatch):
@@ -643,6 +768,149 @@ def test_run_backlog_builtin_non_git_repo_requeues_without_retry(tmp_path, monke
     assert current["status"] == "backlog"
     assert current["retry_count"] == 0
     assert "Git 仓库" in (current["error_message"] or "")
+
+
+def test_run_backlog_builtin_codex_review_requires_git_even_without_auto_commit(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "needs git for review", agent="codex", max_retries=2)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+
+    assert stats["requeued"] == 1
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 0
+    assert "Codex review" in (current["error_message"] or "")
+
+
+def test_run_backlog_builtin_dual_can_proceed_without_git_when_auto_commit_disabled(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    db.create_task("demo", "dual task", agent="dual", max_retries=2)
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(exit_code=0, output="ok", executor="builtin"),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+
+    assert stats["done"] == 1
+
+
+def test_run_backlog_marks_task_cancelled_when_executor_is_stopped(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "cancel me", agent="dual", max_retries=2)
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: (_ for _ in ()).throw(run_cmd.TaskCancelled("手动停止")),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+
+    assert stats["cancelled"] == 1
+    assert current["status"] == "cancelled"
+    assert current["error_message"] == "手动停止"
+
+
+def test_reap_stalled_tasks_marks_dead_in_progress_task_failed(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "stuck task", agent="codex")
+
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        started_at="2026-01-01T00:00:00",
+        heartbeat_at="2026-01-01T00:00:00",
+        active_pid=None,
+        run_phase="builder",
+    )
+
+    reaped = runtime_mod.reap_stalled_tasks("demo", stale_after_seconds=1)
+    current = db.get_task(task["id"])
+
+    assert len(reaped) == 1
+    assert current["status"] == "failed"
+    assert "心跳已超过" in (current["error_message"] or "")
+
+
+def test_stop_command_cancels_in_progress_task_without_live_process(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "stop me", agent="codex")
+    db.update_task(task["id"], status="in_progress", active_pid=999999, run_phase="builder")
+
+    monkeypatch.setattr("codepilot.commands.tasks.is_process_alive", lambda pid: False)
+    monkeypatch.setattr("codepilot.commands.tasks.stop_process_tree", lambda pid: True)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["stop", str(task["id"])])
+    current = db.get_task(task["id"])
+
+    assert result.exit_code == 0
+    assert "已停止" in result.output
+    assert current["status"] == "cancelled"
+
+
+def test_logs_command_reads_live_runtime_log(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "show logs", agent="codex")
+    log_path = tmp_path / "task.log"
+    log_path.write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+    db.update_task(task["id"], status="in_progress", current_log_path=str(log_path))
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["logs", str(task["id"]), "--tail", "2"])
+
+    assert result.exit_code == 0
+    assert "line 2" in result.output
+    assert "line 3" in result.output
+
+
+def test_status_verbose_shows_runtime_summary_for_in_progress_task(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "visible task", agent="codex")
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        run_phase="builder",
+        heartbeat_at="2999-01-01T00:00:00",
+        active_pid=None,
+        last_output="running tests",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["status", "-p", "demo", "-v"])
+
+    assert result.exit_code == 0
+    assert "builder" in result.output
+    assert "running tests" in result.output
 
 
 def test_extract_error_hint_humanizes_json_payload():
@@ -670,3 +938,91 @@ def test_run_command_renders_plain_text_without_markup():
     assert result.exit_code == 0
     assert "错误: 必须指定 --project" in result.output
     assert "[red]" not in result.output
+
+
+def test_binary_default_install_dir_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(binary_mod.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+
+    install_dir = binary_mod.default_install_dir()
+
+    assert install_dir == (tmp_path / "LocalAppData" / "Programs" / "CodePilot" / "bin").resolve()
+
+
+def test_binary_resolve_install_source_prefers_latest_build(tmp_path, monkeypatch):
+    dist_dir = tmp_path / "dist" / "binary" / "windows-x86_64"
+    dist_dir.mkdir(parents=True)
+    binary_path = dist_dir / "codepilot.exe"
+    binary_path.write_text("exe", encoding="utf-8")
+
+    monkeypatch.setattr(binary_mod, "running_binary_path", lambda: None)
+    monkeypatch.setattr(binary_mod.platform, "system", lambda: "Windows")
+
+    resolved = binary_mod.resolve_install_source(None, project_root=tmp_path)
+
+    assert resolved == binary_path.resolve()
+
+
+def test_install_binary_copies_file_and_registers_path(tmp_path, monkeypatch):
+    source = tmp_path / "codepilot"
+    source.write_text("binary", encoding="utf-8")
+    target_dir = tmp_path / "bin"
+    captured = {}
+
+    monkeypatch.setattr(binary_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        binary_mod,
+        "register_install_dir",
+        lambda directory: captured.update({"directory": Path(directory)}) or (True, "ok"),
+    )
+
+    result = binary_mod.install_binary(binary_path=source, target_dir=target_dir, register_path=True)
+
+    assert result.installed_path == (target_dir / "codepilot").resolve()
+    assert result.installed_path.exists()
+    assert captured["directory"] == target_dir.resolve()
+
+
+def test_binary_build_command_invokes_pyinstaller(tmp_path, monkeypatch):
+    (tmp_path / "codepilot").mkdir()
+    (tmp_path / "codepilot" / "__main__.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "codepilot" / "templates").mkdir()
+    (tmp_path / "codepilot" / "templates" / "demo.md").write_text("x", encoding="utf-8")
+    dist_dir = tmp_path / "dist-out"
+    build_dir = tmp_path / "build-out"
+    captured = {}
+
+    monkeypatch.setattr(binary_mod, "default_build_dir", lambda root: build_dir)
+    monkeypatch.setattr(binary_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(binary_mod.platform, "machine", lambda: "x86_64")
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        binary_path = dist_dir / "codepilot"
+        binary_path.parent.mkdir(parents=True, exist_ok=True)
+        binary_path.write_text("exe", encoding="utf-8")
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(binary_mod.subprocess, "run", fake_run)
+
+    result = binary_mod.build_binary(project_root=tmp_path, output_dir=dist_dir, clean=True)
+
+    assert result.binary_path == (dist_dir / "codepilot").resolve()
+    assert "--onefile" in captured["cmd"]
+    assert "--collect-all" in captured["cmd"]
+
+
+def test_binary_where_command_prints_default_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_INSTALL_DIR", str(tmp_path / "custom-bin"))
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["binary", "where"])
+
+    assert result.exit_code == 0
+    assert str((tmp_path / "custom-bin").resolve()) in result.output

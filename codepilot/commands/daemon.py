@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import os
-import platform
-import subprocess
 import time
 from pathlib import Path
 
@@ -13,6 +11,7 @@ import click
 from codepilot import db
 from codepilot.commands.run import run_backlog
 from codepilot.output import echo
+from codepilot.runtime import is_process_alive, reap_stalled_tasks
 
 
 def _resolve_project(ctx, param, value):
@@ -34,34 +33,12 @@ def _acquire_lock() -> bool:
     if LOCK_FILE.exists():
         try:
             pid = int(LOCK_FILE.read_text().strip())
-            if _is_process_alive(pid):
+            if is_process_alive(pid):
                 return False
         except ValueError:
             pass
     LOCK_FILE.write_text(str(os.getpid()))
     return True
-
-
-def _is_process_alive(pid: int) -> bool:
-    system = platform.system().lower()
-    if system == "windows":
-        try:
-            result = subprocess.run(
-                ["powershell.exe", "-Command", f"(Get-Process -Id {pid} -ErrorAction SilentlyContinue).ProcessName"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
-            )
-            return bool(result.stdout.strip())
-        except Exception:
-            return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
 
 
 def _release_lock() -> None:
@@ -129,6 +106,10 @@ def _run_loop(
     click.echo()
 
     while True:
+        reaped = reap_stalled_tasks(project)
+        for task in reaped:
+            echo(f"[yellow]已回收卡住任务 #{task['id']}：{task['title']}[/yellow]")
+
         stats = _get_combined_stats(project)
         timestamp = time.strftime("%H:%M:%S")
 
@@ -167,7 +148,7 @@ def _get_combined_stats(project: str | None) -> dict:
     if project:
         return db.get_task_stats(project)
 
-    combined = {"backlog": 0, "in_progress": 0, "done": 0, "failed": 0, "total": 0}
+    combined = {"backlog": 0, "in_progress": 0, "done": 0, "failed": 0, "cancelled": 0, "total": 0}
     for proj in db.list_projects():
         stats = db.get_task_stats(proj["name"])
         for key in combined:
