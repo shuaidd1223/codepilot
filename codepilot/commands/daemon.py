@@ -15,7 +15,7 @@ from codepilot import db
 from codepilot.commands.inspect import run_inspection
 from codepilot.commands.run import run_backlog
 from codepilot.config import load_project_config
-from codepilot.output import echo
+from codepilot.output import echo, safe
 from codepilot.runtime import is_process_alive, reap_stalled_tasks
 
 
@@ -199,7 +199,7 @@ def _maybe_run_inspect(project: str | None, last_at: dict[str, float], verbose: 
                 agent="codex",
             )
         except Exception as exc:
-            echo(f"[yellow]巡检 {name} 失败：{exc}[/yellow]")
+            echo(f"[yellow]巡检 {name} 失败：{safe(exc)}[/yellow]")
             continue
         if result.get("error"):
             echo(f"[yellow]巡检 {name}：{result['error']}[/yellow]")
