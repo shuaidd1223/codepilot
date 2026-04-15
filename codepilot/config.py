@@ -56,6 +56,7 @@ class AutomationConfig:
     auto_commit: bool = True
     max_tasks: int = 5
     max_retries: int = 3
+    per_task_branch: bool = True
 
 
 @dataclass
@@ -169,6 +170,7 @@ class AgentsConfig:
                 auto_commit=automation.get("auto_commit", True),
                 max_tasks=automation.get("max_tasks", 5),
                 max_retries=automation.get("max_retries", 3),
+                per_task_branch=automation.get("per_task_branch", True),
             ),
             classifier=ClassifierConfig(
                 provider=classifier.get("provider", ""),

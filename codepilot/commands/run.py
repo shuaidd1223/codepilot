@@ -387,6 +387,97 @@ def _git_has_changes(project_path: Path) -> bool:
     return code == 0 and bool(output.strip())
 
 
+def _slugify_branch_part(text: str, max_length: int = 48) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    if len(slug) > max_length:
+        slug = slug[:max_length].strip("-")
+    return slug or "task"
+
+
+def _task_branch_name(task_id: int, title: str) -> str:
+    return f"feat/task-{task_id}-{_slugify_branch_part(title)}"
+
+
+def _resolve_project_base_branch(project_info: dict, config=None) -> str:
+    configured = (project_info.get("base_branch") or "").strip()
+    if configured:
+        return configured
+    if config:
+        fallback = (getattr(config, "base_branch", "") or "").strip()
+        if fallback:
+            return fallback
+    return "dev"
+
+
+def _git_checkout(project_path: Path, branch: str, *, create_from: Optional[str] = None, reset: bool = False) -> None:
+    if create_from:
+        cmd = ["git", "checkout", "-B" if reset else "-b", branch, create_from]
+    else:
+        cmd = ["git", "checkout", branch]
+    code, output = _run_command(cmd, cwd=project_path, timeout=120)
+    if code != 0:
+        raise RuntimeError(f"切换分支 `{branch}` 失败:\n{output}")
+
+
+def _git_local_branch_exists(project_path: Path, branch: str) -> bool:
+    code, _ = _run_command(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=project_path,
+        timeout=30,
+    )
+    return code == 0
+
+
+def _git_prepare_task_branch(project_path: Path, *, task_id: int, title: str, base_branch: str) -> str:
+    if not _git_is_repo(project_path):
+        return ""
+    if _git_has_changes(project_path):
+        raise RuntimeError(
+            "检测到当前工作区有未提交改动，无法为任务自动创建独立分支。"
+            "请先提交/暂存现有改动后再执行。"
+        )
+    # 如果配置的 base_branch 在本地不存在，回退到当前分支（不强制切换），避免 pathspec 失败
+    if not _git_local_branch_exists(project_path, base_branch):
+        current = _git_current_branch(project_path)
+        if current:
+            base_branch = current
+        else:
+            return ""
+    else:
+        _git_checkout(project_path, base_branch)
+    task_branch = _task_branch_name(task_id, title)
+    _git_checkout(project_path, task_branch, create_from=base_branch, reset=True)
+    return task_branch
+
+
+def _git_merge_task_branch(
+    project_path: Path,
+    *,
+    task_id: int,
+    title: str,
+    task_branch: str,
+    base_branch: str,
+) -> str:
+    if not _git_is_repo(project_path) or not task_branch or task_branch == base_branch:
+        return ""
+    if _git_has_changes(project_path):
+        raise RuntimeError(
+            "任务分支存在未提交改动，无法自动合并回 base_branch。"
+            "请先提交改动，或在本次执行启用 auto-commit。"
+        )
+    _git_checkout(project_path, base_branch)
+    merge_code, merge_output = _run_command(
+        ["git", "merge", "--no-ff", "--no-edit", task_branch],
+        cwd=project_path,
+        timeout=300,
+    )
+    if merge_code != 0:
+        raise RuntimeError(f"合并任务分支失败:\n{merge_output}")
+    safe_title = " ".join((title or "").strip().split())[:60]
+    merged_title = safe_title or f"task #{task_id}"
+    return f"已合并 `{task_branch}` -> `{base_branch}` ({merged_title})"
+
+
 def _builtin_runtime_dir(project: dict) -> Path:
     """Store builtin executor artifacts outside the repo to avoid polluting commits."""
     project_path = Path(project["path"]).resolve()
@@ -816,6 +907,7 @@ def run_backlog(
 
     project_path = Path(proj["path"])
     config = _project_config(proj)
+    base_branch = _resolve_project_base_branch(proj, config)
     preferred_shell = shell if shell != "auto" else ((config.shell.preferred if config else "") or "")
     shell_info = detect_best_shell(preferred_shell if preferred_shell != "auto" else None)
 
@@ -849,6 +941,24 @@ def run_backlog(
         preflight_error = ""
         if resolved_executor == "builtin":
             preflight_error = _builtin_preflight_error(project_path, auto_commit, task.get("agent", "codex"))
+        task_branch = _git_current_branch(project_path)
+        # 只在 builtin 执行器启用自动分支；dispatch 模式会在工作区写任务文件，行为不受影响
+        per_task_branch_enabled = (
+            resolved_executor == "builtin"
+            and bool(getattr(getattr(config, "automation", None), "per_task_branch", True))
+        )
+        if per_task_branch_enabled and not preflight_error and not dry_run:
+            try:
+                prepared_branch = _git_prepare_task_branch(
+                    project_path,
+                    task_id=task_id,
+                    title=task["title"],
+                    base_branch=base_branch,
+                )
+                if prepared_branch:
+                    task_branch = prepared_branch
+            except Exception as exc:
+                preflight_error = str(exc)
         if preflight_error:
             if retry_on_failure:
                 db.update_task(task_id, status="backlog", error_message=preflight_error)
@@ -872,7 +982,7 @@ def run_backlog(
             task_id,
             status="in_progress",
             started_at=datetime.now().isoformat(),
-            branch_name=_git_current_branch(project_path),
+            branch_name=task_branch,
             worktree_path=str(project_path),
             stop_requested=0,
             stop_reason=None,
@@ -947,6 +1057,26 @@ def run_backlog(
             if should_stop or once:
                 break
             continue
+
+        if result.exit_code == 0 and per_task_branch_enabled:
+            try:
+                merge_summary = _git_merge_task_branch(
+                    project_path,
+                    task_id=task_id,
+                    title=task["title"],
+                    task_branch=task_branch,
+                    base_branch=base_branch,
+                )
+                if merge_summary:
+                    result.summary = " | ".join(part for part in [result.summary, merge_summary] if part)
+            except Exception as exc:
+                result = ExecutionResult(
+                    exit_code=2,
+                    output=result.output,
+                    review_output=result.review_output,
+                    summary=f"任务执行完成但回合并失败: {exc}",
+                    executor=result.executor,
+                )
 
         if result.exit_code == 0:
             clear_task_runtime(

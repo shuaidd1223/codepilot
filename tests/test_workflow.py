@@ -893,6 +893,90 @@ def test_resolve_builtin_phase_agent_uses_dual_split():
     assert run_cmd._resolve_builtin_phase_agent("dual", "reviewer") == ("claude", None)
 
 
+def test_task_branch_name_uses_slug_and_fallback():
+    assert run_cmd._task_branch_name(20, "Add API endpoint") == "feat/task-20-add-api-endpoint"
+    assert run_cmd._task_branch_name(21, "实现中文能力") == "feat/task-21-task"
+
+
+def test_run_backlog_creates_task_branch_and_checks_out_base_after_merge(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    db.register_project("demo", str(project_path), base_branch=base_branch)
+    task = db.create_task("demo", "Add API endpoint", agent="dual", max_retries=2)
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin"),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=True)
+    current = db.get_task(task["id"])
+    expected_branch = run_cmd._task_branch_name(task["id"], task["title"])
+
+    assert stats["done"] == 1
+    assert current["status"] == "done"
+    assert current["branch_name"] == expected_branch
+
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
+    assert code == 0
+    assert output.strip() == base_branch
+
+    code, output = run_cmd._run_command(["git", "branch", "--list", expected_branch], cwd=project_path, timeout=30)
+    assert code == 0
+    assert expected_branch in output
+
+
+def test_run_backlog_requeues_when_merge_back_fails_with_uncommitted_changes(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    db.register_project("demo", str(project_path), base_branch=base_branch)
+    task = db.create_task("demo", "leave dirty file", agent="dual", max_retries=3)
+
+    def _fake_executor(*args, **kwargs):
+        (project_path / "dirty.txt").write_text("left dirty", encoding="utf-8")
+        return run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin")
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", _fake_executor)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+    expected_branch = run_cmd._task_branch_name(task["id"], task["title"])
+
+    assert stats["requeued"] == 1
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 1
+    assert "回合并失败" in (current["error_message"] or "")
+
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
+    assert code == 0
+    assert output.strip() == expected_branch
+
+
 def test_run_builtin_phase_codex_review_omits_prompt(monkeypatch, tmp_path):
     captured = {}
 
