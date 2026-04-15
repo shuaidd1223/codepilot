@@ -12,6 +12,7 @@ from codepilot import binary as binary_mod
 from codepilot import db
 from codepilot import ai as ai_mod
 from codepilot import runtime as runtime_mod
+from codepilot import webui as webui_mod
 from codepilot.cli import main
 from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
@@ -20,6 +21,9 @@ from codepilot.commands import run as run_cmd
 def _init_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     db.init_db()
+    webui_mod._UI_JOBS.clear()
+    webui_mod._UI_EVENTS.clear()
+    webui_mod._UI_JOB_SEQ = 0
 
 
 def test_update_task_allows_core_fields(tmp_path, monkeypatch):
@@ -61,6 +65,218 @@ def test_increment_task_retry_eventually_fails(tmp_path, monkeypatch):
     assert first["retry_count"] == 1
     assert second["status"] == "failed"
     assert second["retry_count"] == 2
+
+
+def test_reset_task_for_retry_restores_backlog_state(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "retry me", max_retries=2)
+    db.update_task(
+        task["id"],
+        status="failed",
+        retry_count=2,
+        branch_name="feature/retry",
+        worktree_path=str(project_path / "worktree"),
+        error_message="boom",
+        delivery_record="old delivery",
+        started_at="2026-04-12T10:00:00",
+        completed_at="2026-04-12T10:10:00",
+        run_phase="reviewer",
+        heartbeat_at="2026-04-12T10:05:00",
+        active_pid=12345,
+        current_log_path=str(project_path / "task.log"),
+        last_output="broken output",
+        stop_requested=1,
+        stop_reason="stop",
+    )
+
+    reset = db.reset_task_for_retry(task["id"])
+
+    assert reset["status"] == "backlog"
+    assert reset["retry_count"] == 0
+    assert reset["branch_name"] is None
+    assert reset["worktree_path"] is None
+    assert reset["error_message"] is None
+    assert reset["delivery_record"] is None
+    assert reset["started_at"] is None
+    assert reset["completed_at"] is None
+    assert reset["run_phase"] is None
+    assert reset["heartbeat_at"] is None
+    assert reset["active_pid"] is None
+    assert reset["current_log_path"] is None
+    assert reset["last_output"] is None
+    assert reset["stop_requested"] == 0
+    assert reset["stop_reason"] is None
+
+
+def test_retry_command_requeues_failed_task(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "retry me", max_retries=2)
+    db.update_task(task["id"], status="failed", retry_count=2, error_message="boom")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["retry", str(task["id"])])
+
+    assert result.exit_code == 0
+    current = db.get_task(task["id"])
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 0
+    assert current["error_message"] is None
+    assert "已重新放回 backlog" in result.output
+    assert "codepilot run -p demo" in result.output
+
+
+def test_webui_dashboard_payload_lists_projects_and_tasks(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    first = db.create_task("demo", "task A", agent="codex", priority="P1")
+    second = db.create_task("demo", "task B", agent="codex", priority="P2")
+    db.update_task(second["id"], status="failed", error_message="boom")
+
+    payload = webui_mod.dashboard_payload("demo")
+
+    assert payload["selected_project"] == "demo"
+    assert len(payload["projects"]) == 1
+    assert payload["projects"][0]["stats"]["failed"] == 1
+    assert [task["id"] for task in payload["tasks"]] == [first["id"], second["id"]]
+
+
+def test_webui_retry_and_promote_actions_update_task_state(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "task A", agent="codex", priority="P2", max_retries=3)
+    db.update_task(task["id"], status="failed", retry_count=2, error_message="boom")
+
+    retried = webui_mod.retry_task_action(task["id"])
+    current = db.get_task(task["id"])
+    assert retried["ok"] is True
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 0
+
+    promoted = webui_mod.promote_task_action(task["id"])
+    current = db.get_task(task["id"])
+    assert promoted["ok"] is True
+    assert current["status"] == "backlog"
+    assert current["priority"] == "P0"
+
+
+def test_webui_create_task_action_creates_task_for_project(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path), default_mode="codex")
+
+    created = webui_mod.create_task_action(
+        "demo",
+        "从 Web UI 新建任务",
+        content="补一段说明",
+        priority="P1",
+        agent="auto",
+        max_retries=4,
+    )
+
+    assert created["ok"] is True
+    task = db.get_task(created["task"]["id"])
+    assert task["title"] == "从 Web UI 新建任务"
+    assert task["content"] == "补一段说明"
+    assert task["priority"] == "P1"
+    assert task["agent"] == "codex"
+    assert task["max_retries"] == 4
+
+
+def test_webui_task_detail_payload_contains_log_and_content(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "task A", content="详细任务内容", agent="codex", priority="P2")
+    log_path = project_path / "task.log"
+    log_path.write_text("line-1\nline-2\nline-3\n", encoding="utf-8")
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        current_log_path=str(log_path),
+        error_message="",
+        depends_on=[3, 4],
+    )
+
+    detail = webui_mod.task_detail_payload(task["id"])
+
+    assert detail["content"] == "详细任务内容"
+    assert detail["depends_on"] == [3, 4]
+    assert "line-3" in detail["log_text"]
+    assert detail["current_log_path"] == str(log_path)
+
+
+def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path), default_mode="codex")
+
+    def fake_run_requirement_workflow(**kwargs):
+        task = db.create_task(
+            kwargs["project_info"]["name"],
+            kwargs["title"],
+            content="generated",
+            agent=kwargs.get("task_agent") or "codex",
+            priority=kwargs.get("priority") or "P2",
+            project_path=kwargs["project_info"]["path"],
+            max_retries=kwargs.get("max_retries") or 3,
+        )
+        return {
+            "summary": "拆分完成",
+            "tasks": [task],
+            "run": {"done": 1, "failed": 0, "requeued": 0},
+        }
+
+    monkeypatch.setattr(webui_mod, "run_requirement_workflow", fake_run_requirement_workflow)
+
+    result = webui_mod.submit_requirement_action(
+        "demo",
+        "让 Web UI 直接接收需求",
+        execute=True,
+        planner="codex",
+        agent="codex",
+        run_async=False,
+    )
+
+    assert result["ok"] is True
+    jobs = webui_mod.list_ui_jobs("demo")
+    assert jobs
+    assert jobs[0]["status"] == "succeeded"
+    assert jobs[0]["task_ids"]
+    task = db.get_task(jobs[0]["task_ids"][0])
+    assert task["title"] == "让 Web UI 直接接收需求"
+
+
+def test_retry_command_rejects_running_task(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "retry me")
+    db.update_task(task["id"], status="in_progress", active_pid=12345)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["retry", str(task["id"])])
+
+    assert result.exit_code == 0
+    current = db.get_task(task["id"])
+    assert current["status"] == "in_progress"
+    assert "正在运行中" in result.output
 
 
 def test_auto_command_creates_linear_subtasks(tmp_path, monkeypatch):
@@ -137,6 +353,36 @@ def test_run_backlog_builtin_stops_after_retry_limit(tmp_path, monkeypatch):
     assert second["failed"] == 1
     assert current["status"] == "failed"
     assert current["retry_count"] == 2
+
+
+def test_run_backlog_can_fail_without_requeue(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "broken task", max_retries=3)
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(
+            exit_code=2,
+            output="builder failed",
+            review_output="VERDICT: FAIL",
+            summary="review 未通过",
+            executor="builtin",
+        ),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False, retry_on_failure=False)
+    current = db.get_task(task["id"])
+
+    assert stats["failed"] == 1
+    assert stats["requeued"] == 0
+    assert current["status"] == "failed"
+    assert current["retry_count"] == 1
+    assert "review 未通过" in (current["error_message"] or "")
 
 
 def test_resolve_project_for_prompt_uses_current_directory(tmp_path, monkeypatch):
@@ -280,6 +526,54 @@ def test_root_command_passes_selected_task_agent(tmp_path, monkeypatch):
     assert captured["task_agent"] == "codex"
 
 
+def test_run_requirement_workflow_executes_without_retry_requeue(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    project = db.get_project("demo")
+    captured = {}
+
+    monkeypatch.setattr(
+        auto_cmd,
+        "generate_task_breakdown",
+        lambda **kwargs: {
+            "summary": "ok",
+            "complexity": "simple",
+            "should_split": False,
+            "tasks": [
+                {
+                    "title": "step 1",
+                    "priority": "P1",
+                    "goal": "do step 1",
+                    "acceptance_criteria": ["a"],
+                    "builder_notes": ["code 1"],
+                    "reviewer_notes": ["review 1"],
+                    "files": ["a.py"],
+                    "notes": ["note 1"],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(auto_cmd, "render_project_dashboard", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        auto_cmd,
+        "run_backlog",
+        lambda *args, **kwargs: captured.update(kwargs) or {"processed": 1, "done": 1, "failed": 0, "requeued": 0},
+    )
+
+    auto_cmd.run_requirement_workflow(
+        project_info=project,
+        title="让它直接执行",
+        planner="codex",
+        execute=True,
+        executor="builtin",
+        auto_commit=False,
+    )
+
+    assert captured["retry_on_failure"] is False
+
+
 def test_batch_add_with_default_agent_does_not_require_click_context(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
@@ -338,6 +632,25 @@ def test_chat_command_reports_natural_language_error(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "当前无法使用 Claude CLI" in result.output
     assert "Traceback" not in result.output
+
+
+def test_chat_status_renders_dashboard(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    monkeypatch.chdir(project_path)
+
+    called = {}
+
+    monkeypatch.setattr(auto_cmd, "render_project_dashboard", lambda *args, **kwargs: called.update({"args": args, "kwargs": kwargs}))
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat"], input="/status\n/exit\n")
+
+    assert result.exit_code == 0
+    assert called["args"][0] == "demo"
+    assert called["kwargs"]["title"] == "当前任务面板"
 
 
 def test_go_command_wraps_runtime_error_as_click_exception(tmp_path, monkeypatch):
@@ -931,6 +1244,14 @@ def test_root_command_without_args_shows_help_in_non_interactive_mode():
 
     assert result.exit_code == 0
     assert "Usage:" in result.output
+
+
+def test_root_help_includes_ui_command():
+    runner = CliRunner()
+    result = runner.invoke(main, ["--help"])
+
+    assert result.exit_code == 0
+    assert "ui" in result.output
 
 
 def test_ai_manifest_command_outputs_machine_readable_json():

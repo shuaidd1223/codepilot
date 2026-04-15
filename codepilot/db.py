@@ -119,6 +119,8 @@ def init_db() -> None:
         _ensure_column(conn, "tasks", "last_output", "TEXT")
         _ensure_column(conn, "tasks", "stop_requested", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "tasks", "stop_reason", "TEXT")
+        _ensure_column(conn, "tasks", "source", "TEXT NOT NULL DEFAULT 'user'")
+        _ensure_column(conn, "tasks", "dedup_key", "TEXT")
         conn.commit()
 
 
@@ -197,6 +199,8 @@ def create_task(
     depends_on: Optional[list[int]] = None,
     project_path: Optional[str] = None,
     max_retries: int = 3,
+    source: str = "user",
+    dedup_key: Optional[str] = None,
 ) -> dict:
     """Create a task."""
     if not project_path:
@@ -207,8 +211,8 @@ def create_task(
         cur = conn.execute(
             """
             INSERT INTO tasks
-                (project, title, content, agent, priority, depends_on, project_path, max_retries)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (project, title, content, agent, priority, depends_on, project_path, max_retries, source, dedup_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project,
@@ -219,11 +223,24 @@ def create_task(
                 json.dumps(depends_on) if depends_on else None,
                 project_path,
                 max_retries,
+                source,
+                dedup_key,
             ),
         )
         conn.commit()
         task_id = cur.lastrowid
     return get_task(task_id)
+
+
+def existing_dedup_keys(project: str) -> set[str]:
+    """Return dedup_keys already present in non-terminal tasks."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT dedup_key FROM tasks WHERE project = ? AND dedup_key IS NOT NULL "
+            "AND status NOT IN ('done','cancelled')",
+            (project,),
+        ).fetchall()
+    return {row["dedup_key"] for row in rows if row["dedup_key"]}
 
 
 def get_task(task_id: int) -> Optional[dict]:
@@ -318,6 +335,33 @@ def increment_task_retry(task_id: int, error_message: str) -> dict:
         stop_requested=0,
         stop_reason=None,
     )
+
+
+def reset_task_for_retry(task_id: int, *, reset_retry_count: bool = True) -> dict:
+    """Reset a task into backlog so it can be manually retried."""
+    task = get_task(task_id)
+    if not task:
+        raise ValueError(f"Task {task_id} does not exist")
+
+    updates = {
+        "status": "backlog",
+        "branch_name": None,
+        "worktree_path": None,
+        "error_message": None,
+        "delivery_record": None,
+        "started_at": None,
+        "completed_at": None,
+        "run_phase": None,
+        "heartbeat_at": None,
+        "active_pid": None,
+        "current_log_path": None,
+        "last_output": None,
+        "stop_requested": 0,
+        "stop_reason": None,
+    }
+    if reset_retry_count:
+        updates["retry_count"] = 0
+    return update_task(task_id, **updates)
 
 
 def next_backlog_task(project: str) -> list[dict]:

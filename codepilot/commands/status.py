@@ -5,12 +5,154 @@ from __future__ import annotations
 import json
 
 import click
+from rich import box
+from rich.columns import Columns
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
+from rich.console import Group
 
 from codepilot import db
 from codepilot.output import echo
 from codepilot.runtime import runtime_summary
+
+STATUS_META = {
+    "backlog": ("待办", "yellow"),
+    "in_progress": ("进行中", "blue"),
+    "done": ("已完成", "green"),
+    "failed": ("失败", "red"),
+    "cancelled": ("已取消", "magenta"),
+}
+
+
+def _short_text(value: str | None, max_len: int = 80) -> str:
+    text = (value or "").replace("\n", " ").strip()
+    if not text:
+        return "-"
+    return (text[: max_len - 3] + "...") if len(text) > max_len else text
+
+
+def _status_badge(status: str) -> str:
+    label, color = STATUS_META.get(status, (status, "white"))
+    return f"[bold {color}]{label}[/{color}]"
+
+
+def _metric_panel(label: str, value: int, color: str) -> Panel:
+    body = Text()
+    body.append(f"{value}\n", style=f"bold {color}")
+    body.append(label, style="dim")
+    return Panel.fit(body, border_style=color, padding=(0, 2))
+
+
+def _task_recent(task: dict, *, verbose: bool = False) -> str:
+    if task["status"] == "in_progress":
+        return runtime_summary(task)
+    return _short_text(
+        task.get("error_message") or task.get("last_output") or task.get("delivery_record"),
+        110 if verbose else 72,
+    )
+
+
+def _task_table(tasks: list[dict], *, verbose: bool = False) -> Table:
+    table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
+    table.add_column("ID", style="dim", width=4, justify="right")
+    table.add_column("P", width=3, justify="center")
+    table.add_column("Agent", width=8)
+    table.add_column("标题", min_width=24, ratio=3)
+    table.add_column("阶段", width=10)
+    table.add_column("最近信息", min_width=30, ratio=4)
+    if verbose:
+        table.add_column("创建时间", style="dim", width=19)
+        table.add_column("最后输出", style="dim", min_width=24, ratio=3)
+
+    for task in tasks:
+        row = [
+            str(task["id"]),
+            task["priority"],
+            task["agent"],
+            _short_text(task["title"], 68),
+            task.get("run_phase") or "-",
+            _task_recent(task, verbose=verbose),
+        ]
+        if verbose:
+            row.append((task.get("created_at") or "")[:19] or "-")
+            row.append(_short_text(task.get("last_output") or task.get("error_message") or task.get("delivery_record"), 84))
+        table.add_row(*row)
+    return table
+
+
+def _section_panel(title: str, color: str, tasks: list[dict], *, verbose: bool = False) -> Panel:
+    body = Group(_task_table(tasks, verbose=verbose))
+    return Panel(body, title=f"[bold {color}]{title}[/bold {color}]", border_style=color, padding=(0, 1))
+
+
+def render_project_dashboard(
+    project: str,
+    *,
+    verbose: bool = False,
+    include_done: bool = True,
+    max_rows: int = 12,
+    title: str | None = None,
+    console: Console | None = None,
+) -> None:
+    """Render one project dashboard as a compact task table."""
+    proj = db.get_project(project)
+    if not proj:
+        echo(f"[red]错误：项目 '{project}' 未注册[/red]")
+        return
+
+    console = console or Console(width=160)
+    stats = db.get_task_stats(project)
+    header = title or f"CodePilot  {project}"
+    console.print()
+    console.print(
+        Panel(
+            Group(
+                Text(header, style="bold cyan"),
+                Text(str(proj["path"]), style="dim"),
+            ),
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    console.print(
+        Columns(
+            [
+                _metric_panel("进行中", stats["in_progress"], "blue"),
+                _metric_panel("待办", stats["backlog"], "yellow"),
+                _metric_panel("失败", stats["failed"], "red"),
+                _metric_panel("已完成", stats["done"], "green"),
+                _metric_panel("已取消", stats["cancelled"], "magenta"),
+                _metric_panel("总数", stats["total"], "cyan"),
+            ],
+            expand=True,
+            equal=True,
+        )
+    )
+    console.print()
+
+    tasks = db.list_tasks(project=project)
+    if not include_done:
+        tasks = [task for task in tasks if task["status"] != "done"]
+    if not tasks:
+        console.print("[dim]当前没有可显示的任务[/dim]\n")
+        return
+
+    status_order = {"in_progress": 0, "backlog": 1, "failed": 2, "cancelled": 3, "done": 4}
+    tasks = sorted(tasks, key=lambda item: (status_order.get(item["status"], 9), item["priority"], item["id"]))
+    sections = [
+        ("进行中", "blue", [task for task in tasks if task["status"] == "in_progress"][: max(1, max_rows // 2)]),
+        ("待办", "yellow", [task for task in tasks if task["status"] == "backlog"][: max_rows]),
+        ("失败 / 取消", "red", [task for task in tasks if task["status"] in {"failed", "cancelled"}][: max_rows // 2 or 1]),
+    ]
+    if include_done:
+        sections.append(("最近完成", "green", [task for task in tasks if task["status"] == "done"][: max_rows // 2 or 1]))
+
+    for section_title, color, section_tasks in sections:
+        if section_tasks:
+            console.print(_section_panel(section_title, color, section_tasks, verbose=verbose))
+            console.print()
 
 
 def _resolve_project(ctx: click.Context, param: str, value: str | None) -> str | None:
@@ -67,67 +209,7 @@ def _show_project_status(project: str, verbose: bool, json_mode: bool):
         }, ensure_ascii=False, indent=2))
         return
 
-    console = Console()
-
-    console.print(f"\n[bold cyan]CodePilot[/bold cyan]  {project}  ({proj['path']})\n")
-
-    stats = db.get_task_stats(project)
-    console.print(
-        f"  backlog: [yellow]{stats['backlog']}[/yellow]  "
-        f"in-progress: [blue]{stats['in_progress']}[/blue]  "
-        f"done: [green]{stats['done']}[/green]  "
-        f"failed: [red]{stats['failed']}[/red]  "
-        f"cancelled: [magenta]{stats['cancelled']}[/magenta]  "
-        f"total: {stats['total']}\n"
-    )
-
-    status_labels = {
-        "backlog": ("待办", "yellow"),
-        "in_progress": ("进行中", "blue"),
-        "done": ("已完成", "green"),
-        "failed": ("失败", "red"),
-        "cancelled": ("已取消", "magenta"),
-    }
-
-    for status_key, (label, color) in status_labels.items():
-        tasks = db.list_tasks(project=project, status=status_key)
-        if not tasks:
-            continue
-
-        console.print(f"[bold {color}]{label} ({len(tasks)})[/bold {color}]")
-        table = Table(show_header=True, header_style="bold dim", box=None)
-        table.add_column("ID", style="dim", width=4)
-        table.add_column("标题", style="white")
-        table.add_column("优先级", width=5)
-        table.add_column("Agent", width=6)
-        if status_key == "in_progress":
-            table.add_column("运行态", style="dim", min_width=24)
-        if verbose:
-            table.add_column("创建时间", style="dim")
-            table.add_column("分支", style="dim")
-            if status_key == "in_progress":
-                table.add_column("最后输出", style="dim", min_width=24)
-
-        for t in tasks:
-            title = (t["title"][:60] + "...") if len(t["title"]) > 60 else t["title"]
-            row = [
-                str(t["id"]),
-                title,
-                t["priority"],
-                t["agent"],
-            ]
-            if status_key == "in_progress":
-                row.append(runtime_summary(t))
-            if verbose:
-                row.append(t.get("created_at", "")[:19] if t.get("created_at") else "")
-                row.append(t.get("branch_name") or "-")
-                if status_key == "in_progress":
-                    last_output = (t.get("last_output") or "").replace("\n", " ").strip()
-                    row.append((last_output[:80] + "...") if len(last_output) > 80 else (last_output or "-"))
-            table.add_row(*row)
-
-        console.print(table)
-        console.print()
+    render_project_dashboard(project, verbose=verbose, include_done=True, title=f"CodePilot  {project}")
 
 
 def _show_all_projects_status(verbose: bool, json_mode: bool):
@@ -151,19 +233,34 @@ def _show_all_projects_status(verbose: bool, json_mode: bool):
         click.echo(json.dumps(all_data, ensure_ascii=False, indent=2))
         return
 
-    console = Console()
-    console.print("\n[bold cyan]CodePilot[/bold cyan]  所有项目\n")
+    console = Console(width=160)
+    console.print()
+    console.print(Panel(Text("CodePilot 所有项目", style="bold cyan"), border_style="cyan", padding=(0, 1)))
+
+    table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
+    table.add_column("项目", style="bold")
+    table.add_column("路径", style="dim", ratio=3)
+    table.add_column("进行中", justify="right", width=7)
+    table.add_column("待办", justify="right", width=6)
+    table.add_column("失败", justify="right", width=6)
+    table.add_column("已完成", justify="right", width=7)
+    table.add_column("状态摘要", ratio=2)
 
     for proj in projects:
         stats = db.get_task_stats(proj["name"])
         if stats["total"] == 0:
             continue
-        console.print(
-            f"[bold]{proj['name']}[/bold]  ({proj['path']})  "
-            f"backlog: [yellow]{stats['backlog']}[/yellow]  "
-            f"in-progress: [blue]{stats['in_progress']}[/blue]  "
-            f"done: [green]{stats['done']}[/green]  "
-            f"failed: [red]{stats['failed']}[/red]  "
-            f"cancelled: [magenta]{stats['cancelled']}[/magenta]"
+        live = db.list_tasks(project=proj["name"], status="in_progress")
+        live_text = _short_text(runtime_summary(live[0]) if live else "暂无运行中任务", 60)
+        table.add_row(
+            proj["name"],
+            proj["path"],
+            str(stats["in_progress"]),
+            str(stats["backlog"]),
+            str(stats["failed"] + stats["cancelled"]),
+            str(stats["done"]),
+            live_text,
         )
+
+    console.print(table)
     console.print()

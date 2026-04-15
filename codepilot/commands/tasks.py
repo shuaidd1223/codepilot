@@ -1,4 +1,4 @@
-"""codepilot 任务管理命令：edit / rm / done / find."""
+"""codepilot 任务管理命令：edit / rm / done / retry / find."""
 
 from __future__ import annotations
 
@@ -32,6 +32,35 @@ def done(task_id: int, message: str):
         updates["delivery_record"] = message
     clear_task_runtime(task_id, stop_requested=0, stop_reason=None, **updates)
     echo(f"[green][OK] 任务 #{task_id} 已标记为 done[/green]  {task['title']}")
+
+
+# ── retry ─────────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("task_id", type=int)
+def retry(task_id: int):
+    """手动重试指定任务：重置运行态并重新放回 backlog。"""
+    db.init_db()
+    task = db.get_task(task_id)
+    if not task:
+        echo(f"[red]任务 #{task_id} 不存在[/red]")
+        return
+
+    if task["status"] == "in_progress":
+        echo(f"[yellow]任务 #{task_id} 正在运行中，请先执行 stop 再重试[/yellow]")
+        return
+
+    if task["status"] == "done":
+        echo(f"[yellow]任务 #{task_id} 已完成；如需重跑，请先手动修改状态后再执行[/yellow]")
+        return
+
+    updated = db.reset_task_for_retry(task_id)
+    echo(
+        f"[green][OK] 任务 #{task_id} 已重新放回 backlog[/green]  "
+        f"{task['title']}  (retry_count: {task.get('retry_count') or 0} -> {updated.get('retry_count') or 0})"
+    )
+    click.echo(f"  项目: {task['project']}")
+    click.echo(f"  下一步: codepilot run -p {task['project']}")
 
 
 # ── edit ───────────────────────────────────────────────────────────────────────

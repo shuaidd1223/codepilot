@@ -384,6 +384,11 @@ TASK_BREAKDOWN_SCHEMA = {
                         "type": "array",
                         "items": {"type": "string"},
                     },
+                    "depends_on_indices": {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 0},
+                        "description": "依赖哪些子任务，按 tasks 数组下标；留空表示可以和其它无依赖任务并行",
+                    },
                 },
                 "required": [
                     "title",
@@ -1133,3 +1138,205 @@ def generate_task_breakdown(
     breakdown.setdefault("complexity", "simple" if len(breakdown["tasks"]) <= 1 else "complex")
     breakdown.setdefault("should_split", len(breakdown["tasks"]) > 1)
     return breakdown
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 意图分类器
+# ═══════════════════════════════════════════════════════════════════════════════
+
+INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {
+            "type": "string",
+            "enum": ["question", "task", "requirement", "command"],
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["intent"],
+    "additionalProperties": False,
+}
+
+INTENT_PROMPT = """你是一个输入意图分类器。请把用户下面的一句话分到下列四类之一，并以 JSON 返回：
+
+- question: 用户是在问问题、求解释或求建议，不需要你去改代码或建任务。
+- task: 用户想做一件具体小事，一步就能完成，不需要拆分。
+- requirement: 用户想做一个较大的需求，涉及多步或多模块，需要拆分成子任务。
+- command: 用户想直接调 codepilot 自身的某个命令（查看状态、日志、重试、停止、巡检、发布等），不是对代码本身下需求。
+
+只输出 JSON，字段：intent, reason（一句中文说明判断依据）。
+
+用户输入：
+{text}
+"""
+
+
+def _classify_via_api(
+    provider: APIProvider,
+    text: str,
+    timeout: int = 30,
+) -> dict:
+    """Call an API provider with the intent classification prompt."""
+    _ = timeout  # API clients have their own timeouts
+    raw = _run_api_provider(provider, INTENT_PROMPT.format(text=text))
+    # 宽松解析：可能带 ``` 或前缀
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if "\n" in raw:
+            raw = raw.split("\n", 1)[1]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end > start:
+        raw = raw[start : end + 1]
+    return json.loads(raw)
+
+
+def _classify_via_codex(
+    text: str,
+    project_path: str = "",
+    timeout: int = 30,
+) -> dict:
+    """Fallback: use local codex CLI with schema-constrained output."""
+    return _run_codex_schema_prompt(
+        INTENT_PROMPT.format(text=text),
+        INTENT_SCHEMA,
+        project_path=project_path,
+        timeout=timeout,
+    )
+
+
+def _heuristic_intent(text: str) -> Optional[str]:
+    """Cheap rule-based pre-filter. Returns None if unsure."""
+    t = text.strip()
+    if not t:
+        return None
+    # 直接命中 codepilot 内建命令动词
+    command_keywords = (
+        "查看状态", "看一下状态", "看看状态", "列出任务", "看看任务",
+        "查看日志", "看日志", "重试任务", "停止任务", "跑一下巡检", "触发巡检",
+        "发布", "打包", "构建二进制",
+    )
+    for kw in command_keywords:
+        if kw in t:
+            return "command"
+    # 以问号结尾 → question
+    if t.endswith("?") or t.endswith("？"):
+        return "question"
+    # 常见疑问词开头
+    question_starts = (
+        "怎么", "如何", "为什么", "为啥", "什么是", "什么叫",
+        "能不能", "可不可以", "是不是", "有没有", "哪里", "哪个",
+        "解释", "说明", "介绍",
+    )
+    for word in question_starts:
+        if t.startswith(word):
+            return "question"
+    return None
+
+
+def classify_intent(
+    text: str,
+    project_path: str = "",
+    classifier_provider: str = "",
+    classifier_model: str = "",
+    timeout: int = 30,
+    api_key: Optional[str] = None,
+) -> dict:
+    """Classify a chat input as question / task / requirement.
+
+    Strategy:
+      1. Heuristic pre-filter (free, instant).
+      2. Configured API provider if available.
+      3. Local codex CLI fallback.
+      4. On any failure, default to 'requirement' (preserves current behavior).
+    """
+    text = text.strip()
+    if not text:
+        return {"intent": "requirement", "reason": "空输入", "source": "default"}
+
+    guess = _heuristic_intent(text)
+    if guess:
+        return {"intent": guess, "reason": "启发式规则命中", "source": "heuristic"}
+
+    # API path
+    valid_intents = {"question", "task", "requirement", "command"}
+    if classifier_provider and classifier_provider in API_PROVIDERS:
+        provider = replace(API_PROVIDERS[classifier_provider])
+        if classifier_model:
+            provider.model = classifier_model
+        if api_key:
+            provider.api_key = api_key
+        try:
+            if not provider.requires_api_key() or provider.resolve_api_key():
+                payload = _classify_via_api(provider, text, timeout=timeout)
+                intent = payload.get("intent")
+                if intent in valid_intents:
+                    return {
+                        "intent": intent,
+                        "reason": payload.get("reason", ""),
+                        "source": f"api:{classifier_provider}",
+                    }
+        except Exception as exc:
+            # API 失败 → 继续尝试本地
+            last_error = str(exc)
+        else:
+            last_error = ""
+    else:
+        last_error = ""
+
+    # Local codex fallback
+    try:
+        payload = _classify_via_codex(text, project_path=project_path, timeout=timeout)
+        intent = payload.get("intent")
+        if intent in valid_intents:
+            return {
+                "intent": intent,
+                "reason": payload.get("reason", ""),
+                "source": "codex",
+            }
+    except Exception as exc:
+        last_error = str(exc)
+
+    return {
+        "intent": "requirement",
+        "reason": f"分类失败，默认当作需求处理（{last_error or '未知原因'}）",
+        "source": "default",
+    }
+
+
+def answer_question_via_api(
+    provider_key: str,
+    question: str,
+    project_path: str = "",
+    model_override: str = "",
+    api_key: Optional[str] = None,
+) -> str:
+    """Answer a user question directly without creating a task."""
+    context = _collect_project_context(project_path)
+    prompt = (
+        "你是当前项目的协作助手。请基于下面的项目上下文，"
+        "用简洁中文直接回答用户的问题。如果不确定，明确说不确定。\n\n"
+        f"## 项目上下文\n{context}\n\n## 用户问题\n{question}"
+    )
+    if provider_key and provider_key in API_PROVIDERS:
+        provider = replace(API_PROVIDERS[provider_key])
+        if model_override:
+            provider.model = model_override
+        if api_key:
+            provider.api_key = api_key
+        return _run_api_provider(provider, prompt)
+    # 无 API 时回退到 codex 简短回答
+    return _run_codex_schema_prompt(
+        prompt + "\n\n请以 JSON 返回：{\"answer\": \"...\"}",
+        {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+        project_path=project_path,
+        timeout=60,
+    ).get("answer", "")

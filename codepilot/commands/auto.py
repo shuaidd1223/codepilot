@@ -10,13 +10,16 @@ import click
 
 from codepilot import db
 from codepilot.ai import (
+    answer_question_via_api,
     build_task_markdown_from_plan,
     check_provider_availability,
+    classify_intent,
     generate_task_breakdown,
     normalize_agent_name,
 )
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands.run import run_backlog
+from codepilot.commands.status import render_project_dashboard
 from codepilot.config import find_config, load_config, load_project_config
 from codepilot.output import echo
 
@@ -257,18 +260,30 @@ def run_requirement_workflow(
 
     created_tasks = []
     previous_task_id: int | None = None
-    for item in breakdown["tasks"]:
+    created_ids_by_index: list[int] = []
+    for idx, item in enumerate(breakdown["tasks"]):
+        # 优先使用 planner 给出的 depends_on_indices（支持 DAG 并行）；
+        # 如果没给，则保持原来的线性依赖以保证行为兼容。
+        dep_indices = item.get("depends_on_indices") or []
+        dep_ids = [
+            created_ids_by_index[i]
+            for i in dep_indices
+            if isinstance(i, int) and 0 <= i < len(created_ids_by_index)
+        ]
+        if not dep_ids and previous_task_id and not item.get("depends_on_indices"):
+            dep_ids = [previous_task_id]
         task = db.create_task(
             project=project_name,
             title=item["title"],
             content=build_task_markdown_from_plan(item),
             agent=task_agent,
             priority=item.get("priority") or priority,
-            depends_on=[previous_task_id] if previous_task_id else None,
+            depends_on=dep_ids or None,
             project_path=project_path,
             max_retries=max_retries,
         )
         created_tasks.append(task)
+        created_ids_by_index.append(task["id"])
         previous_task_id = task["id"]
 
     will_execute = _should_execute(project_info, execute)
@@ -302,6 +317,7 @@ def run_requirement_workflow(
     for task in created_tasks:
         dep = f" depends_on=#{json.loads(task['depends_on'])[0]}" if task.get("depends_on") else ""
         click.echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]  agent={task_agent}{dep}")
+    render_project_dashboard(project_name, include_done=False, max_rows=max(8, len(created_tasks)), title="任务面板")
 
     if not will_execute:
         echo()
@@ -316,6 +332,7 @@ def run_requirement_workflow(
         limit=len(created_tasks),
         executor=executor,
         auto_commit=auto_commit,
+        retry_on_failure=False,
     )
     payload["run"] = stats
     echo(
@@ -337,8 +354,27 @@ def _chat_help() -> str:
             "  /execute on|off     切换默认是否自动执行",
             "  /plan               只规划下一条需求，不执行",
             "  /run                自动执行下一条需求",
+            "",
+            "输入前缀（跳过自动分类）：",
+            "  ? <文本>            当作问题直接回答，不建任务",
+            "  ! <文本>            当作单任务，不拆分",
+            "  # <文本>            当作需求，强制拆分",
         ]
     )
+
+
+def _parse_intent_prefix(text: str) -> tuple[Optional[str], str]:
+    """Return (forced_intent, stripped_text). forced_intent ∈ {question,task,requirement} 或 None."""
+    if not text:
+        return None, text
+    first, rest = text[0], text[1:].lstrip()
+    if first == "?" and rest:
+        return "question", rest
+    if first == "!" and rest:
+        return "task", rest
+    if first == "#" and rest:
+        return "requirement", rest
+    return None, text
 
 
 def run_chat_session(
@@ -395,11 +431,11 @@ def run_chat_session(
                 click.echo(_chat_help())
                 continue
             if cmd == "/status":
-                stats = db.get_task_stats(project_info["name"])
-                click.echo(
-                    f"[dim]{project_info['name']}: backlog={stats['backlog']} "
-                    f"in_progress={stats['in_progress']} done={stats['done']} "
-                    f"failed={stats['failed']}[/dim]"
+                render_project_dashboard(
+                    project_info["name"],
+                    verbose=True,
+                    include_done=False,
+                    title="当前任务面板",
                 )
                 continue
             if cmd == "/project":
@@ -449,18 +485,87 @@ def run_chat_session(
             click.echo(_chat_help())
             continue
 
+        forced_intent, payload_text = _parse_intent_prefix(text)
+        intent = forced_intent
+        if intent is None:
+            cfg = _project_config(project_info)
+            classifier_cfg = getattr(cfg, "classifier", None)
+            if classifier_cfg and classifier_cfg.enabled:
+                api_key = None
+                if classifier_cfg.provider:
+                    api_key = cfg.get_provider_api_key(classifier_cfg.provider)
+                try:
+                    result = classify_intent(
+                        payload_text,
+                        project_path=project_info["path"],
+                        classifier_provider=classifier_cfg.provider,
+                        classifier_model=classifier_cfg.model,
+                        timeout=classifier_cfg.timeout,
+                        api_key=api_key,
+                    )
+                    intent = result["intent"]
+                    echo(f"[dim]意图={intent} source={result.get('source','')} {result.get('reason','')}[/dim]")
+                except Exception as exc:
+                    echo(f"[yellow]意图分类失败，按需求处理：{exc}[/yellow]")
+                    intent = "requirement"
+            else:
+                intent = "requirement"
+
         try:
-            run_requirement_workflow(
-                project_info=project_info,
-                title=text,
-                planner=effective["planner"],
-                task_agent=default_agent,
-                execute=default_execute,
-                executor=effective["executor"],
-                auto_commit=effective["auto_commit"],
-                max_tasks=effective["max_tasks"],
-                max_retries=effective["max_retries"],
-            )
+            if intent == "command":
+                echo(
+                    "[yellow]这看起来是在调用 codepilot 自身命令，请直接用下面的入口：[/yellow]"
+                )
+                click.echo(
+                    "  状态总览:  codepilot status -p <项目> -v\n"
+                    "  任务日志:  codepilot logs <task_id>\n"
+                    "  重试任务:  codepilot retry <task_id>\n"
+                    "  停止任务:  codepilot stop <task_id>\n"
+                    "  触发巡检:  codepilot inspect -p <项目>\n"
+                    "  发布打包:  codepilot release prepare --version <版本>"
+                )
+                click.echo()
+                continue
+            if intent == "question":
+                cfg = _project_config(project_info)
+                classifier_cfg = getattr(cfg, "classifier", None)
+                provider_key = classifier_cfg.provider if classifier_cfg else ""
+                api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
+                answer = answer_question_via_api(
+                    provider_key=provider_key,
+                    question=payload_text,
+                    project_path=project_info["path"],
+                    model_override=classifier_cfg.model if classifier_cfg else "",
+                    api_key=api_key,
+                )
+                if answer:
+                    click.echo(answer)
+                else:
+                    echo("[yellow]未获得回答[/yellow]")
+            elif intent == "task":
+                run_requirement_workflow(
+                    project_info=project_info,
+                    title=payload_text,
+                    planner=effective["planner"],
+                    task_agent=default_agent,
+                    execute=default_execute,
+                    executor=effective["executor"],
+                    auto_commit=effective["auto_commit"],
+                    max_tasks=1,
+                    max_retries=effective["max_retries"],
+                )
+            else:
+                run_requirement_workflow(
+                    project_info=project_info,
+                    title=payload_text,
+                    planner=effective["planner"],
+                    task_agent=default_agent,
+                    execute=default_execute,
+                    executor=effective["executor"],
+                    auto_commit=effective["auto_commit"],
+                    max_tasks=effective["max_tasks"],
+                    max_retries=effective["max_retries"],
+                )
         except click.ClickException as exc:
             echo(f"[red]{exc.format_message()}[/red]")
         except Exception as exc:

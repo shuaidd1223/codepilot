@@ -8,7 +8,8 @@
     "需要结构化结果时，优先使用 `status --json`、`find --json`、`ai manifest`。",
     "如果目标是提交一个自然语言需求，直接调用 `codepilot \"需求文本\"` 或 `codepilot go \"需求文本\"`。",
     "如果目标是发布产物，优先调用 `codepilot release prepare --version <版本号>`。",
-    "如果任务处于运行中，先用 `codepilot status -p <项目名> -v` 查看阶段，再决定是否 `logs` 或 `stop`。"
+    "如果任务处于运行中，先用 `codepilot status -p <项目名> -v` 查看阶段，再决定是否 `logs` 或 `stop`。",
+    "如果任务失败或被取消，且需要重新排队，使用 `codepilot retry <task_id>`。"
   ],
   "structured_outputs": [
     {
@@ -78,12 +79,31 @@
       ]
     },
     {
+      "name": "retry",
+      "syntax": "codepilot retry <task_id>",
+      "purpose": "手动重试指定任务，重置运行态并重新放回 backlog。",
+      "when_to_use": "任务 failed/cancelled 后需要人工重新触发时。",
+      "examples": [
+        "codepilot retry 7"
+      ]
+    },
+    {
       "name": "run",
       "syntax": "codepilot run -p <项目名> [--executor builtin|dispatch]",
       "purpose": "执行 backlog 中的任务。",
       "when_to_use": "已存在 backlog，想手动触发执行。",
       "examples": [
         "codepilot run -p codepilot-dev --executor builtin --no-auto-commit"
+      ]
+    },
+    {
+      "name": "ui",
+      "syntax": "codepilot ui [--host 127.0.0.1] [--port 8766]",
+      "purpose": "启动本地 Web UI，图形化查看项目、任务和状态，并执行重试 / 停止 / 插队。",
+      "when_to_use": "需要图形化总览多个项目，或需要人工点击干预任务时。",
+      "examples": [
+        "codepilot ui",
+        "codepilot ui --no-open --port 8877"
       ]
     },
     {
@@ -132,6 +152,14 @@
         "codepilot status -p <项目名> -v",
         "codepilot logs <task_id> --tail 80",
         "codepilot stop <task_id>"
+      ]
+    },
+    {
+      "name": "重试失败或取消的任务",
+      "steps": [
+        "codepilot logs <task_id> --tail 80",
+        "codepilot retry <task_id>",
+        "codepilot run -p <项目名>"
       ]
     },
     {

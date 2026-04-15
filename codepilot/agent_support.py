@@ -62,13 +62,14 @@ def command_manifest(
         "version": manifest_version,
         "command_name": command,
         "description": "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。",
-        "calling_principles": [
-            "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
-            "需要结构化结果时，优先使用 `status --json`、`find --json`、`ai manifest`。",
-            f"如果目标是提交一个自然语言需求，直接调用 `{command} \"需求文本\"` 或 `{command} go \"需求文本\"`。",
-            f"如果目标是发布产物，优先调用 `{_cmd(command, 'release prepare --version <版本号>')}`。",
-            f"如果任务处于运行中，先用 `{_cmd(command, 'status -p <项目名> -v')}` 查看阶段，再决定是否 `logs` 或 `stop`。",
-        ],
+            "calling_principles": [
+                "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
+                "需要结构化结果时，优先使用 `status --json`、`find --json`、`ai manifest`。",
+                f"如果目标是提交一个自然语言需求，直接调用 `{command} \"需求文本\"` 或 `{command} go \"需求文本\"`。",
+                f"如果目标是发布产物，优先调用 `{_cmd(command, 'release prepare --version <版本号>')}`。",
+                f"如果任务处于运行中，先用 `{_cmd(command, 'status -p <项目名> -v')}` 查看阶段，再决定是否 `logs` 或 `stop`。",
+                f"如果任务失败或被取消，且需要重新排队，使用 `{_cmd(command, 'retry <task_id>')}`。",
+            ],
         "structured_outputs": [
             {
                 "command": _cmd(command, "ai manifest"),
@@ -126,11 +127,25 @@ def command_manifest(
                 "examples": [_cmd(command, "stop 7"), _cmd(command, 'stop 7 -m "方向错误，停止重跑"')],
             },
             {
+                "name": "retry",
+                "syntax": _cmd(command, "retry <task_id>"),
+                "purpose": "手动重试指定任务，重置运行态并重新放回 backlog。",
+                "when_to_use": "任务 failed/cancelled 后需要人工重新触发时。",
+                "examples": [_cmd(command, "retry 7")],
+            },
+            {
                 "name": "run",
                 "syntax": _cmd(command, "run -p <项目名> [--executor builtin|dispatch]"),
                 "purpose": "执行 backlog 中的任务。",
                 "when_to_use": "已存在 backlog，想手动触发执行。",
                 "examples": [_cmd(command, "run -p codepilot-dev --executor builtin --no-auto-commit")],
+            },
+            {
+                "name": "ui",
+                "syntax": _cmd(command, "ui [--host 127.0.0.1] [--port 8766]"),
+                "purpose": "启动本地 Web UI，图形化查看项目、任务和状态，并执行重试 / 停止 / 插队。",
+                "when_to_use": "需要图形化总览多个项目，或需要人工点击干预任务时。",
+                "examples": [_cmd(command, "ui"), _cmd(command, "ui --no-open --port 8877")],
             },
             {
                 "name": "release_prepare",
@@ -179,6 +194,14 @@ def command_manifest(
                 ],
             },
             {
+                "name": "重试失败或取消的任务",
+                "steps": [
+                    _cmd(command, "logs <task_id> --tail 80"),
+                    _cmd(command, "retry <task_id>"),
+                    _cmd(command, "run -p <项目名>"),
+                ],
+            },
+            {
                 "name": "准备一个发布包",
                 "steps": [
                     _cmd(command, "release prepare --version <版本号>"),
@@ -217,7 +240,8 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 2. 需要结构化结果时，优先使用 JSON 输出命令。
 3. 需要提交高层需求时，直接调用自然语言入口，不要先自己拆任务，除非你明确要控制拆分策略。
 4. 看到任务处于 `in_progress` 时，先查 `status -v` 和 `logs`，不要盲目重复触发 `run`。
-5. 准备发布包时，优先使用 `{_cmd(command, "release prepare --version <版本号>")}`。
+5. 任务失败或取消后，如需人工重新排队，使用 `{_cmd(command, "retry <task_id>")}`。
+6. 准备发布包时，优先使用 `{_cmd(command, "release prepare --version <版本号>")}`。
 
 ## 推荐命令
 
@@ -266,7 +290,13 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 {_cmd(command, "stop <task_id>")}
 ```
 
-### 6. 发布
+### 6. 手动重试任务
+
+```bash
+{_cmd(command, "retry <task_id>")}
+```
+
+### 7. 发布
 
 最推荐：
 
@@ -284,6 +314,12 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 
 ```bash
 {_cmd(command, "release verify")}
+```
+
+### 8. 图形界面
+
+```bash
+{_cmd(command, "ui")}
 ```
 
 ## 结构化接口
@@ -315,7 +351,9 @@ def ai_prompt_text(*, command_name: str = "codepilot") -> str:
         "你正在调用 CodePilot 这个本地 CLI。优先使用非交互命令。"
         f"提交需求时直接用 `{command} \"需求文本\"`。"
         f"查看状态时优先用 `{_cmd(command, 'status -p <项目名> --json')}`，"
-        f"排障时用 `{_cmd(command, 'logs <task_id>')}`，停止任务用 `{_cmd(command, 'stop <task_id>')}`。"
+        f"排障时用 `{_cmd(command, 'logs <task_id>')}`，停止任务用 `{_cmd(command, 'stop <task_id>')}`，"
+        f"重试失败任务用 `{_cmd(command, 'retry <task_id>')}`。"
+        f"如果需要人工介入或图形化查看，启动 `{_cmd(command, 'ui')}`。"
         f"准备发布包时优先用 `{_cmd(command, 'release prepare --version <版本号>')}`。"
         f"如果需要完整命令清单，调用 `{_cmd(command, 'ai manifest')}`。"
     )

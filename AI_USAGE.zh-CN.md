@@ -8,7 +8,8 @@
 2. 需要结构化结果时，优先使用 JSON 输出命令。
 3. 需要提交高层需求时，直接调用自然语言入口，不要先自己拆任务，除非你明确要控制拆分策略。
 4. 看到任务处于 `in_progress` 时，先查 `status -v` 和 `logs`，不要盲目重复触发 `run`。
-5. 准备发布包时，优先使用 `codepilot release prepare --version <版本号>`。
+5. 任务失败或取消后，如需人工重新排队，使用 `codepilot retry <task_id>`。
+6. 准备发布包时，优先使用 `codepilot release prepare --version <版本号>`。
 
 ## 推荐命令
 
@@ -57,7 +58,13 @@ codepilot logs <task_id> --tail 80
 codepilot stop <task_id>
 ```
 
-### 6. 发布
+### 6. 手动重试任务
+
+```bash
+codepilot retry <task_id>
+```
+
+### 7. 发布
 
 最推荐：
 
@@ -75,6 +82,12 @@ codepilot release bundle --build-current
 
 ```bash
 codepilot release verify
+```
+
+### 8. 图形界面
+
+```bash
+codepilot ui
 ```
 
 ## 结构化接口

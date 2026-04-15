@@ -59,6 +59,26 @@ class AutomationConfig:
 
 
 @dataclass
+class InspectConfig:
+    """[inspect] 定时巡检配置."""
+    enabled: bool = False
+    interval_seconds: int = 1800
+    max_new_tasks_per_round: int = 3
+    signals: tuple[str, ...] = ("git_log", "failed_tasks", "todos")
+    auto_execute: bool = False
+    priority: str = "P3"
+
+
+@dataclass
+class ClassifierConfig:
+    """[classifier] 意图分类器配置. provider 留空则走本地 codex CLI."""
+    provider: str = ""  # API provider key (如 openai-gpt4o / claude-haiku / deepseek) 或空走本地
+    model: str = ""  # 可选：覆盖 provider 默认模型
+    enabled: bool = True  # 关闭则所有输入直接当需求处理
+    timeout: int = 30
+
+
+@dataclass
 class ProviderAPIConfig:
     """单个 Provider 的 API 配置."""
     enabled: bool = True
@@ -76,6 +96,8 @@ class AgentsConfig:
     shell: ShellConfig = field(default_factory=ShellConfig)
     dispatch: DispatchConfig = field(default_factory=DispatchConfig)
     automation: AutomationConfig = field(default_factory=AutomationConfig)
+    classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
+    inspect: InspectConfig = field(default_factory=InspectConfig)
     notifications: dict = field(default_factory=dict)
 
     # AI Providers 配置
@@ -101,6 +123,8 @@ class AgentsConfig:
         agents = data.get("agents", {})
         dispatch = data.get("dispatch", {})
         automation = data.get("automation", {})
+        classifier = data.get("classifier", {})
+        inspect = data.get("inspect", {})
         notifications = data.get("notifications", {})
         shell = data.get("shell", {})
         providers = data.get("providers", {})
@@ -145,6 +169,20 @@ class AgentsConfig:
                 auto_commit=automation.get("auto_commit", True),
                 max_tasks=automation.get("max_tasks", 5),
                 max_retries=automation.get("max_retries", 3),
+            ),
+            classifier=ClassifierConfig(
+                provider=classifier.get("provider", ""),
+                model=classifier.get("model", ""),
+                enabled=classifier.get("enabled", True),
+                timeout=classifier.get("timeout", 30),
+            ),
+            inspect=InspectConfig(
+                enabled=inspect.get("enabled", False),
+                interval_seconds=inspect.get("interval_seconds", 1800),
+                max_new_tasks_per_round=inspect.get("max_new_tasks_per_round", 3),
+                signals=tuple(inspect.get("signals", ["git_log", "failed_tasks", "todos"])),
+                auto_execute=inspect.get("auto_execute", False),
+                priority=inspect.get("priority", "P3"),
             ),
             notifications=notifications,
             providers=providers_config,

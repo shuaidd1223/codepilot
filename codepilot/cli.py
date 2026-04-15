@@ -17,6 +17,7 @@ import codepilot.commands.release as release_cmd
 import codepilot.commands.run as run_cmd
 import codepilot.commands.status as status_cmd
 import codepilot.commands.tasks as tasks_cmd
+import codepilot.commands.ui as ui_cmd
 import codepilot.commands.webhook as webhook_cmd
 
 
@@ -97,10 +98,14 @@ main.add_command(auto_cmd.auto)
 main.add_command(auto_cmd.go)
 main.add_command(auto_cmd.chat)
 main.add_command(run_cmd.run)
+main.add_command(ui_cmd.ui)
 main.add_command(daemon_cmd.daemon)
+from codepilot.commands import inspect as inspect_cmd  # noqa: E402
+main.add_command(inspect_cmd.inspect)
 main.add_command(webhook_cmd.webhook)
 main.add_command(providers_cmd.providers)
 main.add_command(tasks_cmd.done)
+main.add_command(tasks_cmd.retry)
 main.add_command(tasks_cmd.edit)
 main.add_command(tasks_cmd.rm)
 main.add_command(tasks_cmd.find)

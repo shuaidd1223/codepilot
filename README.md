@@ -30,7 +30,7 @@ CodePilot 是一个本地工程工作流 CLI，用来把自然语言需求转换
 - 支持会话模式：`codepilot chat` 或直接运行 `codepilot`
 - 自动判断需求复杂度，并决定是否拆分
 - 支持 `run / daemon` 执行 backlog
-- 支持查看实时日志、停止任务、自动回收卡住任务
+- 支持查看实时日志、停止任务、手动重试指定任务、自动回收卡住任务
 - 支持打包成单文件二进制，并安装到系统命令路径
 - 支持把现有二进制整理成标准发布目录
 - 支持输出供其他 AI 直接调用的命令清单和使用手册
@@ -73,6 +73,18 @@ codepilot logs <task_id>
 codepilot stop <task_id>
 ```
 
+手动重试一个失败/取消的任务：
+
+```bash
+codepilot retry <task_id>
+```
+
+启动本地 Web UI：
+
+```bash
+codepilot ui
+```
+
 ## 给其他 AI 用
 
 如果你希望把 CodePilot 暴露给其他 AI、Agent 或自动化系统直接调用，当前已经内置了机器可读和 AI 友好的入口。
@@ -105,7 +117,34 @@ codepilot ai prompt
 1. 用 `codepilot ai manifest` 获取命令和工作流清单
 2. 用 `codepilot status -p <项目名> --json` 拉结构化状态
 3. 用 `codepilot "需求文本"` 直接把高层需求交给 CodePilot
-4. 用 `codepilot logs <task_id>` 和 `codepilot stop <task_id>` 做运行期排障
+4. 用 `codepilot logs <task_id>`、`codepilot stop <task_id>` 和 `codepilot retry <task_id>` 做运行期排障
+
+## Web UI
+
+如果你觉得终端命令太重，可以直接起本地控制台：
+
+```bash
+codepilot ui
+```
+
+默认会打开：
+
+```text
+http://127.0.0.1:8766/
+```
+
+当前 Web UI 支持：
+
+- 查看所有项目及其任务统计
+- 查看单个项目的任务列表和当前运行状态
+- 对任务执行 `重试 / 停止 / 插队`
+- 自动刷新，方便盯运行中的任务
+
+如果你不想自动打开浏览器：
+
+```bash
+codepilot ui --no-open
+```
 
 ## 二进制打包
 
@@ -274,4 +313,5 @@ claude_cmd = "claude"
 - 用 `status -v` 看任务是否还活着
 - 用 `logs` 看实时输出
 - 用 `stop` 停掉当前任务
+- 用 `retry` 把失败或取消的指定任务重新放回 backlog
 - 让系统自动把失联且无进程的任务标记为 `failed`

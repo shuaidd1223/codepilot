@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import click
+from rich.console import Console
 
 from codepilot import db
 from codepilot.ai import (
@@ -22,7 +24,7 @@ from codepilot.ai import (
     normalize_agent_name,
     resolve_cli_provider,
 )
-from codepilot.commands.status import _resolve_project
+from codepilot.commands.status import _resolve_project, render_project_dashboard
 from codepilot.config import load_project_config
 from codepilot.output import echo
 from codepilot.runtime import (
@@ -36,6 +38,8 @@ from codepilot.runtime import (
     update_task_runtime,
 )
 from codepilot.webhook import notify_task_status
+
+STATUS_CONSOLE = Console()
 
 
 @dataclass
@@ -220,27 +224,94 @@ def _run_command_live(
     timeout: int = 3600,
     input_text: Optional[str] = None,
 ) -> tuple[int, str]:
-    """Run a long-lived command while updating heartbeat and honoring stop requests."""
+    """Run a long-lived command while streaming output, updating heartbeat, and honoring stop requests."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    # 可选 PTY：某些 CLI（codex/claude）在非 TTY 下会切块缓冲，用伪终端可以让它按行刷。
+    # 仅在 Unix 且显式开启环境变量 CODEPILOT_USE_PTY=1 时启用，Windows 默认保持 Popen 管道。
+    use_pty = (
+        os.name != "nt"
+        and os.environ.get("CODEPILOT_USE_PTY", "").strip() in {"1", "true", "yes"}
+    )
     with log_path.open("w", encoding="utf-8", errors="replace") as handle:
         popen_kwargs = {
             "cwd": str(cwd) if cwd else None,
-            "stdout": handle,
             "stderr": subprocess.STDOUT,
             "stdin": subprocess.PIPE if input_text is not None else None,
             "text": True,
             "encoding": "utf-8",
             "errors": "replace",
+            "bufsize": 1,
         }
-        if os.name != "nt":
+        pty_master_fd: Optional[int] = None
+        if use_pty:
+            import pty  # Unix-only
+
+            pty_master_fd, pty_slave_fd = pty.openpty()
+            popen_kwargs["stdout"] = pty_slave_fd
+            popen_kwargs["stderr"] = pty_slave_fd
             popen_kwargs["start_new_session"] = True
+        else:
+            popen_kwargs["stdout"] = subprocess.PIPE
+            if os.name != "nt":
+                popen_kwargs["start_new_session"] = True
 
         process = subprocess.Popen(cmd, **popen_kwargs)
+        if use_pty:
+            # 关掉父进程这端的 slave，让子进程退出时 read 能收到 EOF
+            try:
+                os.close(pty_slave_fd)
+            except Exception:
+                pass
         if input_text is not None and process.stdin:
             process.stdin.write(input_text)
             process.stdin.close()
 
         update_task_runtime(task_id, phase=phase, pid=process.pid, log_path=log_path, last_output="")
+
+        recent_lines: list[str] = []
+        recent_lock = threading.Lock()
+
+        def _emit(raw: str) -> None:
+            if not raw:
+                return
+            handle.write(raw)
+            handle.flush()
+            stripped = raw.rstrip()
+            if stripped:
+                STATUS_CONSOLE.print(f"    [dim]{stripped}[/dim]")
+            with recent_lock:
+                recent_lines.append(raw)
+                if len(recent_lines) > 200:
+                    del recent_lines[:-200]
+
+        def _pump_stdout() -> None:
+            if use_pty and pty_master_fd is not None:
+                buf = b""
+                while True:
+                    try:
+                        chunk = os.read(pty_master_fd, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        _emit(line.decode("utf-8", errors="replace") + "\n")
+                if buf:
+                    _emit(buf.decode("utf-8", errors="replace"))
+                try:
+                    os.close(pty_master_fd)
+                except Exception:
+                    pass
+                return
+            assert process.stdout is not None
+            for raw in process.stdout:
+                _emit(raw)
+
+        reader = threading.Thread(target=_pump_stdout, daemon=True)
+        reader.start()
+
         started = time.monotonic()
         last_heartbeat = 0.0
 
@@ -249,6 +320,7 @@ def _run_command_live(
                 requested, reason = get_stop_request(task_id)
                 if requested:
                     stop_process_tree(process.pid)
+                    reader.join(timeout=2)
                     update_task_runtime(
                         task_id,
                         phase=phase,
@@ -260,21 +332,25 @@ def _run_command_live(
 
                 if time.monotonic() - started > timeout:
                     stop_process_tree(process.pid)
+                    reader.join(timeout=2)
                     raise subprocess.TimeoutExpired(cmd, timeout)
 
                 exit_code = process.poll()
                 now = time.monotonic()
                 if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
+                    with recent_lock:
+                        preview = "".join(recent_lines[-20:]).strip()
                     update_task_runtime(
                         task_id,
                         phase=phase,
                         pid=process.pid if exit_code is None else None,
                         log_path=log_path,
-                        last_output=tail_text(log_path),
+                        last_output=preview,
                     )
                     last_heartbeat = now
 
                 if exit_code is not None:
+                    reader.join(timeout=5)
                     handle.flush()
                     update_task_runtime(
                         task_id,
@@ -285,10 +361,13 @@ def _run_command_live(
                     )
                     return exit_code, log_path.read_text(encoding="utf-8", errors="replace").strip()
 
-                time.sleep(0.2)
+                time.sleep(0.1)
         finally:
             if process.stdin:
-                process.stdin.close()
+                try:
+                    process.stdin.close()
+                except Exception:
+                    pass
 
 
 def _git_current_branch(project_path: Path) -> str:
@@ -665,6 +744,45 @@ def _handle_failure(task: dict, error_message: str, stop_on_failure: bool = Fals
     return updated, should_stop
 
 
+def _mark_task_failed(task: dict, error_message: str) -> dict:
+    current_retry = int(task.get("retry_count") or 0) + 1
+    return clear_task_runtime(
+        task["id"],
+        status="failed",
+        completed_at=datetime.now().isoformat(),
+        retry_count=current_retry,
+        error_message=error_message[:4000],
+        stop_requested=0,
+        stop_reason=None,
+    )
+
+
+def _tail_lines(text: str, max_lines: int = 12) -> list[str]:
+    lines = [line.rstrip() for line in (text or "").splitlines() if line.strip()]
+    return lines[-max_lines:]
+
+
+def _show_failure_feedback(
+    task_id: int,
+    *,
+    title: str,
+    error_message: str,
+    review_output: str = "",
+    output: str = "",
+    requeued: bool,
+) -> None:
+    action = "已回退到 backlog" if requeued else "已标记为 failed"
+    echo(f"[red][X] 任务 #{task_id} 未通过[/red]  {title}")
+    click.echo(f"  结果: {action}")
+    click.echo(f"  原因: {error_message.splitlines()[0] if error_message else '执行失败'}")
+    detail_lines = _tail_lines(review_output or output)
+    if detail_lines:
+        echo("[dim]--- 最近输出 ---[/dim]")
+        for line in detail_lines:
+            click.echo(f"  {line}")
+    click.echo(f"  查看完整日志: codepilot logs {task_id} --full")
+
+
 def run_backlog(
     project: str,
     *,
@@ -675,6 +793,7 @@ def run_backlog(
     shell: str = "auto",
     executor: str = "auto",
     auto_commit: bool = True,
+    retry_on_failure: bool = True,
 ) -> dict:
     """Execute up to `limit` runnable tasks for a project."""
     db.init_db()
@@ -708,6 +827,7 @@ def run_backlog(
     echo(f"[dim]使用执行器: {resolved_executor}[/dim]")
     if resolved_executor == "dispatch":
         echo(f"[dim]使用 Shell: {shell_info.version_hint}[/dim]")
+    render_project_dashboard(project, include_done=False, max_rows=10, title="执行队列")
 
     stats = {
         "processed": 0,
@@ -730,10 +850,19 @@ def run_backlog(
         if resolved_executor == "builtin":
             preflight_error = _builtin_preflight_error(project_path, auto_commit, task.get("agent", "codex"))
         if preflight_error:
-            db.update_task(task_id, status="backlog", error_message=preflight_error)
-            echo(f"[yellow]{preflight_error}[/yellow]")
+            if retry_on_failure:
+                db.update_task(task_id, status="backlog", error_message=preflight_error)
+                echo(f"[yellow]{preflight_error}[/yellow]")
+                click.echo(f"  处理: 任务 #{task_id} 保持 backlog，等待你修正环境后再执行")
+            else:
+                _mark_task_failed(task, preflight_error)
+                echo(f"[red]{preflight_error}[/red]")
+                click.echo(f"  处理: 任务 #{task_id} 已直接标记 failed，不再自动回退")
+                stats["failed"] += 1
             stats["processed"] += 1
-            stats["requeued"] += 1
+            if retry_on_failure:
+                stats["requeued"] += 1
+            render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
             break
 
         task_file = _pick_task_file(project_path, task_id, tracked=(resolved_executor == "dispatch"))
@@ -755,6 +884,8 @@ def run_backlog(
         )
 
         echo(f"[cyan]-> 执行任务 #{task_id}[/cyan]  {task['title']}")
+        if limit > 0:
+            click.echo(f"  进度: {stats['processed'] + 1}/{limit}")
         click.echo(f"  Agent: {task['agent']}  优先级: {task['priority']}")
         click.echo(f"  任务文件: {task_file}")
 
@@ -793,14 +924,26 @@ def run_backlog(
                 break
             continue
         except Exception as exc:
-            updated, should_stop = _handle_failure(task, str(exc), stop_on_failure=(resolved_executor == "builtin"))
+            error_text = str(exc)
+            if retry_on_failure:
+                updated, should_stop = _handle_failure(task, error_text, stop_on_failure=(resolved_executor == "builtin"))
+            else:
+                updated = _mark_task_failed(task, error_text)
+                should_stop = True
             echo(f"[red]执行出错: {exc}[/red]")
             if updated["status"] == "failed":
                 stats["failed"] += 1
-                notify_task_status(str(project_path), task_id, task["title"], "failed", str(exc))
+                notify_task_status(str(project_path), task_id, task["title"], "failed", error_text)
             else:
                 stats["requeued"] += 1
+            _show_failure_feedback(
+                task_id,
+                title=task["title"],
+                error_message=error_text,
+                requeued=updated["status"] != "failed",
+            )
             stats["processed"] += 1
+            render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
             if should_stop or once:
                 break
             continue
@@ -820,16 +963,27 @@ def run_backlog(
             stats["done"] += 1
         else:
             error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
-            updated, should_stop = _handle_failure(task, error_message, stop_on_failure=(resolved_executor == "builtin"))
+            if retry_on_failure:
+                updated, should_stop = _handle_failure(task, error_message, stop_on_failure=(resolved_executor == "builtin"))
+            else:
+                updated = _mark_task_failed(task, error_message)
+                should_stop = True
             if updated["status"] == "failed":
-                echo(f"[red][X] 任务 #{task_id} 失败[/red]")
                 stats["failed"] += 1
                 notify_task_status(str(project_path), task_id, task["title"], "failed", error_message)
             else:
-                echo(f"[yellow][!] 任务 #{task_id} 已回到 backlog，等待重试[/yellow]")
                 stats["requeued"] += 1
+            _show_failure_feedback(
+                task_id,
+                title=task["title"],
+                error_message=error_message,
+                review_output=result.review_output,
+                output=result.output,
+                requeued=updated["status"] != "failed",
+            )
             if should_stop:
                 stats["processed"] += 1
+                render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
                 break
 
         if result.output:
@@ -847,6 +1001,7 @@ def run_backlog(
         click.echo()
 
         stats["processed"] += 1
+        render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
         if once:
             break
         if resolved_executor == "dispatch":
