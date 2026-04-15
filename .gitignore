@@ -16,3 +16,4 @@ dist/
 
 .workbuddy/
 tasks.db
+.claude/
