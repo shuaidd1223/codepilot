@@ -36,6 +36,8 @@ auto_commit = true
 max_tasks = 5
 # 每个子任务最多重试次数
 max_retries = 3
+# 为每个任务自动创建 feat/task-<id>-<slug> 分支，成功后合并回 base_branch
+per_task_branch = true
 
 [notifications]
 # 飞书/企微 Webhook URL
