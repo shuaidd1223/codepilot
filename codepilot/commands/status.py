@@ -10,6 +10,7 @@ from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.markup import escape as _markup_escape
 from rich.text import Text
 from rich.console import Group
 
@@ -27,10 +28,12 @@ STATUS_META = {
 
 
 def _short_text(value: str | None, max_len: int = 80) -> str:
+    """Render untrusted text safely for a rich Table cell (escapes markup)."""
     text = (value or "").replace("\n", " ").strip()
     if not text:
         return "-"
-    return (text[: max_len - 3] + "...") if len(text) > max_len else text
+    truncated = (text[: max_len - 3] + "...") if len(text) > max_len else text
+    return _markup_escape(truncated)
 
 
 def _status_badge(status: str) -> str:

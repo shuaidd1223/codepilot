@@ -26,7 +26,7 @@ from codepilot.ai import (
 )
 from codepilot.commands.status import _resolve_project, render_project_dashboard
 from codepilot.config import load_project_config
-from codepilot.output import echo
+from codepilot.output import echo, safe
 from codepilot.runtime import (
     HEARTBEAT_INTERVAL_SECONDS,
     clear_task_runtime,
@@ -1040,7 +1040,7 @@ def run_backlog(
             else:
                 updated = _mark_task_failed(task, error_text)
                 should_stop = True
-            echo(f"[red]执行出错: {exc}[/red]")
+            echo(f"[red]执行出错: {safe(exc)}[/red]")
             if updated["status"] == "failed":
                 stats["failed"] += 1
                 notify_task_status(str(project_path), task_id, task["title"], "failed", error_text)
@@ -1186,7 +1186,7 @@ def run(
             auto_commit=auto_commit,
         )
     except RuntimeError as exc:
-        echo(f"[red]{exc}[/red]")
+        echo(f"[red]{safe(exc)}[/red]")
         return
 
     echo(

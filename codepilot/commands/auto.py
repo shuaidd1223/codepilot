@@ -21,7 +21,7 @@ from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands.run import run_backlog
 from codepilot.commands.status import render_project_dashboard
 from codepilot.config import find_config, load_config, load_project_config
-from codepilot.output import echo
+from codepilot.output import echo, safe
 
 
 def _json_mode(ctx: click.Context, json_mode: bool) -> bool:
@@ -506,7 +506,7 @@ def run_chat_session(
                     intent = result["intent"]
                     echo(f"[dim]意图={intent} source={result.get('source','')} {result.get('reason','')}[/dim]")
                 except Exception as exc:
-                    echo(f"[yellow]意图分类失败，按需求处理：{exc}[/yellow]")
+                    echo(f"[yellow]意图分类失败，按需求处理：{safe(exc)}[/yellow]")
                     intent = "requirement"
             else:
                 intent = "requirement"
@@ -569,7 +569,7 @@ def run_chat_session(
         except click.ClickException as exc:
             echo(f"[red]{exc.format_message()}[/red]")
         except Exception as exc:
-            echo(f"[red]{exc}[/red]")
+            echo(f"[red]{safe(exc)}[/red]")
         click.echo()
 
 
