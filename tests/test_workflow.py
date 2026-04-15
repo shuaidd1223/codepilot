@@ -14,6 +14,7 @@ from codepilot import ai as ai_mod
 from codepilot import runtime as runtime_mod
 from codepilot import webui as webui_mod
 from codepilot.cli import main
+from codepilot.commands import add as add_cmd
 from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
 
@@ -589,6 +590,28 @@ def test_batch_add_with_default_agent_does_not_require_click_context(tmp_path, m
     tasks = db.list_tasks(project="demo")
     assert len(tasks) == 2
     assert all(task["agent"] == "codex" for task in tasks)
+
+
+def test_add_command_preserves_utf8_title_and_content_round_trip(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    title = "修复任务标题/内容在 Windows 控制台显示乱码"
+    content = "# 任务说明\n\n1. 标题需要原样保留\n2. 内容也要原样保留"
+
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "generate_task_content", lambda *args, **kwargs: content)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["add", "-p", "demo", "-t", title, "-a", "codex"])
+
+    assert result.exit_code == 0
+    created = db.list_tasks(project="demo")
+    assert len(created) == 1
+    assert created[0]["title"] == title
+    assert created[0]["content"] == content
 
 
 def test_chat_command_accepts_plain_text_and_exit(tmp_path, monkeypatch):

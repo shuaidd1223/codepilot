@@ -5,6 +5,10 @@ from __future__ import annotations
 import click
 
 from codepilot import __version__
+from codepilot.console_encoding import configure_console_encoding
+
+configure_console_encoding()
+
 from codepilot.db import init_db
 import codepilot.commands.add as add_cmd
 import codepilot.commands.ai as ai_cmd
