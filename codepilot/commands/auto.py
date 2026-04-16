@@ -546,6 +546,9 @@ def run_chat_session(
             continue
 
         forced_intent, payload_text = _parse_intent_prefix(text)
+        spinner = _Spinner("处理中")
+        spinner.__enter__()
+
         intent = forced_intent
         if intent is None:
             cfg = _project_config(project_info)
@@ -570,14 +573,17 @@ def run_chat_session(
                     api_key=api_key,
                 )
                 intent = result["intent"]
-                echo(f"[dim]  {intent} | {result.get('reason','')}[/dim]")
-            except Exception as exc:
-                echo(f"[yellow]意图分类失败，按需求处理：{safe(exc)}[/yellow]")
+            except Exception:
                 intent = "requirement"
+
+        # 分类完成后更新 spinner 文案
+        intent_labels = {"question": "正在思考", "task": "正在执行", "requirement": "正在规划", "command": "处理中"}
+        spinner._message = intent_labels.get(intent, "处理中")
 
         assistant_response = ""
         try:
             if intent == "command":
+                spinner.__exit__(None, None, None)
                 assistant_response = "请使用对应的 CLI 命令操作"
                 echo(
                     "[yellow]这看起来是在调用 codepilot 自身命令，请直接用下面的入口：[/yellow]"
@@ -596,54 +602,54 @@ def run_chat_session(
                 classifier_cfg = getattr(cfg, "classifier", None)
                 provider_key = classifier_cfg.provider if classifier_cfg else ""
                 api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
-                with _Spinner("正在思考"):
-                    answer = answer_question_via_api(
-                        provider_key=provider_key,
-                        question=payload_text,
-                        project_path=project_info["path"],
-                        model_override=classifier_cfg.model if classifier_cfg else "",
-                        api_key=api_key,
-                        history=chat_history,
-                    )
+                answer = answer_question_via_api(
+                    provider_key=provider_key,
+                    question=payload_text,
+                    project_path=project_info["path"],
+                    model_override=classifier_cfg.model if classifier_cfg else "",
+                    api_key=api_key,
+                    history=chat_history,
+                )
+                spinner.__exit__(None, None, None)
                 if answer:
-                    click.echo()
                     click.echo(answer)
                     assistant_response = answer
                 else:
                     echo("[yellow]未获得回答[/yellow]")
             elif intent == "task":
-                echo(f"[cyan]收到任务，开始执行...[/cyan]")
-                with _Spinner("正在规划"):
-                    run_requirement_workflow(
-                        project_info=project_info,
-                        title=payload_text,
-                        planner=effective["planner"],
-                        task_agent=default_agent,
-                        execute=default_execute,
-                        executor=effective["executor"],
-                        auto_commit=effective["auto_commit"],
-                        max_tasks=1,
-                        max_retries=effective["max_retries"],
-                    )
+                run_requirement_workflow(
+                    project_info=project_info,
+                    title=payload_text,
+                    planner=effective["planner"],
+                    task_agent=default_agent,
+                    execute=default_execute,
+                    executor=effective["executor"],
+                    auto_commit=effective["auto_commit"],
+                    max_tasks=1,
+                    max_retries=effective["max_retries"],
+                )
+                spinner.__exit__(None, None, None)
                 assistant_response = "任务已创建并执行"
             else:
-                with _Spinner("正在规划"):
-                    run_requirement_workflow(
-                        project_info=project_info,
-                        title=payload_text,
-                        planner=effective["planner"],
-                        task_agent=default_agent,
-                        execute=default_execute,
-                        executor=effective["executor"],
-                        auto_commit=effective["auto_commit"],
-                        max_tasks=effective["max_tasks"],
-                        max_retries=effective["max_retries"],
-                    )
+                run_requirement_workflow(
+                    project_info=project_info,
+                    title=payload_text,
+                    planner=effective["planner"],
+                    task_agent=default_agent,
+                    execute=default_execute,
+                    executor=effective["executor"],
+                    auto_commit=effective["auto_commit"],
+                    max_tasks=effective["max_tasks"],
+                    max_retries=effective["max_retries"],
+                )
+                spinner.__exit__(None, None, None)
                 assistant_response = "需求已规划"
         except click.ClickException as exc:
-            echo(f"[red]{exc.format_message()}[/red]")
+            spinner.__exit__(None, None, None)
+            echo(f"[red]{safe(exc.format_message())}[/red]")
             assistant_response = f"错误: {exc.format_message()}"
         except Exception as exc:
+            spinner.__exit__(None, None, None)
             echo(f"[red]{safe(exc)}[/red]")
             assistant_response = f"错误: {exc}"
 
