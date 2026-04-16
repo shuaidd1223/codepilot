@@ -965,37 +965,30 @@ def _run_claude_schema_prompt(
             )
         cmd.append(str(cli_js))
 
-    cmd.extend(
-        [
-            "-p",
-            "--output-format",
-            "json",
-            "--json-schema",
-            json.dumps(schema, ensure_ascii=False),
-            "--permission-mode",
-            "plan",
-        ]
-    )
+    cmd.extend([
+        "--output-format", "json",
+        "--json-schema", json.dumps(schema, ensure_ascii=False),
+        "--permission-mode", "plan",
+    ])
     if model_alias:
         cmd.extend(["--model", model_alias])
+    # -p "prompt" 必须放最后，否则 claude CLI 会忽略 --json-schema
+    cmd.extend(["-p", prompt])
 
     try:
-        # 用 Popen + 实时 stderr 打印，让用户看到 claude 在工作
+        import threading, sys
+
         process = subprocess.Popen(
             cmd,
-            stdin=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
         )
-        if process.stdin:
-            process.stdin.write(prompt)
-            process.stdin.close()
 
-        import threading, sys
-
+        # stderr 线程实时打印 claude 进度
         def _stream_stderr():
             assert process.stderr is not None
             for line in process.stderr:
@@ -1004,19 +997,32 @@ def _run_claude_schema_prompt(
                     sys.stderr.write(f"  [planner] {stripped}\n")
                     sys.stderr.flush()
 
-        t = threading.Thread(target=_stream_stderr, daemon=True)
-        t.start()
+        stderr_thread = threading.Thread(target=_stream_stderr, daemon=True)
+        stderr_thread.start()
 
+        # stdout 单独读（不用 communicate 避免和 stderr 线程冲突）
+        stdout_chunks = []
+
+        def _read_stdout():
+            assert process.stdout is not None
+            stdout_chunks.append(process.stdout.read())
+
+        stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
+        stdout_thread.start()
+
+        # 等待进程结束
         try:
-            stdout_data, _ = process.communicate(timeout=timeout)
+            process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
             raise
-        t.join(timeout=2)
-        result_stdout = stdout_data or ""
+
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=2)
+
+        result_stdout = "".join(stdout_chunks)
         result_returncode = process.returncode
-        result_stderr = ""  # already streamed
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
             f"{provider.name} 在任务拆分阶段超时了，{timeout} 秒内没有返回结果。"
@@ -1024,7 +1030,7 @@ def _run_claude_schema_prompt(
         ) from exc
 
     if result_returncode != 0:
-        hint = _extract_error_hint(result_stderr or result_stdout)
+        hint = _extract_error_hint(result_stdout)
         suffix = f"原因：{hint}" if hint else "请检查 Claude CLI 当前是否可用。"
         raise RuntimeError(f"{provider.name} 没有成功完成任务拆分。{suffix}")
 
