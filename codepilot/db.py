@@ -455,3 +455,60 @@ def list_task_logs(task_id: int) -> list[dict]:
             (task_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+# ── Cleanup helpers ─────────────────────────────────────────────────────────
+
+
+def find_stale_in_progress(
+    project: str,
+    stale_minutes: int = 30,
+) -> list[dict]:
+    """Return in_progress tasks whose heartbeat exceeds *stale_minutes*."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM tasks
+            WHERE project = ?
+              AND status = 'in_progress'
+              AND heartbeat_at IS NOT NULL
+              AND (julianday('now') - julianday(heartbeat_at)) * 1440 > ?
+            """,
+            (project, stale_minutes),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def find_orphan_log_paths(project: str) -> list[dict]:
+    """Return tasks whose current_log_path is set but the file no longer exists."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM tasks
+            WHERE project = ?
+              AND current_log_path IS NOT NULL
+              AND current_log_path != ''
+            """,
+            (project,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def find_old_done_tasks(
+    project: str,
+    retention_days: int = 30,
+) -> list[dict]:
+    """Return done tasks older than *retention_days* that still have a log path."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM tasks
+            WHERE project = ?
+              AND status = 'done'
+              AND current_log_path IS NOT NULL
+              AND current_log_path != ''
+              AND (julianday('now') - julianday(COALESCE(completed_at, created_at))) > ?
+            """,
+            (project, retention_days),
+        ).fetchall()
+        return [dict(r) for r in rows]
