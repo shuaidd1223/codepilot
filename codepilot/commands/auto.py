@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import sys
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -350,6 +353,8 @@ def _chat_help() -> str:
             "  /help               查看帮助",
             "  /exit               退出会话",
             "  /status             查看当前项目任务看板",
+            "  /history            查看对话记录",
+            "  /clear              清空对话历史",
             "  /project <name>     切换项目",
             "  /agent <name>       切换默认任务智能体（如 codex / claude / dual）",
             "  /execute on|off     切换默认是否自动执行",
@@ -360,6 +365,8 @@ def _chat_help() -> str:
             "  ? <文本>            当作问题直接回答，不建任务",
             "  ! <文本>            当作单任务，不拆分",
             "  # <文本>            当作需求，强制拆分",
+            "",
+            "会话内会自动记住上下文，连续提问无需重复说明。",
         ]
     )
 
@@ -376,6 +383,39 @@ def _parse_intent_prefix(text: str) -> tuple[Optional[str], str]:
     if first == "#" and rest:
         return "requirement", rest
     return None, text
+
+
+class _Spinner:
+    """Simple inline spinner for long-running operations."""
+
+    FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def __init__(self, message: str = "思考中"):
+        self._message = message
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self):
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=1)
+        sys.stderr.write("\r\033[K")
+        sys.stderr.flush()
+
+    def _spin(self):
+        i = 0
+        while not self._stop.is_set():
+            frame = self.FRAMES[i % len(self.FRAMES)]
+            sys.stderr.write(f"\r  {frame} {self._message}...")
+            sys.stderr.flush()
+            i += 1
+            self._stop.wait(0.1)
 
 
 def run_chat_session(
@@ -402,11 +442,15 @@ def run_chat_session(
     default_execute = effective["auto_execute"] if execute is None else execute
     default_agent = _resolve_task_agent(project_info, task_agent, effective["executor"])
 
+    # 会话历史（跨 turn 记忆）
+    chat_history: list[dict] = []
+
     echo(
         f"[cyan]CodePilot Chat[/cyan]  项目: {project_info['name']}  "
         f"planner={effective['planner']} executor={effective['executor']} agent={default_agent}"
     )
-    echo("[dim]直接输入需求文本即可。输入 /help 查看会话命令。[/dim]")
+    echo("[dim]直接输入文本即可。问题会直接回答，需求会自动规划执行。[/dim]")
+    echo("[dim]输入 /help 查看命令，/history 查看对话记录。[/dim]")
     echo()
 
     while True:
@@ -482,6 +526,21 @@ def run_chat_session(
                 echo("[green][OK] 下一条需求将自动执行[/green]")
                 continue
 
+            if cmd == "/history":
+                if not chat_history:
+                    echo("[dim]暂无对话记录[/dim]")
+                else:
+                    for i, turn in enumerate(chat_history, 1):
+                        intent_tag = turn.get("intent", "?")
+                        echo(f"[dim]#{i}[/dim] [{intent_tag}] {turn['user'][:80]}")
+                        if turn.get("assistant"):
+                            click.echo(f"  → {turn['assistant'][:120]}")
+                continue
+            if cmd == "/clear":
+                chat_history.clear()
+                echo("[green]对话历史已清空[/green]")
+                continue
+
             echo("[yellow]未知会话命令[/yellow]")
             click.echo(_chat_help())
             continue
@@ -511,13 +570,15 @@ def run_chat_session(
                     api_key=api_key,
                 )
                 intent = result["intent"]
-                echo(f"[dim]意图={intent} source={result.get('source','')} {result.get('reason','')}[/dim]")
+                echo(f"[dim]  {intent} | {result.get('reason','')}[/dim]")
             except Exception as exc:
                 echo(f"[yellow]意图分类失败，按需求处理：{safe(exc)}[/yellow]")
                 intent = "requirement"
 
+        assistant_response = ""
         try:
             if intent == "command":
+                assistant_response = "请使用对应的 CLI 命令操作"
                 echo(
                     "[yellow]这看起来是在调用 codepilot 自身命令，请直接用下面的入口：[/yellow]"
                 )
@@ -530,51 +591,68 @@ def run_chat_session(
                     "  发布打包:  codepilot release prepare --version <版本>"
                 )
                 click.echo()
-                continue
-            if intent == "question":
+            elif intent == "question":
                 cfg = _project_config(project_info)
                 classifier_cfg = getattr(cfg, "classifier", None)
                 provider_key = classifier_cfg.provider if classifier_cfg else ""
                 api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
-                answer = answer_question_via_api(
-                    provider_key=provider_key,
-                    question=payload_text,
-                    project_path=project_info["path"],
-                    model_override=classifier_cfg.model if classifier_cfg else "",
-                    api_key=api_key,
-                )
+                with _Spinner("正在思考"):
+                    answer = answer_question_via_api(
+                        provider_key=provider_key,
+                        question=payload_text,
+                        project_path=project_info["path"],
+                        model_override=classifier_cfg.model if classifier_cfg else "",
+                        api_key=api_key,
+                        history=chat_history,
+                    )
                 if answer:
+                    click.echo()
                     click.echo(answer)
+                    assistant_response = answer
                 else:
                     echo("[yellow]未获得回答[/yellow]")
             elif intent == "task":
-                run_requirement_workflow(
-                    project_info=project_info,
-                    title=payload_text,
-                    planner=effective["planner"],
-                    task_agent=default_agent,
-                    execute=default_execute,
-                    executor=effective["executor"],
-                    auto_commit=effective["auto_commit"],
-                    max_tasks=1,
-                    max_retries=effective["max_retries"],
-                )
+                echo(f"[cyan]收到任务，开始执行...[/cyan]")
+                with _Spinner("正在规划"):
+                    run_requirement_workflow(
+                        project_info=project_info,
+                        title=payload_text,
+                        planner=effective["planner"],
+                        task_agent=default_agent,
+                        execute=default_execute,
+                        executor=effective["executor"],
+                        auto_commit=effective["auto_commit"],
+                        max_tasks=1,
+                        max_retries=effective["max_retries"],
+                    )
+                assistant_response = "任务已创建并执行"
             else:
-                run_requirement_workflow(
-                    project_info=project_info,
-                    title=payload_text,
-                    planner=effective["planner"],
-                    task_agent=default_agent,
-                    execute=default_execute,
-                    executor=effective["executor"],
-                    auto_commit=effective["auto_commit"],
-                    max_tasks=effective["max_tasks"],
-                    max_retries=effective["max_retries"],
-                )
+                with _Spinner("正在规划"):
+                    run_requirement_workflow(
+                        project_info=project_info,
+                        title=payload_text,
+                        planner=effective["planner"],
+                        task_agent=default_agent,
+                        execute=default_execute,
+                        executor=effective["executor"],
+                        auto_commit=effective["auto_commit"],
+                        max_tasks=effective["max_tasks"],
+                        max_retries=effective["max_retries"],
+                    )
+                assistant_response = "需求已规划"
         except click.ClickException as exc:
             echo(f"[red]{exc.format_message()}[/red]")
+            assistant_response = f"错误: {exc.format_message()}"
         except Exception as exc:
             echo(f"[red]{safe(exc)}[/red]")
+            assistant_response = f"错误: {exc}"
+
+        # 保存对话历史
+        chat_history.append({
+            "user": payload_text,
+            "assistant": assistant_response,
+            "intent": intent or "unknown",
+        })
         click.echo()
 
 

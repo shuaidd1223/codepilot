@@ -1440,13 +1440,22 @@ def answer_question_via_api(
     project_path: str = "",
     model_override: str = "",
     api_key: Optional[str] = None,
+    history: list[dict] | None = None,
 ) -> str:
     """Answer a user question directly without creating a task."""
     context = _collect_project_context(project_path)
+    history_block = ""
+    if history:
+        lines = []
+        for turn in history[-10:]:  # 最多保留最近 10 轮
+            lines.append(f"用户: {turn['user']}")
+            if turn.get("assistant"):
+                lines.append(f"助手: {turn['assistant'][:300]}")
+        history_block = "\n## 对话历史\n" + "\n".join(lines) + "\n"
     prompt = (
-        "你是当前项目的协作助手。请基于下面的项目上下文，"
+        "你是当前项目的协作助手。请基于下面的项目上下文和对话历史，"
         "用简洁中文直接回答用户的问题。如果不确定，明确说不确定。\n\n"
-        f"## 项目上下文\n{context}\n\n## 用户问题\n{question}"
+        f"## 项目上下文\n{context}\n{history_block}\n## 用户问题\n{question}"
     )
     if provider_key and provider_key in API_PROVIDERS:
         provider = replace(API_PROVIDERS[provider_key])

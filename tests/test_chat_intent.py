@@ -58,7 +58,7 @@ def test_chat_question_heuristic_does_not_create_task(tmp_path, monkeypatch):
     result = runner.invoke(main, ["chat"], input="怎么用这个工具\n/exit\n")
 
     assert result.exit_code == 0
-    assert "意图=question" in result.output
+    assert "question" in result.output
     assert "CodePilot 是一个工作流工具" in result.output
     # Should NOT have created any task
     tasks = db.list_tasks(project="demo")
@@ -98,7 +98,7 @@ def test_chat_requirement_heuristic_triggers_planning(tmp_path, monkeypatch):
     result = runner.invoke(main, ["chat"], input="帮我修复登录 bug\n/exit\n")
 
     assert result.exit_code == 0
-    assert "意图=requirement" in result.output
+    assert "requirement" in result.output
     assert "收到需求" in result.output
     assert planning_called["count"] >= 1, "Planning should have been triggered"
 
@@ -120,7 +120,7 @@ def test_chat_command_heuristic_shows_help(tmp_path, monkeypatch):
     result = runner.invoke(main, ["chat"], input="查看状态\n/exit\n")
 
     assert result.exit_code == 0
-    assert "意图=command" in result.output
+    assert "command" in result.output
     assert "codepilot status" in result.output
     # No task created
     tasks = db.list_tasks(project="demo")
