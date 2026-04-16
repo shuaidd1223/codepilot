@@ -968,7 +968,7 @@ def _run_claude_schema_prompt(
     cmd.extend([
         "--output-format", "json",
         "--json-schema", json.dumps(schema, ensure_ascii=False),
-        "--tools", "",
+        "--dangerously-skip-permissions",
     ])
     if model_alias:
         cmd.extend(["--model", model_alias])
@@ -1331,7 +1331,7 @@ def _classify_via_claude_cli(
         str(exe),
         "--output-format", "json",
         "--json-schema", json.dumps(INTENT_SCHEMA, ensure_ascii=False),
-        "--tools", "",
+        "--dangerously-skip-permissions",
         "-p", prompt,
     ]
     result = subprocess.run(
