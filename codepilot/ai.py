@@ -414,6 +414,7 @@ TASK_BREAKDOWN_SCHEMA = {
                     "reviewer_notes",
                     "files",
                     "notes",
+                    "depends_on_indices",
                 ],
                 "additionalProperties": False,
             },
@@ -553,6 +554,30 @@ def resolve_cli_provider(provider_key: str, project_path: str | Path | None = No
     if override and override != provider.cmd:
         return replace(provider, cmd=override)
     return provider
+
+
+def _ensure_claude_git_bash_env() -> None:
+    """On Windows, auto-detect git-bash and set CLAUDE_CODE_GIT_BASH_PATH if missing."""
+    if platform.system().lower() != "windows":
+        return
+    if os.environ.get("CLAUDE_CODE_GIT_BASH_PATH"):
+        return
+    for candidate in [
+        Path("D:/Program Files/Git/bin/bash.exe"),
+        Path("C:/Program Files/Git/bin/bash.exe"),
+        Path("C:/Program Files (x86)/Git/bin/bash.exe"),
+    ]:
+        if candidate.exists():
+            os.environ["CLAUDE_CODE_GIT_BASH_PATH"] = str(candidate)
+            return
+    # Try to find via PATH
+    bash = shutil.which("bash")
+    if bash:
+        os.environ["CLAUDE_CODE_GIT_BASH_PATH"] = bash
+
+
+# Auto-run on import for Windows
+_ensure_claude_git_bash_env()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
