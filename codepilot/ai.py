@@ -140,7 +140,7 @@ CLI_PROVIDERS: dict[str, CLIProvider] = {
     "claude": CLIProvider(
         name="Claude Code",
         cmd="claude",
-        args_template=["-p", "{prompt}", "--output-format", "text"],
+        args_template=["-p", "{prompt}", "--output-format", "text", "--dangerously-skip-permissions"],
         timeout=180,
     ),
     # Claude Code via Node.js（Windows 兼容）
@@ -149,7 +149,7 @@ CLI_PROVIDERS: dict[str, CLIProvider] = {
         cmd="node",
         args_template=[
             "{node_modules}/@anthropic-ai/claude-code/cli.js",
-            "-p", "{prompt}", "--output-format", "text"
+            "-p", "{prompt}", "--output-format", "text", "--dangerously-skip-permissions"
         ],
         timeout=180,
     ),
@@ -157,7 +157,11 @@ CLI_PROVIDERS: dict[str, CLIProvider] = {
     "codex": CLIProvider(
         name="OpenAI Codex",
         cmd="codex",
-        args_template=["-p", "{prompt}"],
+        args_template=[
+            "exec", "--ephemeral", "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "{prompt}",
+        ],
         timeout=180,
     ),
     # Google Gemini CLI（如果有）
@@ -1533,12 +1537,13 @@ def _answer_via_local_cli(prompt: str, project_path: str = "", timeout: int = 12
         if not exe:
             continue
 
-        cmd = [str(exe), "-p", "--output-format", "text"]
         if cli_name == "codex":
             cmd = [str(exe), "exec", "--skip-git-repo-check", "--ephemeral",
                    "--dangerously-bypass-approvals-and-sandbox"]
             if project_path:
                 cmd = [str(exe), "-C", project_path] + cmd[1:]
+        else:
+            cmd = [str(exe), "-p", "--output-format", "text", "--dangerously-skip-permissions"]
 
         try:
             result = subprocess.run(

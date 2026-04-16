@@ -429,6 +429,22 @@ class _Spinner:
             self._stop.wait(0.1)
 
 
+def _start_chat_ui(port: int = 8766):
+    """Start Web UI in a background daemon thread for chat mode."""
+    try:
+        from codepilot.webui import start_ui_server
+        server = start_ui_server(host="127.0.0.1", port=port, open_browser=False)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        echo(f"[dim]Web UI 已启动: http://127.0.0.1:{port}/[/dim]")
+        return server
+    except OSError:
+        # 端口被占用，可能已有其他实例在跑
+        return None
+    except Exception:
+        return None
+
+
 def run_chat_session(
     *,
     project: Optional[str] = None,
@@ -439,6 +455,8 @@ def run_chat_session(
     auto_commit: Optional[bool] = None,
     max_tasks: int = 0,
     max_retries: int = 0,
+    enable_ui: bool = True,
+    ui_port: int = 8766,
 ) -> None:
     """Run a simple REPL that accepts plain-text requirements."""
     project_info = resolve_project_for_prompt(project)
@@ -453,6 +471,11 @@ def run_chat_session(
     default_execute = effective["auto_execute"] if execute is None else execute
     default_agent = _resolve_task_agent(project_info, task_agent, effective["executor"])
 
+    # 自动启动 Web UI
+    ui_server = None
+    if enable_ui:
+        ui_server = _start_chat_ui(ui_port)
+
     # 会话历史（跨 turn 记忆）
     chat_history: list[dict] = []
 
@@ -464,11 +487,17 @@ def run_chat_session(
     echo("[dim]输入 /help 查看命令，/history 查看对话记录。[/dim]")
     echo()
 
+    def _shutdown_ui():
+        if ui_server:
+            ui_server.shutdown()
+            ui_server.server_close()
+
     while True:
         try:
             raw = click.prompt("codepilot", prompt_suffix="> ", default="", show_default=False)
         except (EOFError, KeyboardInterrupt):
             echo()
+            _shutdown_ui()
             echo("[dim]会话已结束[/dim]")
             return
 
@@ -481,6 +510,7 @@ def run_chat_session(
             cmd = parts[0].lower()
 
             if cmd == "/exit":
+                _shutdown_ui()
                 echo("[dim]会话已结束[/dim]")
                 return
             if cmd == "/help":
@@ -854,6 +884,8 @@ def go(
 @click.option("--auto-commit/--no-auto-commit", default=None, help="是否自动提交；默认跟随配置")
 @click.option("--max-tasks", type=int, default=0, help="最大拆分任务数；0 表示读取配置")
 @click.option("--max-retries", type=int, default=0, help="最大重试次数；0 表示读取配置")
+@click.option("--ui/--no-ui", "enable_ui", default=True, help="是否自动启动 Web UI（默认开启）")
+@click.option("--ui-port", type=int, default=8766, help="Web UI 端口")
 @click.pass_context
 def chat(
     ctx: click.Context,
@@ -865,6 +897,8 @@ def chat(
     auto_commit: Optional[bool],
     max_tasks: int,
     max_retries: int,
+    enable_ui: bool,
+    ui_port: int,
 ):
     """Start an interactive natural-language session."""
     root_obj = _root_options(ctx)
@@ -890,4 +924,6 @@ def chat(
         auto_commit=auto_commit,
         max_tasks=max_tasks,
         max_retries=max_retries,
+        enable_ui=enable_ui,
+        ui_port=ui_port,
     )
