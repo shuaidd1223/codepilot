@@ -1330,11 +1330,31 @@ def _heuristic_intent(text: str) -> Optional[str]:
     question_starts = (
         "怎么", "如何", "为什么", "为啥", "什么是", "什么叫",
         "能不能", "可不可以", "是不是", "有没有", "哪里", "哪个",
-        "解释", "说明", "介绍",
+        "解释", "说明", "介绍", "告诉我", "请问",
     )
     for word in question_starts:
         if t.startswith(word):
             return "question"
+    # 句中含疑问词（"做什么的"、"是什么"、"有哪些"、"怎样"、"吗"结尾等）
+    question_contains = (
+        "是什么", "做什么", "有什么", "有哪些", "哪些", "怎样", "怎么样",
+        "能做什么", "提供什么", "支持什么", "包含什么",
+        "是干什么", "干什么的", "干嘛的", "用来做什么",
+        "多少", "几个", "啥意思", "什么意思",
+    )
+    for word in question_contains:
+        if word in t:
+            return "question"
+    if t.endswith("吗") or t.endswith("呢") or t.endswith("吧？"):
+        return "question"
+    # 含"帮我""实现""修复""添加""优化"等动词 → requirement
+    requirement_verbs = (
+        "帮我", "实现", "修复", "修改", "添加", "新增", "优化", "重构",
+        "删除", "移除", "升级", "迁移", "部署", "接入",
+    )
+    for word in requirement_verbs:
+        if word in t:
+            return "requirement"
     return None
 
 
