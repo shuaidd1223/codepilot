@@ -10,6 +10,7 @@ from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.markup import escape as _markup_escape
 from rich.text import Text
 from rich.console import Group
 
@@ -27,10 +28,12 @@ STATUS_META = {
 
 
 def _short_text(value: str | None, max_len: int = 80) -> str:
+    """Render untrusted text safely for a rich Table cell (escapes markup)."""
     text = (value or "").replace("\n", " ").strip()
     if not text:
         return "-"
-    return (text[: max_len - 3] + "...") if len(text) > max_len else text
+    truncated = (text[: max_len - 3] + "...") if len(text) > max_len else text
+    return _markup_escape(truncated)
 
 
 def _status_badge(status: str) -> str:
@@ -102,34 +105,23 @@ def render_project_dashboard(
         echo(f"[red]错误：项目 '{project}' 未注册[/red]")
         return
 
-    console = console or Console(width=160)
+    import shutil
+    term_width = shutil.get_terminal_size((120, 24)).columns
+    console = console or Console(width=min(term_width, 140))
     stats = db.get_task_stats(project)
     header = title or f"CodePilot  {project}"
+
+    # 紧凑统计行（替代 6 个 Panel 方块）
+    stat_line = (
+        f"[blue]进行中:{stats['in_progress']}[/blue]  "
+        f"[yellow]待办:{stats['backlog']}[/yellow]  "
+        f"[red]失败:{stats['failed']}[/red]  "
+        f"[green]完成:{stats['done']}[/green]  "
+        f"[cyan]总计:{stats['total']}[/cyan]"
+    )
     console.print()
-    console.print(
-        Panel(
-            Group(
-                Text(header, style="bold cyan"),
-                Text(str(proj["path"]), style="dim"),
-            ),
-            border_style="cyan",
-            padding=(0, 1),
-        )
-    )
-    console.print(
-        Columns(
-            [
-                _metric_panel("进行中", stats["in_progress"], "blue"),
-                _metric_panel("待办", stats["backlog"], "yellow"),
-                _metric_panel("失败", stats["failed"], "red"),
-                _metric_panel("已完成", stats["done"], "green"),
-                _metric_panel("已取消", stats["cancelled"], "magenta"),
-                _metric_panel("总数", stats["total"], "cyan"),
-            ],
-            expand=True,
-            equal=True,
-        )
-    )
+    console.print(f"[bold cyan]{header}[/bold cyan]  {stat_line}")
+    console.print(f"[dim]{proj['path']}[/dim]")
     console.print()
 
     tasks = db.list_tasks(project=project)

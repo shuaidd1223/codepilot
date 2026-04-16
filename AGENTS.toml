@@ -7,7 +7,7 @@ name = "codepilot-dev"
 # Git 主分支
 base_branch = "dev"
 # 默认任务智能体
-default_mode = "codex"
+default_mode = "claude"
 # Worktree 隔离目录，空值则自动推导到 ~/.codepilot/worktrees/<project>/
 worktree_base = ""
 
@@ -24,7 +24,7 @@ stale_minutes = 30
 
 [automation]
 # 纯文本需求默认使用 Codex 规划和执行
-planner = "codex"
+planner = "claude"
 executor = "builtin"
 # 输入需求后默认直接执行；如果只想先规划，可命令行加 --no-execute
 auto_execute = true
@@ -36,6 +36,8 @@ auto_commit = true
 max_tasks = 5
 # 每个子任务最多重试次数
 max_retries = 3
+# 为每个任务自动创建 feat/task-<id>-<slug> 分支，成功后合并回 base_branch
+per_task_branch = true
 
 [notifications]
 # 飞书/企微 Webhook URL

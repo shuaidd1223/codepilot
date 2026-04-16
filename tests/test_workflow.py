@@ -14,6 +14,7 @@ from codepilot import ai as ai_mod
 from codepilot import runtime as runtime_mod
 from codepilot import webui as webui_mod
 from codepilot.cli import main
+from codepilot.commands import add as add_cmd
 from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
 
@@ -591,6 +592,29 @@ def test_batch_add_with_default_agent_does_not_require_click_context(tmp_path, m
     assert all(task["agent"] == "codex" for task in tasks)
 
 
+def test_add_command_preserves_utf8_title_and_content_round_trip(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    title = "修复任务标题/内容在 Windows 控制台显示乱码"
+    content = "# 任务说明\n\n1. 标题需要原样保留\n2. 内容也要原样保留"
+
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+    monkeypatch.setattr(add_cmd, "generate_task_content", lambda *args, **kwargs: content)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["add", "-p", "demo", "-t", title, "-a", "codex"])
+
+    assert result.exit_code == 0
+    created = db.list_tasks(project="demo")
+    assert len(created) == 1
+    assert created[0]["title"] == title
+    assert created[0]["content"] == content
+
+
 def test_chat_command_accepts_plain_text_and_exit(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
@@ -650,7 +674,7 @@ def test_chat_status_renders_dashboard(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert called["args"][0] == "demo"
-    assert called["kwargs"]["title"] == "当前任务面板"
+    assert "demo" in called["kwargs"]["title"]
 
 
 def test_go_command_wraps_runtime_error_as_click_exception(tmp_path, monkeypatch):
@@ -868,6 +892,90 @@ def test_resolve_task_agent_preserves_dual(monkeypatch):
 def test_resolve_builtin_phase_agent_uses_dual_split():
     assert run_cmd._resolve_builtin_phase_agent("dual", "builder") == ("codex", None)
     assert run_cmd._resolve_builtin_phase_agent("dual", "reviewer") == ("claude", None)
+
+
+def test_task_branch_name_uses_slug_and_fallback():
+    assert run_cmd._task_branch_name(20, "Add API endpoint") == "feat/task-20-add-api-endpoint"
+    assert run_cmd._task_branch_name(21, "实现中文能力") == "feat/task-21-task"
+
+
+def test_run_backlog_creates_task_branch_and_checks_out_base_after_merge(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    db.register_project("demo", str(project_path), base_branch=base_branch)
+    task = db.create_task("demo", "Add API endpoint", agent="dual", max_retries=2)
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin"),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=True)
+    current = db.get_task(task["id"])
+    expected_branch = run_cmd._task_branch_name(task["id"], task["title"])
+
+    assert stats["done"] == 1
+    assert current["status"] == "done"
+    assert current["branch_name"] == expected_branch
+
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
+    assert code == 0
+    assert output.strip() == base_branch
+
+    code, output = run_cmd._run_command(["git", "branch", "--list", expected_branch], cwd=project_path, timeout=30)
+    assert code == 0
+    assert expected_branch not in output, "task branch should be deleted after merge"
+
+
+def test_run_backlog_requeues_when_merge_back_fails_with_uncommitted_changes(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    db.register_project("demo", str(project_path), base_branch=base_branch)
+    task = db.create_task("demo", "leave dirty file", agent="dual", max_retries=3)
+
+    def _fake_executor(*args, **kwargs):
+        (project_path / "dirty.txt").write_text("left dirty", encoding="utf-8")
+        return run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin")
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", _fake_executor)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+    expected_branch = run_cmd._task_branch_name(task["id"], task["title"])
+
+    assert stats["requeued"] == 1
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 1
+    assert "回合并失败" in (current["error_message"] or "")
+
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
+    assert code == 0
+    assert output.strip() == expected_branch
 
 
 def test_run_builtin_phase_codex_review_omits_prompt(monkeypatch, tmp_path):
@@ -1165,6 +1273,127 @@ def test_reap_stalled_tasks_marks_dead_in_progress_task_failed(tmp_path, monkeyp
     assert len(reaped) == 1
     assert current["status"] == "failed"
     assert "心跳已超过" in (current["error_message"] or "")
+
+
+def test_reap_stalled_tasks_cleans_dead_process_tree_before_marking_failed(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "stale task", agent="codex")
+
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        started_at="2026-01-01T00:00:00",
+        heartbeat_at="2026-01-01T00:00:00",
+        active_pid=123456,
+        run_phase="builder",
+    )
+
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: False)
+    killed: list[int] = []
+    monkeypatch.setattr(runtime_mod, "stop_process_tree", lambda pid, wait_seconds=5: killed.append(int(pid)) or True)
+
+    reaped = runtime_mod.reap_stalled_tasks("demo", stale_after_seconds=1)
+    current = db.get_task(task["id"])
+
+    assert len(reaped) == 1
+    assert killed == [123456]
+    assert current["status"] == "failed"
+
+
+def test_stop_process_tree_windows_kills_descendants_even_if_root_is_gone(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(runtime_mod.platform, "system", lambda: "Windows")
+
+    processes = {
+        200: {"parent": 100, "name": "codex.exe"},
+        201: {"parent": 200, "name": "node.exe"},
+    }
+
+    def _descendants(root_pid: int) -> set[int]:
+        found = set()
+        while True:
+            added = {pid for pid, meta in processes.items() if meta["parent"] in ({root_pid} | found)}
+            if added.issubset(found):
+                break
+            found |= added
+        return found
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[0].lower() == "powershell.exe":
+            payload = [
+                {"ProcessId": pid, "ParentProcessId": meta["parent"], "Name": meta["name"]}
+                for pid, meta in sorted(processes.items())
+            ]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[0].lower() == "taskkill":
+            target = int(cmd[cmd.index("/PID") + 1])
+            # Simulate "root is gone": taskkill returns failure and does not cascade
+            if target not in processes:
+                return subprocess.CompletedProcess(cmd, 128, "", "not found")
+            if "/T" in cmd:
+                targets = _descendants(target) | {target}
+            else:
+                targets = {target}
+            for pid in targets:
+                processes.pop(pid, None)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(runtime_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: int(pid) in processes if pid else False)
+
+    tick = {"t": 0.0}
+
+    def fake_monotonic():
+        tick["t"] += 0.4
+        return tick["t"]
+
+    monkeypatch.setattr(runtime_mod.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(runtime_mod.time, "sleep", lambda _: None)
+
+    assert runtime_mod.stop_process_tree(100, wait_seconds=1) is True
+    assert processes == {}
+    assert any(cmd[:4] == ["taskkill", "/PID", "200", "/T"] for cmd in calls)
+    assert any(cmd[:4] == ["taskkill", "/PID", "201", "/T"] for cmd in calls)
+
+
+def test_run_command_live_cleans_process_tree_on_unexpected_exception(tmp_path, monkeypatch):
+    import sys
+
+    log_path = tmp_path / "live.log"
+    monkeypatch.setattr(run_cmd, "update_task_runtime", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "get_stop_request", lambda task_id: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    killed: list[int] = []
+
+    def _tracking_stop(pid):
+        killed.append(int(pid))
+        return runtime_mod.stop_process_tree(pid)
+
+    monkeypatch.setattr(run_cmd, "stop_process_tree", _tracking_stop)
+
+    try:
+        run_cmd._run_command_live(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            task_id=1,
+            phase="builder",
+            log_path=log_path,
+            timeout=30,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "boom"
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert killed
+    assert not runtime_mod.is_process_alive(killed[0])
 
 
 def test_stop_command_cancels_in_progress_task_without_live_process(tmp_path, monkeypatch):
@@ -1771,3 +2000,97 @@ def test_release_verify_alias_invokes_verify(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert "发布目录校验通过" in result.output
+
+
+# ── Task dedup tests ──────────────────────────────────────────────────────────
+
+
+def test_create_task_dedup_returns_existing_backlog_task(tmp_path, monkeypatch):
+    """Submitting the same project+title+content while a backlog task exists returns
+    the original task id instead of creating a duplicate."""
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    first = db.create_task("demo", "implement feature X", content="details")
+    second = db.create_task("demo", "implement feature X", content="details")
+
+    assert first["id"] == second["id"]
+    assert first["dedup_key"] == second["dedup_key"]
+    tasks = db.list_tasks(project="demo")
+    assert len(tasks) == 1
+
+
+def test_create_task_dedup_allows_resubmit_after_done(tmp_path, monkeypatch):
+    """A done task with the same dedup_key should NOT block creating a new task."""
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    first = db.create_task("demo", "implement feature X", content="details")
+    db.update_task(first["id"], status="done")
+
+    second = db.create_task("demo", "implement feature X", content="details")
+
+    assert second["id"] != first["id"]
+    assert second["dedup_key"] == first["dedup_key"]
+
+
+def test_create_task_dedup_allows_resubmit_after_failed(tmp_path, monkeypatch):
+    """A failed task with the same dedup_key should NOT block creating a new task."""
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    first = db.create_task("demo", "implement feature X", content="details")
+    db.update_task(first["id"], status="failed")
+
+    second = db.create_task("demo", "implement feature X", content="details")
+
+    assert second["id"] != first["id"]
+
+
+def test_create_task_dedup_blocks_in_progress_duplicate(tmp_path, monkeypatch):
+    """An in_progress task with the same dedup_key should block creating a duplicate."""
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    first = db.create_task("demo", "implement feature X", content="details")
+    db.update_task(first["id"], status="in_progress")
+
+    second = db.create_task("demo", "implement feature X", content="details")
+
+    assert second["id"] == first["id"]
+
+
+def test_create_task_dedup_prints_notice(tmp_path, monkeypatch, capsys):
+    """When returning an existing task, create_task prints [i] 已存在任务 #N."""
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    first = db.create_task("demo", "implement feature X")
+    db.create_task("demo", "implement feature X")
+
+    captured = capsys.readouterr()
+    assert f"[i] 已存在任务 #{first['id']}" in captured.out
+
+
+def test_create_task_respects_caller_supplied_dedup_key(tmp_path, monkeypatch):
+    """When a caller provides an explicit dedup_key it is used as-is."""
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    first = db.create_task("demo", "task A", dedup_key="custom-key-1234")
+    second = db.create_task("demo", "task B", dedup_key="custom-key-1234")
+
+    assert first["id"] == second["id"]
+    assert first["dedup_key"] == "custom-key-1234"

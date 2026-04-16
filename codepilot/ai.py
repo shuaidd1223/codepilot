@@ -14,6 +14,13 @@ from typing import Optional
 
 from codepilot.config import load_project_config
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stub 注入钩子（供 e2e 测试使用）
+# ═══════════════════════════════════════════════════════════════════════════════
+# 设置后，_run_builtin_phase 会调用此函数代替真实 CLI，
+# 签名: (task: dict, project_path: Path, phase: str, prompt: str) -> tuple[str, int, str]
+_phase_stub: Optional[callable] = None
+
 # API 支持库（可选导入）
 try:
     import openai
@@ -844,6 +851,44 @@ def check_provider_availability(agent: str, project_path: str | Path | None = No
         return False, f"没有找到名为 `{agent}` 的智能体。请改用 codepilot providers 查看可用列表。"
 
 
+def resolve_agent_with_fallback(
+    agent: str,
+    project_path: str | Path | None = None,
+    default_mode: str = "codex",
+) -> tuple[str, str | None]:
+    """Check if *agent* is usable; if not, fall back to *default_mode*.
+
+    Returns:
+        (effective_agent, fallback_reason)  — *fallback_reason* is ``None``
+        when no fallback was needed.
+    """
+    normalized = normalize_agent_name(agent)
+    available, message = check_provider_availability(normalized, project_path=project_path)
+    if available:
+        return normalized, None
+
+    # Determine a usable fallback ------------------------------------------
+    fallback = normalize_agent_name(default_mode) if default_mode else "codex"
+    if fallback == normalized:
+        # The default itself is the failing agent; hard-fallback to codex CLI.
+        fallback = "codex"
+
+    fb_available, fb_msg = check_provider_availability(fallback, project_path=project_path)
+    if not fb_available:
+        # Last resort: try codex
+        fallback = "codex"
+        fb_available, fb_msg = check_provider_availability(fallback, project_path=project_path)
+        if not fb_available:
+            # Nothing works — let the caller decide how to handle it.
+            return normalized, None
+
+    reason = (
+        f"请求的 agent '{agent}' 不可用（{message}），"
+        f"已自动回退到 '{fallback}'"
+    )
+    return fallback, reason
+
+
 _normalize_agent_name = normalize_agent_name
 
 
@@ -920,42 +965,76 @@ def _run_claude_schema_prompt(
             )
         cmd.append(str(cli_js))
 
-    cmd.extend(
-        [
-            "-p",
-            "--output-format",
-            "json",
-            "--json-schema",
-            json.dumps(schema, ensure_ascii=False),
-            "--permission-mode",
-            "plan",
-        ]
-    )
+    cmd.extend([
+        "--output-format", "json",
+        "--json-schema", json.dumps(schema, ensure_ascii=False),
+        "--permission-mode", "plan",
+    ])
     if model_alias:
         cmd.extend(["--model", model_alias])
+    # -p "prompt" 必须放最后，否则 claude CLI 会忽略 --json-schema
+    cmd.extend(["-p", prompt])
 
     try:
-        result = subprocess.run(
+        import threading, sys
+
+        process = subprocess.Popen(
             cmd,
-            input=prompt,
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
         )
+
+        # stderr 线程实时打印 claude 进度
+        def _stream_stderr():
+            assert process.stderr is not None
+            for line in process.stderr:
+                stripped = line.rstrip()
+                if stripped:
+                    sys.stderr.write(f"  [planner] {stripped}\n")
+                    sys.stderr.flush()
+
+        stderr_thread = threading.Thread(target=_stream_stderr, daemon=True)
+        stderr_thread.start()
+
+        # stdout 单独读（不用 communicate 避免和 stderr 线程冲突）
+        stdout_chunks = []
+
+        def _read_stdout():
+            assert process.stdout is not None
+            stdout_chunks.append(process.stdout.read())
+
+        stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
+        stdout_thread.start()
+
+        # 等待进程结束
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            raise
+
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=2)
+
+        result_stdout = "".join(stdout_chunks)
+        result_returncode = process.returncode
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
             f"{provider.name} 在任务拆分阶段超时了，{timeout} 秒内没有返回结果。"
             "可以稍后重试，或改用 codex 作为规划器。"
         ) from exc
 
-    if result.returncode != 0:
-        hint = _extract_error_hint(result.stderr or result.stdout)
+    if result_returncode != 0:
+        hint = _extract_error_hint(result_stdout)
         suffix = f"原因：{hint}" if hint else "请检查 Claude CLI 当前是否可用。"
         raise RuntimeError(f"{provider.name} 没有成功完成任务拆分。{suffix}")
 
-    output = (result.stdout or "").strip()
+    output = result_stdout.strip()
     if not output:
         raise RuntimeError("Claude 任务拆分返回空内容")
 
@@ -1019,29 +1098,57 @@ def _run_codex_schema_prompt(
         )
 
         try:
-            result = subprocess.run(
+            import threading as _threading
+
+            process = subprocess.Popen(
                 cmd,
-                input=prompt,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=timeout,
             )
+            if process.stdin:
+                process.stdin.write(prompt)
+                process.stdin.close()
+
+            def _stream_codex_stderr():
+                assert process.stderr is not None
+                for line in process.stderr:
+                    stripped = line.rstrip()
+                    if stripped:
+                        import sys
+                        sys.stderr.write(f"  [planner] {stripped}\n")
+                        sys.stderr.flush()
+
+            st = _threading.Thread(target=_stream_codex_stderr, daemon=True)
+            st.start()
+
+            try:
+                stdout_data, _ = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                raise
+            st.join(timeout=2)
+            codex_returncode = process.returncode
+            codex_stdout = stdout_data or ""
+            codex_stderr = ""
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
                 f"Codex 在任务拆分阶段超时了，{timeout} 秒内没有返回结果。"
                 "可以稍后重试，或改用 claude 作为规划器。"
             ) from exc
 
-        if result.returncode != 0:
-            hint = _extract_error_hint(result.stderr or result.stdout)
+        if codex_returncode != 0:
+            hint = _extract_error_hint(codex_stderr or codex_stdout)
             suffix = f"原因：{hint}" if hint else "请检查 Codex CLI 当前是否可用。"
             raise RuntimeError(f"Codex 没有成功完成任务拆分。{suffix}")
 
         output = output_path.read_text(encoding="utf-8", errors="replace").strip() if output_path.exists() else ""
         if not output:
-            output = (result.stdout or "").strip()
+            output = codex_stdout.strip()
         if not output:
             raise RuntimeError("Codex 没有返回任务拆分结果，暂时无法继续自动规划。")
 
@@ -1208,6 +1315,46 @@ def _classify_via_codex(
     )
 
 
+def _classify_via_claude_cli(
+    text: str,
+    project_path: str = "",
+    timeout: int = 30,
+) -> dict:
+    """Use local claude CLI with --json-schema for intent classification."""
+    provider = resolve_cli_provider("claude", project_path or None)
+    exe = provider.find_executable()
+    if not exe:
+        raise RuntimeError("claude CLI 不可用")
+
+    prompt = INTENT_PROMPT.format(text=text)
+    cmd = [
+        str(exe),
+        "--output-format", "json",
+        "--json-schema", json.dumps(INTENT_SCHEMA, ensure_ascii=False),
+        "--permission-mode", "plan",
+        "-p", prompt,
+    ]
+    result = subprocess.run(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("claude 分类失败")
+    output = (result.stdout or "").strip()
+    if not output:
+        raise RuntimeError("claude 分类返回空内容")
+    payload = json.loads(output)
+    # claude --output-format json wraps result in envelope
+    if isinstance(payload, dict) and "structured_output" in payload:
+        return payload["structured_output"]
+    return payload
+
+
 def _heuristic_intent(text: str) -> Optional[str]:
     """Cheap rule-based pre-filter. Returns None if unsure."""
     t = text.strip()
@@ -1229,11 +1376,31 @@ def _heuristic_intent(text: str) -> Optional[str]:
     question_starts = (
         "怎么", "如何", "为什么", "为啥", "什么是", "什么叫",
         "能不能", "可不可以", "是不是", "有没有", "哪里", "哪个",
-        "解释", "说明", "介绍",
+        "解释", "说明", "介绍", "告诉我", "请问",
     )
     for word in question_starts:
         if t.startswith(word):
             return "question"
+    # 句中含疑问词（"做什么的"、"是什么"、"有哪些"、"怎样"、"吗"结尾等）
+    question_contains = (
+        "是什么", "做什么", "有什么", "有哪些", "哪些", "怎样", "怎么样",
+        "能做什么", "提供什么", "支持什么", "包含什么",
+        "是干什么", "干什么的", "干嘛的", "用来做什么",
+        "多少", "几个", "啥意思", "什么意思",
+    )
+    for word in question_contains:
+        if word in t:
+            return "question"
+    if t.endswith("吗") or t.endswith("呢") or t.endswith("吧？"):
+        return "question"
+    # 含"帮我""实现""修复""添加""优化"等动词 → requirement
+    requirement_verbs = (
+        "帮我", "实现", "修复", "修改", "添加", "新增", "优化", "重构",
+        "删除", "移除", "升级", "迁移", "部署", "接入",
+    )
+    for word in requirement_verbs:
+        if word in t:
+            return "requirement"
     return None
 
 
@@ -1287,6 +1454,19 @@ def classify_intent(
     else:
         last_error = ""
 
+    # Local claude CLI fallback（比 codex 快）
+    try:
+        payload = _classify_via_claude_cli(text, project_path=project_path, timeout=timeout)
+        intent = payload.get("intent")
+        if intent in valid_intents:
+            return {
+                "intent": intent,
+                "reason": payload.get("reason", ""),
+                "source": "claude-cli",
+            }
+    except Exception:
+        pass
+
     # Local codex fallback
     try:
         payload = _classify_via_codex(text, project_path=project_path, timeout=timeout)
@@ -1313,13 +1493,22 @@ def answer_question_via_api(
     project_path: str = "",
     model_override: str = "",
     api_key: Optional[str] = None,
+    history: list[dict] | None = None,
 ) -> str:
     """Answer a user question directly without creating a task."""
     context = _collect_project_context(project_path)
+    history_block = ""
+    if history:
+        lines = []
+        for turn in history[-10:]:  # 最多保留最近 10 轮
+            lines.append(f"用户: {turn['user']}")
+            if turn.get("assistant"):
+                lines.append(f"助手: {turn['assistant'][:300]}")
+        history_block = "\n## 对话历史\n" + "\n".join(lines) + "\n"
     prompt = (
-        "你是当前项目的协作助手。请基于下面的项目上下文，"
+        "你是当前项目的协作助手。请基于下面的项目上下文和对话历史，"
         "用简洁中文直接回答用户的问题。如果不确定，明确说不确定。\n\n"
-        f"## 项目上下文\n{context}\n\n## 用户问题\n{question}"
+        f"## 项目上下文\n{context}\n{history_block}\n## 用户问题\n{question}"
     )
     if provider_key and provider_key in API_PROVIDERS:
         provider = replace(API_PROVIDERS[provider_key])
@@ -1328,15 +1517,41 @@ def answer_question_via_api(
         if api_key:
             provider.api_key = api_key
         return _run_api_provider(provider, prompt)
-    # 无 API 时回退到 codex 简短回答
-    return _run_codex_schema_prompt(
-        prompt + "\n\n请以 JSON 返回：{\"answer\": \"...\"}",
-        {
-            "type": "object",
-            "properties": {"answer": {"type": "string"}},
-            "required": ["answer"],
-            "additionalProperties": False,
-        },
-        project_path=project_path,
-        timeout=60,
-    ).get("answer", "")
+    # 无 API 时用本地 claude CLI 回答
+    return _answer_via_local_cli(prompt, project_path=project_path)
+
+
+def _answer_via_local_cli(prompt: str, project_path: str = "", timeout: int = 120) -> str:
+    """Use claude or codex CLI to answer a question directly."""
+    # 优先 claude
+    for cli_name in ("claude", "codex"):
+        try:
+            provider = resolve_cli_provider(cli_name, project_path or None)
+            exe = provider.find_executable()
+        except Exception:
+            continue
+        if not exe:
+            continue
+
+        cmd = [str(exe), "-p", "--output-format", "text"]
+        if cli_name == "codex":
+            cmd = [str(exe), "exec", "--skip-git-repo-check", "--ephemeral",
+                   "--dangerously-bypass-approvals-and-sandbox"]
+            if project_path:
+                cmd = [str(exe), "-C", project_path] + cmd[1:]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+            if result.returncode == 0 and (result.stdout or "").strip():
+                return result.stdout.strip()
+        except Exception:
+            continue
+    return ""

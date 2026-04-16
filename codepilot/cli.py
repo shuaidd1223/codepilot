@@ -5,6 +5,10 @@ from __future__ import annotations
 import click
 
 from codepilot import __version__
+from codepilot.console_encoding import configure_console_encoding
+
+configure_console_encoding()
+
 from codepilot.db import init_db
 import codepilot.commands.add as add_cmd
 import codepilot.commands.ai as ai_cmd
@@ -18,6 +22,8 @@ import codepilot.commands.run as run_cmd
 import codepilot.commands.status as status_cmd
 import codepilot.commands.tasks as tasks_cmd
 import codepilot.commands.ui as ui_cmd
+import codepilot.commands.cleanup as cleanup_cmd
+import codepilot.commands.doctor as doctor_cmd
 import codepilot.commands.webhook as webhook_cmd
 
 
@@ -104,6 +110,8 @@ from codepilot.commands import inspect as inspect_cmd  # noqa: E402
 main.add_command(inspect_cmd.inspect)
 main.add_command(webhook_cmd.webhook)
 main.add_command(providers_cmd.providers)
+main.add_command(cleanup_cmd.cleanup)
+main.add_command(doctor_cmd.doctor)
 main.add_command(tasks_cmd.done)
 main.add_command(tasks_cmd.retry)
 main.add_command(tasks_cmd.edit)

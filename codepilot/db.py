@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -121,6 +122,7 @@ def init_db() -> None:
         _ensure_column(conn, "tasks", "stop_reason", "TEXT")
         _ensure_column(conn, "tasks", "source", "TEXT NOT NULL DEFAULT 'user'")
         _ensure_column(conn, "tasks", "dedup_key", "TEXT")
+        _ensure_column(conn, "tasks", "fallback_reason", "TEXT")
         conn.commit()
 
 
@@ -190,6 +192,21 @@ def delete_project(name: str) -> bool:
         return cur.rowcount > 0
 
 
+def compute_dedup_key(project: str, title: str, content: str = "") -> str:
+    """Return a 16-char hex dedup key: sha256(project + normalized_title + normalized_content)[:16]."""
+    normalized = (project.strip() + "|" + title.strip() + "|" + content.strip()).lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _find_active_duplicate(conn: sqlite3.Connection, project: str, dedup_key: str) -> Optional[dict]:
+    """Return an existing task with the same dedup_key in backlog/in_progress status, or None."""
+    row = conn.execute(
+        "SELECT * FROM tasks WHERE project = ? AND dedup_key = ? AND status IN ('backlog', 'in_progress') LIMIT 1",
+        (project, dedup_key),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def create_task(
     project: str,
     title: str,
@@ -201,18 +218,30 @@ def create_task(
     max_retries: int = 3,
     source: str = "user",
     dedup_key: Optional[str] = None,
+    fallback_reason: Optional[str] = None,
 ) -> dict:
-    """Create a task."""
+    """Create a task.  Auto-computes *dedup_key* when not supplied and returns
+    an existing backlog/in_progress task instead of inserting a duplicate."""
+    if not dedup_key:
+        dedup_key = compute_dedup_key(project, title, content)
+
     if not project_path:
         proj = get_project(project)
         project_path = proj["path"] if proj else ""
 
     with get_conn() as conn:
+        existing = _find_active_duplicate(conn, project, dedup_key)
+        if existing:
+            import click
+
+            click.echo(f"[i] 已存在任务 #{existing['id']}")
+            return existing
+
         cur = conn.execute(
             """
             INSERT INTO tasks
-                (project, title, content, agent, priority, depends_on, project_path, max_retries, source, dedup_key)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (project, title, content, agent, priority, depends_on, project_path, max_retries, source, dedup_key, fallback_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project,
@@ -225,6 +254,7 @@ def create_task(
                 max_retries,
                 source,
                 dedup_key,
+                fallback_reason,
             ),
         )
         conn.commit()
@@ -233,11 +263,11 @@ def create_task(
 
 
 def existing_dedup_keys(project: str) -> set[str]:
-    """Return dedup_keys already present in non-terminal tasks."""
+    """Return dedup_keys already present in active (backlog/in_progress) tasks."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT dedup_key FROM tasks WHERE project = ? AND dedup_key IS NOT NULL "
-            "AND status NOT IN ('done','cancelled')",
+            "AND status IN ('backlog','in_progress')",
             (project,),
         ).fetchall()
     return {row["dedup_key"] for row in rows if row["dedup_key"]}
@@ -455,3 +485,60 @@ def list_task_logs(task_id: int) -> list[dict]:
             (task_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+# ── Cleanup helpers ─────────────────────────────────────────────────────────
+
+
+def find_stale_in_progress(
+    project: str,
+    stale_minutes: int = 30,
+) -> list[dict]:
+    """Return in_progress tasks whose heartbeat exceeds *stale_minutes*."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM tasks
+            WHERE project = ?
+              AND status = 'in_progress'
+              AND heartbeat_at IS NOT NULL
+              AND (julianday('now') - julianday(heartbeat_at)) * 1440 > ?
+            """,
+            (project, stale_minutes),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def find_orphan_log_paths(project: str) -> list[dict]:
+    """Return tasks whose current_log_path is set but the file no longer exists."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM tasks
+            WHERE project = ?
+              AND current_log_path IS NOT NULL
+              AND current_log_path != ''
+            """,
+            (project,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def find_old_done_tasks(
+    project: str,
+    retention_days: int = 30,
+) -> list[dict]:
+    """Return done tasks older than *retention_days* that still have a log path."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM tasks
+            WHERE project = ?
+              AND status = 'done'
+              AND current_log_path IS NOT NULL
+              AND current_log_path != ''
+              AND (julianday('now') - julianday(COALESCE(completed_at, created_at))) > ?
+            """,
+            (project, retention_days),
+        ).fetchall()
+        return [dict(r) for r in rows]
