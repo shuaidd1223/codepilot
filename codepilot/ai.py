@@ -1429,15 +1429,41 @@ def answer_question_via_api(
         if api_key:
             provider.api_key = api_key
         return _run_api_provider(provider, prompt)
-    # 无 API 时回退到 codex 简短回答
-    return _run_codex_schema_prompt(
-        prompt + "\n\n请以 JSON 返回：{\"answer\": \"...\"}",
-        {
-            "type": "object",
-            "properties": {"answer": {"type": "string"}},
-            "required": ["answer"],
-            "additionalProperties": False,
-        },
-        project_path=project_path,
-        timeout=60,
-    ).get("answer", "")
+    # 无 API 时用本地 claude CLI 回答
+    return _answer_via_local_cli(prompt, project_path=project_path)
+
+
+def _answer_via_local_cli(prompt: str, project_path: str = "", timeout: int = 120) -> str:
+    """Use claude or codex CLI to answer a question directly."""
+    # 优先 claude
+    for cli_name in ("claude", "codex"):
+        try:
+            provider = resolve_cli_provider(cli_name, project_path or None)
+            exe = provider.find_executable()
+        except Exception:
+            continue
+        if not exe:
+            continue
+
+        cmd = [str(exe), "-p", "--output-format", "text"]
+        if cli_name == "codex":
+            cmd = [str(exe), "exec", "--skip-git-repo-check", "--ephemeral",
+                   "--dangerously-bypass-approvals-and-sandbox"]
+            if project_path:
+                cmd = [str(exe), "-C", project_path] + cmd[1:]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+            if result.returncode == 0 and (result.stdout or "").strip():
+                return result.stdout.strip()
+        except Exception:
+            continue
+    return ""

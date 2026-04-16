@@ -491,25 +491,29 @@ def run_chat_session(
         if intent is None:
             cfg = _project_config(project_info)
             classifier_cfg = getattr(cfg, "classifier", None)
+            api_key = None
+            classifier_provider = ""
+            classifier_model = ""
+            classifier_timeout = 30
             if classifier_cfg and classifier_cfg.enabled:
-                api_key = None
-                if classifier_cfg.provider:
-                    api_key = cfg.get_provider_api_key(classifier_cfg.provider)
-                try:
-                    result = classify_intent(
-                        payload_text,
-                        project_path=project_info["path"],
-                        classifier_provider=classifier_cfg.provider,
-                        classifier_model=classifier_cfg.model,
-                        timeout=classifier_cfg.timeout,
-                        api_key=api_key,
-                    )
-                    intent = result["intent"]
-                    echo(f"[dim]意图={intent} source={result.get('source','')} {result.get('reason','')}[/dim]")
-                except Exception as exc:
-                    echo(f"[yellow]意图分类失败，按需求处理：{safe(exc)}[/yellow]")
-                    intent = "requirement"
-            else:
+                classifier_provider = classifier_cfg.provider or ""
+                classifier_model = classifier_cfg.model or ""
+                classifier_timeout = classifier_cfg.timeout or 30
+                if classifier_provider:
+                    api_key = cfg.get_provider_api_key(classifier_provider)
+            try:
+                result = classify_intent(
+                    payload_text,
+                    project_path=project_info["path"],
+                    classifier_provider=classifier_provider,
+                    classifier_model=classifier_model,
+                    timeout=classifier_timeout,
+                    api_key=api_key,
+                )
+                intent = result["intent"]
+                echo(f"[dim]意图={intent} source={result.get('source','')} {result.get('reason','')}[/dim]")
+            except Exception as exc:
+                echo(f"[yellow]意图分类失败，按需求处理：{safe(exc)}[/yellow]")
                 intent = "requirement"
 
         try:
