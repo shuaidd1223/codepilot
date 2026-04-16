@@ -937,7 +937,7 @@ def test_run_backlog_creates_task_branch_and_checks_out_base_after_merge(tmp_pat
 
     code, output = run_cmd._run_command(["git", "branch", "--list", expected_branch], cwd=project_path, timeout=30)
     assert code == 0
-    assert expected_branch in output
+    assert expected_branch not in output, "task branch should be deleted after merge"
 
 
 def test_run_backlog_requeues_when_merge_back_fails_with_uncommitted_changes(tmp_path, monkeypatch):
