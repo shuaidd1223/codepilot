@@ -984,7 +984,7 @@ def _run_claude_schema_prompt(
     cmd.extend(["-p", prompt])
 
     try:
-        import threading, sys
+        import threading, sys, time as _time
 
         process = subprocess.Popen(
             cmd,
@@ -996,12 +996,16 @@ def _run_claude_schema_prompt(
             errors="replace",
         )
 
+        stdout_chunks: list[str] = []
+        last_activity = [_time.monotonic()]
+
         # stderr 线程实时打印 claude 进度
         def _stream_stderr():
             assert process.stderr is not None
             for line in process.stderr:
                 stripped = line.rstrip()
                 if stripped:
+                    last_activity[0] = _time.monotonic()
                     sys.stderr.write(f"  [planner] {stripped}\n")
                     sys.stderr.flush()
                     if _planner_progress_callback:
@@ -1013,9 +1017,6 @@ def _run_claude_schema_prompt(
         stderr_thread = threading.Thread(target=_stream_stderr, daemon=True)
         stderr_thread.start()
 
-        # stdout 单独读（不用 communicate 避免和 stderr 线程冲突）
-        stdout_chunks = []
-
         def _read_stdout():
             assert process.stdout is not None
             stdout_chunks.append(process.stdout.read())
@@ -1023,13 +1024,33 @@ def _run_claude_schema_prompt(
         stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
         stdout_thread.start()
 
-        # 等待进程结束
-        try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-            raise
+        # Wait with heartbeat / stall detection
+        started = _time.monotonic()
+        stall_warned = False
+        while True:
+            exit_code = process.poll()
+            if exit_code is not None:
+                break
+            elapsed = _time.monotonic() - started
+            if elapsed > timeout:
+                _kill_process_tree(process.pid)
+                process.wait(timeout=5)
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            stall_time = _time.monotonic() - last_activity[0]
+            if stall_time > 60 and not stall_warned:
+                stall_warned = True
+                msg = f"claude 已 {int(stall_time)}s 无输出，可能仍在处理中..."
+                sys.stderr.write(f"  [planner] {msg}\n")
+                sys.stderr.flush()
+                if _planner_progress_callback:
+                    try:
+                        _planner_progress_callback(msg)
+                    except Exception:
+                        pass
+            if stall_time > 120:
+                stall_warned = False
+                last_activity[0] = _time.monotonic()
+            _time.sleep(0.5)
 
         stdout_thread.join(timeout=5)
         stderr_thread.join(timeout=2)
@@ -1038,7 +1059,7 @@ def _run_claude_schema_prompt(
         result_returncode = process.returncode
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
-            f"{provider.name} 在任务拆分阶段超时了，{timeout} 秒内没有返回结果。"
+            f"{provider.name} 在任务拆分阶段超时了（{timeout}s），已强制终止。"
             "可以稍后重试，或改用 codex 作为规划器。"
         ) from exc
 
@@ -1066,6 +1087,28 @@ def _run_claude_schema_prompt(
         return payload
 
     raise RuntimeError(f"{provider.name} 返回的任务拆分结果格式不正确，暂时无法继续自动规划。")
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Kill a process and all its children. Works on Windows and Unix."""
+    if platform.system().lower() == "windows":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception:
+            pass
+    else:
+        import signal
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except Exception:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
 
 
 def _run_codex_schema_prompt(
@@ -1112,6 +1155,7 @@ def _run_codex_schema_prompt(
 
         try:
             import threading as _threading
+            import time as _time
 
             process = subprocess.Popen(
                 cmd,
@@ -1126,12 +1170,20 @@ def _run_codex_schema_prompt(
                 process.stdin.write(prompt)
                 process.stdin.close()
 
+            # Use separate threads for BOTH stdout and stderr (avoid communicate() deadlock)
+            stdout_chunks: list[str] = []
+            last_activity = [_time.monotonic()]  # mutable for closure
+
+            def _read_codex_stdout():
+                assert process.stdout is not None
+                stdout_chunks.append(process.stdout.read())
+
             def _stream_codex_stderr():
                 assert process.stderr is not None
                 for line in process.stderr:
                     stripped = line.rstrip()
                     if stripped:
-                        import sys
+                        last_activity[0] = _time.monotonic()
                         sys.stderr.write(f"  [planner] {stripped}\n")
                         sys.stderr.flush()
                         if _planner_progress_callback:
@@ -1140,22 +1192,48 @@ def _run_codex_schema_prompt(
                             except Exception:
                                 pass
 
-            st = _threading.Thread(target=_stream_codex_stderr, daemon=True)
-            st.start()
+            stdout_thread = _threading.Thread(target=_read_codex_stdout, daemon=True)
+            stderr_thread = _threading.Thread(target=_stream_codex_stderr, daemon=True)
+            stdout_thread.start()
+            stderr_thread.start()
 
-            try:
-                stdout_data, _ = process.communicate(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-                raise
-            st.join(timeout=2)
+            # Wait with heartbeat detection
+            started = _time.monotonic()
+            stall_warned = False
+            while True:
+                exit_code = process.poll()
+                if exit_code is not None:
+                    break
+                elapsed = _time.monotonic() - started
+                if elapsed > timeout:
+                    _kill_process_tree(process.pid)
+                    process.wait(timeout=5)
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                # Stall detection: no stderr output for 60s
+                stall_time = _time.monotonic() - last_activity[0]
+                if stall_time > 60 and not stall_warned:
+                    stall_warned = True
+                    msg = f"codex 已 {int(stall_time)}s 无输出，可能仍在处理中..."
+                    sys.stderr.write(f"  [planner] {msg}\n")
+                    sys.stderr.flush()
+                    if _planner_progress_callback:
+                        try:
+                            _planner_progress_callback(msg)
+                        except Exception:
+                            pass
+                if stall_time > 120:
+                    stall_warned = False  # reset to warn again
+                    last_activity[0] = _time.monotonic()
+                _time.sleep(0.5)
+
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=2)
             codex_returncode = process.returncode
-            codex_stdout = stdout_data or ""
+            codex_stdout = "".join(stdout_chunks)
             codex_stderr = ""
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
-                f"Codex 在任务拆分阶段超时了，{timeout} 秒内没有返回结果。"
+                f"Codex 在任务拆分阶段超时了（{timeout}s），已强制终止。"
                 "可以稍后重试，或改用 claude 作为规划器。"
             ) from exc
 
