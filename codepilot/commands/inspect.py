@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -339,7 +340,7 @@ def run_inspection(
             agent=agent,
             priority=item.get("priority") or priority,
             project_path=str(project_path),
-            source="auto-inspect",
+            source="inspector",
             dedup_key=key,
         )
         created.append(task)
@@ -379,40 +380,8 @@ def _build_content(item: dict) -> str:
     )
 
 
-@click.command("inspect")
-@click.option("--project", "-p", callback=_resolve_project_strict, help="项目名称")
-@click.option("--max", "max_new", type=int, default=None, help="本轮最多新增任务数")
-@click.option("--dry-run", is_flag=True, help="只打印候选，不落库")
-@click.option("--agent", default="codex", help="给新任务指定执行智能体")
-@click.option("--json", "json_mode", is_flag=True, help="以 JSON 输出结果，便于脚本和其他 AI 调用")
-def inspect(project: str, max_new: Optional[int], dry_run: bool, agent: str, json_mode: bool) -> None:
-    """Scan project signals and surface improvement candidates as tasks."""
-    db.init_db()
-    proj = db.get_project(project) if project else None
-    if not proj:
-        raise click.ClickException("需要用 -p 指定项目，或先 codepilot init")
-    project_info = {"name": proj["name"], "path": proj["path"]}
-
-    cfg = load_project_config(Path(proj["path"]))
-    ins = cfg.inspect
-    limit = max_new if max_new is not None else ins.max_new_tasks_per_round
-
-    if not json_mode:
-        echo(f"[cyan]巡检项目 {project_info['name']}[/cyan]  max={limit}  signals={','.join(ins.signals)}")
-    result = run_inspection(
-        project_info,
-        max_new_tasks=limit,
-        signals=ins.signals,
-        auto_execute=ins.auto_execute,
-        priority=ins.priority,
-        agent=agent,
-        dry_run=dry_run,
-    )
-
-    if json_mode:
-        click.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        return
-
+def _print_result(result: dict, dry_run: bool) -> None:
+    """Print a single inspection result to the terminal."""
     if result.get("error"):
         echo(f"[red]{result['error']}[/red]")
         return
@@ -425,6 +394,76 @@ def inspect(project: str, max_new: Optional[int], dry_run: bool, agent: str, jso
         if dry_run:
             echo(f"  [dim][dry-run][/dim] {task['title']}  [{task.get('priority')}]")
         else:
-            echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]  source=auto-inspect")
+            echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]  source=inspector")
     for skipped in result["skipped"]:
         echo(f"  [dim]跳过: {skipped['title']} ({skipped['reason']})[/dim]")
+
+
+@click.command("inspect")
+@click.option("--project", "-p", callback=_resolve_project_strict, help="项目名称")
+@click.option("--max", "max_new", type=int, default=None, help="本轮最多新增任务数")
+@click.option("--dry-run", is_flag=True, help="只打印候选，不落库")
+@click.option("--agent", default="codex", help="给新任务指定执行智能体")
+@click.option("--json", "json_mode", is_flag=True, help="以 JSON 输出结果，便于脚本和其他 AI 调用")
+@click.option("--interval", type=int, default=None, help="巡检间隔秒数（默认 1800）")
+@click.option("--once", is_flag=True, help="仅巡检一次后退出")
+def inspect(
+    project: str,
+    max_new: Optional[int],
+    dry_run: bool,
+    agent: str,
+    json_mode: bool,
+    interval: Optional[int],
+    once: bool,
+) -> None:
+    """Scan project signals and surface improvement candidates as tasks.
+
+    Without --once the command runs continuously, sleeping *interval* seconds
+    between rounds (default 1800 = 30 min).  Use --once for a single pass.
+    """
+    db.init_db()
+    proj = db.get_project(project) if project else None
+    if not proj:
+        raise click.ClickException("需要用 -p 指定项目，或先 codepilot init")
+    project_info = {"name": proj["name"], "path": proj["path"]}
+
+    cfg = load_project_config(Path(proj["path"]))
+    ins = cfg.inspect
+    limit = max_new if max_new is not None else ins.max_new_tasks_per_round
+    sleep_seconds = interval if interval is not None else ins.interval_seconds
+
+    round_num = 0
+    while True:
+        round_num += 1
+        if not json_mode:
+            if not once:
+                echo(f"[cyan]巡检项目 {project_info['name']}  第 {round_num} 轮[/cyan]  max={limit}  signals={','.join(ins.signals)}")
+            else:
+                echo(f"[cyan]巡检项目 {project_info['name']}[/cyan]  max={limit}  signals={','.join(ins.signals)}")
+
+        result = run_inspection(
+            project_info,
+            max_new_tasks=limit,
+            signals=ins.signals,
+            auto_execute=ins.auto_execute,
+            priority=ins.priority,
+            agent=agent,
+            dry_run=dry_run,
+        )
+
+        if json_mode:
+            click.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        else:
+            _print_result(result, dry_run)
+
+        if once:
+            break
+
+        if not json_mode:
+            echo(f"[dim]下次巡检将在 {sleep_seconds} 秒后...[/dim]")
+        try:
+            time.sleep(sleep_seconds)
+        except KeyboardInterrupt:
+            if not json_mode:
+                echo("[yellow]巡检已停止[/yellow]")
+            break
