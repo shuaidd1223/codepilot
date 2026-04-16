@@ -898,6 +898,7 @@ def run_backlog(
     executor: str = "auto",
     auto_commit: bool = True,
     retry_on_failure: bool = True,
+    quiet: bool = False,
 ) -> dict:
     """Execute up to `limit` runnable tasks for a project."""
     db.init_db()
@@ -932,7 +933,8 @@ def run_backlog(
     echo(f"[dim]使用执行器: {resolved_executor}[/dim]")
     if resolved_executor == "dispatch":
         echo(f"[dim]使用 Shell: {shell_info.version_hint}[/dim]")
-    render_project_dashboard(project, include_done=False, max_rows=10, title="执行队列")
+    if not quiet:
+        render_project_dashboard(project, include_done=False, max_rows=10, title="执行队列")
 
     stats = {
         "processed": 0,
@@ -985,7 +987,8 @@ def run_backlog(
             stats["processed"] += 1
             if retry_on_failure:
                 stats["requeued"] += 1
-            render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
+            if not quiet:
+                render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
             break
 
         task_file = _pick_task_file(project_path, task_id, tracked=(resolved_executor == "dispatch"))
@@ -1066,7 +1069,8 @@ def run_backlog(
                 requeued=updated["status"] != "failed",
             )
             stats["processed"] += 1
-            render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
+            if not quiet:
+                render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
             if should_stop or once:
                 break
             continue
@@ -1126,7 +1130,8 @@ def run_backlog(
             )
             if should_stop:
                 stats["processed"] += 1
-                render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
+                if not quiet:
+                    render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
                 break
 
         if result.output:

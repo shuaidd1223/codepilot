@@ -190,6 +190,7 @@ def run_requirement_workflow(
     auto_commit: bool = True,
     max_retries: int = 3,
     json_mode: bool = False,
+    quiet: bool = False,
 ) -> dict:
     """Plan one natural-language requirement and optionally execute it."""
     title = " ".join(title.strip().split())
@@ -321,7 +322,8 @@ def run_requirement_workflow(
     for task in created_tasks:
         dep = f" depends_on=#{json.loads(task['depends_on'])[0]}" if task.get("depends_on") else ""
         click.echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]  agent={task_agent}{dep}")
-    render_project_dashboard(project_name, include_done=False, max_rows=max(8, len(created_tasks)), title="任务面板")
+    if not quiet:
+        render_project_dashboard(project_name, include_done=False, max_rows=max(8, len(created_tasks)), title="任务面板")
 
     if not will_execute:
         echo()
@@ -337,6 +339,7 @@ def run_requirement_workflow(
         executor=executor,
         auto_commit=auto_commit,
         retry_on_failure=False,
+        quiet=quiet,
     )
     payload["run"] = stats
     echo(
@@ -476,12 +479,26 @@ def run_chat_session(
                 click.echo(_chat_help())
                 continue
             if cmd == "/status":
-                render_project_dashboard(
-                    project_info["name"],
-                    verbose=True,
-                    include_done=False,
-                    title="当前任务面板",
-                )
+                # 支持 /status watch 实时刷新
+                watch = len(parts) > 1 and parts[1].lower() in ("watch", "live", "-w")
+                if watch:
+                    echo("[dim]实时刷新中，按 Ctrl+C 停止...[/dim]")
+                try:
+                    while True:
+                        if watch:
+                            click.clear()
+                        render_project_dashboard(
+                            project_info["name"],
+                            verbose=False,
+                            include_done=False,
+                            title=f"任务面板  {project_info['name']}",
+                        )
+                        if not watch:
+                            break
+                        time.sleep(3)
+                except KeyboardInterrupt:
+                    if watch:
+                        echo("\n[dim]已停止刷新[/dim]")
                 continue
             if cmd == "/project":
                 if len(parts) < 2:
@@ -628,6 +645,7 @@ def run_chat_session(
                     auto_commit=effective["auto_commit"],
                     max_tasks=1,
                     max_retries=effective["max_retries"],
+                    quiet=True,
                 )
                 assistant_response = "任务已创建并执行"
             else:
@@ -642,6 +660,7 @@ def run_chat_session(
                     auto_commit=effective["auto_commit"],
                     max_tasks=effective["max_tasks"],
                     max_retries=effective["max_retries"],
+                    quiet=True,
                 )
                 assistant_response = "需求已规划"
         except click.ClickException as exc:

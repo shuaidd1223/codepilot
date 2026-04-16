@@ -674,7 +674,7 @@ def test_chat_status_renders_dashboard(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert called["args"][0] == "demo"
-    assert called["kwargs"]["title"] == "当前任务面板"
+    assert "demo" in called["kwargs"]["title"]
 
 
 def test_go_command_wraps_runtime_error_as_click_exception(tmp_path, monkeypatch):
