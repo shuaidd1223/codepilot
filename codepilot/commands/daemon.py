@@ -17,6 +17,7 @@ from codepilot.commands.run import run_backlog
 from codepilot.config import load_project_config
 from codepilot.output import echo, safe
 from codepilot.runtime import is_process_alive, reap_stalled_tasks
+from codepilot.webui import start_ui_server
 
 
 def _resolve_project(ctx, param, value):
@@ -31,6 +32,19 @@ def _resolve_project(ctx, param, value):
 
 
 LOCK_FILE = Path.home() / ".codepilot" / "daemon.lock"
+
+
+def _start_ui_background(port: int = 8766):
+    """Start Web UI in a daemon thread so it lives as long as the daemon."""
+    try:
+        server = start_ui_server(host="127.0.0.1", port=port, open_browser=False)
+    except OSError as exc:
+        echo(f"[yellow]Web UI 启动失败（端口 {port} 可能被占用）：{safe(exc)}[/yellow]")
+        return None
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    echo(f"[cyan]Web UI[/cyan]  http://127.0.0.1:{port}/")
+    return server
 
 
 def _acquire_lock() -> bool:
@@ -76,6 +90,8 @@ def _release_lock() -> None:
     help="执行器类型",
 )
 @click.option("--auto-commit/--no-auto-commit", default=True, help="内置执行器成功后自动提交当前任务")
+@click.option("--ui/--no-ui", "enable_ui", default=True, help="同时启动 Web UI（默认开启）")
+@click.option("--ui-port", type=int, default=8766, help="Web UI 端口")
 def daemon(
     project: str | None,
     interval: int,
@@ -84,6 +100,8 @@ def daemon(
     shell: str,
     executor: str,
     auto_commit: bool,
+    enable_ui: bool,
+    ui_port: int,
 ):
     """Continuously poll backlog and run tasks in-process."""
     db.init_db()
@@ -91,12 +109,19 @@ def daemon(
         echo("[red]已有 daemon 实例运行中，退出[/red]")
         return
 
+    ui_server = None
     try:
+        if enable_ui:
+            ui_server = _start_ui_background(ui_port)
         _run_loop(project, interval, verbose, shell, executor, auto_commit, max_concurrent)
     except KeyboardInterrupt:
         echo()
         echo("[yellow]守护进程收到停止信号，退出[/yellow]")
     finally:
+        if ui_server:
+            ui_server.shutdown()
+            ui_server.server_close()
+            echo("[dim]Web UI 已停止[/dim]")
         _release_lock()
 
 
