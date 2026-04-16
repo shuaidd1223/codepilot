@@ -1315,6 +1315,46 @@ def _classify_via_codex(
     )
 
 
+def _classify_via_claude_cli(
+    text: str,
+    project_path: str = "",
+    timeout: int = 30,
+) -> dict:
+    """Use local claude CLI with --json-schema for intent classification."""
+    provider = resolve_cli_provider("claude", project_path or None)
+    exe = provider.find_executable()
+    if not exe:
+        raise RuntimeError("claude CLI 不可用")
+
+    prompt = INTENT_PROMPT.format(text=text)
+    cmd = [
+        str(exe),
+        "--output-format", "json",
+        "--json-schema", json.dumps(INTENT_SCHEMA, ensure_ascii=False),
+        "--permission-mode", "plan",
+        "-p", prompt,
+    ]
+    result = subprocess.run(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("claude 分类失败")
+    output = (result.stdout or "").strip()
+    if not output:
+        raise RuntimeError("claude 分类返回空内容")
+    payload = json.loads(output)
+    # claude --output-format json wraps result in envelope
+    if isinstance(payload, dict) and "structured_output" in payload:
+        return payload["structured_output"]
+    return payload
+
+
 def _heuristic_intent(text: str) -> Optional[str]:
     """Cheap rule-based pre-filter. Returns None if unsure."""
     t = text.strip()
@@ -1413,6 +1453,19 @@ def classify_intent(
             last_error = ""
     else:
         last_error = ""
+
+    # Local claude CLI fallback（比 codex 快）
+    try:
+        payload = _classify_via_claude_cli(text, project_path=project_path, timeout=timeout)
+        intent = payload.get("intent")
+        if intent in valid_intents:
+            return {
+                "intent": intent,
+                "reason": payload.get("reason", ""),
+                "source": "claude-cli",
+            }
+    except Exception:
+        pass
 
     # Local codex fallback
     try:

@@ -617,6 +617,7 @@ def run_chat_session(
                 else:
                     echo("[yellow]未获得回答[/yellow]")
             elif intent == "task":
+                spinner.__exit__(None, None, None)
                 run_requirement_workflow(
                     project_info=project_info,
                     title=payload_text,
@@ -628,9 +629,9 @@ def run_chat_session(
                     max_tasks=1,
                     max_retries=effective["max_retries"],
                 )
-                spinner.__exit__(None, None, None)
                 assistant_response = "任务已创建并执行"
             else:
+                spinner.__exit__(None, None, None)
                 run_requirement_workflow(
                     project_info=project_info,
                     title=payload_text,
@@ -642,7 +643,6 @@ def run_chat_session(
                     max_tasks=effective["max_tasks"],
                     max_retries=effective["max_retries"],
                 )
-                spinner.__exit__(None, None, None)
                 assistant_response = "需求已规划"
         except click.ClickException as exc:
             spinner.__exit__(None, None, None)
