@@ -980,27 +980,55 @@ def _run_claude_schema_prompt(
         cmd.extend(["--model", model_alias])
 
     try:
-        result = subprocess.run(
+        # 用 Popen + 实时 stderr 打印，让用户看到 claude 在工作
+        process = subprocess.Popen(
             cmd,
-            input=prompt,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
         )
+        if process.stdin:
+            process.stdin.write(prompt)
+            process.stdin.close()
+
+        import threading, sys
+
+        def _stream_stderr():
+            assert process.stderr is not None
+            for line in process.stderr:
+                stripped = line.rstrip()
+                if stripped:
+                    sys.stderr.write(f"  [planner] {stripped}\n")
+                    sys.stderr.flush()
+
+        t = threading.Thread(target=_stream_stderr, daemon=True)
+        t.start()
+
+        try:
+            stdout_data, _ = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            raise
+        t.join(timeout=2)
+        result_stdout = stdout_data or ""
+        result_returncode = process.returncode
+        result_stderr = ""  # already streamed
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
             f"{provider.name} 在任务拆分阶段超时了，{timeout} 秒内没有返回结果。"
             "可以稍后重试，或改用 codex 作为规划器。"
         ) from exc
 
-    if result.returncode != 0:
-        hint = _extract_error_hint(result.stderr or result.stdout)
+    if result_returncode != 0:
+        hint = _extract_error_hint(result_stderr or result_stdout)
         suffix = f"原因：{hint}" if hint else "请检查 Claude CLI 当前是否可用。"
         raise RuntimeError(f"{provider.name} 没有成功完成任务拆分。{suffix}")
 
-    output = (result.stdout or "").strip()
+    output = result_stdout.strip()
     if not output:
         raise RuntimeError("Claude 任务拆分返回空内容")
 
@@ -1064,29 +1092,57 @@ def _run_codex_schema_prompt(
         )
 
         try:
-            result = subprocess.run(
+            import threading as _threading
+
+            process = subprocess.Popen(
                 cmd,
-                input=prompt,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=timeout,
             )
+            if process.stdin:
+                process.stdin.write(prompt)
+                process.stdin.close()
+
+            def _stream_codex_stderr():
+                assert process.stderr is not None
+                for line in process.stderr:
+                    stripped = line.rstrip()
+                    if stripped:
+                        import sys
+                        sys.stderr.write(f"  [planner] {stripped}\n")
+                        sys.stderr.flush()
+
+            st = _threading.Thread(target=_stream_codex_stderr, daemon=True)
+            st.start()
+
+            try:
+                stdout_data, _ = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                raise
+            st.join(timeout=2)
+            codex_returncode = process.returncode
+            codex_stdout = stdout_data or ""
+            codex_stderr = ""
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
                 f"Codex 在任务拆分阶段超时了，{timeout} 秒内没有返回结果。"
                 "可以稍后重试，或改用 claude 作为规划器。"
             ) from exc
 
-        if result.returncode != 0:
-            hint = _extract_error_hint(result.stderr or result.stdout)
+        if codex_returncode != 0:
+            hint = _extract_error_hint(codex_stderr or codex_stdout)
             suffix = f"原因：{hint}" if hint else "请检查 Codex CLI 当前是否可用。"
             raise RuntimeError(f"Codex 没有成功完成任务拆分。{suffix}")
 
         output = output_path.read_text(encoding="utf-8", errors="replace").strip() if output_path.exists() else ""
         if not output:
-            output = (result.stdout or "").strip()
+            output = codex_stdout.strip()
         if not output:
             raise RuntimeError("Codex 没有返回任务拆分结果，暂时无法继续自动规划。")
 

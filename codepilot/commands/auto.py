@@ -211,6 +211,7 @@ def run_requirement_workflow(
     task_agent = _resolve_task_agent(project_info, task_agent, executor)
 
     echo(f"[cyan]收到需求：{title}[/cyan]")
+    echo(f"[dim]  正在用 {planner} 规划任务，请稍候...[/dim]")
     try:
         breakdown = generate_task_breakdown(
             title=title,
