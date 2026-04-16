@@ -424,24 +424,30 @@ TASK_BREAKDOWN_SCHEMA = {
 }
 
 
-TASK_BREAKDOWN_PROMPT_TEMPLATE = """\
-你是一个资深技术负责人，负责把一个高层目标拆成可以自动执行的工程任务。
+TASK_BREAKDOWN_PROMPT_TEMPLATE = (
+    "你的任务是: 把下面的高层目标拆解成可以自动执行的工程子任务, 并以 JSON 输出.\n"
+    "\n"
+    "重要: 下面的高层目标就是用户已经给定的需求, 你必须直接对它进行拆解. "
+    "不要回复 '等待输入' '请提供目标' 之类的内容. 需求已经给你了, 直接分析并拆分.\n"
+    "\n"
+    "规则:\n"
+    "1. 先判断需求是 simple 还是 complex.\n"
+    "2. simple: 输出 1 个任务, should_split=false.\n"
+    "3. complex: 输出 2 到 {max_tasks} 个子任务, should_split=true, 默认按线性顺序执行.\n"
+    "4. 每个任务都要足够具体, 能直接交给代码代理执行(包含文件路径/实现步骤/验收标准).\n"
+    "5. 优先拆出 '先修基础设施, 再做能力' 的顺序.\n"
+    "6. 只输出符合 schema 的 JSON, 不要输出 Markdown, 不要解释.\n"
+    "7. files 只写真实可能涉及的相对路径; 不确定就少写, 不要乱写.\n"
+    "8. acceptance_criteria/builder_notes/reviewer_notes/notes 都要有实际内容.\n"
+    "9. summary 字段必须是对需求本身的概括, 禁止写 '等待' '请提供' 等元描述.\n"
+    "10. 每个 task 的 title 必须是具体的工程动作(如 '重构 WebUI 为 Vue 项目'), 禁止写 '等待输入'.\n"
+    "\n"
+    "=== 高层目标 (这就是你要拆解的需求, 直接开始工作) ===\n"
+    "{title}\n"
+    "\n"
+    "{project_context}\n"
+)
 
-要求：
-1. 先判断需求是 simple 还是 complex。
-2. simple: 输出 1 个任务，should_split=false。
-3. complex: 输出 2 到 {max_tasks} 个子任务，should_split=true，默认按线性顺序执行。
-4. 每个任务都要足够具体，能直接交给代码代理执行。
-5. 优先拆出“先修基础设施，再做能力”的顺序。
-6. 只输出符合 schema 的 JSON，不要输出 Markdown，不要解释。
-7. files 只写真实可能涉及的相对路径；不确定就少写，不要乱写。
-8. acceptance_criteria、builder_notes、reviewer_notes、notes 都要有实际内容。
-
-高层目标：
-{title}
-
-{project_context}
-"""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1337,7 +1343,35 @@ def generate_task_breakdown(
     tasks = breakdown.get("tasks") or []
     if not tasks:
         raise RuntimeError("任务拆分结果为空")
-    breakdown["tasks"] = tasks[:max_tasks]
+
+    # ── Validate planner output ──────────────────────────────────────────
+    # Reject garbage tasks where the planner echoed its instructions
+    # instead of actually planning.
+    _garbage_keywords = ("等待", "请提供", "请输入", "待用户", "请发送", "等待高层")
+
+    def _is_garbage_task(task_item: dict) -> bool:
+        t = (task_item.get("title") or "").strip()
+        g = (task_item.get("goal") or "").strip()
+        for kw in _garbage_keywords:
+            if kw in t or kw in g:
+                return True
+        return False
+
+    valid_tasks = [t for t in tasks if not _is_garbage_task(t)]
+    if not valid_tasks:
+        summary = breakdown.get("summary", "")
+        raise RuntimeError(
+            f"规划器未能正确理解需求，返回了无效任务。"
+            f"规划器摘要：{summary[:120]}\n"
+            f"请重新描述需求，或换一个规划器重试。"
+        )
+    if len(valid_tasks) < len(tasks):
+        import sys
+        dropped = len(tasks) - len(valid_tasks)
+        sys.stderr.write(f"  [planner] 过滤掉 {dropped} 个无效任务\n")
+    # ─────────────────────────────────────────────────────────────────────
+
+    breakdown["tasks"] = valid_tasks[:max_tasks]
     breakdown.setdefault("complexity", "simple" if len(breakdown["tasks"]) <= 1 else "complex")
     breakdown.setdefault("should_split", len(breakdown["tasks"]) > 1)
     return breakdown
