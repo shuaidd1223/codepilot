@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -190,6 +191,21 @@ def delete_project(name: str) -> bool:
         return cur.rowcount > 0
 
 
+def compute_dedup_key(project: str, title: str, content: str = "") -> str:
+    """Return a 16-char hex dedup key: sha256(project + normalized_title + normalized_content)[:16]."""
+    normalized = (project.strip() + "|" + title.strip() + "|" + content.strip()).lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _find_active_duplicate(conn: sqlite3.Connection, project: str, dedup_key: str) -> Optional[dict]:
+    """Return an existing task with the same dedup_key in backlog/in_progress status, or None."""
+    row = conn.execute(
+        "SELECT * FROM tasks WHERE project = ? AND dedup_key = ? AND status IN ('backlog', 'in_progress') LIMIT 1",
+        (project, dedup_key),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def create_task(
     project: str,
     title: str,
@@ -202,12 +218,23 @@ def create_task(
     source: str = "user",
     dedup_key: Optional[str] = None,
 ) -> dict:
-    """Create a task."""
+    """Create a task.  Auto-computes *dedup_key* when not supplied and returns
+    an existing backlog/in_progress task instead of inserting a duplicate."""
+    if not dedup_key:
+        dedup_key = compute_dedup_key(project, title, content)
+
     if not project_path:
         proj = get_project(project)
         project_path = proj["path"] if proj else ""
 
     with get_conn() as conn:
+        existing = _find_active_duplicate(conn, project, dedup_key)
+        if existing:
+            import click
+
+            click.echo(f"[i] 已存在任务 #{existing['id']}")
+            return existing
+
         cur = conn.execute(
             """
             INSERT INTO tasks
@@ -233,11 +260,11 @@ def create_task(
 
 
 def existing_dedup_keys(project: str) -> set[str]:
-    """Return dedup_keys already present in non-terminal tasks."""
+    """Return dedup_keys already present in active (backlog/in_progress) tasks."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT dedup_key FROM tasks WHERE project = ? AND dedup_key IS NOT NULL "
-            "AND status NOT IN ('done','cancelled')",
+            "AND status IN ('backlog','in_progress')",
             (project,),
         ).fetchall()
     return {row["dedup_key"] for row in rows if row["dedup_key"]}
