@@ -477,7 +477,10 @@ def _git_merge_task_branch(
     if merge_code != 0:
         raise RuntimeError(f"合并任务分支失败:\n{merge_output}")
     # 合并成功后删除任务分支
-    _run_command(["git", "branch", "-d", task_branch], cwd=project_path, timeout=30)
+    del_code, del_output = _run_command(["git", "branch", "-d", task_branch], cwd=project_path, timeout=30)
+    if del_code != 0:
+        # 不阻塞，但记录失败原因
+        click.echo(f"  [warn] 删除分支 {task_branch} 失败: {del_output.strip()}")
     safe_title = " ".join((title or "").strip().split())[:60]
     merged_title = safe_title or f"task #{task_id}"
     return f"已合并 `{task_branch}` -> `{base_branch}` ({merged_title})"
