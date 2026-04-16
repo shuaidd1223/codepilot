@@ -1274,6 +1274,127 @@ def test_reap_stalled_tasks_marks_dead_in_progress_task_failed(tmp_path, monkeyp
     assert "心跳已超过" in (current["error_message"] or "")
 
 
+def test_reap_stalled_tasks_cleans_dead_process_tree_before_marking_failed(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "stale task", agent="codex")
+
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        started_at="2026-01-01T00:00:00",
+        heartbeat_at="2026-01-01T00:00:00",
+        active_pid=123456,
+        run_phase="builder",
+    )
+
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: False)
+    killed: list[int] = []
+    monkeypatch.setattr(runtime_mod, "stop_process_tree", lambda pid, wait_seconds=5: killed.append(int(pid)) or True)
+
+    reaped = runtime_mod.reap_stalled_tasks("demo", stale_after_seconds=1)
+    current = db.get_task(task["id"])
+
+    assert len(reaped) == 1
+    assert killed == [123456]
+    assert current["status"] == "failed"
+
+
+def test_stop_process_tree_windows_kills_descendants_even_if_root_is_gone(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(runtime_mod.platform, "system", lambda: "Windows")
+
+    processes = {
+        200: {"parent": 100, "name": "codex.exe"},
+        201: {"parent": 200, "name": "node.exe"},
+    }
+
+    def _descendants(root_pid: int) -> set[int]:
+        found = set()
+        while True:
+            added = {pid for pid, meta in processes.items() if meta["parent"] in ({root_pid} | found)}
+            if added.issubset(found):
+                break
+            found |= added
+        return found
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[0].lower() == "powershell.exe":
+            payload = [
+                {"ProcessId": pid, "ParentProcessId": meta["parent"], "Name": meta["name"]}
+                for pid, meta in sorted(processes.items())
+            ]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[0].lower() == "taskkill":
+            target = int(cmd[cmd.index("/PID") + 1])
+            # Simulate "root is gone": taskkill returns failure and does not cascade
+            if target not in processes:
+                return subprocess.CompletedProcess(cmd, 128, "", "not found")
+            if "/T" in cmd:
+                targets = _descendants(target) | {target}
+            else:
+                targets = {target}
+            for pid in targets:
+                processes.pop(pid, None)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(runtime_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: int(pid) in processes if pid else False)
+
+    tick = {"t": 0.0}
+
+    def fake_monotonic():
+        tick["t"] += 0.4
+        return tick["t"]
+
+    monkeypatch.setattr(runtime_mod.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(runtime_mod.time, "sleep", lambda _: None)
+
+    assert runtime_mod.stop_process_tree(100, wait_seconds=1) is True
+    assert processes == {}
+    assert any(cmd[:4] == ["taskkill", "/PID", "200", "/T"] for cmd in calls)
+    assert any(cmd[:4] == ["taskkill", "/PID", "201", "/T"] for cmd in calls)
+
+
+def test_run_command_live_cleans_process_tree_on_unexpected_exception(tmp_path, monkeypatch):
+    import sys
+
+    log_path = tmp_path / "live.log"
+    monkeypatch.setattr(run_cmd, "update_task_runtime", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "get_stop_request", lambda task_id: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    killed: list[int] = []
+
+    def _tracking_stop(pid):
+        killed.append(int(pid))
+        return runtime_mod.stop_process_tree(pid)
+
+    monkeypatch.setattr(run_cmd, "stop_process_tree", _tracking_stop)
+
+    try:
+        run_cmd._run_command_live(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            task_id=1,
+            phase="builder",
+            log_path=log_path,
+            timeout=30,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "boom"
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert killed
+    assert not runtime_mod.is_process_alive(killed[0])
+
+
 def test_stop_command_cancels_in_progress_task_without_live_process(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

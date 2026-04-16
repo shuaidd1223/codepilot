@@ -7,6 +7,7 @@ import platform
 import signal
 import subprocess
 import time
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -63,6 +64,91 @@ def is_process_alive(pid: Optional[int]) -> bool:
         return False
 
 
+def _windows_process_snapshot() -> dict[int, dict[str, str | int]]:
+    """Return a lightweight process table snapshot on Windows."""
+    script = (
+        "$ErrorActionPreference='SilentlyContinue'; "
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId,ParentProcessId,Name | "
+        "ConvertTo-Json -Compress"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except Exception:
+        return {}
+
+    raw = (result.stdout or "").strip()
+    if result.returncode != 0 or not raw:
+        return {}
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+    rows = payload if isinstance(payload, list) else [payload]
+    snapshot: dict[int, dict[str, str | int]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            proc_id = int(row.get("ProcessId"))
+            parent_id = int(row.get("ParentProcessId") or 0)
+        except Exception:
+            continue
+        snapshot[proc_id] = {
+            "parent": parent_id,
+            "name": str(row.get("Name") or ""),
+        }
+    return snapshot
+
+
+def _windows_collect_descendants(root_pid: int, snapshot: dict[int, dict[str, str | int]]) -> list[int]:
+    """Collect descendant process IDs for a root process ID."""
+    children: dict[int, list[int]] = {}
+    for proc_id, info in snapshot.items():
+        parent = int(info.get("parent") or 0)
+        children.setdefault(parent, []).append(proc_id)
+
+    result: list[int] = []
+    stack = list(children.get(int(root_pid), []))
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        result.append(current)
+        stack.extend(children.get(current, []))
+    return result
+
+
+def _windows_kill_pid(pid: int, *, include_tree: bool = False) -> None:
+    """Force-kill a single PID (optionally with descendants) on Windows."""
+    cmd = ["taskkill", "/PID", str(int(pid))]
+    if include_tree:
+        cmd.append("/T")
+    cmd.append("/F")
+    try:
+        subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except Exception:
+        pass
+
+
 def stop_process_tree(pid: Optional[int], *, wait_seconds: int = 5) -> bool:
     """Stop a process tree and return whether it is no longer alive."""
     if not pid:
@@ -71,15 +157,36 @@ def stop_process_tree(pid: Optional[int], *, wait_seconds: int = 5) -> bool:
     pid = int(pid)
     system = platform.system().lower()
     if system == "windows":
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-        )
-        return not is_process_alive(pid)
+        _windows_kill_pid(pid, include_tree=True)
+
+        deadline = time.monotonic() + max(wait_seconds, 1)
+        while time.monotonic() < deadline:
+            snapshot = _windows_process_snapshot()
+            if (not is_process_alive(pid)) and (not _windows_collect_descendants(pid, snapshot)):
+                return True
+            time.sleep(0.2)
+
+        # Fallback: parent may have crashed already; explicitly walk and kill descendants.
+        snapshot = _windows_process_snapshot()
+        descendants = _windows_collect_descendants(pid, snapshot)
+        for child_pid in sorted(set(descendants), reverse=True):
+            _windows_kill_pid(child_pid, include_tree=True)
+        _windows_kill_pid(pid, include_tree=False)
+
+        deadline = time.monotonic() + max(wait_seconds, 1)
+        while time.monotonic() < deadline:
+            snapshot = _windows_process_snapshot()
+            descendants = _windows_collect_descendants(pid, snapshot)
+            if (not is_process_alive(pid)) and (not descendants):
+                return True
+            for child_pid in descendants:
+                _windows_kill_pid(child_pid, include_tree=True)
+            if is_process_alive(pid):
+                _windows_kill_pid(pid, include_tree=False)
+            time.sleep(0.2)
+
+        snapshot = _windows_process_snapshot()
+        return (not is_process_alive(pid)) and (not _windows_collect_descendants(pid, snapshot))
 
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)
@@ -229,8 +336,11 @@ def reap_stalled_tasks(project: Optional[str] = None, *, stale_after_seconds: in
             continue
         if delta <= stale_after_seconds:
             continue
-        if is_process_alive(task.get("active_pid")):
+        active_pid = task.get("active_pid")
+        if is_process_alive(active_pid):
             continue
+        if active_pid:
+            stop_process_tree(active_pid)
 
         message = (
             f"任务运行心跳已超过 {stale_after_seconds} 秒，且执行进程不存在。"

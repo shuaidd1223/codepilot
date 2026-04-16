@@ -368,6 +368,9 @@ def _run_command_live(
                     process.stdin.close()
                 except Exception:
                     pass
+            if process.poll() is None:
+                stop_process_tree(process.pid)
+            reader.join(timeout=2)
 
 
 def _git_current_branch(project_path: Path) -> str:
