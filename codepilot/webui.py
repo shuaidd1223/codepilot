@@ -272,6 +272,16 @@ def create_task_action(
     resolved_agent = (agent or project_info.get("default_mode") or "codex").lower()
     if resolved_agent == "auto":
         resolved_agent = project_info.get("default_mode") or "codex"
+
+    # Fallback when the requested agent is unavailable (e.g. missing API key).
+    from codepilot.ai import resolve_agent_with_fallback
+    default_mode = project_info.get("default_mode") or "codex"
+    resolved_agent, fallback_reason = resolve_agent_with_fallback(
+        resolved_agent,
+        project_path=project_info["path"],
+        default_mode=default_mode,
+    )
+
     task = db.create_task(
         project=project,
         title=normalized_title,
@@ -280,9 +290,13 @@ def create_task_action(
         priority=normalized_priority,
         project_path=project_info["path"],
         max_retries=max(0, int(max_retries or 0)),
+        fallback_reason=fallback_reason,
     )
+    msg = f"任务 #{task['id']} 已创建。"
+    if fallback_reason:
+        msg += f" （{fallback_reason}）"
     _append_event(f"已新建任务 #{task['id']}：{normalized_title}", project=project, task_id=task["id"])
-    return {"ok": True, "message": f"任务 #{task['id']} 已创建。", "task": _task_payload(task)}
+    return {"ok": True, "message": msg, "task": _task_payload(task)}
 
 
 def _job_result_summary(result: dict, execute: bool) -> str:

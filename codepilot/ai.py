@@ -844,6 +844,44 @@ def check_provider_availability(agent: str, project_path: str | Path | None = No
         return False, f"没有找到名为 `{agent}` 的智能体。请改用 codepilot providers 查看可用列表。"
 
 
+def resolve_agent_with_fallback(
+    agent: str,
+    project_path: str | Path | None = None,
+    default_mode: str = "codex",
+) -> tuple[str, str | None]:
+    """Check if *agent* is usable; if not, fall back to *default_mode*.
+
+    Returns:
+        (effective_agent, fallback_reason)  — *fallback_reason* is ``None``
+        when no fallback was needed.
+    """
+    normalized = normalize_agent_name(agent)
+    available, message = check_provider_availability(normalized, project_path=project_path)
+    if available:
+        return normalized, None
+
+    # Determine a usable fallback ------------------------------------------
+    fallback = normalize_agent_name(default_mode) if default_mode else "codex"
+    if fallback == normalized:
+        # The default itself is the failing agent; hard-fallback to codex CLI.
+        fallback = "codex"
+
+    fb_available, fb_msg = check_provider_availability(fallback, project_path=project_path)
+    if not fb_available:
+        # Last resort: try codex
+        fallback = "codex"
+        fb_available, fb_msg = check_provider_availability(fallback, project_path=project_path)
+        if not fb_available:
+            # Nothing works — let the caller decide how to handle it.
+            return normalized, None
+
+    reason = (
+        f"请求的 agent '{agent}' 不可用（{message}），"
+        f"已自动回退到 '{fallback}'"
+    )
+    return fallback, reason
+
+
 _normalize_agent_name = normalize_agent_name
 
 
