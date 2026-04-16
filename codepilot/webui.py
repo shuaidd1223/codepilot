@@ -27,6 +27,7 @@ _UI_JOB_SEQ = 0
 _UI_JOBS: dict[int, dict] = {}
 _UI_EVENTS: list[dict] = []
 _MAX_EVENTS = 40
+_MAX_JOB_LOG_LINES = 50
 
 
 def _now_iso() -> str:
@@ -348,11 +349,29 @@ def submit_requirement_action(
             "summary": "",
             "error": "",
             "task_ids": [],
+            "log": [],
         }
     _append_event(f"收到需求：{normalized_title}", project=project)
 
+    def _append_job_log(line: str) -> None:
+        with _UI_LOCK:
+            job = _UI_JOBS.get(job_id)
+            if job:
+                job["log"].append(line)
+                if len(job["log"]) > _MAX_JOB_LOG_LINES:
+                    del job["log"][:-_MAX_JOB_LOG_LINES]
+                job["updated_at"] = _now_iso()
+
     def worker() -> None:
+        import codepilot.ai as _ai_module
+
         _update_job(job_id, status="running", phase="planning", updated_at=_now_iso())
+        _append_job_log(f"开始规划：{normalized_title}")
+        _append_job_log(f"使用规划器：{planner}")
+
+        # Hook planner progress callback
+        prev_callback = _ai_module._planner_progress_callback
+        _ai_module._planner_progress_callback = _append_job_log
         try:
             result = run_requirement_workflow(
                 project_info=db.get_project(project) or project_info,
@@ -370,6 +389,9 @@ def submit_requirement_action(
             task_ids = [item["id"] for item in (result.get("tasks") or [])]
             run_stats = result.get("run") or {}
             status = "attention" if execute and run_stats.get("failed") else "succeeded"
+            _append_job_log(f"规划完成，创建 {len(task_ids)} 个任务")
+            if execute and run_stats:
+                _append_job_log(f"执行结果: done={run_stats.get('done', 0)} failed={run_stats.get('failed', 0)}")
             _update_job(
                 job_id,
                 status=status,
@@ -387,6 +409,7 @@ def submit_requirement_action(
                 task_id=task_ids[0] if task_ids else None,
             )
         except Exception as exc:
+            _append_job_log(f"失败：{exc}")
             _update_job(
                 job_id,
                 status="failed",
@@ -396,6 +419,8 @@ def submit_requirement_action(
                 error=str(exc),
             )
             _append_event(f"需求执行失败：{normalized_title} | {exc}", level="error", project=project)
+        finally:
+            _ai_module._planner_progress_callback = prev_callback
 
     if run_async:
         threading.Thread(target=worker, name=f"codepilot-ui-job-{job_id}", daemon=True).start()
@@ -685,6 +710,11 @@ input,select,textarea{width:100%;padding:11px 13px;border:1px solid var(--line);
 .session-item{cursor:pointer;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}.session-item:hover{border-color:#9dccdf}.session-item.active{border-color:#9dccdf;background:#f4fbff}
 .session-item .split{align-items:center}
 .session-project-label{font-size:11px;color:var(--muted);background:#f1f3f5;padding:2px 8px;border-radius:6px;margin-top:2px;display:inline-block}
+.job-active{border-color:var(--brand);background:var(--brand-bg);animation:jobPulse 2s ease-in-out infinite}
+@keyframes jobPulse{0%,100%{opacity:1}50%{opacity:.85}}
+.job-spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--brand);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:4px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.job-log{margin:6px 0 0;padding:6px 8px;background:#f8f6f3;border:1px solid var(--line);border-radius:8px;font-size:11px;max-height:100px;overflow-y:auto;color:var(--muted)}
 @media(max-width:1180px){.shell,.hero,.workspace{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.scroll{max-height:none}.side{max-height:none}}@media(max-width:720px){.grid,.metrics{grid-template-columns:1fr}}
 </style></head><body>
 <div class="shell">
@@ -871,7 +901,7 @@ async function loadDashboard(){
     S.project=data.selected_project;
     $('projects').innerHTML=(data.projects||[]).length?data.projects.map(projectCard).join(''):'<div class="empty">还没有项目。先执行一次 codepilot init。</div>';
     bindProjects();
-    $('jobs').innerHTML=(data.jobs||[]).length?data.jobs.map(function(j){return '<div class="job"><div class="split"><strong>#'+j.id+' '+esc(j.title)+'</strong><span class="tag '+stsCls(j.status)+'">'+esc(j.status)+'</span></div><div class="meta"><span>planner: '+esc(j.planner||'-')+'</span><span>agent: '+esc(j.agent||'auto')+'</span><span>阶段: '+esc(j.phase||'-')+'</span></div><div class="body">'+esc(j.summary||j.error||'等待中')+'</div></div>'}).join(''):'<div class="empty">还没有从 Web UI 发起的需求。</div>';
+    $('jobs').innerHTML=(data.jobs||[]).length?data.jobs.map(function(j){var isActive=j.status==='running'||j.status==='queued';var spinner=isActive?'<span class="job-spinner"></span> ':'';var phaseLabel={'queued':'排队中','planning':'规划中...','running':'执行中...','done':'完成','failed':'失败','attention':'需关注'}[j.phase]||j.phase;var logHtml='';if(j.log&&j.log.length){var recent=j.log.slice(-5);logHtml='<pre class="job-log">'+esc(recent.join('\n'))+'</pre>'}var bodyText=j.summary||j.error||logHtml||'等待中';if(j.summary||j.error)bodyText=esc(j.summary||j.error);else if(logHtml)bodyText=logHtml;else bodyText=esc('等待中');return '<div class="job'+(isActive?' job-active':'')+'"><div class="split"><strong>'+spinner+'#'+j.id+' '+esc(j.title)+'</strong><span class="tag '+stsCls(j.status)+'">'+esc(phaseLabel)+'</span></div><div class="meta"><span>planner: '+esc(j.planner||'-')+'</span><span>agent: '+esc(j.agent||'auto')+'</span></div><div class="body">'+bodyText+'</div></div>'}).join(''):'<div class="empty">还没有从 Web UI 发起的需求。</div>';
     $('events').innerHTML=(data.events||[]).length?data.events.map(function(ev){return '<div class="event"><div class="split"><span class="tag '+stsCls(ev.level||'info')+'">'+esc(ev.level||'info')+'</span><span class="muted">'+esc(fmtTime(ev.time))+'</span></div><div class="body">'+esc(ev.message)+'</div></div>'}).join(''):'<div class="empty">最近还没有事件。</div>';
     var p=(data.projects||[]).find(function(i){return i.name===data.selected_project});
     $('projectTitle').textContent=p?p.name:'项目总览';

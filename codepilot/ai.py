@@ -21,6 +21,10 @@ from codepilot.config import load_project_config
 # 签名: (task: dict, project_path: Path, phase: str, prompt: str) -> tuple[str, int, str]
 _phase_stub: Optional[callable] = None
 
+# 规划进度回调：外部（如 WebUI）可设置此回调来接收 planner 实时输出
+# 签名: (line: str) -> None
+_planner_progress_callback: Optional[callable] = None
+
 # API 支持库（可选导入）
 try:
     import openai
@@ -1000,6 +1004,11 @@ def _run_claude_schema_prompt(
                 if stripped:
                     sys.stderr.write(f"  [planner] {stripped}\n")
                     sys.stderr.flush()
+                    if _planner_progress_callback:
+                        try:
+                            _planner_progress_callback(stripped)
+                        except Exception:
+                            pass
 
         stderr_thread = threading.Thread(target=_stream_stderr, daemon=True)
         stderr_thread.start()
@@ -1125,6 +1134,11 @@ def _run_codex_schema_prompt(
                         import sys
                         sys.stderr.write(f"  [planner] {stripped}\n")
                         sys.stderr.flush()
+                        if _planner_progress_callback:
+                            try:
+                                _planner_progress_callback(stripped)
+                            except Exception:
+                                pass
 
             st = _threading.Thread(target=_stream_codex_stderr, daemon=True)
             st.start()
