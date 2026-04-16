@@ -165,6 +165,40 @@ def _check_cli_tools() -> list[CheckResult]:
     return results
 
 
+def _check_api_keys() -> list[CheckResult]:
+    """Check API key availability for commonly used providers."""
+    from codepilot.ai import API_PROVIDERS
+
+    results: list[CheckResult] = []
+    # Only check providers whose env vars are partially expected.
+    key_groups: dict[str, tuple[str, list[str]]] = {}
+    for key, provider in API_PROVIDERS.items():
+        if not provider.api_env_vars or not provider.requires_api_key():
+            continue
+        env_var = provider.api_env_vars[0]
+        if env_var not in key_groups:
+            key_groups[env_var] = (env_var, [])
+        key_groups[env_var][1].append(key)
+
+    for env_var, (_, provider_names) in key_groups.items():
+        value = os.environ.get(env_var, "").strip()
+        label = f"api_key_{env_var.lower()}"
+        names_str = ", ".join(provider_names[:3])
+        if value:
+            results.append(CheckResult(
+                label, True,
+                f"{env_var} 已设置（可用: {names_str}）",
+            ))
+        else:
+            results.append(CheckResult(
+                label, False,
+                f"{env_var} 未设置（影响: {names_str}）",
+                fix=f"设置环境变量 {env_var}，或在 AGENTS.toml [providers] 中配置 api_key",
+            ))
+
+    return results
+
+
 def _check_db_path() -> CheckResult:
     """Task DB path readable & writable."""
     from codepilot.db import _get_db_path
@@ -219,6 +253,7 @@ def run_all_checks() -> list[CheckResult]:
     results.extend(_check_git(None))
     results.append(_check_agents_toml())
     results.extend(_check_cli_tools())
+    results.extend(_check_api_keys())
     results.append(_check_db_path())
     results.append(_check_console_encoding())
     return results

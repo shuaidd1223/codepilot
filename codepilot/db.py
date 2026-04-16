@@ -122,6 +122,7 @@ def init_db() -> None:
         _ensure_column(conn, "tasks", "stop_reason", "TEXT")
         _ensure_column(conn, "tasks", "source", "TEXT NOT NULL DEFAULT 'user'")
         _ensure_column(conn, "tasks", "dedup_key", "TEXT")
+        _ensure_column(conn, "tasks", "fallback_reason", "TEXT")
         conn.commit()
 
 
@@ -217,6 +218,7 @@ def create_task(
     max_retries: int = 3,
     source: str = "user",
     dedup_key: Optional[str] = None,
+    fallback_reason: Optional[str] = None,
 ) -> dict:
     """Create a task.  Auto-computes *dedup_key* when not supplied and returns
     an existing backlog/in_progress task instead of inserting a duplicate."""
@@ -238,8 +240,8 @@ def create_task(
         cur = conn.execute(
             """
             INSERT INTO tasks
-                (project, title, content, agent, priority, depends_on, project_path, max_retries, source, dedup_key)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (project, title, content, agent, priority, depends_on, project_path, max_retries, source, dedup_key, fallback_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project,
@@ -252,6 +254,7 @@ def create_task(
                 max_retries,
                 source,
                 dedup_key,
+                fallback_reason,
             ),
         )
         conn.commit()

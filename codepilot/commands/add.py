@@ -16,6 +16,7 @@ from codepilot.ai import (
     generate_task_content,
     list_available_providers,
     normalize_agent_name,
+    resolve_agent_with_fallback,
 )
 from codepilot.commands.status import _resolve_project
 from codepilot.output import echo
@@ -37,29 +38,44 @@ def _resolve_project_strict(ctx, param, value):
     return value
 
 
-def _resolve_agent(ctx, param, value):
-    """解析 agent 参数，提供友好的错误提示."""
+def _resolve_agent_info(ctx, value) -> tuple[str, str | None, str | None]:
+    """Resolve agent with fallback.  Returns (agent, fallback_reason, project_path)."""
     if not value:
-        return "codex"
+        value = "codex"
 
-    normalized = normalize_agent_name(value)
     project_path = None
+    default_mode = "codex"
     if ctx is not None and getattr(ctx, "params", None):
         project_name = ctx.params.get("project")
         project_info = db.get_project(project_name) if project_name else None
-        project_path = project_info.get("path") if project_info else None
-    available, msg = check_provider_availability(normalized, project_path=project_path)
-    if not available:
-        providers = list_available_providers()
-        hint_lines = []
-        for cli in providers.get("cli", [])[:4]:
-            hint_lines.append(f"CLI: {cli}")
-        for api in providers.get("api", [])[:6]:
-            hint_lines.append(f"API: {api}")
-        hint = "；可选示例：" + "；".join(hint_lines) if hint_lines else ""
-        raise click.BadParameter(msg + hint)
+        if project_info:
+            project_path = project_info.get("path")
+            default_mode = project_info.get("default_mode") or "codex"
 
-    return normalized
+    agent, fallback_reason = resolve_agent_with_fallback(
+        value, project_path=project_path, default_mode=default_mode,
+    )
+
+    # If fallback also failed, raise a clear error.
+    if fallback_reason is None:
+        available, msg = check_provider_availability(agent, project_path=project_path)
+        if not available:
+            providers = list_available_providers()
+            hint_lines = []
+            for cli in providers.get("cli", [])[:4]:
+                hint_lines.append(f"CLI: {cli}")
+            for api in providers.get("api", [])[:6]:
+                hint_lines.append(f"API: {api}")
+            hint = "；可选示例：" + "；".join(hint_lines) if hint_lines else ""
+            raise click.BadParameter(msg + hint)
+
+    return agent, fallback_reason, project_path
+
+
+def _resolve_agent(ctx, param, value):
+    """Click callback — resolve agent (backward-compatible signature)."""
+    agent, _fallback_reason, _project_path = _resolve_agent_info(ctx, value)
+    return agent
 
 
 def _parse_batch_file(file_path: Path) -> list[dict]:
@@ -201,8 +217,13 @@ def add(
     if not title:
         raise click.BadParameter("--title 或 --file 必须指定一个")
 
+    # Re-resolve with fallback info (the Click callback doesn't propagate it).
+    default_mode = proj_info.get("default_mode", "codex") if proj_info else "codex"
+    effective_agent, fallback_reason, _ = _resolve_agent_info(ctx, agent)
+
     _single_add(
-        project, title, agent, priority, no_ai, dep_list, proj_path, json_mode,
+        project, title, effective_agent, priority, no_ai, dep_list, proj_path,
+        json_mode, fallback_reason=fallback_reason,
     )
 
 
@@ -215,8 +236,12 @@ def _single_add(
     dep_list: list[int] | None,
     proj_path: str,
     json_mode: bool,
+    fallback_reason: str | None = None,
 ):
     """添加单个任务."""
+    if fallback_reason:
+        echo(f"[yellow]⚠ {fallback_reason}[/yellow]")
+
     if no_ai:
         content = ""
         echo("[yellow]跳过 AI 生成，内容为空[/yellow]")
@@ -232,6 +257,7 @@ def _single_add(
         agent=agent,
         priority=priority,
         depends_on=dep_list,
+        fallback_reason=fallback_reason,
     )
 
     task_id = task["id"]
@@ -244,6 +270,8 @@ def _single_add(
     click.echo(f"  项目:     {project}")
     click.echo(f"  标题:     {title}")
     click.echo(f"  Agent:    {agent}")
+    if fallback_reason:
+        click.echo(f"  回退原因: {fallback_reason}")
     click.echo(f"  优先级:   {priority}")
     if dep_list:
         click.echo(f"  依赖:     #{', #'.join(str(d) for d in dep_list)}")

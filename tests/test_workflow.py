@@ -602,6 +602,7 @@ def test_add_command_preserves_utf8_title_and_content_round_trip(tmp_path, monke
     content = "# 任务说明\n\n1. 标题需要原样保留\n2. 内容也要原样保留"
 
     monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
     monkeypatch.setattr(add_cmd, "generate_task_content", lambda *args, **kwargs: content)
 
     runner = CliRunner()
