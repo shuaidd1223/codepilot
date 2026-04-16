@@ -15,7 +15,10 @@ from urllib.parse import unquote, urlparse
 
 from codepilot import db
 from codepilot.commands.auto import run_requirement_workflow
+from codepilot.config import load_project_config
 from codepilot.runtime import runtime_summary
+
+_GOAL_MAX_BYTES = 4096
 
 
 STATUS_ORDER = {"in_progress": 0, "backlog": 1, "failed": 2, "cancelled": 3, "done": 4}
@@ -388,6 +391,100 @@ def submit_requirement_action(
     return {"ok": True, "message": f"需求已提交，后台任务 #{job_id} 已启动。", "job": dict(_UI_JOBS[job_id])}
 
 
+def submit_goal_action(project: str, text: str, *, category: str = "auto") -> dict:
+    """POST /api/goal — classify intent and route accordingly.
+
+    *category* can be ``auto``, ``question``, ``requirement``, or ``command``.
+    """
+    from codepilot.ai import answer_question_via_api, classify_intent
+
+    db.init_db()
+    project_info = db.get_project(project)
+    if not project_info:
+        raise RuntimeError(f"项目 '{project}' 不存在。")
+    text = (text or "").strip()
+    if not text:
+        raise RuntimeError("输入不能为空。")
+    if len(text.encode("utf-8")) > _GOAL_MAX_BYTES:
+        raise RuntimeError(f"输入超过 {_GOAL_MAX_BYTES // 1024}KB 限制。")
+
+    category = (category or "auto").lower()
+    valid_categories = {"auto", "question", "requirement", "command"}
+    if category not in valid_categories:
+        category = "auto"
+
+    # --- resolve intent ---
+    if category == "auto":
+        cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+        classifier_cfg = getattr(cfg, "classifier", None)
+        api_key = None
+        if classifier_cfg and classifier_cfg.enabled:
+            if classifier_cfg.provider:
+                api_key = cfg.get_provider_api_key(classifier_cfg.provider)
+            try:
+                result = classify_intent(
+                    text,
+                    project_path=project_info["path"],
+                    classifier_provider=classifier_cfg.provider,
+                    classifier_model=classifier_cfg.model,
+                    timeout=classifier_cfg.timeout,
+                    api_key=api_key,
+                )
+                intent = result["intent"]
+            except Exception:
+                intent = "requirement"
+        else:
+            intent = "requirement"
+    else:
+        intent = category
+
+    # --- route ---
+    if intent == "command":
+        _append_event(f"收到命令类输入（已提示用户使用 CLI）：{text[:60]}", project=project)
+        return {
+            "ok": True,
+            "intent": "command",
+            "message": (
+                "这看起来是在调用 codepilot 自身命令，请在终端直接执行：\n"
+                "  状态总览:  codepilot status -p <项目> -v\n"
+                "  任务日志:  codepilot logs <task_id>\n"
+                "  重试任务:  codepilot retry <task_id>\n"
+                "  停止任务:  codepilot stop <task_id>\n"
+                "  触发巡检:  codepilot inspect -p <项目>"
+            ),
+        }
+
+    if intent == "question":
+        cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+        classifier_cfg = getattr(cfg, "classifier", None)
+        provider_key = classifier_cfg.provider if classifier_cfg else ""
+        api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
+        try:
+            answer = answer_question_via_api(
+                provider_key=provider_key,
+                question=text,
+                project_path=project_info["path"],
+                model_override=classifier_cfg.model if classifier_cfg else "",
+                api_key=api_key,
+            )
+        except Exception as exc:
+            answer = f"回答失败：{exc}"
+        _append_event(f"回答问题：{text[:60]}", project=project)
+        return {"ok": True, "intent": "question", "message": answer or "未获得回答"}
+
+    # requirement or task — delegate to the existing requirement flow
+    max_tasks = 1 if intent == "task" else 5
+    result = submit_requirement_action(
+        project,
+        text,
+        execute=True,
+        max_tasks=max_tasks,
+        run_async=True,
+    )
+    result["intent"] = intent
+    return result
+
+
 HTML = """<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -418,6 +515,12 @@ input,select,textarea{width:100%;padding:11px 13px;border:1px solid var(--line);
 </aside>
 <main class="main">
   <div class="toolbar"><div><h2 id="projectTitle" style="margin:0">项目总览</h2><div id="projectPath" class="muted">正在读取数据…</div></div><div class="split"><button id="refreshBtn" class="btn secondary">立即刷新</button><button id="toggleBtn" class="btn">自动刷新：开</button></div></div>
+  <div id="goalBar" class="detail" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+    <div class="field" style="flex:1;min-width:220px"><label>快速输入</label><input id="goalText" type="text" placeholder="输入问题、需求或命令…" maxlength="4096"></div>
+    <div class="field" style="width:120px"><label>类型</label><select id="goalCategory"><option value="auto" selected>自动</option><option value="question">问题</option><option value="requirement">需求</option><option value="command">命令</option></select></div>
+    <button id="goalSubmit" class="btn ok" style="height:42px;white-space:nowrap">提交</button>
+  </div>
+  <div id="goalAnswer" class="banner"></div>
   <div id="banner" class="banner"></div>
   <div class="hero">
     <section class="detail">
@@ -467,6 +570,7 @@ async function loadTaskDetail(){const box=document.getElementById('taskDetail');
 async function loadDashboard(){try{const data=await getj(state.project?`/api/projects/${encodeURIComponent(state.project)}`:'/api/projects');state.project=data.selected_project;document.getElementById('projects').innerHTML=(data.projects||[]).length?data.projects.map(projectCard).join(''):'<div class="empty">还没有项目。先执行一次 codepilot init。</div>';bindProjects();document.getElementById('jobs').innerHTML=(data.jobs||[]).length?data.jobs.map(j=>`<div class="job"><div class="split"><strong>#${j.id} ${e(j.title)}</strong><span class="tag ${c(j.status)}">${e(j.status)}</span></div><div class="meta"><span>planner: ${e(j.planner||'-')}</span><span>agent: ${e(j.agent||'auto')}</span><span>阶段: ${e(j.phase||'-')}</span></div><div class="body">${e(j.summary||j.error||'等待中')}</div></div>`).join(''):'<div class="empty">还没有从 Web UI 发起的需求。</div>';document.getElementById('events').innerHTML=(data.events||[]).length?data.events.map(ev=>`<div class="event"><div class="split"><span class="tag ${c(ev.level||'info')}">${e(ev.level||'info')}</span><span class="muted">${e(t(ev.time))}</span></div><div class="body">${e(ev.message)}</div></div>`).join(''):'<div class="empty">最近还没有事件。</div>';const p=(data.projects||[]).find(i=>i.name===data.selected_project);document.getElementById('projectTitle').textContent=p?p.name:'项目总览';document.getElementById('projectPath').textContent=p?p.path:'当前没有已注册项目';const s=p?p.stats:{in_progress:0,backlog:0,failed:0,cancelled:0,done:0,total:0};document.getElementById('metrics').innerHTML=[metric('进行中',s.in_progress||0),metric('待办',s.backlog||0),metric('失败 / 取消',(s.failed||0)+(s.cancelled||0)),metric('已完成',s.done||0),metric('总任务',s.total||0)].join('');const tasks=data.tasks||[];renderList('running',tasks.filter(x=>x.status==='in_progress'),'当前没有运行中的任务');renderList('backlog',tasks.filter(x=>x.status==='backlog'),'当前 backlog 为空');renderList('failed',tasks.filter(x=>x.status==='failed'||x.status==='cancelled'),'当前没有失败或取消的任务');renderList('done',tasks.filter(x=>x.status==='done').slice(0,8),'还没有已完成任务');bindTaskClicks();bindActions();const ids=tasks.map(x=>x.id);if(!state.taskId&&tasks.length)state.taskId=pickTask(tasks);else if(state.taskId&&!ids.includes(state.taskId))state.taskId=pickTask(tasks);await loadTaskDetail()}catch(err){flash(err.message,'error')}}
 function schedule(){clearInterval(state.timer);if(!state.auto)return;state.timer=setInterval(loadDashboard,3000)}
 document.getElementById('refreshBtn').onclick=loadDashboard;document.getElementById('toggleBtn').onclick=()=>{state.auto=!state.auto;document.getElementById('toggleBtn').textContent=`自动刷新：${state.auto?'开':'关'}`;schedule()};document.getElementById('mode').onchange=syncMode;document.getElementById('composer').onsubmit=async(ev)=>{ev.preventDefault();if(!state.project){flash('当前没有已注册项目，先执行一次 codepilot init。','error');return}const payload={project:state.project,title:document.getElementById('titleInput').value,content:document.getElementById('contentInput').value,priority:document.getElementById('priority').value,agent:document.getElementById('agent').value,planner:document.getElementById('planner').value,execute:document.getElementById('executeNow').checked};try{const mode=document.getElementById('mode').value;let out;if(mode==='task'){out=await postj('/api/tasks',payload);state.taskId=out.task.id;document.getElementById('contentInput').value=''}else{out=await postj('/api/requirements',payload)}document.getElementById('titleInput').value='';flash(out.message||'提交成功','success');await loadDashboard()}catch(err){flash(err.message,'error')}};
+document.getElementById('goalSubmit').onclick=async()=>{if(!state.project){flash('当前没有已注册项目，先执行一次 codepilot init。','error');return}const text=document.getElementById('goalText').value.trim();if(!text){flash('输入不能为空。','error');return}if(new Blob([text]).size>4096){flash('输入超过 4KB 限制。','error');return}const cat=document.getElementById('goalCategory').value;document.getElementById('goalSubmit').disabled=true;const ab=document.getElementById('goalAnswer');ab.className='banner';ab.textContent='';try{const out=await postj('/api/goal',{project:state.project,text:text,category:cat});if(out.intent==='question'||out.intent==='command'){ab.className='banner show info';ab.textContent=out.message||'完成';ab.style.whiteSpace='pre-wrap'}else{flash(out.message||'提交成功','success');await loadDashboard()}document.getElementById('goalText').value=''}catch(err){flash(err.message,'error')}finally{document.getElementById('goalSubmit').disabled=false}};document.getElementById('goalText').onkeydown=(ev)=>{if(ev.key==='Enter'&&!ev.shiftKey){ev.preventDefault();document.getElementById('goalSubmit').click()}};
 syncMode();loadDashboard();schedule();
 </script></body></html>"""
 
@@ -527,6 +631,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         try:
+            if path == "/api/goal":
+                body = self._read_json_body()
+                self._send_json(
+                    submit_goal_action(
+                        body.get("project") or "",
+                        body.get("text") or "",
+                        category=body.get("category") or "auto",
+                    )
+                )
+                return
             if path == "/api/tasks":
                 body = self._read_json_body()
                 self._send_json(
