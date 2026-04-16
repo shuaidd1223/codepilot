@@ -476,6 +476,8 @@ def _git_merge_task_branch(
     )
     if merge_code != 0:
         raise RuntimeError(f"合并任务分支失败:\n{merge_output}")
+    # 合并成功后删除任务分支
+    _run_command(["git", "branch", "-d", task_branch], cwd=project_path, timeout=30)
     safe_title = " ".join((title or "").strip().split())[:60]
     merged_title = safe_title or f"task #{task_id}"
     return f"已合并 `{task_branch}` -> `{base_branch}` ({merged_title})"
@@ -633,6 +635,11 @@ def _run_builtin_phase(
     config_ref: str | Path | None = None,
 ) -> tuple[str, int, str]:
     """Execute one builtin phase with the requested agent."""
+    # stub 注入钩子：e2e 测试可通过 ai._phase_stub 替换真实 CLI 调用
+    from codepilot import ai as _ai_hook
+    if _ai_hook._phase_stub is not None:
+        return _ai_hook._phase_stub(task=task, project_path=project_path, phase=phase, prompt=prompt)
+
     runner, model = _resolve_builtin_phase_agent(task.get("agent", "dual"), phase)
     task_id = int(task.get("id") or 0)
     provider_ref = config_ref or project_path

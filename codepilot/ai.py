@@ -14,6 +14,13 @@ from typing import Optional
 
 from codepilot.config import load_project_config
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stub 注入钩子（供 e2e 测试使用）
+# ═══════════════════════════════════════════════════════════════════════════════
+# 设置后，_run_builtin_phase 会调用此函数代替真实 CLI，
+# 签名: (task: dict, project_path: Path, phase: str, prompt: str) -> tuple[str, int, str]
+_phase_stub: Optional[callable] = None
+
 # API 支持库（可选导入）
 try:
     import openai
