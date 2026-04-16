@@ -355,7 +355,7 @@ def _chat_help() -> str:
             "会话命令：",
             "  /help               查看帮助",
             "  /exit               退出会话",
-            "  /status             查看当前项目任务看板",
+            "  /status             查看任务看板（/status watch 实时刷新）",
             "  /history            查看对话记录",
             "  /clear              清空对话历史",
             "  /project <name>     切换项目",
@@ -363,6 +363,14 @@ def _chat_help() -> str:
             "  /execute on|off     切换默认是否自动执行",
             "  /plan               只规划下一条需求，不执行",
             "  /run                自动执行下一条需求",
+            "",
+            "任务管理：",
+            "  /cancel <id ...>    取消任务（保留记录）",
+            "  /resume <id ...>    恢复 cancelled/failed 任务到 backlog",
+            "  /stop <id>          停止运行中的任务",
+            "  /retry <id>         重试任务",
+            "  /rm <id ...>        删除任务",
+            "  /logs <id>          查看任务日志",
             "",
             "输入前缀（跳过自动分类）：",
             "  ? <文本>            当作问题直接回答，不建任务",
@@ -556,6 +564,29 @@ def run_chat_session(
             if cmd == "/clear":
                 chat_history.clear()
                 echo("[green]对话历史已清空[/green]")
+                continue
+
+            # 任务管理快捷命令
+            if cmd in ("/cancel", "/resume", "/retry", "/rm", "/stop", "/logs"):
+                ids = [int(x) for x in parts[1:] if x.isdigit()]
+                if not ids:
+                    echo(f"[yellow]用法: {cmd} <task_id ...>[/yellow]")
+                    continue
+                from codepilot.commands import tasks as tasks_cmd_mod
+                from click.testing import CliRunner as _InlineRunner
+                cli_cmd_map = {
+                    "/cancel": tasks_cmd_mod.cancel,
+                    "/resume": tasks_cmd_mod.resume,
+                    "/retry": tasks_cmd_mod.retry,
+                    "/rm": tasks_cmd_mod.rm,
+                    "/stop": tasks_cmd_mod.stop,
+                    "/logs": tasks_cmd_mod.logs,
+                }
+                target_cmd = cli_cmd_map[cmd]
+                args = [str(i) for i in ids]
+                if cmd in ("/rm", "/cancel"):
+                    args.append("-f") if cmd == "/rm" else None
+                _InlineRunner().invoke(target_cmd, args)
                 continue
 
             echo("[yellow]未知会话命令[/yellow]")

@@ -63,6 +63,73 @@ def retry(task_id: int):
     click.echo(f"  下一步: codepilot run -p {task['project']}")
 
 
+# ── cancel ────────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("task_ids", type=int, nargs=-1, required=True)
+@click.option("--message", "-m", default="", help="取消原因")
+def cancel(task_ids: tuple[int, ...], message: str):
+    """取消一个或多个任务（保留记录，不删除）。"""
+    db.init_db()
+    count = 0
+    for tid in task_ids:
+        task = db.get_task(tid)
+        if not task:
+            echo(f"[yellow]任务 #{tid} 不存在，跳过[/yellow]")
+            continue
+        if task["status"] == "done":
+            echo(f"[yellow]任务 #{tid} 已完成，无法取消[/yellow]")
+            continue
+        if task["status"] == "in_progress":
+            pid = task.get("active_pid")
+            if pid:
+                stop_process_tree(pid)
+            reason = message or f"任务 #{tid} 已取消"
+            request_task_stop(tid, reason)
+        from datetime import datetime
+        clear_task_runtime(
+            tid,
+            status="cancelled",
+            completed_at=datetime.now().isoformat(),
+            error_message=message or "手动取消",
+            stop_requested=0,
+            stop_reason=None,
+        )
+        echo(f"[yellow]已取消 #{tid}[/yellow]  {task['title']}")
+        count += 1
+    if count:
+        echo(f"[green][OK] 共取消 {count} 个任务[/green]")
+
+
+# ── resume ────────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("task_ids", type=int, nargs=-1, required=True)
+def resume(task_ids: tuple[int, ...]):
+    """恢复 cancelled/failed 任务到 backlog，等待重新执行。"""
+    db.init_db()
+    count = 0
+    for tid in task_ids:
+        task = db.get_task(tid)
+        if not task:
+            echo(f"[yellow]任务 #{tid} 不存在，跳过[/yellow]")
+            continue
+        if task["status"] not in ("cancelled", "failed"):
+            echo(f"[yellow]任务 #{tid} 状态为 {task['status']}，只有 cancelled/failed 可恢复[/yellow]")
+            continue
+        clear_task_runtime(
+            tid,
+            status="backlog",
+            error_message=None,
+            stop_requested=0,
+            stop_reason=None,
+        )
+        echo(f"[green]已恢复 #{tid}[/green]  {task['title']} → backlog")
+        count += 1
+    if count:
+        echo(f"[green][OK] 共恢复 {count} 个任务到 backlog[/green]")
+
+
 # ── edit ───────────────────────────────────────────────────────────────────────
 
 @click.command()
