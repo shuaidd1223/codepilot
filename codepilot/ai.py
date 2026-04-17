@@ -1372,14 +1372,23 @@ def generate_task_breakdown(
     # ── Validate planner output ──────────────────────────────────────────
     # Reject garbage tasks where the planner echoed its instructions
     # instead of actually planning.
-    _garbage_keywords = ("等待", "请提供", "请输入", "待用户", "请发送", "等待高层")
+    _garbage_keywords_zh = ("等待", "请提供", "请输入", "待用户", "请发送", "等待高层")
+    _garbage_keywords_en = ("awaiting", "waiting for", "please provide", "no goal", "user input needed", "awaiting-user")
 
     def _is_garbage_task(task_item: dict) -> bool:
         t = (task_item.get("title") or "").strip()
         g = (task_item.get("goal") or "").strip()
-        for kw in _garbage_keywords:
-            if kw in t or kw in g:
+        combined = t + " " + g
+        combined_lower = combined.lower()
+        for kw in _garbage_keywords_zh:
+            if kw in combined:
                 return True
+        for kw in _garbage_keywords_en:
+            if kw in combined_lower:
+                return True
+        # Title is too generic / meta
+        if t.lower() in ("awaiting-user-input", "waiting", "pending", "no-op", "placeholder"):
+            return True
         return False
 
     valid_tasks = [t for t in tasks if not _is_garbage_task(t)]
