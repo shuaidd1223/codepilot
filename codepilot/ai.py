@@ -1145,10 +1145,14 @@ def _kill_process_tree(pid: int) -> None:
 
 
 def _planner_process_group_kwargs() -> dict:
-    """Isolate planner child processes so timeouts/interrupts can be cleaned up safely."""
-    if platform.system().lower() == "windows":
-        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
-    return {"start_new_session": True}
+    """Isolate planner child processes so timeouts/interrupts can be cleaned up safely.
+
+    Also suppresses Windows console pop-ups when the parent process has no
+    console (e.g. when the planner runs inside the detached `codepilot webui`
+    service). Delegates to :func:`runtime.no_window_kwargs`.
+    """
+    from codepilot.runtime import no_window_kwargs
+    return no_window_kwargs(new_process_group=True)
 
 
 def _terminate_planner_process(process) -> None:
@@ -1428,10 +1432,18 @@ def generate_task_breakdown(
     valid_tasks = [t for t in tasks if not _is_garbage_task(t)]
     if not valid_tasks:
         summary = breakdown.get("summary", "")
+        rejected = "\n".join(
+            f"  - {(t.get('title') or '?')[:60]} :: {(t.get('goal') or '?')[:80]}"
+            for t in tasks[:3]
+        )
         raise RuntimeError(
-            f"规划器未能正确理解需求，返回了无效任务。"
-            f"规划器摘要：{summary[:120]}\n"
-            f"请重新描述需求，或换一个规划器重试。"
+            f"规划器把这次需求理解成「等待 / 请用户补充」一类的占位任务，全部被过滤掉了。\n"
+            f"规划器摘要：{summary[:200]}\n"
+            f"被过滤的任务示例：\n{rejected}\n"
+            f"通常出现在需求过于宽泛 / 探索性时（比如「看看有没有什么优化点」）。建议：\n"
+            f"  1. 把需求写得更具体：指明要修改 / 新增 / 优化哪一块；\n"
+            f"  2. 想让 AI 主动找改进点：用 `codepilot inspect -p <项目>`；\n"
+            f"  3. 或换 codex 规划器（自带兜底降级），用 --planner codex 重试。"
         )
     if len(valid_tasks) < len(tasks):
         import sys

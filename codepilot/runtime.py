@@ -17,6 +17,85 @@ from codepilot import db
 HEARTBEAT_INTERVAL_SECONDS = 3
 STALE_AFTER_SECONDS = 600
 
+# Windows creation flags
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def no_window_kwargs(*, new_process_group: bool = False) -> dict:
+    """Subprocess kwargs that prevent console window pop-ups on Windows.
+
+    When the parent process has no console (e.g. the detached `codepilot webui`
+    service), spawning a console-mode child like `claude.exe` or `git.exe` will
+    pop a fresh console window unless we pass ``CREATE_NO_WINDOW``.
+
+    On POSIX this returns an empty dict (no console concept), or ``start_new_session=True``
+    if ``new_process_group`` is set so the parent can clean up the whole tree.
+    """
+    if platform.system().lower() == "windows":
+        flags = _CREATE_NO_WINDOW
+        if new_process_group:
+            flags |= _CREATE_NEW_PROCESS_GROUP
+        kwargs = {"creationflags": flags}
+        # Hide window even if a process accidentally tries to show one.
+        try:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0  # SW_HIDE
+            kwargs["startupinfo"] = si
+        except Exception:
+            pass
+        return kwargs
+    if new_process_group:
+        return {"start_new_session": True}
+    return {}
+
+
+def _has_console_window() -> bool:
+    """On Windows, return whether this process owns a console. Always True elsewhere."""
+    if platform.system().lower() != "windows":
+        return True
+    try:
+        import ctypes
+        return bool(ctypes.windll.kernel32.GetConsoleWindow())
+    except Exception:
+        return True  # If detection fails, assume we have a console (safer default).
+
+
+def silence_subprocess_windows_if_detached() -> None:
+    """If running without a console (e.g. the detached webui service),
+    monkey-patch ``subprocess.Popen`` so every child gets ``CREATE_NO_WINDOW``
+    and never pops a black console window.
+
+    Idempotent. No-op on POSIX or in interactive terminals.
+    """
+    if platform.system().lower() != "windows":
+        return
+    if _has_console_window():
+        return  # interactive — let children inherit the parent console.
+
+    orig_popen = subprocess.Popen
+    if getattr(orig_popen, "_codepilot_no_window_patched", False):
+        return
+
+    class _SilencedPopen(orig_popen):  # type: ignore[misc, valid-type]
+        def __init__(self, *args, **kwargs):
+            cf = kwargs.get("creationflags", 0) or 0
+            if not (cf & _CREATE_NO_WINDOW):
+                kwargs["creationflags"] = cf | _CREATE_NO_WINDOW
+            if "startupinfo" not in kwargs:
+                try:
+                    si = subprocess.STARTUPINFO()
+                    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    si.wShowWindow = 0  # SW_HIDE
+                    kwargs["startupinfo"] = si
+                except Exception:
+                    pass
+            super().__init__(*args, **kwargs)
+
+    _SilencedPopen._codepilot_no_window_patched = True
+    subprocess.Popen = _SilencedPopen  # type: ignore[misc]
+
 
 def tail_text(path: str | Path | None, *, max_lines: int = 12, max_chars: int = 1200) -> str:
     """Return a compact tail snippet for live status updates."""

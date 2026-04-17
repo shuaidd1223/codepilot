@@ -156,18 +156,42 @@ def register_project(
     worktree_base: Optional[str] = None,
     config_file: Optional[str] = None,
 ) -> dict:
-    """Register or update a project."""
+    """Register or update a project.
+
+    Uses UPDATE-by-path / INSERT-new semantics instead of ``INSERT OR REPLACE``
+    so that child rows (tasks, sessions) keep their foreign-key references
+    intact. If a row already exists for *path*, its existing ``name`` is
+    preserved to avoid orphaning dependent tasks.
+    """
     with get_conn() as conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO projects
-                (name, path, base_branch, default_mode, worktree_base, config_file)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (name, path, base_branch, default_mode, worktree_base, config_file),
-        )
+        existing = conn.execute(
+            "SELECT name FROM projects WHERE path = ?", (path,)
+        ).fetchone()
+        if existing:
+            effective_name = existing["name"]
+            conn.execute(
+                """
+                UPDATE projects
+                   SET base_branch = ?,
+                       default_mode = ?,
+                       worktree_base = ?,
+                       config_file = ?
+                 WHERE path = ?
+                """,
+                (base_branch, default_mode, worktree_base, config_file, path),
+            )
+        else:
+            effective_name = name
+            conn.execute(
+                """
+                INSERT INTO projects
+                    (name, path, base_branch, default_mode, worktree_base, config_file)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (name, path, base_branch, default_mode, worktree_base, config_file),
+            )
         conn.commit()
-    return get_project(name)
+    return get_project(effective_name)
 
 
 def get_project(name: str) -> Optional[dict]:

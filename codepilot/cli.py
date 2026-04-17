@@ -6,8 +6,10 @@ import click
 
 from codepilot import __version__
 from codepilot.console_encoding import configure_console_encoding
+from codepilot.runtime import silence_subprocess_windows_if_detached
 
 configure_console_encoding()
+silence_subprocess_windows_if_detached()
 
 from codepilot.db import init_db
 import codepilot.commands.add as add_cmd
@@ -22,6 +24,7 @@ import codepilot.commands.run as run_cmd
 import codepilot.commands.status as status_cmd
 import codepilot.commands.tasks as tasks_cmd
 import codepilot.commands.ui as ui_cmd
+import codepilot.commands.webui_service as webui_service_cmd
 import codepilot.commands.cleanup as cleanup_cmd
 import codepilot.commands.doctor as doctor_cmd
 import codepilot.commands.webhook as webhook_cmd
@@ -43,8 +46,24 @@ class NaturalLanguageGroup(click.Group):
         return super().resolve_command(ctx, args)
 
 
-@click.group(cls=NaturalLanguageGroup, invoke_without_command=True)
-@click.version_option(version=__version__)
+def _cn_help_option():
+    def callback(ctx, param, value):
+        if value and not ctx.resilient_parsing:
+            click.echo(ctx.get_help(), color=ctx.color)
+            ctx.exit()
+    return click.option(
+        "--help",
+        is_flag=True,
+        expose_value=False,
+        is_eager=True,
+        callback=callback,
+        help="显示此帮助信息并退出",
+    )
+
+
+@click.group(cls=NaturalLanguageGroup, invoke_without_command=True, add_help_option=False)
+@click.version_option(version=__version__, message="%(prog)s %(version)s", help="显示版本号并退出")
+@_cn_help_option()
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="以 JSON 格式输出（全局选项）")
 @click.option("--project", "direct_project", help="纯文本模式下使用的项目名，不指定则自动识别")
 @click.option("--planner", default=None, help="纯文本模式下的规划器，默认读取配置")
@@ -72,7 +91,7 @@ def main(
     max_tasks: int,
     max_retries: int,
 ):
-    """CodePilot - pure-text task planning and execution for local engineering workflows."""
+    """CodePilot —— 面向本地工程工作流的纯文本任务规划与执行工具."""
     ctx.ensure_object(dict)
     ctx.obj["json_mode"] = json_mode
     ctx.obj["direct_project"] = direct_project
@@ -105,6 +124,7 @@ main.add_command(auto_cmd.go)
 main.add_command(auto_cmd.chat)
 main.add_command(run_cmd.run)
 main.add_command(ui_cmd.ui)
+main.add_command(webui_service_cmd.webui)
 main.add_command(daemon_cmd.daemon)
 from codepilot.commands import inspect as inspect_cmd  # noqa: E402
 main.add_command(inspect_cmd.inspect)

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodePilot 控制台</title>
+<link rel="stylesheet" href="/static/styles.css">
+<!-- Must use the FULL build (with template compiler), not vue.global.prod.js, because we compile templates in the browser. -->
+<script src="https://unpkg.com/vue@3.5.13/dist/vue.global.js"></script>
+</head>
+<body>
+<div id="app"></div>
+
+<!-- Shared helpers / constants (exposes window.CP) -->
+<script src="/static/utils.js"></script>
+
+<!-- Base components -->
+<script src="/static/components/Chip.js"></script>
+<script src="/static/components/ToastStack.js"></script>
+<script src="/static/components/MainHeader.js"></script>
+
+<!-- Panels used by views -->
+<script src="/static/components/GoalInput.js"></script>
+<script src="/static/components/Composer.js"></script>
+<script src="/static/components/MetricsPanel.js"></script>
+<script src="/static/components/TaskSection.js"></script>
+
+<!-- Views (routed by ContentPane) -->
+<script src="/static/components/ProjectView.js"></script>
+<script src="/static/components/SessionsView.js"></script>
+<script src="/static/components/TasksView.js"></script>
+<script src="/static/components/JobsView.js"></script>
+<script src="/static/components/TaskDetail.js"></script>
+<script src="/static/components/JobDetail.js"></script>
+<script src="/static/components/ChatView.js"></script>
+<script src="/static/components/ContentPane.js"></script>
+
+<!-- Sidebar + root app -->
+<script src="/static/components/Sidebar.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

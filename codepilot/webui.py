@@ -681,290 +681,36 @@ def delete_session_action(session_id: int) -> dict:
     return {"ok": True, "message": f"会话 #{session_id} 已删除。"}
 
 
-HTML = r"""<!doctype html>
-<html lang="zh-CN"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CodePilot 控制台</title>
-<style>
-:root{--bg:#f6f0e7;--panel:#fffdf8;--line:#e1d9cf;--text:#1f2933;--muted:#64707d;--brand:#0f6c9b;--brand-bg:#eaf6fb;--ok:#1b8b57;--ok-bg:#e9f8f1;--warn:#b87900;--warn-bg:#fff4de;--danger:#c43f52;--danger-bg:#fcebef;--shadow:0 18px 36px rgba(31,41,51,.10);font-family:"Segoe UI Variable","PingFang SC","Microsoft YaHei UI",sans-serif}
-*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#f7f2ea,#edf2f6);color:var(--text)}
-.shell{display:grid;grid-template-columns:300px 1fr;gap:20px;padding:20px;min-height:100vh}.side,.main{background:rgba(255,255,255,.9);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);backdrop-filter:blur(14px)}
-.side{padding:18px;display:flex;flex-direction:column;gap:16px;overflow-y:auto;max-height:100vh}.main{padding:20px;display:flex;flex-direction:column;gap:16px}.title{margin:0;font-size:28px}.muted{color:var(--muted);line-height:1.5}
-.toolbar,.split{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap}.btn{border:0;border-radius:12px;padding:10px 14px;font:inherit;font-weight:700;cursor:pointer;background:var(--brand-bg);color:var(--brand);transition:opacity .15s}.btn:disabled{opacity:.5;cursor:wait}
-.btn.secondary{background:#f1f3f5;color:var(--text)}.btn.warn{background:var(--warn-bg);color:var(--warn)}.btn.danger{background:var(--danger-bg);color:var(--danger)}.btn.ok{background:var(--ok-bg);color:var(--ok)}
-.btn.sm{padding:6px 10px;font-size:12px;border-radius:8px}
-.card,.task,.job,.event,.detail{border:1px solid var(--line);border-radius:18px;background:var(--panel);padding:14px}.card.active,.task.sel{border-color:#9dccdf;background:#f4fbff}.list{display:flex;flex-direction:column;gap:10px}.scroll{max-height:calc(100vh - 260px);overflow:auto;padding-right:4px}
-.tag{display:inline-flex;align-items:center;justify-content:center;padding:5px 10px;border-radius:999px;font-size:12px;font-weight:800}.status-backlog{background:#f1f3f5}.status-in_progress,.status-running{background:var(--brand-bg);color:var(--brand)}.status-failed,.status-cancelled,.status-error{background:var(--danger-bg);color:var(--danger)}.status-done,.status-succeeded{background:var(--ok-bg);color:var(--ok)}.status-warning,.status-attention{background:var(--warn-bg);color:var(--warn)}.status-queued{background:#f1f3f5}
-.metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.metric{border:1px solid var(--line);border-radius:16px;padding:14px;background:var(--panel)}.metric b{display:block;font-size:28px;margin-top:8px}
-.hero,.workspace{display:grid;grid-template-columns:1fr 1fr;gap:16px}.workspace{grid-template-columns:1.1fr .9fr}.field{display:flex;flex-direction:column;gap:6px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.grid .wide{grid-column:1/-1}
-input,select,textarea{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:12px;background:#fff;font:inherit;color:var(--text)}textarea{min-height:100px;resize:vertical;line-height:1.55}
-.sections{display:flex;flex-direction:column;gap:16px}.task{cursor:pointer}.task:hover{border-color:#9dccdf}.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:var(--muted);font-size:12px}.body{margin-top:10px;white-space:pre-wrap;word-break:break-word;line-height:1.55}
-.banner{display:none;padding:12px 14px;border-radius:14px;font-weight:700;white-space:pre-wrap}.banner.show{display:block}.banner.info{background:var(--brand-bg);color:var(--brand)}.banner.success{background:var(--ok-bg);color:var(--ok)}.banner.error{background:var(--danger-bg);color:var(--danger)}
-.empty{padding:18px;border:1px dashed var(--line);border-radius:14px;text-align:center;color:var(--muted)}pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:"Cascadia Code","Consolas",monospace;font-size:12px;line-height:1.6;max-height:300px;overflow:auto}
-.tab-bar{display:flex;gap:4px;border-bottom:2px solid var(--line);padding-bottom:0}.tab-bar .tab{padding:10px 16px;cursor:pointer;border-radius:12px 12px 0 0;font-weight:700;color:var(--muted);border:1px solid transparent;border-bottom:none;margin-bottom:-2px}.tab-bar .tab.active{color:var(--brand);background:var(--panel);border-color:var(--line)}
-.view{display:none}.view.active{display:flex;flex-direction:column;gap:16px}
-.chat-messages{display:flex;flex-direction:column;gap:10px;min-height:200px;max-height:55vh;overflow-y:auto;padding:10px 4px}
-.chat-msg{padding:10px 14px;border-radius:14px;max-width:85%;line-height:1.55;white-space:pre-wrap;word-break:break-word}
-.chat-msg.user{align-self:flex-end;background:var(--brand-bg);color:var(--brand)}.chat-msg.assistant{align-self:flex-start;background:var(--panel);border:1px solid var(--line)}
-.chat-msg .msg-meta{font-size:11px;color:var(--muted);margin-top:4px}
-.session-item{cursor:pointer;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}.session-item:hover{border-color:#9dccdf}.session-item.active{border-color:#9dccdf;background:#f4fbff}
-.session-item .split{align-items:center}
-.session-project-label{font-size:11px;color:var(--muted);background:#f1f3f5;padding:2px 8px;border-radius:6px;margin-top:2px;display:inline-block}
-.job-active{border-color:var(--brand);background:var(--brand-bg);animation:jobPulse 2s ease-in-out infinite}
-@keyframes jobPulse{0%,100%{opacity:1}50%{opacity:.85}}
-.job-spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--brand);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:4px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.job-log{margin:6px 0 0;padding:6px 8px;background:#f8f6f3;border:1px solid var(--line);border-radius:8px;font-size:11px;max-height:100px;overflow-y:auto;color:var(--muted)}
-@media(max-width:1180px){.shell,.hero,.workspace{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.scroll{max-height:none}.side{max-height:none}}@media(max-width:720px){.grid,.metrics{grid-template-columns:1fr}}
-</style></head><body>
-<div class="shell">
-<aside class="side">
-  <div><h1 class="title">CodePilot</h1><div class="muted">直接提需求，盯住任务、日志和失败原因。</div></div>
-  <section><div class="muted">项目</div><div id="projects" class="list"></div></section>
-  <section>
-    <div class="split" style="align-items:center"><div class="muted">全部会话</div><button id="newSessionBtn" class="btn sm ok">+ 新建</button></div>
-    <div id="sessions" class="list" style="margin-top:8px;max-height:30vh;overflow-y:auto"></div>
-  </section>
-  <section><div class="muted">最近需求</div><div id="jobs" class="list"></div></section>
-  <section><div class="muted">最近事件</div><div id="events" class="list"></div></section>
-</aside>
-<main class="main">
-  <div class="toolbar"><div><h2 id="projectTitle" style="margin:0">项目总览</h2><div id="projectPath" class="muted">正在读取数据…</div></div><div class="split"><button id="refreshBtn" class="btn secondary">立即刷新</button><button id="toggleBtn" class="btn">自动刷新：开</button></div></div>
-  <!-- Banner OUTSIDE views so it is always visible -->
-  <div id="banner" class="banner"></div>
-  <div id="goalAnswer" class="banner"></div>
-  <div class="tab-bar">
-    <div class="tab active" data-view="dashboard">控制台</div>
-    <div class="tab" data-view="chat">会话</div>
-  </div>
-  <!-- Dashboard view -->
-  <div id="dashboardView" class="view active">
-  <div id="goalBar" class="detail" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-    <div class="field" style="flex:1;min-width:220px"><label>快速输入</label><input id="goalText" type="text" placeholder="输入问题、需求或命令…" maxlength="4096"></div>
-    <div class="field" style="width:120px"><label>类型</label><select id="goalCategory"><option value="auto" selected>自动</option><option value="question">问题</option><option value="requirement">需求</option><option value="command">命令</option></select></div>
-    <button id="goalSubmit" class="btn ok" style="height:42px;white-space:nowrap">提交</button>
-  </div>
-  <div class="hero">
-    <section class="detail">
-      <div class="split"><div><h3 style="margin:0">发起工作</h3><div class="muted">可直接提交自然语言需求，也可直接建任务。</div></div></div>
-      <form id="composer">
-        <div class="grid">
-          <div class="field"><label>模式</label><select id="mode"><option value="requirement">自然语言需求</option><option value="task">直接建任务</option></select></div>
-          <div class="field"><label>优先级</label><select id="priority"><option>P0</option><option>P1</option><option selected>P2</option><option>P3</option></select></div>
-          <div class="field wide"><label>标题</label><textarea id="titleInput" placeholder="例如：把失败任务的原因直接显示在 UI 里，并且可以一键重试"></textarea></div>
-          <div class="field wide"><label>补充说明</label><textarea id="contentInput" placeholder="可选：范围、约束、验收标准。直接建任务时会写入任务内容。"></textarea></div>
-          <div class="field"><label>任务智能体</label><select id="agent"><option value="auto" selected>跟随项目默认</option><option value="codex">codex</option><option value="claude">claude</option></select></div>
-          <div class="field" id="plannerWrap"><label>规划智能体</label><select id="planner"><option value="codex" selected>codex</option><option value="claude">claude</option></select></div>
-        </div>
-        <div class="split" style="margin-top:12px"><label class="muted"><input id="executeNow" type="checkbox" checked> 提交后立即执行</label><button id="composerSubmit" class="btn ok" type="submit">提交到当前项目</button></div>
-      </form>
-    </section>
-    <section class="detail"><h3 style="margin:0 0 12px">项目状态</h3><div id="metrics" class="metrics"></div></section>
-  </div>
-  <div class="workspace">
-    <section class="sections">
-      <div class="detail"><h3 style="margin:0 0 12px">进行中</h3><div id="running" class="list"></div></div>
-      <div class="detail"><h3 style="margin:0 0 12px">待办 / 可重试</h3><div id="backlog" class="list"></div></div>
-      <div class="detail"><h3 style="margin:0 0 12px">失败 / 已取消</h3><div id="failed" class="list"></div></div>
-      <div class="detail"><h3 style="margin:0 0 12px">最近完成</h3><div id="done" class="list"></div></div>
-    </section>
-    <section class="detail"><h3 style="margin:0 0 12px">任务详情</h3><div id="taskDetail" class="list"><div class="empty">先选择一个任务。</div></div></section>
-  </div>
-  </div>
-  <!-- Chat/Session view -->
-  <div id="chatView" class="view">
-    <div id="chatHeader" class="detail" style="padding:10px 14px">
-      <div class="split" style="align-items:center">
-        <div><strong id="chatSessionTitle">选择或新建一个会话</strong><div id="chatSessionMeta" class="muted" style="font-size:12px"></div></div>
-        <div class="split" style="gap:6px"><button id="deleteSessionBtn" class="btn sm danger" style="display:none">删除会话</button></div>
-      </div>
-    </div>
-    <div id="chatMessages" class="chat-messages"><div class="empty">从左侧选择一个会话，或点击「+ 新建」开始。</div></div>
-    <div id="chatInputBar" class="detail" style="display:none;gap:10px;align-items:flex-end;flex-wrap:wrap;padding:10px 14px">
-      <div class="field" style="flex:1;min-width:200px"><input id="chatInput" type="text" placeholder="在此会话中输入问题或需求…" maxlength="4096"></div>
-      <div class="field" style="width:100px"><select id="chatCategory"><option value="auto" selected>自动</option><option value="question">问题</option><option value="requirement">需求</option></select></div>
-      <button id="chatSend" class="btn ok" style="height:42px;white-space:nowrap">发送</button>
-    </div>
-  </div>
-</main></div>
-<script>
-"use strict";
-const S={project:null,taskId:null,auto:true,timer:null,view:'dashboard',sessionId:null,busy:false};
-const esc=(v)=>String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-const fmtTime=(v)=>v?v.replace('T',' ').slice(0,19):'-';
-const stsCls=(s)=>'status-'+String(s||'').replace(/ /g,'_');
-function $(id){return document.getElementById(id)}
-async function getj(url){const r=await fetch(url);const d=await r.json();if(!r.ok)throw new Error(d.error||r.statusText||'请求失败');return d}
-async function postj(url,p){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p||{})});const d=await r.json();if(!r.ok)throw new Error(d.error||r.statusText||'请求失败');return d}
-async function delj(url){const r=await fetch(url,{method:'DELETE'});const d=await r.json();if(!r.ok)throw new Error(d.error||r.statusText||'请求失败');return d}
-function flash(msg,type){const b=$('banner');if(!msg){b.className='banner';b.textContent='';return}b.className='banner show '+(type||'info');b.textContent=msg;if(type==='success')setTimeout(()=>{if(b.textContent===msg)flash('')},4000)}
-function flashAnswer(msg){const b=$('goalAnswer');if(!msg){b.className='banner';b.textContent='';return}b.className='banner show info';b.textContent=msg}
-function setLoading(btn,loading,label){if(!btn)return;btn.disabled=loading;if(loading){btn._origText=btn._origText||btn.textContent;btn.textContent='处理中...'}else{btn.textContent=btn._origText||label||'提交'}}
-function metric(label,val){return '<div class="metric"><div class="muted">'+esc(label)+'</div><b>'+esc(val)+'</b></div>'}
-function projectCard(p){var s=p.stats||{};return '<div class="card '+(p.name===S.project?'active':'')+'" data-project="'+esc(p.name)+'"><div class="split"><strong>'+esc(p.name)+'</strong><span class="tag '+(s.in_progress?'status-in_progress':'status-backlog')+'">'+((s.total||0))+'</span></div><div class="meta"><span class="tag status-in_progress">'+('进行中 '+(s.in_progress||0))+'</span><span class="tag status-backlog">'+('待办 '+(s.backlog||0))+'</span><span class="tag status-failed">'+('失败 '+((s.failed||0)+(s.cancelled||0)))+'</span><span class="tag status-done">'+('完成 '+(s.done||0))+'</span></div><div class="body">'+esc(p.active_summary||'当前没有运行中的任务')+'</div></div>'}
-function taskCard(x){var body=x.runtime||x.error_message||x.latest||'暂无详细信息';var acts='';if(x.actions.promote)acts+='<button class="btn secondary" data-action="promote" data-task-id="'+x.id+'">插队到 P0</button>';if(x.actions.retry)acts+='<button class="btn warn" data-action="retry" data-task-id="'+x.id+'">重试</button>';if(x.actions.stop)acts+='<button class="btn danger" data-action="stop" data-task-id="'+x.id+'">停止</button>';var inspect=x.source==='auto-inspect'?'<span class="tag status-failed">巡检建议</span>':'';return '<article class="task '+(S.taskId===x.id?'sel':'')+'" data-task="'+x.id+'"><div class="split"><div><strong>#'+x.id+' '+esc(x.title)+'</strong><div class="meta"><span class="tag '+stsCls(x.status)+'">'+esc(x.status)+'</span><span class="tag status-backlog">'+esc(x.priority)+'</span><span class="tag status-in_progress">'+esc(x.agent||'-')+'</span><span class="tag status-backlog">重试 '+(x.retry_count||0)+'/'+(x.max_retries||0)+'</span>'+inspect+'</div><div class="meta"><span>阶段: '+esc(x.phase||'-')+'</span><span>开始: '+esc(fmtTime(x.started_at))+'</span><span>完成: '+esc(fmtTime(x.completed_at))+'</span></div></div></div><div class="body">'+esc(body)+'</div><div class="split" style="margin-top:10px">'+acts+'</div></article>'}
-function renderList(id,items,empty){$(id).innerHTML=items.length?items.map(taskCard).join(''):'<div class="empty">'+esc(empty)+'</div>'}
-function bindTaskClicks(){document.querySelectorAll('[data-task]').forEach(function(n){n.onclick=function(ev){if(ev.target.closest('[data-action]'))return;S.taskId=Number(n.dataset.task);loadTaskDetail()}})}
-function bindActions(){document.querySelectorAll('[data-action]').forEach(function(b){b.onclick=async function(ev){ev.preventDefault();ev.stopPropagation();setLoading(b,true);try{var out=await postj('/api/tasks/'+b.dataset.taskId+'/'+b.dataset.action,{});flash(out.message||'操作完成','success');await loadDashboard()}catch(err){flash(err.message,'error')}finally{setLoading(b,false,b.dataset.action)}}})}
-function bindProjects(){document.querySelectorAll('[data-project]').forEach(function(n){n.onclick=function(){S.project=n.dataset.project;S.taskId=null;loadDashboard();loadSessions()}})}
-function syncMode(){var m=$('mode').value;$('plannerWrap').style.display=m==='requirement'?'flex':'none';$('executeNow').disabled=m==='task';if(m==='task')$('executeNow').checked=false}
-function pickTask(tasks){return (tasks.find(function(x){return x.status==='in_progress'})||tasks.find(function(x){return x.status==='failed'})||tasks[0]||{}).id||null}
+_WEB_DIR = Path(__file__).parent / "web"
 
-/* --- View switching --- */
-function switchView(view){S.view=view;document.querySelectorAll('.tab').forEach(function(el){el.classList.toggle('active',el.dataset.view===view)});$('dashboardView').classList.toggle('active',view==='dashboard');$('chatView').classList.toggle('active',view==='chat');if(view==='chat')loadSessionChat()}
-document.querySelectorAll('.tab').forEach(function(el){el.onclick=function(){switchView(el.dataset.view)}});
 
-/* --- Sessions (cross-project) --- */
-async function loadSessions(){
-  try{
-    var url=S.project?'/api/sessions?project='+encodeURIComponent(S.project):'/api/sessions';
-    var data=await getj(url);
-    var list=data.sessions||[];
-    if(!list.length){$('sessions').innerHTML='<div class="empty">暂无会话</div>';return}
-    var html=list.map(function(s){
-      var isActive=S.sessionId===s.id;
-      var projLabel=s.project!==S.project?'<span class="session-project-label">'+esc(s.project)+'</span>':'';
-      return '<div class="session-item '+(isActive?'active':'')+'" data-session="'+s.id+'" data-session-project="'+esc(s.project)+'"><div class="split"><strong style="font-size:13px">'+esc(s.title)+'</strong><span class="muted" style="font-size:11px">'+(s.message_count||0)+' 条</span></div><div class="muted" style="font-size:11px;margin-top:2px">'+esc(fmtTime(s.updated_at))+' '+projLabel+'</div></div>'
-    }).join('');
-    $('sessions').innerHTML=html;
-    document.querySelectorAll('[data-session]').forEach(function(n){n.onclick=function(){
-      S.sessionId=Number(n.dataset.session);
-      loadSessions();
-      if(S.view==='chat')loadSessionChat();else switchView('chat');
-    }});
-  }catch(err){$('sessions').innerHTML='<div class="empty">'+esc(err.message)+'</div>'}
+def _load_web_file(name: str) -> bytes:
+    path = _WEB_DIR / name
+    return path.read_bytes()
+
+
+def _safe_web_path(rel: str) -> Path | None:
+    """Resolve *rel* under _WEB_DIR, preventing path traversal."""
+    try:
+        candidate = (_WEB_DIR / rel).resolve()
+        base = _WEB_DIR.resolve()
+        candidate.relative_to(base)
+    except (ValueError, OSError):
+        return None
+    return candidate if candidate.is_file() else None
+
+
+_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
 }
-
-$('newSessionBtn').onclick=async function(){
-  if(!S.project){flash('先选择一个项目','error');return}
-  var btn=$('newSessionBtn');setLoading(btn,true);
-  try{var out=await postj('/api/sessions',{project:S.project,title:''});S.sessionId=out.session.id;await loadSessions();switchView('chat');flash('会话已创建','success')}
-  catch(err){flash(err.message,'error')}finally{setLoading(btn,false,'+ 新建')}
-};
-
-async function loadSessionChat(){
-  var box=$('chatMessages'),bar=$('chatInputBar'),del=$('deleteSessionBtn');
-  if(!S.sessionId){box.innerHTML='<div class="empty">从左侧选择一个会话，或点击「+ 新建」开始。</div>';bar.style.display='none';del.style.display='none';$('chatSessionTitle').textContent='选择或新建一个会话';$('chatSessionMeta').textContent='';return}
-  try{
-    var data=await getj('/api/sessions/'+S.sessionId);var s=data.session;var msgs=data.messages||[];
-    $('chatSessionTitle').textContent='#'+s.id+' '+s.title;
-    $('chatSessionMeta').textContent='项目: '+s.project+' | 创建: '+fmtTime(s.created_at);
-    del.style.display='inline-flex';bar.style.display='flex';
-    if(!msgs.length){box.innerHTML='<div class="empty">会话刚创建，发送第一条消息开始对话。</div>'}
-    else{box.innerHTML=msgs.map(function(m){
-      var intent=m.intent?'<span class="tag '+stsCls(m.intent)+'" style="font-size:10px;padding:2px 6px">'+esc(m.intent)+'</span>':'';
-      var tasks=m.task_ids&&m.task_ids.length?' <span class="muted" style="font-size:11px">任务: '+m.task_ids.map(function(id){return '#'+id}).join(', ')+'</span>':'';
-      return '<div class="chat-msg '+esc(m.role)+'"><div>'+esc(m.content)+'</div><div class="msg-meta">'+esc(fmtTime(m.created_at))+' '+intent+tasks+'</div></div>'
-    }).join('');box.scrollTop=box.scrollHeight}
-  }catch(err){box.innerHTML='<div class="empty">'+esc(err.message)+'</div>'}
-}
-
-$('chatSend').onclick=async function(){
-  if(!S.sessionId)return;
-  var input=$('chatInput');var text=input.value.trim();if(!text)return;
-  var cat=$('chatCategory').value;var btn=$('chatSend');setLoading(btn,true);
-  try{await postj('/api/sessions/'+S.sessionId+'/messages',{text:text,category:cat});input.value='';await loadSessionChat();await loadSessions();flash('消息已发送','success')}
-  catch(err){flash(err.message,'error')}finally{setLoading(btn,false,'发送')}
-};
-$('chatInput').onkeydown=function(ev){if(ev.key==='Enter'&&!ev.shiftKey){ev.preventDefault();$('chatSend').click()}};
-$('deleteSessionBtn').onclick=async function(){
-  if(!S.sessionId)return;if(!confirm('确定要删除这个会话吗？'))return;
-  var btn=$('deleteSessionBtn');setLoading(btn,true);
-  try{await delj('/api/sessions/'+S.sessionId);S.sessionId=null;await loadSessions();loadSessionChat();flash('会话已删除','success')}
-  catch(err){flash(err.message,'error')}finally{setLoading(btn,false,'删除会话')}
-};
-
-/* --- Task detail --- */
-async function loadTaskDetail(){
-  var box=$('taskDetail');
-  if(!S.taskId){box.innerHTML='<div class="empty">先选择一个任务。</div>';return}
-  try{
-    var x=await getj('/api/tasks/'+S.taskId);
-    var deps=x.depends_on&&x.depends_on.length?x.depends_on.map(function(id){return '<span class="tag status-backlog">#'+id+'</span>'}).join(' '):'<span class="muted">无依赖</span>';
-    var logs=x.logs&&x.logs.length?'<div class="detail"><div class="muted">阶段日志摘要</div><pre>'+esc(x.logs.map(function(i){return '['+( i.phase||'-')+'] agent='+(i.agent||'-')+' exit='+(i.exit_code==null?'-':i.exit_code)+'\n'+(i.output_excerpt||'')}).join('\n\n'))+'</pre></div>':'';
-    var fail=x.error_message?'<div class="detail"><div class="muted">失败原因</div><pre>'+esc(x.error_message)+'</pre></div>':'';
-    var delivery=x.delivery_record?'<div class="detail"><div class="muted">交付记录</div><pre>'+esc(x.delivery_record)+'</pre></div>':'';
-    var acts='';
-    if(x.actions.promote)acts+='<button class="btn secondary" data-action="promote" data-task-id="'+x.id+'">插队到 P0</button>';
-    if(x.actions.retry)acts+='<button class="btn warn" data-action="retry" data-task-id="'+x.id+'">重试</button>';
-    if(x.actions.stop)acts+='<button class="btn danger" data-action="stop" data-task-id="'+x.id+'">停止</button>';
-    box.innerHTML='<div class="detail"><div class="split"><div><strong>#'+x.id+' '+esc(x.title)+'</strong><div class="meta"><span class="tag '+stsCls(x.status)+'">'+esc(x.status)+'</span><span class="tag status-backlog">'+esc(x.priority)+'</span><span class="tag status-in_progress">'+esc(x.agent||'-')+'</span><span class="tag status-backlog">重试 '+(x.retry_count||0)+'/'+(x.max_retries||0)+'</span></div></div><div class="split">'+acts+'</div></div><div class="meta"><span>项目: '+esc(x.project)+'</span><span>阶段: '+esc(x.phase||'-')+'</span><span>运行态: '+esc(x.runtime||'-')+'</span></div><div class="meta"><span>依赖: '+deps+'</span></div><div class="meta"><span>项目路径: '+esc(x.project_path||'-')+'</span></div><div class="meta"><span>日志文件: '+esc(x.current_log_path||'-')+'</span></div></div>'+fail+'<div class="detail"><div class="muted">任务内容</div><pre>'+esc(x.content||'暂无任务内容')+'</pre></div><div class="detail"><div class="muted">实时日志 / 最近输出</div><pre>'+esc(x.log_text||'还没有可显示的日志')+'</pre></div>'+delivery+logs;
-    bindActions()
-  }catch(err){box.innerHTML='<div class="empty">'+esc(err.message)+'</div>'}
-}
-
-/* --- Dashboard --- */
-async function loadDashboard(){
-  if(S.busy)return;
-  try{
-    var data=await getj(S.project?'/api/projects/'+encodeURIComponent(S.project):'/api/projects');
-    S.project=data.selected_project;
-    $('projects').innerHTML=(data.projects||[]).length?data.projects.map(projectCard).join(''):'<div class="empty">还没有项目。先执行一次 codepilot init。</div>';
-    bindProjects();
-    $('jobs').innerHTML=(data.jobs||[]).length?data.jobs.map(function(j){var isActive=j.status==='running'||j.status==='queued';var spinner=isActive?'<span class="job-spinner"></span> ':'';var phaseLabel={'queued':'排队中','planning':'规划中...','running':'执行中...','done':'完成','failed':'失败','attention':'需关注'}[j.phase]||j.phase;var logHtml='';if(j.log&&j.log.length){var recent=j.log.slice(-5);logHtml='<pre class="job-log">'+esc(recent.join('\n'))+'</pre>'}var bodyText=j.summary||j.error||logHtml||'等待中';if(j.summary||j.error)bodyText=esc(j.summary||j.error);else if(logHtml)bodyText=logHtml;else bodyText=esc('等待中');return '<div class="job'+(isActive?' job-active':'')+'"><div class="split"><strong>'+spinner+'#'+j.id+' '+esc(j.title)+'</strong><span class="tag '+stsCls(j.status)+'">'+esc(phaseLabel)+'</span></div><div class="meta"><span>planner: '+esc(j.planner||'-')+'</span><span>agent: '+esc(j.agent||'auto')+'</span></div><div class="body">'+bodyText+'</div></div>'}).join(''):'<div class="empty">还没有从 Web UI 发起的需求。</div>';
-    $('events').innerHTML=(data.events||[]).length?data.events.map(function(ev){return '<div class="event"><div class="split"><span class="tag '+stsCls(ev.level||'info')+'">'+esc(ev.level||'info')+'</span><span class="muted">'+esc(fmtTime(ev.time))+'</span></div><div class="body">'+esc(ev.message)+'</div></div>'}).join(''):'<div class="empty">最近还没有事件。</div>';
-    var p=(data.projects||[]).find(function(i){return i.name===data.selected_project});
-    $('projectTitle').textContent=p?p.name:'项目总览';
-    $('projectPath').textContent=p?p.path:'当前没有已注册项目';
-    var st=p?p.stats:{in_progress:0,backlog:0,failed:0,cancelled:0,done:0,total:0};
-    $('metrics').innerHTML=[metric('进行中',st.in_progress||0),metric('待办',st.backlog||0),metric('失败 / 取消',(st.failed||0)+(st.cancelled||0)),metric('已完成',st.done||0),metric('总任务',st.total||0)].join('');
-    var tasks=data.tasks||[];
-    renderList('running',tasks.filter(function(x){return x.status==='in_progress'}),'当前没有运行中的任务');
-    renderList('backlog',tasks.filter(function(x){return x.status==='backlog'}),'当前 backlog 为空');
-    renderList('failed',tasks.filter(function(x){return x.status==='failed'||x.status==='cancelled'}),'当前没有失败或取消的任务');
-    renderList('done',tasks.filter(function(x){return x.status==='done'}).slice(0,8),'还没有已完成任务');
-    bindTaskClicks();bindActions();
-    var ids=tasks.map(function(x){return x.id});
-    if(!S.taskId&&tasks.length)S.taskId=pickTask(tasks);
-    else if(S.taskId&&ids.indexOf(S.taskId)===-1)S.taskId=pickTask(tasks);
-    await loadTaskDetail();
-    await loadSessions()
-  }catch(err){flash(err.message,'error')}
-}
-
-function schedule(){clearInterval(S.timer);if(!S.auto)return;S.timer=setInterval(function(){if(!S.busy)loadDashboard()},3000)}
-
-/* --- Event bindings --- */
-$('refreshBtn').onclick=loadDashboard;
-$('toggleBtn').onclick=function(){S.auto=!S.auto;$('toggleBtn').textContent='自动刷新：'+(S.auto?'开':'关');schedule()};
-$('mode').onchange=syncMode;
-
-$('composer').onsubmit=async function(ev){
-  ev.preventDefault();
-  if(!S.project){flash('当前没有已注册项目，先执行一次 codepilot init。','error');return}
-  var title=$('titleInput').value.trim();
-  if(!title){flash('标题不能为空。','error');return}
-  var btn=$('composerSubmit');setLoading(btn,true);S.busy=true;
-  var payload={project:S.project,title:title,content:$('contentInput').value,priority:$('priority').value,agent:$('agent').value,planner:$('planner').value,execute:$('executeNow').checked};
-  try{
-    var mode=$('mode').value;var out;
-    if(mode==='task'){out=await postj('/api/tasks',payload);S.taskId=out.task.id;$('contentInput').value=''}
-    else{out=await postj('/api/requirements',payload)}
-    $('titleInput').value='';
-    flash(out.message||'提交成功','success');
-    await loadDashboard()
-  }catch(err){flash(err.message,'error')}finally{setLoading(btn,false,'提交到当前项目');S.busy=false}
-};
-
-$('goalSubmit').onclick=async function(){
-  if(!S.project){flash('当前没有已注册项目，先执行一次 codepilot init。','error');return}
-  var text=$('goalText').value.trim();
-  if(!text){flash('输入不能为空。','error');return}
-  var cat=$('goalCategory').value;
-  var btn=$('goalSubmit');setLoading(btn,true);S.busy=true;
-  flashAnswer('');
-  try{
-    var out=await postj('/api/goal',{project:S.project,text:text,category:cat});
-    if(out.intent==='question'||out.intent==='command'){flashAnswer(out.message||'完成')}
-    else{flash(out.message||'提交成功','success');await loadDashboard()}
-    $('goalText').value=''
-  }catch(err){flash(err.message,'error')}finally{setLoading(btn,false,'提交');S.busy=false}
-};
-$('goalText').onkeydown=function(ev){if(ev.key==='Enter'&&!ev.shiftKey){ev.preventDefault();$('goalSubmit').click()}};
-
-/* --- Init --- */
-syncMode();loadDashboard();schedule();
-</script></body></html>"""
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -978,13 +724,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_html(self, html: str) -> None:
-        body = html.encode("utf-8")
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+    def _send_bytes(self, body: bytes, content_type: str, status: int = HTTPStatus.OK) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_html_file(self, name: str = "index.html") -> None:
+        try:
+            body = _load_web_file(name)
+        except FileNotFoundError:
+            self._send_json({"error": f"找不到 {name}"}, status=500)
+            return
+        self._send_bytes(body, "text/html; charset=utf-8")
+
+    def _serve_static(self, rel: str) -> bool:
+        target = _safe_web_path(rel)
+        if not target:
+            return False
+        content_type = _CONTENT_TYPES.get(target.suffix.lower(), "application/octet-stream")
+        self._send_bytes(target.read_bytes(), content_type)
+        return True
 
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length") or "0")
@@ -999,7 +761,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/":
-            self._send_html(HTML)
+            self._send_html_file()
+            return
+        if path.startswith("/static/"):
+            rel = path[len("/static/"):]
+            if self._serve_static(rel):
+                return
+            self._send_json({"error": "未找到文件。"}, status=404)
+            return
+        if path == "/favicon.ico":
+            self._send_bytes(b"", "image/x-icon", HTTPStatus.NO_CONTENT)
             return
         if path == "/api/health":
             self._send_json({"ok": True})

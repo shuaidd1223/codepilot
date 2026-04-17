@@ -783,7 +783,7 @@ def auto(
     max_retries: int,
     json_mode: bool,
 ):
-    """Split one high-level goal and optionally execute it."""
+    """将一个高层目标拆分为子任务，并可选立即执行."""
     json_mode = _json_mode(ctx, json_mode)
     project_info = resolve_project_for_prompt(project)
     try:
@@ -838,7 +838,7 @@ def go(
     max_retries: int,
     json_mode: bool,
 ):
-    """Accept plain text, decide complexity, then plan and optionally execute."""
+    """接收纯文本需求，判定复杂度后自动规划或直接执行."""
     json_mode = _json_mode(ctx, json_mode)
     text = " ".join(requirement).strip()
     if not text:
@@ -909,7 +909,7 @@ def chat(
     enable_ui: bool,
     ui_port: int,
 ):
-    """Start an interactive natural-language session."""
+    """启动交互式自然语言会话."""
     root_obj = _root_options(ctx)
     project = project or root_obj.get("direct_project")
     planner = planner or root_obj.get("planner")

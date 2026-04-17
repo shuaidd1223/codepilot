@@ -320,6 +320,11 @@ def _run_command_live(
             popen_kwargs["stdout"] = subprocess.PIPE
             if os.name != "nt":
                 popen_kwargs["start_new_session"] = True
+            else:
+                # Prevent console pop-ups when the parent (e.g. the detached
+                # webui service) has no console of its own.
+                from codepilot.runtime import no_window_kwargs
+                popen_kwargs.update(no_window_kwargs())
 
         process = subprocess.Popen(cmd, **popen_kwargs)
         if use_pty:
@@ -1267,7 +1272,7 @@ def run(
     executor: str,
     auto_commit: bool,
 ):
-    """Execute queued tasks for a registered project."""
+    """执行已注册项目队列中的任务."""
     if not project:
         echo("[red]错误: 必须指定 --project[/red]")
         return

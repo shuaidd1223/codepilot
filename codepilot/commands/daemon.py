@@ -103,7 +103,7 @@ def daemon(
     enable_ui: bool,
     ui_port: int,
 ):
-    """Continuously poll backlog and run tasks in-process."""
+    """持续轮询 backlog 并在进程内执行任务."""
     db.init_db()
     if not _acquire_lock():
         echo("[red]已有 daemon 实例运行中，退出[/red]")

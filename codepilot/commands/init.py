@@ -32,12 +32,31 @@ def init_(
     project_path = str(path.resolve())
     project_name = project_name or path.name
 
-    # 检查是否已注册
-    existing = db_module.get_project(project_name)
+    # 先按路径查——同一目录可能早以其他名字注册过
+    existing = db_module.find_project_by_path(project_path)
+    if existing and Path(existing["path"]).resolve() != path.resolve():
+        existing = None  # 仅允许精确匹配（同路径），不让父级项目误命中
+    if not existing:
+        existing = db_module.get_project(project_name)
+
     if existing:
-        echo(f"[yellow]项目 '{project_name}' 已注册，路径: {existing['path']}[/yellow]")
+        echo(f"[yellow]项目已注册[/yellow]")
+        click.echo(f"  名称:   {existing['name']}")
+        click.echo(f"  路径:   {existing['path']}")
+        click.echo(f"  分支:   {existing.get('base_branch') or '-'}")
+        click.echo(f"  模式:   {existing.get('default_mode') or '-'}")
+        click.echo(f"  配置:   {existing.get('config_file') or '-'}")
+        stats = db_module.get_task_stats(existing["name"])
+        click.echo(
+            f"  任务:   {stats['total']} 总 / "
+            f"{stats['backlog']} backlog / "
+            f"{stats['in_progress']} 进行 / "
+            f"{stats['done']} 完成"
+        )
+        if existing["name"] != project_name:
+            echo(f"[dim]  (传入名称 '{project_name}' 被忽略，保留原名 '{existing['name']}' 以维护任务关联)[/dim]")
         if not no_config:
-            _update_config(path / "AGENTS.toml", project_name)
+            _update_config(path / "AGENTS.toml", existing["name"])
         return
 
     # 注册到数据库

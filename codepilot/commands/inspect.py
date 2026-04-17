@@ -416,10 +416,10 @@ def inspect(
     interval: Optional[int],
     once: bool,
 ) -> None:
-    """Scan project signals and surface improvement candidates as tasks.
+    """扫描项目信号，将可优化点作为候选任务产出.
 
-    Without --once the command runs continuously, sleeping *interval* seconds
-    between rounds (default 1800 = 30 min).  Use --once for a single pass.
+    不带 --once 时将持续运行，每轮之间间隔 *interval* 秒（默认 1800 = 30 分钟）.
+    传入 --once 则只巡检一轮后退出.
     """
     db.init_db()
     proj = db.get_project(project) if project else None
