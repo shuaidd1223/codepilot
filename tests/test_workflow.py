@@ -481,6 +481,109 @@ max_retries = 2
     assert parent_project["path"] == str(parent)
 
 
+def test_get_current_project_task_stats_uses_current_directory(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    workdir = project_path / "src"
+    workdir.mkdir(parents=True)
+
+    db.register_project("demo", str(project_path))
+
+    backlog = db.create_task("demo", "task backlog")
+    in_progress = db.create_task("demo", "task running")
+    done = db.create_task("demo", "task done")
+    failed = db.create_task("demo", "task failed")
+    cancelled = db.create_task("demo", "task cancelled")
+
+    db.update_task(in_progress["id"], status="in_progress")
+    db.update_task(done["id"], status="done")
+    db.update_task(failed["id"], status="failed")
+    db.update_task(cancelled["id"], status="cancelled")
+
+    monkeypatch.chdir(workdir)
+
+    stats = db.get_current_project_task_stats()
+
+    assert stats == {
+        "backlog": 1,
+        "in_progress": 1,
+        "done": 1,
+        "failed": 1,
+        "cancelled": 1,
+        "total": 5,
+    }
+    assert db.get_current_project_stats() == stats
+
+
+def test_get_current_project_task_stats_accepts_explicit_path(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    nested = project_path / "nested"
+    nested.mkdir(parents=True)
+
+    db.register_project("demo", str(project_path))
+    db.create_task("demo", "task backlog")
+    done = db.create_task("demo", "task done")
+    db.update_task(done["id"], status="done")
+
+    stats = db.get_current_project_task_stats(nested)
+
+    assert stats == {
+        "backlog": 1,
+        "in_progress": 0,
+        "done": 1,
+        "failed": 0,
+        "cancelled": 0,
+        "total": 2,
+    }
+    assert db.get_task_stats_by_path(nested) == stats
+    assert db.get_current_project_stats(nested) == stats
+
+
+def test_get_current_project_task_stats_returns_none_when_project_is_unregistered(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    assert db.get_current_project_task_stats() is None
+    assert db.get_current_project_stats() is None
+    assert db.get_current_project_task_stats(outside) is None
+    assert db.get_task_stats_by_path(outside) is None
+
+
+def test_get_current_project_task_stats_prefers_deepest_registered_project(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+
+    db.register_project("parent-demo", str(parent))
+    db.register_project("child-demo", str(child))
+
+    db.create_task("parent-demo", "parent backlog")
+    parent_done = db.create_task("parent-demo", "parent done")
+    db.update_task(parent_done["id"], status="done")
+
+    child_running = db.create_task("child-demo", "child running")
+    child_failed = db.create_task("child-demo", "child failed")
+    db.update_task(child_running["id"], status="in_progress")
+    db.update_task(child_failed["id"], status="failed")
+
+    monkeypatch.chdir(child)
+
+    stats = db.get_current_project_task_stats()
+
+    assert stats == {
+        "backlog": 0,
+        "in_progress": 1,
+        "done": 0,
+        "failed": 1,
+        "cancelled": 0,
+        "total": 2,
+    }
+
+
 def test_root_command_accepts_plain_text_requirement(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
