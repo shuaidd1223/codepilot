@@ -23,7 +23,7 @@ from codepilot.ai import (
 )
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands.run import run_backlog
-from codepilot.commands.status import render_project_dashboard
+from codepilot.commands.status import render_project_dashboard, render_project_stats
 from codepilot.config import find_config, load_config, load_project_config
 from codepilot.output import echo, safe
 
@@ -358,6 +358,7 @@ def _chat_help() -> str:
             "  /version            查看当前版本",
             "  /exit               退出会话",
             "  /status             查看任务看板（/status watch 实时刷新）",
+            "  /stats              查看状态统计",
             "  /history            查看对话记录",
             "  /clear              清空对话历史",
             "  /project <name>     切换项目",
@@ -542,6 +543,9 @@ def run_chat_session(
                 except KeyboardInterrupt:
                     if watch:
                         echo("\n[dim]已停止刷新[/dim]")
+                continue
+            if cmd == "/stats":
+                render_project_stats(project_info["name"], title=f"状态统计  {project_info['name']}")
                 continue
             if cmd == "/project":
                 if len(parts) < 2:
