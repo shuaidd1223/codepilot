@@ -761,6 +761,10 @@ def test_chat_command_reports_natural_language_error(tmp_path, monkeypatch):
     assert "Traceback" not in result.output
 
 
+def test_chat_help_mentions_stats_command():
+    assert "/stats" in auto_cmd._chat_help()
+
+
 def test_chat_status_renders_dashboard(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
@@ -778,6 +782,37 @@ def test_chat_status_renders_dashboard(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert called["args"][0] == "demo"
     assert "demo" in called["kwargs"]["title"]
+
+
+def test_chat_stats_outputs_status_summary(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    monkeypatch.chdir(project_path)
+
+    db.create_task("demo", "task backlog")
+    running = db.create_task("demo", "task running")
+    done = db.create_task("demo", "task done")
+    failed = db.create_task("demo", "task failed")
+    cancelled = db.create_task("demo", "task cancelled")
+
+    db.update_task(running["id"], status="in_progress")
+    db.update_task(done["id"], status="done")
+    db.update_task(failed["id"], status="failed")
+    db.update_task(cancelled["id"], status="cancelled")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat"], input="/stats\n/exit\n")
+
+    assert result.exit_code == 0
+    assert "状态统计  demo" in result.output
+    assert "进行中:1" in result.output
+    assert "待办:1" in result.output
+    assert "失败:1" in result.output
+    assert "已取消:1" in result.output
+    assert "完成:1" in result.output
+    assert "总计:5" in result.output
 
 
 def test_go_command_wraps_runtime_error_as_click_exception(tmp_path, monkeypatch):

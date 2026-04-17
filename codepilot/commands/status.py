@@ -41,6 +41,32 @@ def _status_badge(status: str) -> str:
     return f"[bold {color}]{label}[/{color}]"
 
 
+def _status_stats_line(stats: dict, *, include_cancelled: bool = False) -> str:
+    parts = [
+        f"[blue]进行中:{stats['in_progress']}[/blue]",
+        f"[yellow]待办:{stats['backlog']}[/yellow]",
+        f"[red]失败:{stats['failed']}[/red]",
+    ]
+    if include_cancelled:
+        parts.append(f"[magenta]已取消:{stats['cancelled']}[/magenta]")
+    parts.extend(
+        [
+            f"[green]完成:{stats['done']}[/green]",
+            f"[cyan]总计:{stats['total']}[/cyan]",
+        ]
+    )
+    return "  ".join(parts)
+
+
+def _build_console(console: Console | None = None) -> Console:
+    if console is not None:
+        return console
+    import shutil
+
+    term_width = shutil.get_terminal_size((120, 24)).columns
+    return Console(width=min(term_width, 140))
+
+
 def _metric_panel(label: str, value: int, color: str) -> Panel:
     body = Text()
     body.append(f"{value}\n", style=f"bold {color}")
@@ -105,20 +131,12 @@ def render_project_dashboard(
         echo(f"[red]错误：项目 '{project}' 未注册[/red]")
         return
 
-    import shutil
-    term_width = shutil.get_terminal_size((120, 24)).columns
-    console = console or Console(width=min(term_width, 140))
+    console = _build_console(console)
     stats = db.get_task_stats(project)
     header = title or f"CodePilot  {project}"
 
     # 紧凑统计行（替代 6 个 Panel 方块）
-    stat_line = (
-        f"[blue]进行中:{stats['in_progress']}[/blue]  "
-        f"[yellow]待办:{stats['backlog']}[/yellow]  "
-        f"[red]失败:{stats['failed']}[/red]  "
-        f"[green]完成:{stats['done']}[/green]  "
-        f"[cyan]总计:{stats['total']}[/cyan]"
-    )
+    stat_line = _status_stats_line(stats)
     console.print()
     console.print(f"[bold cyan]{header}[/bold cyan]  {stat_line}")
     console.print(f"[dim]{proj['path']}[/dim]")
@@ -145,6 +163,28 @@ def render_project_dashboard(
         if section_tasks:
             console.print(_section_panel(section_title, color, section_tasks, verbose=verbose))
             console.print()
+
+
+def render_project_stats(
+    project: str,
+    *,
+    title: str | None = None,
+    console: Console | None = None,
+) -> None:
+    """Render one project's aggregate task stats without the dashboard detail."""
+    proj = db.get_project(project)
+    if not proj:
+        echo(f"[red]错误：项目 '{project}' 未注册[/red]")
+        return
+
+    stats = db.get_task_stats(project)
+    console = _build_console(console)
+    header = title or f"状态统计  {project}"
+
+    console.print()
+    console.print(f"[bold cyan]{header}[/bold cyan]  {_status_stats_line(stats, include_cancelled=True)}")
+    console.print(f"[dim]{proj['path']}[/dim]")
+    console.print()
 
 
 def _resolve_project(ctx: click.Context, param: str, value: str | None) -> str | None:
