@@ -6,6 +6,7 @@ import json
 
 from click.testing import CliRunner
 
+from codepilot import __version__
 from codepilot import db
 from codepilot import webui as webui_mod
 from codepilot.cli import main
@@ -119,6 +120,19 @@ def test_chat_command_heuristic_shows_help(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "codepilot status" in result.output
     # No task created
+    tasks = db.list_tasks(project="demo")
+    assert len(tasks) == 0
+
+
+def test_chat_slash_version_shows_current_version_without_creating_task(tmp_path, monkeypatch):
+    """The interactive chat command dispatcher should handle /version locally."""
+    _register_project(tmp_path, monkeypatch)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat"], input="/version\n/exit\n")
+
+    assert result.exit_code == 0
+    assert f"CodePilot {__version__}" in result.output
     tasks = db.list_tasks(project="demo")
     assert len(tasks) == 0
 

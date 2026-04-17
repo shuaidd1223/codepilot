@@ -11,6 +11,7 @@ from typing import Optional
 
 import click
 
+from codepilot import __version__
 from codepilot import db
 from codepilot.ai import (
     answer_question_via_api,
@@ -354,6 +355,7 @@ def _chat_help() -> str:
         [
             "会话命令：",
             "  /help               查看帮助",
+            "  /version            查看当前版本",
             "  /exit               退出会话",
             "  /status             查看任务看板（/status watch 实时刷新）",
             "  /history            查看对话记录",
@@ -515,6 +517,9 @@ def run_chat_session(
                 return
             if cmd == "/help":
                 click.echo(_chat_help())
+                continue
+            if cmd == "/version":
+                click.echo(f"CodePilot {__version__}")
                 continue
             if cmd == "/status":
                 # 支持 /status watch 实时刷新

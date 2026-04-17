@@ -274,11 +274,21 @@ def _run_command_live(
         def _emit(raw: str) -> None:
             if not raw:
                 return
-            handle.write(raw)
-            handle.flush()
+            try:
+                handle.write(raw)
+                handle.flush()
+            except Exception:
+                pass
             stripped = raw.rstrip()
             if stripped:
-                STATUS_CONSOLE.print(f"    [dim]{stripped}[/dim]")
+                try:
+                    # Escape Rich markup to prevent MarkupError on output
+                    # containing brackets (e.g. codex log lines with [dim] etc.)
+                    from rich.markup import escape as _rich_escape
+                    STATUS_CONSOLE.print(f"    [dim]{_rich_escape(stripped)}[/dim]")
+                except Exception:
+                    # Never let console rendering kill the pump thread
+                    pass
             with recent_lock:
                 recent_lines.append(raw)
                 if len(recent_lines) > 200:
