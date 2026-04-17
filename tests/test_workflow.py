@@ -874,6 +874,107 @@ def test_generate_task_breakdown_uses_codex_planner(monkeypatch):
     assert captured["config_ref"] is None
 
 
+def test_run_codex_schema_prompt_kills_process_and_raises_runtime_error_on_interrupt(monkeypatch):
+    class _FakeProvider:
+        name = "Codex"
+
+        def find_executable(self):
+            return Path("codex")
+
+    class _FakeStdin:
+        def write(self, _text):
+            return None
+
+        def close(self):
+            return None
+
+    class _FakeStream:
+        def read(self):
+            return ""
+
+        def __iter__(self):
+            return iter(())
+
+    class _FakeProcess:
+        def __init__(self):
+            self.pid = 4321
+            self.stdin = _FakeStdin()
+            self.stdout = _FakeStream()
+            self.stderr = _FakeStream()
+            self.returncode = None
+
+        def poll(self):
+            raise KeyboardInterrupt()
+
+        def wait(self, timeout=None):
+            self.returncode = -9
+            return self.returncode
+
+    fake_process = _FakeProcess()
+    killed: list[int] = []
+
+    monkeypatch.setattr(ai_mod, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(ai_mod, "resolve_cli_provider", lambda *args, **kwargs: _FakeProvider())
+    monkeypatch.setattr(ai_mod.subprocess, "Popen", lambda *args, **kwargs: fake_process)
+    monkeypatch.setattr(ai_mod, "_kill_process_tree", lambda pid: killed.append(int(pid)))
+
+    try:
+        ai_mod._run_codex_schema_prompt("prompt", {"type": "object"})
+    except RuntimeError as exc:
+        assert "中断" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert killed == [4321]
+    assert fake_process.returncode == -9
+
+
+def test_run_claude_schema_prompt_kills_process_and_raises_runtime_error_on_interrupt(monkeypatch):
+    class _FakeProvider:
+        name = "Claude CLI"
+
+        def find_executable(self):
+            return Path("claude")
+
+    class _FakeStream:
+        def read(self):
+            return ""
+
+        def __iter__(self):
+            return iter(())
+
+    class _FakeProcess:
+        def __init__(self):
+            self.pid = 8765
+            self.stdout = _FakeStream()
+            self.stderr = _FakeStream()
+            self.returncode = None
+
+        def poll(self):
+            raise KeyboardInterrupt()
+
+        def wait(self, timeout=None):
+            self.returncode = -9
+            return self.returncode
+
+    fake_process = _FakeProcess()
+    killed: list[int] = []
+
+    monkeypatch.setattr(ai_mod, "resolve_cli_provider", lambda *args, **kwargs: _FakeProvider())
+    monkeypatch.setattr(ai_mod.subprocess, "Popen", lambda *args, **kwargs: fake_process)
+    monkeypatch.setattr(ai_mod, "_kill_process_tree", lambda pid: killed.append(int(pid)))
+
+    try:
+        ai_mod._run_claude_schema_prompt("prompt", {"type": "object"}, planner="claude")
+    except RuntimeError as exc:
+        assert "中断" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert killed == [8765]
+    assert fake_process.returncode == -9
+
+
 def test_run_requirement_workflow_falls_back_to_single_codex_task(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
