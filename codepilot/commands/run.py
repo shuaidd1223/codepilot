@@ -214,6 +214,72 @@ def _run_command(
     return result.returncode, output
 
 
+def _should_show_line(line: str) -> bool:
+    """Filter: only show concise progress lines, suppress raw code/diff output."""
+    s = line.strip()
+    if not s:
+        return False
+    # Always show these patterns
+    _show_patterns = (
+        # Agent lifecycle
+        "session id:", "model:", "provider:", "workdir:", "sandbox:",
+        "tokens used", "approval:",
+        # Phase markers
+        "user", "codex", "claude", "assistant",
+        # File operations
+        "Created ", "Modified ", "Deleted ", "Renamed ",
+        "created ", "modified ", "deleted ", "renamed ",
+        "Writing ", "Reading ", "Wrote ", "Read ",
+        # Commands being run
+        "Running ", "Executing ", "$ ", "running ",
+        # Test results
+        "passed", "failed", "PASSED", "FAILED", "VERDICT",
+        "pytest", "test_",
+        # Git
+        "commit ", "branch ", "merge ",
+        # Errors
+        "Error", "error:", "ERROR", "Warning", "WARNING",
+        # Summary lines
+        "Summary", "Changed Files", "Validation",
+    )
+    for pat in _show_patterns:
+        if pat in s:
+            return True
+    # Show lines that look like file paths being modified
+    if ("/" in s or "\\" in s) and any(ext in s for ext in (".py", ".js", ".ts", ".vue", ".html", ".css", ".json", ".toml")):
+        # But not if it's a code line (starts with common code chars)
+        if not s.startswith(("import ", "from ", "def ", "class ", "    ", "\t", "return ", "if ", "else", "#", "//", "/*")):
+            return True
+    # Suppress everything else (raw code, diffs, etc.)
+    return False
+
+
+def _summarize_output(output: str) -> list[str]:
+    """Extract a concise summary: modified files and line counts."""
+    lines = (output or "").splitlines()
+    summary = []
+    files_seen = set()
+    for line in lines:
+        s = line.strip()
+        # Look for file modification patterns
+        for prefix in ("Created ", "Modified ", "Deleted ", "Renamed ",
+                       "created ", "modified ", "deleted ", "renamed ",
+                       "Wrote ", "Writing "):
+            if s.startswith(prefix):
+                summary.append(s[:120])
+                break
+        # Look for "Changed Files" section in codex output
+        if s.startswith(("- ", "* ")) and any(ext in s for ext in (".py", ".js", ".ts", ".vue", ".html")):
+            if s not in files_seen:
+                files_seen.add(s)
+                summary.append(s[:120])
+    # If no file-level info found, show last few meaningful lines
+    if not summary:
+        meaningful = [l.strip() for l in lines if l.strip() and not l.strip().startswith(("import ", "from ", "def ", "class ", "    "))]
+        summary = meaningful[-5:]
+    return summary[:15]
+
+
 def _run_command_live(
     cmd: list[str],
     *,
@@ -281,14 +347,14 @@ def _run_command_live(
                 pass
             stripped = raw.rstrip()
             if stripped:
-                try:
-                    # Escape Rich markup to prevent MarkupError on output
-                    # containing brackets (e.g. codex log lines with [dim] etc.)
-                    from rich.markup import escape as _rich_escape
-                    STATUS_CONSOLE.print(f"    [dim]{_rich_escape(stripped)}[/dim]")
-                except Exception:
-                    # Never let console rendering kill the pump thread
-                    pass
+                # Only show concise progress lines, not full code output
+                _show = _should_show_line(stripped)
+                if _show:
+                    try:
+                        from rich.markup import escape as _rich_escape
+                        STATUS_CONSOLE.print(f"    [dim]{_rich_escape(stripped[:160])}[/dim]")
+                    except Exception:
+                        pass
             with recent_lock:
                 recent_lines.append(raw)
                 if len(recent_lines) > 200:
@@ -889,11 +955,11 @@ def _show_failure_feedback(
     echo(f"[red][X] 任务 #{task_id} 未通过[/red]  {title}")
     click.echo(f"  结果: {action}")
     click.echo(f"  原因: {error_message.splitlines()[0] if error_message else '执行失败'}")
-    detail_lines = _tail_lines(review_output or output)
+    detail_lines = _summarize_output(review_output or output) or _tail_lines(review_output or output, max_lines=5)
     if detail_lines:
-        echo("[dim]--- 最近输出 ---[/dim]")
-        for line in detail_lines:
-            click.echo(f"  {line}")
+        echo("[dim]--- 摘要 ---[/dim]")
+        for line in detail_lines[:5]:
+            click.echo(f"  {line[:120]}")
     click.echo(f"  查看完整日志: codepilot logs {task_id} --full")
 
 
@@ -1145,17 +1211,21 @@ def run_backlog(
                 break
 
         if result.output:
-            lines = [line for line in result.output.splitlines() if line.strip()]
-            if lines:
-                echo("[dim]--- builder 输出 ---[/dim]")
-                for line in lines[-8:]:
+            summary_lines = _summarize_output(result.output)
+            if summary_lines:
+                echo("[dim]--- builder 摘要 ---[/dim]")
+                for line in summary_lines:
                     click.echo(f"  {line}")
         if result.review_output:
-            lines = [line for line in result.review_output.splitlines() if line.strip()]
-            if lines:
-                echo("[dim]--- reviewer 输出 ---[/dim]")
-                for line in lines[-8:]:
-                    click.echo(f"  {line}")
+            # Show review verdict concisely
+            review_lines = [l.strip() for l in result.review_output.splitlines()
+                           if l.strip() and any(kw in l for kw in ("VERDICT", "pass", "fail", "PASS", "FAIL", "[P", "Restore", "Fix", "issue", "regression"))]
+            if not review_lines:
+                review_lines = [l.strip() for l in result.review_output.splitlines() if l.strip()][-3:]
+            if review_lines:
+                echo("[dim]--- reviewer 摘要 ---[/dim]")
+                for line in review_lines[:5]:
+                    click.echo(f"  {line[:120]}")
         click.echo()
 
         stats["processed"] += 1
