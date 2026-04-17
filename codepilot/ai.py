@@ -426,24 +426,24 @@ TASK_BREAKDOWN_SCHEMA = {
 
 
 TASK_BREAKDOWN_PROMPT_TEMPLATE = (
-    "你的任务是: 把下面的高层目标拆解成可以自动执行的工程子任务, 并以 JSON 输出.\n"
+    "你是一个任务拆解器. 用户给了你一个明确的需求, 你必须把它拆成可执行的工程子任务.\n"
     "\n"
-    "重要: 下面的高层目标就是用户已经给定的需求, 你必须直接对它进行拆解. "
-    "不要回复 '等待输入' '请提供目标' 之类的内容. 需求已经给你了, 直接分析并拆分.\n"
+    "核心原则:\n"
+    "- 你的所有任务必须 100% 围绕用户的需求, 不能偏离.\n"
+    "- 禁止自作主张去修 bug、优化代码、重构架构, 除非用户明确要求.\n"
+    "- 禁止分析项目现有问题然后去修, 那不是你的工作.\n"
+    "- 如果用户说 '重构 WebUI 为 Vue', 你的所有任务都必须是关于 Vue 重构的.\n"
     "\n"
     "规则:\n"
-    "1. 先判断需求是 simple 还是 complex.\n"
-    "2. simple: 输出 1 个任务, should_split=false.\n"
-    "3. complex: 输出 2 到 {max_tasks} 个子任务, should_split=true, 默认按线性顺序执行.\n"
-    "4. 每个任务都要足够具体, 能直接交给代码代理执行(包含文件路径/实现步骤/验收标准).\n"
-    "5. 优先拆出 '先修基础设施, 再做能力' 的顺序.\n"
-    "6. 只输出符合 schema 的 JSON, 不要输出 Markdown, 不要解释.\n"
-    "7. files 只写真实可能涉及的相对路径; 不确定就少写, 不要乱写.\n"
-    "8. acceptance_criteria/builder_notes/reviewer_notes/notes 都要有实际内容.\n"
-    "9. summary 字段必须是对需求本身的概括, 禁止写 '等待' '请提供' 等元描述.\n"
-    "10. 每个 task 的 title 必须是具体的工程动作(如 '重构 WebUI 为 Vue 项目'), 禁止写 '等待输入'.\n"
+    "1. 判断 simple 或 complex. simple=1个任务, complex=2到{max_tasks}个.\n"
+    "2. 每个任务标题必须直接体现用户需求中的关键动作.\n"
+    "3. 每个任务要具体到: 改哪些文件, 怎么改, 验收标准是什么.\n"
+    "4. files 只写与用户需求直接相关的文件路径.\n"
+    "5. 只输出 JSON, 不要输出 Markdown 或解释.\n"
+    "6. summary 必须是对用户需求的一句话概括.\n"
+    "7. 禁止出现 '等待输入' '请提供' 'awaiting' 'placeholder' 等无意义标题.\n"
     "\n"
-    "=== 高层目标 (这就是你要拆解的需求, 直接开始工作) ===\n"
+    "=== 用户需求 ===\n"
     "{title}\n"
     "\n"
     "{project_context}\n"
@@ -456,7 +456,7 @@ TASK_BREAKDOWN_PROMPT_TEMPLATE = (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _collect_project_context(project_path: str) -> str:
-    """收集项目文件列表作为上下文."""
+    """收集项目顶层结构作为上下文, 不展开所有文件避免诱导规划器发散."""
     if not project_path:
         return ""
 
@@ -464,31 +464,22 @@ def _collect_project_context(project_path: str) -> str:
     if not proj.exists():
         return ""
 
-    parts = ["项目上下文（供参考）："]
+    parts = ["项目结构(仅供参考, 不要偏离用户需求去分析这些文件):"]
 
-    # Python 文件
-    py_files = [
-        str(p.relative_to(proj))
-        for p in proj.rglob("*.py")
-        if "__pycache__" not in str(p) and "venv" not in str(p)
-           and ".venv" not in str(p) and "env" not in p.parent.name
-    ]
-    if py_files:
-        parts.append(f"Python 文件: {', '.join(py_files[:20])}")
+    # 只列顶层目录和关键文件
+    top_items = sorted(p.name for p in proj.iterdir()
+                       if not p.name.startswith(".") and p.name not in {
+                           "__pycache__", "node_modules", "venv", ".venv",
+                           "dist", "build", ".git", ".pytest_cache",
+                       })
+    if top_items:
+        parts.append(f"顶层: {', '.join(top_items[:20])}")
 
-    # JS/TS 文件
-    js_files = [
-        str(p.relative_to(proj))
-        for p in list(proj.rglob("*.js")) + list(proj.rglob("*.ts"))
-        if "node_modules" not in str(p)
-    ]
-    if js_files:
-        parts.append(f"JS/TS 文件: {', '.join(js_files[:15])}")
-
-    # 文档
-    md_files = [str(p.relative_to(proj)) for p in proj.rglob("*.md")]
-    if md_files:
-        parts.append(f"文档: {', '.join(md_files[:5])}")
+    # 如果有 package.json / pyproject.toml, 说明技术栈
+    if (proj / "pyproject.toml").exists():
+        parts.append("技术栈: Python (pyproject.toml)")
+    if (proj / "package.json").exists():
+        parts.append("技术栈: Node.js (package.json)")
 
     return "\n".join(parts)
 
@@ -1014,6 +1005,7 @@ def _run_claude_schema_prompt(
     # -p "prompt" 必须放最后，否则 claude CLI 会忽略 --json-schema
     cmd.extend(["-p", prompt])
 
+    process = None
     try:
         import threading, sys, time as _time
 
@@ -1025,6 +1017,7 @@ def _run_claude_schema_prompt(
             text=True,
             encoding="utf-8",
             errors="replace",
+            **_planner_process_group_kwargs(),
         )
 
         stdout_chunks: list[str] = []
@@ -1089,10 +1082,19 @@ def _run_claude_schema_prompt(
         result_stdout = "".join(stdout_chunks)
         result_returncode = process.returncode
     except subprocess.TimeoutExpired as exc:
+        _terminate_planner_process(process)
         raise RuntimeError(
             f"{provider.name} 在任务拆分阶段超时了（{timeout}s），已强制终止。"
             "可以稍后重试，或改用 codex 作为规划器。"
         ) from exc
+    except KeyboardInterrupt as exc:
+        _terminate_planner_process(process)
+        raise RuntimeError(
+            f"{provider.name} 在任务拆分阶段被中断，已终止当前规划。可以稍后重试。"
+        ) from exc
+    except BaseException:
+        _terminate_planner_process(process)
+        raise
 
     if result_returncode != 0:
         hint = _extract_error_hint(result_stdout)
@@ -1142,6 +1144,29 @@ def _kill_process_tree(pid: int) -> None:
                 pass
 
 
+def _planner_process_group_kwargs() -> dict:
+    """Isolate planner child processes so timeouts/interrupts can be cleaned up safely."""
+    if platform.system().lower() == "windows":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _terminate_planner_process(process) -> None:
+    """Best-effort cleanup for planner subprocesses left running by timeouts/interruption."""
+    if process is None:
+        return
+    pid = getattr(process, "pid", None)
+    if pid:
+        try:
+            _kill_process_tree(int(pid))
+        except Exception:
+            pass
+    try:
+        process.wait(timeout=5)
+    except Exception:
+        pass
+
+
 def _run_codex_schema_prompt(
     prompt: str,
     schema: dict,
@@ -1184,6 +1209,7 @@ def _run_codex_schema_prompt(
             ]
         )
 
+        process = None
         try:
             import threading as _threading
             import time as _time
@@ -1196,6 +1222,7 @@ def _run_codex_schema_prompt(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                **_planner_process_group_kwargs(),
             )
             if process.stdin:
                 process.stdin.write(prompt)
@@ -1263,10 +1290,17 @@ def _run_codex_schema_prompt(
             codex_stdout = "".join(stdout_chunks)
             codex_stderr = ""
         except subprocess.TimeoutExpired as exc:
+            _terminate_planner_process(process)
             raise RuntimeError(
                 f"Codex 在任务拆分阶段超时了（{timeout}s），已强制终止。"
                 "可以稍后重试，或改用 claude 作为规划器。"
             ) from exc
+        except KeyboardInterrupt as exc:
+            _terminate_planner_process(process)
+            raise RuntimeError("Codex 在任务拆分阶段被中断，已终止当前规划。可以稍后重试。") from exc
+        except BaseException:
+            _terminate_planner_process(process)
+            raise
 
         if codex_returncode != 0:
             hint = _extract_error_hint(codex_stderr or codex_stdout)
@@ -1403,6 +1437,32 @@ def generate_task_breakdown(
         import sys
         dropped = len(tasks) - len(valid_tasks)
         sys.stderr.write(f"  [planner] 过滤掉 {dropped} 个无效任务\n")
+
+    # ── Relevance check ─────────────────────────────────────────────────
+    # Warn if tasks seem unrelated to the original requirement.
+    # Extract keywords from the user's requirement for simple overlap check.
+    import re as _re
+    _req_words = set(_re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]{3,}", title.lower()))
+    # Remove very common words
+    _req_words -= {"the", "and", "for", "that", "with", "this", "from", "into",
+                   "can", "not", "but", "all", "will", "have", "are", "was",
+                   "then", "just", "one", "also", "use", "using", "some",
+                   "about", "what", "which", "how", "been", "more", "when"}
+    if _req_words:
+        for task_item in valid_tasks:
+            task_text = (
+                (task_item.get("title") or "") + " " +
+                (task_item.get("goal") or "") + " " +
+                " ".join(task_item.get("files") or [])
+            ).lower()
+            task_words = set(_re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]{3,}", task_text))
+            overlap = _req_words & task_words
+            if not overlap:
+                sys.stderr.write(
+                    f"  [planner] 警告: 任务 '{task_item.get('title', '')[:40]}' "
+                    f"与需求无明显关联, 可能跑偏\n"
+                )
+    # ─────────────────────────────────────────────────────────────────────
     # ─────────────────────────────────────────────────────────────────────
 
     breakdown["tasks"] = valid_tasks[:max_tasks]
