@@ -473,6 +473,24 @@ def get_task_stats(project: str) -> dict:
     }
 
 
+def get_task_stats_by_path(path: str | Path) -> Optional[dict]:
+    """Return task counts for the deepest registered project containing *path*."""
+    project = find_project_by_path(path)
+    if not project:
+        return None
+    return get_task_stats(project["name"])
+
+
+def get_current_project_task_stats(path: str | Path | None = None) -> Optional[dict]:
+    """Return task counts for the registered project containing *path* or the current working directory."""
+    return get_task_stats_by_path(path or Path.cwd())
+
+
+def get_current_project_stats(path: str | Path | None = None) -> Optional[dict]:
+    """Backward-compatible alias for current-project task counts."""
+    return get_current_project_task_stats(path)
+
+
 def create_task_log(
     task_id: int,
     agent: str,
