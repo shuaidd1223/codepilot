@@ -1,4 +1,8 @@
-"""Run queued tasks via external dispatch or a built-in Codex executor."""
+"""Run queued tasks via external dispatch or a built-in executor.
+
+Shell/command helpers live in `run_shell.py`; git operations live in
+`run_git.py`. Both are re-exported here so existing imports continue to work.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,6 @@ import os
 import re
 import subprocess
 import tempfile
-import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,18 +42,33 @@ from codepilot.runtime import (
 )
 from codepilot.webhook import notify_task_status
 
+# Re-export shell + command helpers
+from codepilot.commands.run_shell import (  # noqa: F401
+    ShellInfo,
+    TaskCancelled,
+    build_script_command,
+    detect_best_shell,
+    _run_command,
+    _run_command_live,
+    _should_show_line,
+    _summarize_output,
+)
+# Re-export git helpers
+from codepilot.commands.run_git import (  # noqa: F401
+    _git_auto_commit,
+    _git_checkout,
+    _git_current_branch,
+    _git_has_changes,
+    _git_is_repo,
+    _git_local_branch_exists,
+    _git_merge_task_branch,
+    _git_prepare_task_branch,
+    _resolve_project_base_branch,
+    _slugify_branch_part,
+    _task_branch_name,
+)
+
 STATUS_CONSOLE = Console()
-
-
-@dataclass
-class ShellInfo:
-    """Resolved shell configuration for dispatch scripts."""
-
-    executable: str
-    args: list[str]
-    is_powershell: bool = False
-    is_bash: bool = False
-    version_hint: str = ""
 
 
 @dataclass
@@ -63,58 +81,6 @@ class ExecutionResult:
     summary: str = ""
     executor: str = "dispatch"
 
-
-class TaskCancelled(RuntimeError):
-    """Raised when a running task is explicitly stopped."""
-
-
-def detect_best_shell(preferred: Optional[str] = None) -> ShellInfo:
-    """Pick the best available shell on the current platform."""
-    import platform
-    import shutil
-
-    system = platform.system().lower()
-    is_windows = system == "windows"
-    requested = (preferred or "").lower().strip()
-
-    if requested in {"pwsh", "powershell7"} and shutil.which("pwsh"):
-        return ShellInfo("pwsh", ["-ExecutionPolicy", "Bypass"], is_powershell=True, version_hint="PowerShell 7")
-    if requested == "powershell":
-        if shutil.which("powershell.exe"):
-            return ShellInfo("powershell.exe", ["-ExecutionPolicy", "Bypass"], is_powershell=True, version_hint="PowerShell 5")
-        if shutil.which("pwsh"):
-            return ShellInfo("pwsh", ["-ExecutionPolicy", "Bypass"], is_powershell=True, version_hint="PowerShell 7")
-    if requested in {"bash", "zsh", "sh"}:
-        shell = shutil.which(requested)
-        if shell:
-            return ShellInfo(shell, ["-c"], is_bash=True, version_hint=requested)
-
-    if is_windows:
-        if shutil.which("pwsh"):
-            return ShellInfo("pwsh", ["-ExecutionPolicy", "Bypass"], is_powershell=True, version_hint="PowerShell 7")
-        if shutil.which("powershell.exe"):
-            return ShellInfo("powershell.exe", ["-ExecutionPolicy", "Bypass"], is_powershell=True, version_hint="PowerShell 5")
-        return ShellInfo("cmd.exe", ["/C"], version_hint="cmd")
-
-    for shell_name in ["zsh", "bash", "sh"]:
-        shell = shutil.which(shell_name)
-        if shell:
-            return ShellInfo(shell, ["-c"], is_bash=True, version_hint=shell_name)
-    return ShellInfo("sh", ["-c"], is_bash=True, version_hint="sh")
-
-
-def build_script_command(shell: ShellInfo, script_path: Path, script_args: list[str]) -> tuple[list[str], str]:
-    """Build a portable script invocation command."""
-    if shell.is_powershell:
-        cmd = [shell.executable] + shell.args + ["-File", str(script_path)] + script_args
-        return cmd, f"{shell.version_hint} -File {script_path.name}"
-    if shell.is_bash:
-        quoted_args = " ".join(f'"{arg}"' for arg in script_args)
-        script = f'chmod +x "{script_path}" 2>/dev/null; "{script_path}" {quoted_args}'
-        cmd = [shell.executable] + shell.args + [script]
-        return cmd, f"{shell.version_hint} {script_path.name}"
-    cmd = [shell.executable] + shell.args + [f'"{script_path}" {" ".join(script_args)}']
-    return cmd, f"cmd {script_path.name}"
 
 
 def _project_config(project_ref: str | dict | None):
@@ -193,379 +159,6 @@ def _pick_task_file(project_path: Path, task_id: int, tracked: bool = True) -> P
     return backlog / f"{task_id:03d}-task.md"
 
 
-def _run_command(
-    cmd: list[str],
-    *,
-    cwd: Optional[Path] = None,
-    timeout: int = 3600,
-    input_text: Optional[str] = None,
-) -> tuple[int, str]:
-    result = subprocess.run(
-        cmd,
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        input=input_text,
-    )
-    output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-    return result.returncode, output
-
-
-def _should_show_line(line: str) -> bool:
-    """Filter: only show concise progress lines, suppress raw code/diff output."""
-    s = line.strip()
-    if not s:
-        return False
-    # Always show these patterns
-    _show_patterns = (
-        # Agent lifecycle
-        "session id:", "model:", "provider:", "workdir:", "sandbox:",
-        "tokens used", "approval:",
-        # Phase markers
-        "user", "codex", "claude", "assistant",
-        # File operations
-        "Created ", "Modified ", "Deleted ", "Renamed ",
-        "created ", "modified ", "deleted ", "renamed ",
-        "Writing ", "Reading ", "Wrote ", "Read ",
-        # Commands being run
-        "Running ", "Executing ", "$ ", "running ",
-        # Test results
-        "passed", "failed", "PASSED", "FAILED", "VERDICT",
-        "pytest", "test_",
-        # Git
-        "commit ", "branch ", "merge ",
-        # Errors
-        "Error", "error:", "ERROR", "Warning", "WARNING",
-        # Summary lines
-        "Summary", "Changed Files", "Validation",
-    )
-    for pat in _show_patterns:
-        if pat in s:
-            return True
-    # Show lines that look like file paths being modified
-    if ("/" in s or "\\" in s) and any(ext in s for ext in (".py", ".js", ".ts", ".vue", ".html", ".css", ".json", ".toml")):
-        # But not if it's a code line (starts with common code chars)
-        if not s.startswith(("import ", "from ", "def ", "class ", "    ", "\t", "return ", "if ", "else", "#", "//", "/*")):
-            return True
-    # Suppress everything else (raw code, diffs, etc.)
-    return False
-
-
-def _summarize_output(output: str) -> list[str]:
-    """Extract a concise summary: modified files and line counts."""
-    lines = (output or "").splitlines()
-    summary = []
-    files_seen = set()
-    for line in lines:
-        s = line.strip()
-        # Look for file modification patterns
-        for prefix in ("Created ", "Modified ", "Deleted ", "Renamed ",
-                       "created ", "modified ", "deleted ", "renamed ",
-                       "Wrote ", "Writing "):
-            if s.startswith(prefix):
-                summary.append(s[:120])
-                break
-        # Look for "Changed Files" section in codex output
-        if s.startswith(("- ", "* ")) and any(ext in s for ext in (".py", ".js", ".ts", ".vue", ".html")):
-            if s not in files_seen:
-                files_seen.add(s)
-                summary.append(s[:120])
-    # If no file-level info found, show last few meaningful lines
-    if not summary:
-        meaningful = [l.strip() for l in lines if l.strip() and not l.strip().startswith(("import ", "from ", "def ", "class ", "    "))]
-        summary = meaningful[-5:]
-    return summary[:15]
-
-
-def _run_command_live(
-    cmd: list[str],
-    *,
-    task_id: int,
-    phase: str,
-    log_path: Path,
-    cwd: Optional[Path] = None,
-    timeout: int = 3600,
-    input_text: Optional[str] = None,
-) -> tuple[int, str]:
-    """Run a long-lived command while streaming output, updating heartbeat, and honoring stop requests."""
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    # 可选 PTY：某些 CLI（codex/claude）在非 TTY 下会切块缓冲，用伪终端可以让它按行刷。
-    # 仅在 Unix 且显式开启环境变量 CODEPILOT_USE_PTY=1 时启用，Windows 默认保持 Popen 管道。
-    use_pty = (
-        os.name != "nt"
-        and os.environ.get("CODEPILOT_USE_PTY", "").strip() in {"1", "true", "yes"}
-    )
-    with log_path.open("w", encoding="utf-8", errors="replace") as handle:
-        popen_kwargs = {
-            "cwd": str(cwd) if cwd else None,
-            "stderr": subprocess.STDOUT,
-            "stdin": subprocess.PIPE if input_text is not None else None,
-            "text": True,
-            "encoding": "utf-8",
-            "errors": "replace",
-            "bufsize": 1,
-        }
-        pty_master_fd: Optional[int] = None
-        if use_pty:
-            import pty  # Unix-only
-
-            pty_master_fd, pty_slave_fd = pty.openpty()
-            popen_kwargs["stdout"] = pty_slave_fd
-            popen_kwargs["stderr"] = pty_slave_fd
-            popen_kwargs["start_new_session"] = True
-        else:
-            popen_kwargs["stdout"] = subprocess.PIPE
-            if os.name != "nt":
-                popen_kwargs["start_new_session"] = True
-            else:
-                # Prevent console pop-ups when the parent (e.g. the detached
-                # webui service) has no console of its own.
-                from codepilot.runtime import no_window_kwargs
-                popen_kwargs.update(no_window_kwargs())
-
-        process = subprocess.Popen(cmd, **popen_kwargs)
-        if use_pty:
-            # 关掉父进程这端的 slave，让子进程退出时 read 能收到 EOF
-            try:
-                os.close(pty_slave_fd)
-            except Exception:
-                pass
-        if input_text is not None and process.stdin:
-            process.stdin.write(input_text)
-            process.stdin.close()
-
-        update_task_runtime(task_id, phase=phase, pid=process.pid, log_path=log_path, last_output="")
-
-        recent_lines: list[str] = []
-        recent_lock = threading.Lock()
-
-        def _emit(raw: str) -> None:
-            if not raw:
-                return
-            try:
-                handle.write(raw)
-                handle.flush()
-            except Exception:
-                pass
-            stripped = raw.rstrip()
-            if stripped:
-                # Only show concise progress lines, not full code output
-                _show = _should_show_line(stripped)
-                if _show:
-                    try:
-                        from rich.markup import escape as _rich_escape
-                        STATUS_CONSOLE.print(f"    [dim]{_rich_escape(stripped[:160])}[/dim]")
-                    except Exception:
-                        pass
-            with recent_lock:
-                recent_lines.append(raw)
-                if len(recent_lines) > 200:
-                    del recent_lines[:-200]
-
-        def _pump_stdout() -> None:
-            if use_pty and pty_master_fd is not None:
-                buf = b""
-                while True:
-                    try:
-                        chunk = os.read(pty_master_fd, 4096)
-                    except OSError:
-                        break
-                    if not chunk:
-                        break
-                    buf += chunk
-                    while b"\n" in buf:
-                        line, buf = buf.split(b"\n", 1)
-                        _emit(line.decode("utf-8", errors="replace") + "\n")
-                if buf:
-                    _emit(buf.decode("utf-8", errors="replace"))
-                try:
-                    os.close(pty_master_fd)
-                except Exception:
-                    pass
-                return
-            assert process.stdout is not None
-            for raw in process.stdout:
-                _emit(raw)
-
-        reader = threading.Thread(target=_pump_stdout, daemon=True)
-        reader.start()
-
-        started = time.monotonic()
-        last_heartbeat = 0.0
-
-        try:
-            while True:
-                requested, reason = get_stop_request(task_id)
-                if requested:
-                    stop_process_tree(process.pid)
-                    reader.join(timeout=2)
-                    update_task_runtime(
-                        task_id,
-                        phase=phase,
-                        pid=process.pid,
-                        log_path=log_path,
-                        last_output=tail_text(log_path),
-                    )
-                    raise TaskCancelled(reason or f"任务 #{task_id} 已停止")
-
-                if time.monotonic() - started > timeout:
-                    stop_process_tree(process.pid)
-                    reader.join(timeout=2)
-                    raise subprocess.TimeoutExpired(cmd, timeout)
-
-                exit_code = process.poll()
-                now = time.monotonic()
-                if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
-                    with recent_lock:
-                        preview = "".join(recent_lines[-20:]).strip()
-                    update_task_runtime(
-                        task_id,
-                        phase=phase,
-                        pid=process.pid if exit_code is None else None,
-                        log_path=log_path,
-                        last_output=preview,
-                    )
-                    last_heartbeat = now
-
-                if exit_code is not None:
-                    reader.join(timeout=5)
-                    handle.flush()
-                    update_task_runtime(
-                        task_id,
-                        phase=phase,
-                        pid=None,
-                        log_path=log_path,
-                        last_output=tail_text(log_path),
-                    )
-                    return exit_code, log_path.read_text(encoding="utf-8", errors="replace").strip()
-
-                time.sleep(0.1)
-        finally:
-            if process.stdin:
-                try:
-                    process.stdin.close()
-                except Exception:
-                    pass
-            if process.poll() is None:
-                stop_process_tree(process.pid)
-            reader.join(timeout=2)
-
-
-def _git_current_branch(project_path: Path) -> str:
-    code, output = _run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
-    if code == 0 and output.strip():
-        return output.strip().splitlines()[-1]
-    return "main"
-
-
-def _git_is_repo(project_path: Path) -> bool:
-    code, output = _run_command(["git", "rev-parse", "--is-inside-work-tree"], cwd=project_path, timeout=30)
-    return code == 0 and output.strip().lower().endswith("true")
-
-
-def _git_has_changes(project_path: Path) -> bool:
-    code, output = _run_command(["git", "status", "--short"], cwd=project_path, timeout=30)
-    return code == 0 and bool(output.strip())
-
-
-def _slugify_branch_part(text: str, max_length: int = 48) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
-    if len(slug) > max_length:
-        slug = slug[:max_length].strip("-")
-    return slug or "task"
-
-
-def _task_branch_name(task_id: int, title: str) -> str:
-    return f"feat/task-{task_id}-{_slugify_branch_part(title)}"
-
-
-def _resolve_project_base_branch(project_info: dict, config=None) -> str:
-    configured = (project_info.get("base_branch") or "").strip()
-    if configured:
-        return configured
-    if config:
-        fallback = (getattr(config, "base_branch", "") or "").strip()
-        if fallback:
-            return fallback
-    return "dev"
-
-
-def _git_checkout(project_path: Path, branch: str, *, create_from: Optional[str] = None, reset: bool = False) -> None:
-    if create_from:
-        cmd = ["git", "checkout", "-B" if reset else "-b", branch, create_from]
-    else:
-        cmd = ["git", "checkout", branch]
-    code, output = _run_command(cmd, cwd=project_path, timeout=120)
-    if code != 0:
-        raise RuntimeError(f"切换分支 `{branch}` 失败:\n{output}")
-
-
-def _git_local_branch_exists(project_path: Path, branch: str) -> bool:
-    code, _ = _run_command(
-        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
-        cwd=project_path,
-        timeout=30,
-    )
-    return code == 0
-
-
-def _git_prepare_task_branch(project_path: Path, *, task_id: int, title: str, base_branch: str) -> str:
-    if not _git_is_repo(project_path):
-        return ""
-    if _git_has_changes(project_path):
-        raise RuntimeError(
-            "检测到当前工作区有未提交改动，无法为任务自动创建独立分支。"
-            "请先提交/暂存现有改动后再执行。"
-        )
-    # 如果配置的 base_branch 在本地不存在，回退到当前分支（不强制切换），避免 pathspec 失败
-    if not _git_local_branch_exists(project_path, base_branch):
-        current = _git_current_branch(project_path)
-        if current:
-            base_branch = current
-        else:
-            return ""
-    else:
-        _git_checkout(project_path, base_branch)
-    task_branch = _task_branch_name(task_id, title)
-    _git_checkout(project_path, task_branch, create_from=base_branch, reset=True)
-    return task_branch
-
-
-def _git_merge_task_branch(
-    project_path: Path,
-    *,
-    task_id: int,
-    title: str,
-    task_branch: str,
-    base_branch: str,
-) -> str:
-    if not _git_is_repo(project_path) or not task_branch or task_branch == base_branch:
-        return ""
-    if _git_has_changes(project_path):
-        raise RuntimeError(
-            "任务分支存在未提交改动，无法自动合并回 base_branch。"
-            "请先提交改动，或在本次执行启用 auto-commit。"
-        )
-    _git_checkout(project_path, base_branch)
-    merge_code, merge_output = _run_command(
-        ["git", "merge", "--no-ff", "--no-edit", task_branch],
-        cwd=project_path,
-        timeout=300,
-    )
-    if merge_code != 0:
-        raise RuntimeError(f"合并任务分支失败:\n{merge_output}")
-    # 合并成功后删除任务分支
-    del_code, del_output = _run_command(["git", "branch", "-d", task_branch], cwd=project_path, timeout=30)
-    if del_code != 0:
-        # 不阻塞，但记录失败原因
-        click.echo(f"  [warn] 删除分支 {task_branch} 失败: {del_output.strip()}")
-    safe_title = " ".join((title or "").strip().split())[:60]
-    merged_title = safe_title or f"task #{task_id}"
-    return f"已合并 `{task_branch}` -> `{base_branch}` ({merged_title})"
-
 
 def _builtin_runtime_dir(project: dict) -> Path:
     """Store builtin executor artifacts outside the repo to avoid polluting commits."""
@@ -603,26 +196,6 @@ def _builtin_preflight_error(project_path: Path, auto_commit: bool, agent_mode: 
     return ""
 
 
-def _git_auto_commit(project_path: Path, task_id: int, title: str) -> str:
-    if not _git_has_changes(project_path):
-        return ""
-
-    add_code, add_output = _run_command(["git", "add", "-A"], cwd=project_path, timeout=120)
-    if add_code != 0:
-        raise RuntimeError(f"git add 失败:\n{add_output}")
-
-    diff_code, _ = _run_command(["git", "diff", "--cached", "--quiet"], cwd=project_path, timeout=30)
-    if diff_code == 0:
-        return ""
-
-    safe_title = " ".join(title.strip().split())[:60]
-    commit_msg = f"task #{task_id}: {safe_title}"
-    commit_code, commit_output = _run_command(["git", "commit", "-m", commit_msg], cwd=project_path, timeout=300)
-    if commit_code != 0:
-        raise RuntimeError(f"git commit 失败:\n{commit_output}")
-
-    sha_code, sha_output = _run_command(["git", "rev-parse", "--short", "HEAD"], cwd=project_path, timeout=30)
-    return sha_output.strip() if sha_code == 0 else ""
 
 
 def _write_task_log(task_id: int, agent: str, phase: str, output: str, exit_code: int, started_at: datetime) -> None:
@@ -899,6 +472,7 @@ def _run_builtin_executor(task: dict, project: dict, task_file: Path, auto_commi
         summary=" | ".join(summary_lines),
         executor="builtin",
     )
+
 
 
 def _run_dispatch(project: dict, task_file: Path, agent_mode: str, shell: ShellInfo, dry_run: bool = False) -> tuple[int, str]:
