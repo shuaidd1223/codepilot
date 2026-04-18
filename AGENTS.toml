@@ -6,8 +6,8 @@
 name = "codepilot-dev"
 # Git 主分支
 base_branch = "dev"
-# 默认任务智能体
-default_mode = "claude"
+# 默认任务智能体（写代码 / 执行任务 —— codex）
+default_mode = "codex"
 # Worktree 隔离目录，空值则自动推导到 ~/.codepilot/worktrees/<project>/
 worktree_base = ""
 
@@ -23,8 +23,8 @@ interval_seconds = 600
 stale_minutes = 30
 
 [automation]
-# 纯文本需求默认使用 Codex 规划和执行
-planner = "claude"
+# 纯文本需求 —— 规划和执行统一走 codex（擅长写代码）
+planner = "codex"
 executor = "builtin"
 # 输入需求后默认直接执行；如果只想先规划，可命令行加 --no-execute
 auto_execute = true
@@ -38,6 +38,22 @@ max_tasks = 5
 max_retries = 3
 # 为每个任务自动创建 feat/task-<id>-<slug> 分支，成功后合并回 base_branch
 per_task_branch = true
+
+[inspect]
+# 定时巡检开关；开启后配合 `codepilot daemon` 会自动周期扫描
+enabled = true
+# 巡检 LLM —— 用 claude 做分析、推理（快）
+planner = "claude"
+# 每多久跑一轮（秒）
+interval_seconds = 1800
+# 每轮最多产出几条候选任务
+max_new_tasks_per_round = 3
+# 使用哪些信号
+signals = ["git_log", "failed_tasks", "todos"]
+# 巡检产生的任务是否立即进入执行（false 仅入 backlog 等待人工确认）
+auto_execute = false
+# 巡检任务默认优先级
+priority = "P3"
 
 [notifications]
 # 飞书/企微 Webhook URL

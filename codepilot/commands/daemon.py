@@ -221,7 +221,8 @@ def _maybe_run_inspect(project: str | None, last_at: dict[str, float], verbose: 
                 signals=ins.signals,
                 auto_execute=ins.auto_execute,
                 priority=ins.priority,
-                agent="codex",
+                agent="codex",                # 执行器：写代码默认 codex
+                planner=ins.planner or "claude",  # 巡检 LLM：默认 claude
             )
         except Exception as exc:
             echo(f"[yellow]巡检 {name} 失败：{safe(exc)}[/yellow]")

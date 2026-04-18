@@ -16,7 +16,9 @@ from codepilot import db
 from codepilot.ai import (
     API_PROVIDERS,
     _run_api_provider,
+    _run_claude_schema_prompt,
     _run_codex_schema_prompt,
+    normalize_agent_name,
 )
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.config import load_project_config
@@ -40,11 +42,15 @@ INSPECT_SCHEMA = {
                         "enum": ["refactor", "bug", "test", "docs", "perf", "chore"],
                     },
                 },
-                "required": ["title", "goal", "rationale"],
+                # OpenAI strict structured-output: every object needs
+                # additionalProperties=false AND ALL properties in `required`.
+                "required": ["title", "goal", "priority", "rationale", "kind"],
+                "additionalProperties": False,
             },
         }
     },
     "required": ["candidates"],
+    "additionalProperties": False,
 }
 
 INSPECT_PROMPT = """你是当前项目的资深巡检工程师。基于下列信号，挑出 0~{max_tasks} 个真正值得做的改进项，形成结构化候选任务。
@@ -229,7 +235,9 @@ def _call_llm(
     api_key: Optional[str],
     project_path: str,
     timeout: int,
+    planner: str = "claude",
 ) -> dict:
+    # 1) Prefer the configured classifier provider (API with key).
     if classifier_provider and classifier_provider in API_PROVIDERS:
         from dataclasses import replace
 
@@ -250,7 +258,17 @@ def _call_llm(
             if start != -1 and end > start:
                 raw = raw[start : end + 1]
             return json.loads(raw)
-    # Fallback: local codex
+
+    # 2) Fall back to local CLI — default claude (faster for analysis/inspection).
+    normalized = normalize_agent_name(planner) if planner else "claude"
+    if normalized in {"claude", "claude-node", "claude-sonnet", "claude-opus", "claude-haiku"}:
+        return _run_claude_schema_prompt(
+            prompt,
+            INSPECT_SCHEMA,
+            planner=normalized,
+            project_path=project_path,
+            timeout=timeout,
+        )
     return _run_codex_schema_prompt(
         prompt,
         INSPECT_SCHEMA,
@@ -267,6 +285,7 @@ def run_inspection(
     auto_execute: bool = False,
     priority: str = "P3",
     agent: str = "codex",
+    planner: str = "claude",
     dry_run: bool = False,
     timeout: int = 120,
 ) -> dict:
@@ -304,6 +323,7 @@ def run_inspection(
             api_key=api_key,
             project_path=str(project_path),
             timeout=timeout,
+            planner=planner,
         )
     except Exception as exc:
         return {
@@ -403,7 +423,12 @@ def _print_result(result: dict, dry_run: bool) -> None:
 @click.option("--project", "-p", callback=_resolve_project_strict, help="项目名称")
 @click.option("--max", "max_new", type=int, default=None, help="本轮最多新增任务数")
 @click.option("--dry-run", is_flag=True, help="只打印候选，不落库")
-@click.option("--agent", default="codex", help="给新任务指定执行智能体")
+@click.option("--agent", default="codex", help="给新任务指定执行智能体（默认 codex，负责写代码）")
+@click.option(
+    "--planner",
+    default=None,
+    help="巡检用的 LLM（默认 claude，从 [inspect].planner 读取；可选 claude / codex）",
+)
 @click.option("--json", "json_mode", is_flag=True, help="以 JSON 输出结果，便于脚本和其他 AI 调用")
 @click.option("--interval", type=int, default=None, help="巡检间隔秒数（默认 1800）")
 @click.option("--once", is_flag=True, help="仅巡检一次后退出")
@@ -412,6 +437,7 @@ def inspect(
     max_new: Optional[int],
     dry_run: bool,
     agent: str,
+    planner: Optional[str],
     json_mode: bool,
     interval: Optional[int],
     once: bool,
@@ -431,15 +457,19 @@ def inspect(
     ins = cfg.inspect
     limit = max_new if max_new is not None else ins.max_new_tasks_per_round
     sleep_seconds = interval if interval is not None else ins.interval_seconds
+    effective_planner = planner or ins.planner or "claude"
 
     round_num = 0
     while True:
         round_num += 1
         if not json_mode:
+            head = f"巡检项目 {project_info['name']}"
             if not once:
-                echo(f"[cyan]巡检项目 {project_info['name']}  第 {round_num} 轮[/cyan]  max={limit}  signals={','.join(ins.signals)}")
-            else:
-                echo(f"[cyan]巡检项目 {project_info['name']}[/cyan]  max={limit}  signals={','.join(ins.signals)}")
+                head += f"  第 {round_num} 轮"
+            echo(
+                f"[cyan]{head}[/cyan]  planner={effective_planner}  agent={agent}  "
+                f"max={limit}  signals={','.join(ins.signals)}"
+            )
 
         result = run_inspection(
             project_info,
@@ -448,6 +478,7 @@ def inspect(
             auto_execute=ins.auto_execute,
             priority=ins.priority,
             agent=agent,
+            planner=effective_planner,
             dry_run=dry_run,
         )
 

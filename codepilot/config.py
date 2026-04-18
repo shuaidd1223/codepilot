@@ -68,6 +68,8 @@ class InspectConfig:
     signals: tuple[str, ...] = ("git_log", "failed_tasks", "todos")
     auto_execute: bool = False
     priority: str = "P3"
+    # 巡检默认用 claude（推理快、适合分析），写代码走 codex 交由 --agent 决定。
+    planner: str = "claude"
 
 
 @dataclass
@@ -184,6 +186,7 @@ class AgentsConfig:
                 max_new_tasks_per_round=inspect.get("max_new_tasks_per_round", 3),
                 signals=tuple(inspect.get("signals", ["git_log", "failed_tasks", "todos"])),
                 auto_execute=inspect.get("auto_execute", False),
+                planner=inspect.get("planner", "claude"),
                 priority=inspect.get("priority", "P3"),
             ),
             notifications=notifications,
