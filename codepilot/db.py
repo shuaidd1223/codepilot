@@ -9,7 +9,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 DB_PATH = Path.home() / ".codepilot" / "tasks.db"
 
@@ -49,103 +49,194 @@ def _ensure_column(
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+# ── Schema baseline & versioned migrations ─────────────────────────────────
+#
+# The baseline `_BASELINE_SCHEMA` reflects the *current* canonical schema so
+# fresh DBs create everything at once. Each entry in `_MIGRATIONS` upgrades
+# an older DB to the numbered version; they are idempotent (use _ensure_column)
+# so re-running against an already-upgraded DB is safe. Every applied migration
+# writes a row to `schema_migrations` for audit.
+
+_BASELINE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS projects (
+    name            TEXT PRIMARY KEY,
+    path            TEXT NOT NULL UNIQUE,
+    base_branch     TEXT NOT NULL DEFAULT 'dev',
+    default_mode    TEXT NOT NULL DEFAULT 'dual',
+    worktree_base   TEXT,
+    config_file     TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project         TEXT NOT NULL REFERENCES projects(name),
+    title           TEXT NOT NULL,
+    content         TEXT NOT NULL DEFAULT '',
+    agent           TEXT NOT NULL DEFAULT 'dual',
+    builder         TEXT,
+    reviewer        TEXT,
+    priority        TEXT NOT NULL DEFAULT 'P2',
+    depends_on      TEXT,
+    status          TEXT NOT NULL DEFAULT 'backlog',
+    project_path    TEXT NOT NULL,
+    branch_name     TEXT,
+    worktree_path   TEXT,
+    error_message   TEXT,
+    delivery_record TEXT,
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    max_retries     INTEGER NOT NULL DEFAULT 3,
+    run_phase       TEXT,
+    heartbeat_at    TEXT,
+    active_pid      INTEGER,
+    current_log_path TEXT,
+    last_output     TEXT,
+    stop_requested  INTEGER NOT NULL DEFAULT 0,
+    stop_reason     TEXT,
+    source          TEXT NOT NULL DEFAULT 'user',
+    dedup_key       TEXT,
+    fallback_reason TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at      TEXT,
+    completed_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS task_logs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    agent       TEXT,
+    phase       TEXT NOT NULL,
+    output      TEXT,
+    exit_code   INTEGER,
+    started_at  TEXT,
+    finished_at TEXT,
+    duration    INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project     TEXT NOT NULL REFERENCES projects(name),
+    title       TEXT NOT NULL DEFAULT '新会话',
+    status      TEXT NOT NULL DEFAULT 'active',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS session_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    role        TEXT NOT NULL DEFAULT 'user',
+    content     TEXT NOT NULL DEFAULT '',
+    intent      TEXT,
+    task_ids    TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     INTEGER PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_task_logs_task_id ON task_logs(task_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
+CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session_id);
+"""
+
+
+def _mig_1_retry_fields(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "tasks", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "tasks", "max_retries", "INTEGER NOT NULL DEFAULT 3")
+
+
+def _mig_2_runtime_fields(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "tasks", "run_phase", "TEXT")
+    _ensure_column(conn, "tasks", "heartbeat_at", "TEXT")
+    _ensure_column(conn, "tasks", "active_pid", "INTEGER")
+    _ensure_column(conn, "tasks", "current_log_path", "TEXT")
+    _ensure_column(conn, "tasks", "last_output", "TEXT")
+
+
+def _mig_3_stop_fields(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "tasks", "stop_requested", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "tasks", "stop_reason", "TEXT")
+
+
+def _mig_4_task_source(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "tasks", "source", "TEXT NOT NULL DEFAULT 'user'")
+
+
+def _mig_5_dedup_key(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "tasks", "dedup_key", "TEXT")
+
+
+def _mig_6_fallback_reason(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "tasks", "fallback_reason", "TEXT")
+
+
+_MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
+    (1, "tasks: retry_count / max_retries", _mig_1_retry_fields),
+    (2, "tasks: run_phase / heartbeat / active_pid / log_path / last_output", _mig_2_runtime_fields),
+    (3, "tasks: stop_requested / stop_reason", _mig_3_stop_fields),
+    (4, "tasks: source", _mig_4_task_source),
+    (5, "tasks: dedup_key", _mig_5_dedup_key),
+    (6, "tasks: fallback_reason", _mig_6_fallback_reason),
+]
+
+SCHEMA_VERSION = max(v for v, _, _ in _MIGRATIONS)
+
+
+def _get_schema_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT MAX(version) AS v FROM schema_migrations"
+    ).fetchone()
+    return int(row["v"]) if row and row["v"] is not None else 0
+
+
+def _record_migration(conn: sqlite3.Connection, version: int, description: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_migrations (version, description) VALUES (?, ?)",
+        (version, description),
+    )
+
+
 def init_db() -> None:
-    """Create tables and run lightweight migrations."""
+    """Create baseline tables and run versioned migrations in order."""
     with get_conn() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS projects (
-                name            TEXT PRIMARY KEY,
-                path            TEXT NOT NULL UNIQUE,
-                base_branch     TEXT NOT NULL DEFAULT 'dev',
-                default_mode    TEXT NOT NULL DEFAULT 'dual',
-                worktree_base   TEXT,
-                config_file     TEXT,
-                created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-            );
+        conn.executescript(_BASELINE_SCHEMA)
 
-            CREATE TABLE IF NOT EXISTS tasks (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                project         TEXT NOT NULL REFERENCES projects(name),
-                title           TEXT NOT NULL,
-                content         TEXT NOT NULL DEFAULT '',
-                agent           TEXT NOT NULL DEFAULT 'dual',
-                builder         TEXT,
-                reviewer        TEXT,
-                priority        TEXT NOT NULL DEFAULT 'P2',
-                depends_on      TEXT,
-                status          TEXT NOT NULL DEFAULT 'backlog',
-                project_path    TEXT NOT NULL,
-                branch_name     TEXT,
-                worktree_path   TEXT,
-                error_message   TEXT,
-                delivery_record TEXT,
-                retry_count     INTEGER NOT NULL DEFAULT 0,
-                max_retries     INTEGER NOT NULL DEFAULT 3,
-                run_phase       TEXT,
-                heartbeat_at    TEXT,
-                active_pid      INTEGER,
-                current_log_path TEXT,
-                last_output     TEXT,
-                stop_requested  INTEGER NOT NULL DEFAULT 0,
-                stop_reason     TEXT,
-                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                started_at      TEXT,
-                completed_at    TEXT
-            );
+        # Seed schema_migrations on an existing pre-versioned DB. If tasks
+        # already has all current columns (i.e., an older `_ensure_column`
+        # run brought it up to date), mark all migrations as applied so we
+        # don't double-run them.
+        current = _get_schema_version(conn)
+        if current == 0 and _has_column(conn, "tasks", "fallback_reason"):
+            for version, description, _ in _MIGRATIONS:
+                _record_migration(conn, version, description)
+            current = SCHEMA_VERSION
 
-            CREATE TABLE IF NOT EXISTS task_logs (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-                agent       TEXT,
-                phase       TEXT NOT NULL,
-                output      TEXT,
-                exit_code   INTEGER,
-                started_at  TEXT,
-                finished_at TEXT,
-                duration    INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS sessions (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                project     TEXT NOT NULL REFERENCES projects(name),
-                title       TEXT NOT NULL DEFAULT '新会话',
-                status      TEXT NOT NULL DEFAULT 'active',
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-
-            CREATE TABLE IF NOT EXISTS session_messages (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                role        TEXT NOT NULL DEFAULT 'user',
-                content     TEXT NOT NULL DEFAULT '',
-                intent      TEXT,
-                task_ids    TEXT,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
-            CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-            CREATE INDEX IF NOT EXISTS idx_task_logs_task_id ON task_logs(task_id);
-            CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
-            CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session_id);
-            """
-        )
-
-        _ensure_column(conn, "tasks", "retry_count", "INTEGER NOT NULL DEFAULT 0")
-        _ensure_column(conn, "tasks", "max_retries", "INTEGER NOT NULL DEFAULT 3")
-        _ensure_column(conn, "tasks", "run_phase", "TEXT")
-        _ensure_column(conn, "tasks", "heartbeat_at", "TEXT")
-        _ensure_column(conn, "tasks", "active_pid", "INTEGER")
-        _ensure_column(conn, "tasks", "current_log_path", "TEXT")
-        _ensure_column(conn, "tasks", "last_output", "TEXT")
-        _ensure_column(conn, "tasks", "stop_requested", "INTEGER NOT NULL DEFAULT 0")
-        _ensure_column(conn, "tasks", "stop_reason", "TEXT")
-        _ensure_column(conn, "tasks", "source", "TEXT NOT NULL DEFAULT 'user'")
-        _ensure_column(conn, "tasks", "dedup_key", "TEXT")
-        _ensure_column(conn, "tasks", "fallback_reason", "TEXT")
+        for version, description, apply in _MIGRATIONS:
+            if version <= current:
+                continue
+            apply(conn)
+            _record_migration(conn, version, description)
         conn.commit()
+
+
+def schema_status() -> dict:
+    """Return current schema version and applied migration history."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT version, description, applied_at "
+            "FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        return {
+            "current_version": _get_schema_version(conn),
+            "target_version": SCHEMA_VERSION,
+            "applied": [dict(row) for row in rows],
+        }
 
 
 def register_project(
@@ -472,6 +563,68 @@ def next_backlog_task(project: str) -> list[dict]:
             (project,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def compute_agent_eta_seconds(
+    project: str,
+    agent: Optional[str] = None,
+    *,
+    sample_size: int = 20,
+) -> Optional[int]:
+    """Return a rough ETA (in seconds) based on historical ``done`` tasks.
+
+    Picks the most recent ``sample_size`` completed tasks for the project
+    (optionally filtered by agent) and returns the median wall-clock
+    duration between ``started_at`` and ``completed_at``. Returns ``None``
+    when there's not enough history to produce a stable number.
+    """
+    with get_conn() as conn:
+        if agent:
+            rows = conn.execute(
+                """
+                SELECT started_at, completed_at
+                FROM tasks
+                WHERE project = ? AND agent = ? AND status = 'done'
+                  AND started_at IS NOT NULL AND completed_at IS NOT NULL
+                ORDER BY completed_at DESC
+                LIMIT ?
+                """,
+                (project, agent, sample_size),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT started_at, completed_at
+                FROM tasks
+                WHERE project = ? AND status = 'done'
+                  AND started_at IS NOT NULL AND completed_at IS NOT NULL
+                ORDER BY completed_at DESC
+                LIMIT ?
+                """,
+                (project, sample_size),
+            ).fetchall()
+
+    from datetime import datetime as _dt
+
+    durations: list[float] = []
+    for row in rows:
+        try:
+            started = _dt.fromisoformat(row["started_at"])
+            completed = _dt.fromisoformat(row["completed_at"])
+        except (ValueError, TypeError):
+            continue
+        delta = (completed - started).total_seconds()
+        if delta > 0:
+            durations.append(delta)
+
+    if len(durations) < 3:
+        return None
+
+    durations.sort()
+    mid = len(durations) // 2
+    if len(durations) % 2:
+        return int(durations[mid])
+    return int((durations[mid - 1] + durations[mid]) / 2)
 
 
 def get_task_stats(project: str) -> dict:

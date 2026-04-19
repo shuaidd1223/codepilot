@@ -30,6 +30,7 @@ from codepilot.ai import (
 from codepilot.commands.status import _resolve_project, render_project_dashboard
 from codepilot.config import load_project_config
 from codepilot.output import echo, safe
+from codepilot.prompts import load_prompt as _load_prompt
 from codepilot.runtime import (
     HEARTBEAT_INTERVAL_SECONDS,
     clear_task_runtime,
@@ -218,31 +219,173 @@ def _read_output_file(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace").strip()
 
 
-def _build_builtin_prompt(task: dict, task_file: Path) -> str:
-    return "\n".join(
-        [
-            f"你正在执行排队任务 #{task['id']}：{task['title']}",
-            "",
-            "要求：",
-            "1. 阅读任务文件并在当前仓库中直接完成实现。",
-            "2. 必须自己运行必要的检查命令，并根据结果修正问题。",
-            "3. 不要等待人工确认，不要进入交互模式。",
-            "4. 结束时输出三段：Summary、Changed Files、Validation。",
-            "",
-            f"任务文件：{task_file}",
-        ]
-    )
+_SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
 
-def _build_review_prompt(task: dict) -> str:
-    return "\n".join(
-        [
-            f"请审查当前仓库中为任务 #{task['id']} `{task['title']}` 产生的未提交改动。",
-            "聚焦：功能正确性、回归风险、遗漏的验证。",
-            "如果没有阻塞问题，最后单独输出一行 `VERDICT: PASS`。",
-            "如果有阻塞问题，最后单独输出一行 `VERDICT: FAIL`，并先列出发现。",
-        ]
-    )
+def _extract_task_sections(content: str) -> dict[str, str]:
+    """Parse ``task.content`` markdown into a {section_title: body} dict.
+
+    The planner writes the task content as a sequence of ``## 验收标准`` /
+    ``## Builder 职责`` / ``## 涉及文件`` / ``## 备注`` sections. We pick
+    them out individually so the executor prompts can inject the right
+    pieces without dumping the entire file at the AI every call.
+    """
+    if not content:
+        return {}
+    sections: dict[str, str] = {}
+    matches = list(_SECTION_RE.finditer(content))
+    for idx, match in enumerate(matches):
+        title = match.group(1).strip()
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(content)
+        body = content[start:end].strip()
+        sections[title] = body
+    return sections
+
+
+def _bullet_lines(body: str) -> list[str]:
+    """Return non-empty bullet items from a markdown section body."""
+    if not body:
+        return []
+    items: list[str] = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line in {"- 待补充", "- 无", "- （待确认）"}:
+            continue
+        if line.startswith(("- ", "* ")):
+            items.append(line[2:].strip())
+        elif line[:2].isdigit() and line[2:3] in {".", "、", ")"}:
+            items.append(line[3:].strip())
+        else:
+            items.append(line)
+    return [it for it in items if it]
+
+
+def _collect_project_conventions_snippet(project_path: Path, *, max_chars: int = 800) -> str:
+    """Grab the first hit of AGENTS.md / CLAUDE.md / CONTRIBUTING.md for the builder.
+
+    Kept separate from the planner's convention block so the executor can use
+    a tighter budget — the builder already has the task markdown; we only
+    want the hard "don't do X" / "style must be Y" rules here.
+    """
+    try:
+        from codepilot.ai_planner_context import _read_project_conventions
+    except Exception:
+        return ""
+    try:
+        return _read_project_conventions(
+            project_path,
+            max_chars_per_file=max_chars,
+            total_cap=max_chars,
+        )
+    except Exception:
+        return ""
+
+
+def _build_builtin_prompt(
+    task: dict,
+    task_file: Path,
+    *,
+    project_path: Path | None = None,
+    review_round: int = 1,
+    previous_review_feedback: str = "",
+) -> str:
+    """Compose the Builder prompt.
+
+    When ``review_round > 1`` the prompt reminds the AI this is a rework and
+    injects the reviewer's prior feedback so it can fix its own mistakes
+    instead of redoing everything from scratch.
+    """
+    sections = _extract_task_sections(task.get("content") or "")
+    goal = (sections.get("任务目标") or "").strip()
+    acceptance = _bullet_lines(sections.get("验收标准") or "")
+    builder_notes = _bullet_lines(sections.get("Builder 职责") or "")
+    files = _bullet_lines(sections.get("涉及文件") or "")
+
+    lines: list[str] = []
+    if review_round <= 1:
+        lines.append(f"你正在执行排队任务 #{task['id']}：{task['title']}")
+    else:
+        lines.append(
+            f"这是任务 #{task['id']} 「{task['title']}」的第 {review_round} 轮重做。"
+            " 上一轮 reviewer 发现了阻塞问题，请针对性修复。"
+        )
+    lines.append("")
+
+    if goal:
+        lines.append("【任务目标】")
+        lines.append(goal)
+        lines.append("")
+
+    if acceptance:
+        lines.append("【验收标准（必须全部达成，reviewer 会逐条核对）】")
+        for i, item in enumerate(acceptance, 1):
+            lines.append(f"  {i}. {item}")
+        lines.append("")
+
+    if builder_notes:
+        lines.append("【实施提示（来自规划器）】")
+        for item in builder_notes:
+            lines.append(f"  - {item}")
+        lines.append("")
+
+    if files:
+        lines.append("【预计要动的文件（非强制，偏离请在 Summary 说明）】")
+        for item in files:
+            lines.append(f"  - {item}")
+        lines.append("")
+
+    conventions = ""
+    if project_path is not None:
+        conventions = _collect_project_conventions_snippet(project_path)
+    if conventions:
+        lines.append("【项目约定（来自 AGENTS.md / CLAUDE.md / CONTRIBUTING.md 等，必须遵守）】")
+        lines.append(conventions)
+        lines.append("")
+
+    if review_round > 1 and previous_review_feedback:
+        lines.append("【上一轮 reviewer 的阻塞意见（必须处理）】")
+        lines.append(previous_review_feedback.strip())
+        lines.append("")
+
+    lines.append(_load_prompt("builder_rules", task_file=str(task_file)).rstrip())
+    return "\n".join(lines)
+
+
+def _build_review_prompt(
+    task: dict,
+    *,
+    review_round: int = 1,
+) -> str:
+    """Compose the Reviewer prompt with acceptance-criteria-driven checklist."""
+    sections = _extract_task_sections(task.get("content") or "")
+    acceptance = _bullet_lines(sections.get("验收标准") or "")
+    reviewer_notes = _bullet_lines(sections.get("Reviewer 职责") or "")
+
+    lines = [
+        f"请审查当前仓库中为任务 #{task['id']} `{task['title']}` 产生的未提交改动。",
+    ]
+    if review_round > 1:
+        lines.append(f"（这是第 {review_round} 轮审查，之前有过 FAIL 结论，请重新判断）")
+
+    if acceptance:
+        lines.append("")
+        lines.append("【必须逐条核对的验收标准】")
+        for i, item in enumerate(acceptance, 1):
+            lines.append(f"  {i}. {item}")
+        lines.append(
+            "对每一条，明确指出: 通过 / 未通过 / 无法判断，并说明理由（看了哪些文件或命令输出）。"
+        )
+
+    if reviewer_notes:
+        lines.append("")
+        lines.append("【补充检查项（来自规划器的 reviewer 提示）】")
+        for item in reviewer_notes:
+            lines.append(f"  - {item}")
+
+    lines.append("")
+    lines.append(_load_prompt("reviewer_rules").rstrip())
+    return "\n".join(lines)
 
 
 def _extract_review_verdict(review_output: str, reviewer_agent: str = "") -> str:
@@ -384,94 +527,295 @@ def _run_builtin_phase(
     return label, exit_code, console
 
 
-def _run_builtin_executor(task: dict, project: dict, task_file: Path, auto_commit: bool = True) -> ExecutionResult:
-    """Execute a task directly with Codex CLI and review the result."""
+def _extract_reviewer_findings(review_output: str) -> str:
+    """Pull the actionable failure summary out of a reviewer transcript.
+
+    We want only the "what's wrong" part handed to the builder as its next
+    round of input — not the entire reviewer chain-of-thought (which could
+    include prose, verdict line, etc.). Strategy:
+
+    1. Prefer content between "需要修复的点" and "VERDICT:" if the reviewer
+       followed the prompt.
+    2. Otherwise drop the final VERDICT line and pass the rest.
+    """
+    if not review_output:
+        return ""
+    text = review_output.strip()
+
+    # Strategy 1: section between a "needs fix" header and the VERDICT line.
+    pattern = re.compile(
+        r"(?:需要修复的点|需要修复|需要处理|修复建议)\s*[:：]?\s*\n(.*?)(?:\n\s*VERDICT\s*:|$)",
+        re.DOTALL | re.IGNORECASE,
+    )
+    m = pattern.search(text)
+    if m:
+        block = m.group(1).strip()
+        if block:
+            return block
+
+    # Strategy 2: drop the VERDICT line and return the rest, capped.
+    lines = [ln for ln in text.splitlines() if not re.match(r"\s*VERDICT\s*:", ln, re.I)]
+    stripped = "\n".join(lines).strip()
+    if len(stripped) > 2000:
+        stripped = stripped[-2000:]
+    return stripped
+
+
+@dataclass
+class _PhaseOutcome:
+    """Normalized result of one builder or reviewer invocation."""
+
+    agent: str
+    exit_code: int
+    output: str
+
+
+@dataclass
+class _ExecutorContext:
+    """Everything a single executor run needs once, so helpers don't each
+    recompute project paths / config refs / event hooks."""
+
+    task: dict
+    project: dict
+    project_path: Path
+    config_ref: object
+    output_dir: Path
+    task_file: Path
+    max_rounds: int
+    task_id_for_events: Optional[int]
+
+
+def _make_phase_output_path(output_dir: Path, task_id: int, round_num: int, kind: str) -> Path:
+    """Reserve a unique file path under ``output_dir`` for a phase's output.
+
+    We use ``mkstemp`` for uniqueness, then delete it immediately because some
+    CLI providers (codex/claude) refuse to overwrite an existing ``-o`` file.
+    """
+    fd, raw = tempfile.mkstemp(
+        prefix=f"task-{task_id}-{kind}-r{round_num}-",
+        suffix=".txt",
+        dir=output_dir,
+    )
+    os.close(fd)
+    path = Path(raw)
+    path.unlink(missing_ok=True)
+    return path
+
+
+def _run_builder_round(
+    ctx: _ExecutorContext,
+    *,
+    round_num: int,
+    previous_findings: str,
+) -> _PhaseOutcome:
+    """Run one builder invocation; persist a task_log row on completion."""
+    from codepilot import progress_bus
+
+    output_path = _make_phase_output_path(ctx.output_dir, ctx.task["id"], round_num, "builder")
+    label = "builder" if round_num == 1 else f"builder (round {round_num}/{ctx.max_rounds})"
+    echo(f"[dim]  阶段: {label}[/dim]")
+    progress_bus.emit(
+        task_id=ctx.task_id_for_events,
+        stage="builder",
+        message=f"启动 {label}",
+        extra={"round": round_num, "round_total": ctx.max_rounds},
+    )
+
+    started = datetime.now()
+    prompt = _build_builtin_prompt(
+        ctx.task,
+        ctx.task_file,
+        project_path=ctx.project_path,
+        review_round=round_num,
+        previous_review_feedback=previous_findings,
+    )
+    agent, exit_code, output = _run_builtin_phase(
+        task=ctx.task,
+        project_path=ctx.project_path,
+        phase="builder",
+        prompt=prompt,
+        output_path=output_path,
+        timeout=3600,
+        config_ref=ctx.config_ref,
+    )
+    phase_name = "builder" if round_num == 1 else f"builder-r{round_num}"
+    _write_task_log(ctx.task["id"], agent, phase_name, output, exit_code, started)
+    return _PhaseOutcome(agent=agent, exit_code=exit_code, output=output)
+
+
+def _run_reviewer_round(
+    ctx: _ExecutorContext,
+    *,
+    round_num: int,
+) -> _PhaseOutcome:
+    """Run one reviewer invocation; persist a task_log row on completion."""
+    from codepilot import progress_bus
+
+    output_path = _make_phase_output_path(ctx.output_dir, ctx.task["id"], round_num, "review")
+    label = "reviewer" if round_num == 1 else f"reviewer (round {round_num}/{ctx.max_rounds})"
+    echo(f"[dim]  阶段: {label}[/dim]")
+    progress_bus.emit(
+        task_id=ctx.task_id_for_events,
+        stage="reviewer",
+        message=f"启动 {label}",
+        extra={"round": round_num, "round_total": ctx.max_rounds},
+    )
+
+    started = datetime.now()
+    prompt = _build_review_prompt(ctx.task, review_round=round_num)
+    agent, exit_code, output = _run_builtin_phase(
+        task=ctx.task,
+        project_path=ctx.project_path,
+        phase="reviewer",
+        prompt=prompt,
+        output_path=output_path,
+        timeout=1800,
+        config_ref=ctx.config_ref,
+    )
+    phase_name = "reviewer" if round_num == 1 else f"reviewer-r{round_num}"
+    _write_task_log(ctx.task["id"], agent, phase_name, output, exit_code, started)
+    return _PhaseOutcome(agent=agent, exit_code=exit_code, output=output)
+
+
+def _finalize_executor_success(
+    ctx: _ExecutorContext,
+    *,
+    auto_commit: bool,
+    round_num: int,
+    builder: _PhaseOutcome,
+    reviewer: _PhaseOutcome,
+) -> ExecutionResult:
+    """After a PASS verdict, optionally commit and build the success summary."""
+    commit_sha = (
+        _git_auto_commit(ctx.project_path, ctx.task["id"], ctx.task["title"])
+        if auto_commit
+        else ""
+    )
+    parts = [
+        f"内置执行器完成(builder={builder.agent}, reviewer={reviewer.agent}, rounds={round_num})"
+    ]
+    if commit_sha:
+        parts.append(f"commit: {commit_sha}")
+    parts.append("review: pass")
+    return ExecutionResult(
+        exit_code=0,
+        output=builder.output,
+        review_output=reviewer.output,
+        summary=" | ".join(parts),
+        executor="builtin",
+    )
+
+
+def _run_builtin_executor(
+    task: dict,
+    project: dict,
+    task_file: Path,
+    auto_commit: bool = True,
+    *,
+    max_review_rounds: int = 2,
+) -> ExecutionResult:
+    """Execute a task with Codex/Claude CLI, review, and retry on FAIL.
+
+    The builder and reviewer form a short loop: a FAIL verdict (or an unclear
+    one) feeds the reviewer's findings back into the builder for another pass,
+    up to ``max_review_rounds`` attempts. All the single-round mechanics live
+    in ``_run_builder_round`` / ``_run_reviewer_round``; this function only
+    owns the loop, the verdict decision, and the final commit/summary step.
+    """
     project_path = Path(project["path"])
-    config_ref = project.get("config_file") or project_path
     preflight_error = _builtin_preflight_error(project_path, auto_commit, task.get("agent", "codex"))
     if preflight_error:
         raise RuntimeError(preflight_error)
 
-    output_dir = _builtin_runtime_dir(project)
+    from codepilot import progress_bus
 
-    builder_fd, builder_raw = tempfile.mkstemp(prefix=f"task-{task['id']}-builder-", suffix=".txt", dir=output_dir)
-    review_fd, review_raw = tempfile.mkstemp(prefix=f"task-{task['id']}-review-", suffix=".txt", dir=output_dir)
-    os.close(builder_fd)
-    os.close(review_fd)
-    Path(builder_raw).unlink(missing_ok=True)
-    Path(review_raw).unlink(missing_ok=True)
-
-    builder_out = Path(builder_raw)
-    review_out = Path(review_raw)
-
-    builder_started = datetime.now()
-    echo(f"[dim]  阶段: builder[/dim]")
-    builder_agent, builder_exit, builder_output = _run_builtin_phase(
+    ctx = _ExecutorContext(
         task=task,
+        project=project,
         project_path=project_path,
-        phase="builder",
-        prompt=_build_builtin_prompt(task, task_file),
-        output_path=builder_out,
-        timeout=3600,
-        config_ref=config_ref,
+        config_ref=project.get("config_file") or project_path,
+        output_dir=_builtin_runtime_dir(project),
+        task_file=task_file,
+        max_rounds=max(1, int(max_review_rounds or 1)),
+        task_id_for_events=(int(task.get("id") or 0) or None),
     )
-    _write_task_log(task["id"], builder_agent, "builder", builder_output, builder_exit, builder_started)
-    if builder_exit != 0:
-        return ExecutionResult(exit_code=builder_exit, output=builder_output, executor="builtin")
 
-    review_started = datetime.now()
-    echo(f"[dim]  阶段: reviewer[/dim]")
-    review_agent, review_exit, review_output = _run_builtin_phase(
-        task=task,
-        project_path=project_path,
-        phase="reviewer",
-        prompt=_build_review_prompt(task),
-        output_path=review_out,
-        timeout=1800,
-        config_ref=config_ref,
-    )
-    _write_task_log(task["id"], review_agent, "reviewer", review_output, review_exit, review_started)
-    if review_exit != 0:
-        return ExecutionResult(
-            exit_code=review_exit,
-            output=builder_output,
-            review_output=review_output,
-            summary="review 命令执行失败",
-            executor="builtin",
+    previous_findings = ""
+    builder = _PhaseOutcome(agent="", exit_code=0, output="")
+    reviewer = _PhaseOutcome(agent="", exit_code=0, output="")
+
+    for round_num in range(1, ctx.max_rounds + 1):
+        builder = _run_builder_round(ctx, round_num=round_num, previous_findings=previous_findings)
+        if builder.exit_code != 0:
+            return ExecutionResult(
+                exit_code=builder.exit_code,
+                output=builder.output,
+                executor="builtin",
+            )
+
+        reviewer = _run_reviewer_round(ctx, round_num=round_num)
+        if reviewer.exit_code != 0:
+            return ExecutionResult(
+                exit_code=reviewer.exit_code,
+                output=builder.output,
+                review_output=reviewer.output,
+                summary="review 命令执行失败",
+                executor="builtin",
+            )
+
+        verdict = _extract_review_verdict(reviewer.output, reviewer.agent)
+        if verdict == "pass":
+            progress_bus.emit(
+                task_id=ctx.task_id_for_events,
+                stage="reviewer",
+                message="reviewer 判定 PASS",
+                extra={"round": round_num, "verdict": "pass"},
+            )
+            return _finalize_executor_success(
+                ctx,
+                auto_commit=auto_commit,
+                round_num=round_num,
+                builder=builder,
+                reviewer=reviewer,
+            )
+
+        previous_findings = _extract_reviewer_findings(reviewer.output)
+        if round_num >= ctx.max_rounds:
+            summary = (
+                "review 未通过（已用完重做轮次）"
+                if verdict == "fail"
+                else "review 结果不明确（已用完重做轮次）"
+            )
+            progress_bus.emit(
+                task_id=ctx.task_id_for_events,
+                stage="reviewer",
+                level="error",
+                message=summary,
+                extra={"round": round_num, "verdict": verdict},
+            )
+            return ExecutionResult(
+                exit_code=2,
+                output=builder.output,
+                review_output=reviewer.output,
+                summary=summary,
+                executor="builtin",
+            )
+
+        progress_bus.emit(
+            task_id=ctx.task_id_for_events,
+            stage="reviewer",
+            level="warning",
+            message=f"reviewer 判定 {verdict.upper()}，准备第 {round_num + 1} 轮重做",
+            extra={"round": round_num, "verdict": verdict},
+        )
+        echo(
+            f"[yellow]  reviewer 判定 {verdict.upper()}，准备第 {round_num + 1} 轮重做，"
+            f"让 builder 针对反馈再改一次[/yellow]"
         )
 
-    verdict = _extract_review_verdict(review_output, review_agent)
-    if verdict == "fail":
-        return ExecutionResult(
-            exit_code=2,
-            output=builder_output,
-            review_output=review_output,
-            summary="review 未通过",
-            executor="builtin",
-        )
-    if verdict != "pass":
-        return ExecutionResult(
-            exit_code=2,
-            output=builder_output,
-            review_output=review_output,
-            summary="review 结果不明确",
-            executor="builtin",
-        )
-
-    commit_sha = _git_auto_commit(project_path, task["id"], task["title"]) if auto_commit else ""
-    summary_lines = [f"内置执行器完成(builder={builder_agent}, reviewer={review_agent})"]
-    if commit_sha:
-        summary_lines.append(f"commit: {commit_sha}")
-    if verdict == "pass":
-        summary_lines.append("review: pass")
-
-    return ExecutionResult(
-        exit_code=0,
-        output=builder_output,
-        review_output=review_output,
-        summary=" | ".join(summary_lines),
-        executor="builtin",
-    )
+    # Unreachable: the loop either returns success, returns a failure summary
+    # when rounds are exhausted, or bails out on a non-zero phase exit code.
+    raise RuntimeError("_run_builtin_executor: unreachable fallthrough")
 
 
 
@@ -585,6 +929,11 @@ def run_backlog(
     if resolved_executor == "auto":
         resolved_executor = "dispatch" if dispatch_path else "builtin"
 
+    max_review_rounds = 2
+    if config and getattr(config, "automation", None):
+        max_review_rounds = int(getattr(config.automation, "max_review_rounds", 2) or 2)
+    max_review_rounds = max(1, min(max_review_rounds, 5))
+
     echo(f"[dim]使用执行器: {resolved_executor}[/dim]")
     if resolved_executor == "dispatch":
         echo(f"[dim]使用 Shell: {shell_info.version_hint}[/dim]")
@@ -686,7 +1035,13 @@ def run_backlog(
                 _write_task_log(task_id, task["agent"], "dispatch", output, exit_code, started_at)
                 result = ExecutionResult(exit_code=exit_code, output=output, executor="dispatch")
             else:
-                result = _run_builtin_executor(task, proj, task_file, auto_commit=auto_commit)
+                result = _run_builtin_executor(
+                    task,
+                    proj,
+                    task_file,
+                    auto_commit=auto_commit,
+                    max_review_rounds=max_review_rounds,
+                )
         except TaskCancelled as exc:
             clear_task_runtime(
                 task_id,

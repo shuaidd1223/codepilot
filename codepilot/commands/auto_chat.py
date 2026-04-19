@@ -160,6 +160,10 @@ def run_chat_session(
         ui_server = _start_chat_ui(ui_port)
 
     chat_history: list[dict] = []
+    # Multi-turn requirement clarification state. When AI asks for more info we
+    # stash the original title + accumulated Q/A here, and the next user input
+    # is treated as the answer to the most-recent batch of questions.
+    pending_clarification: Optional[dict] = None
 
     echo(
         f"[cyan]CodePilot Chat[/cyan]  项目: {project_info['name']}  "
@@ -280,7 +284,11 @@ def run_chat_session(
                 continue
             if cmd == "/clear":
                 chat_history.clear()
-                echo("[green]对话历史已清空[/green]")
+                if pending_clarification:
+                    pending_clarification = None
+                    echo("[green]对话历史已清空，当前待澄清的需求也已放弃[/green]")
+                else:
+                    echo("[green]对话历史已清空[/green]")
                 continue
 
             if cmd in ("/cancel", "/resume", "/retry", "/rm", "/stop", "/logs"):
@@ -310,6 +318,92 @@ def run_chat_session(
             continue
 
         forced_intent, payload_text = _parse_intent_prefix(text)
+
+        # ── Multi-turn clarification: user is answering outstanding questions ──
+        if pending_clarification and not forced_intent and not text.startswith("?"):
+            answer_text = payload_text
+            qa_history = list(pending_clarification.get("qa_history", []))
+            last_questions = pending_clarification.get("last_questions") or []
+            # Attach the user's answer to the most-recent round of questions.
+            if last_questions:
+                merged_q = " | ".join(last_questions)
+                qa_history.append({"question": merged_q, "answer": answer_text})
+            else:
+                qa_history.append({"question": "", "answer": answer_text})
+
+            spinner = _Spinner("正在评估补充信息")
+            spinner.__enter__()
+            try:
+                assessment = shell.clarify_requirement(
+                    pending_clarification["original_title"],
+                    project_info=project_info,
+                    qa_history=qa_history,
+                    planner=effective["planner"],
+                )
+            finally:
+                spinner.__exit__(None, None, None)
+
+            if assessment.get("status") == "needs_clarification":
+                questions = assessment.get("questions") or []
+                pending_clarification = {
+                    "original_title": pending_clarification["original_title"],
+                    "qa_history": qa_history,
+                    "last_questions": questions,
+                    "intent": pending_clarification.get("intent", "requirement"),
+                }
+                echo("[cyan]还需要再澄清一下：[/cyan]")
+                for i, q in enumerate(questions, 1):
+                    click.echo(f"  {i}. {q}")
+                chat_history.append({
+                    "user": answer_text,
+                    "assistant": "继续澄清：" + " / ".join(questions),
+                    "intent": "clarify",
+                })
+                click.echo()
+                continue
+
+            # Ready — take refined title forward into planning.
+            refined = assessment.get("refined_title") or pending_clarification["original_title"]
+            pending_intent = pending_clarification.get("intent", "requirement")
+            pending_clarification = None
+            echo(f"[green][OK] 已澄清需求：{refined}[/green]")
+
+            try:
+                max_tasks_override = 1 if pending_intent == "task" else effective["max_tasks"]
+                shell.run_requirement_workflow(
+                    project_info=project_info,
+                    title=refined,
+                    planner=effective["planner"],
+                    task_agent=default_agent,
+                    execute=default_execute,
+                    executor=effective["executor"],
+                    auto_commit=effective["auto_commit"],
+                    max_tasks=max_tasks_override,
+                    max_retries=effective["max_retries"],
+                    quiet=True,
+                )
+                chat_history.append({
+                    "user": answer_text,
+                    "assistant": "需求已规划并执行",
+                    "intent": pending_intent,
+                })
+            except click.ClickException as exc:
+                echo(f"[red]{safe(exc.format_message())}[/red]")
+                chat_history.append({
+                    "user": answer_text,
+                    "assistant": f"错误: {exc.format_message()}",
+                    "intent": pending_intent,
+                })
+            except Exception as exc:
+                echo(f"[red]{safe(exc)}[/red]")
+                chat_history.append({
+                    "user": answer_text,
+                    "assistant": f"错误: {exc}",
+                    "intent": pending_intent,
+                })
+            click.echo()
+            continue
+
         spinner = _Spinner("处理中")
         spinner.__enter__()
 
@@ -379,36 +473,48 @@ def run_chat_session(
                     assistant_response = answer
                 else:
                     echo("[yellow]未获得回答[/yellow]")
-            elif intent == "task":
-                spinner.__exit__(None, None, None)
-                shell.run_requirement_workflow(
+            elif intent in ("task", "requirement"):
+                # ── Step 1: clarify if the requirement looks vague ──
+                spinner._message = "正在评估需求完整度"
+                assessment = shell.clarify_requirement(
+                    payload_text,
                     project_info=project_info,
-                    title=payload_text,
+                    qa_history=[],
                     planner=effective["planner"],
-                    task_agent=default_agent,
-                    execute=default_execute,
-                    executor=effective["executor"],
-                    auto_commit=effective["auto_commit"],
-                    max_tasks=1,
-                    max_retries=effective["max_retries"],
-                    quiet=True,
                 )
-                assistant_response = "任务已创建并执行"
-            else:
                 spinner.__exit__(None, None, None)
-                shell.run_requirement_workflow(
-                    project_info=project_info,
-                    title=payload_text,
-                    planner=effective["planner"],
-                    task_agent=default_agent,
-                    execute=default_execute,
-                    executor=effective["executor"],
-                    auto_commit=effective["auto_commit"],
-                    max_tasks=effective["max_tasks"],
-                    max_retries=effective["max_retries"],
-                    quiet=True,
-                )
-                assistant_response = "需求已规划"
+
+                if assessment.get("status") == "needs_clarification":
+                    questions = assessment.get("questions") or []
+                    pending_clarification = {
+                        "original_title": payload_text,
+                        "qa_history": [],
+                        "last_questions": questions,
+                        "intent": intent,
+                    }
+                    echo("[cyan]为了更好地规划，我想先确认几个点：[/cyan]")
+                    for i, q in enumerate(questions, 1):
+                        click.echo(f"  {i}. {q}")
+                    echo("[dim]请直接回复你的答案（可以一次性全写）。输入 /clear 放弃此需求。[/dim]")
+                    assistant_response = "请求澄清：" + " / ".join(questions)
+                else:
+                    refined = assessment.get("refined_title") or payload_text
+                    max_tasks_override = 1 if intent == "task" else effective["max_tasks"]
+                    shell.run_requirement_workflow(
+                        project_info=project_info,
+                        title=refined,
+                        planner=effective["planner"],
+                        task_agent=default_agent,
+                        execute=default_execute,
+                        executor=effective["executor"],
+                        auto_commit=effective["auto_commit"],
+                        max_tasks=max_tasks_override,
+                        max_retries=effective["max_retries"],
+                        quiet=True,
+                    )
+                    assistant_response = (
+                        "任务已创建并执行" if intent == "task" else "需求已规划"
+                    )
         except click.ClickException as exc:
             spinner.__exit__(None, None, None)
             echo(f"[red]{safe(exc.format_message())}[/red]")

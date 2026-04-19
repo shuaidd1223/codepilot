@@ -77,6 +77,17 @@ def _compose_log_text(task: dict) -> str:
 
 def _task_payload(task: dict) -> dict:
     status = task["status"]
+
+    # Best-effort ETA for this task based on historical median duration of
+    # tasks run by the same agent in the same project. Only surfaces for
+    # pending / in-progress tasks — done tasks show actual runtime instead.
+    eta_seconds: int | None = None
+    if status in {"backlog", "in_progress"}:
+        try:
+            eta_seconds = db.compute_agent_eta_seconds(task["project"], task.get("agent") or None)
+        except Exception:
+            eta_seconds = None
+
     return {
         "id": task["id"],
         "project": task["project"],
@@ -87,6 +98,7 @@ def _task_payload(task: dict) -> dict:
         "source": task.get("source") or "user",
         "phase": task.get("run_phase") or "",
         "runtime": runtime_summary(task) if status == "in_progress" else "",
+        "eta_seconds": eta_seconds,
         "latest": task.get("last_output") or task.get("error_message") or task.get("delivery_record") or "",
         "error_message": task.get("error_message") or "",
         "delivery_record": task.get("delivery_record") or "",

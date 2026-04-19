@@ -38,6 +38,62 @@ def _should_fallback_codex_planning(exc: Exception) -> bool:
     return "超时" in str(exc) or "timed out" in message or "timeout" in message
 
 
+def clarify_requirement(
+    title: str,
+    *,
+    project_info: dict,
+    qa_history: Optional[list[dict]] = None,
+    planner: str = "codex",
+    max_turns: int = 3,
+) -> dict:
+    """Assess a requirement and ask for clarification if the intent is vague.
+
+    Returns:
+        ``{"status": "ready", "refined_title": str, "qa_history": [...]}`` when
+        the planner can proceed, or
+        ``{"status": "needs_clarification", "questions": [str, ...], "turn": int,
+        "qa_history": [...]}`` when the caller should collect another round.
+
+    The ``qa_history`` field is always returned so callers can persist it
+    between turns (e.g. chat REPL, Web UI session state).
+    """
+    from codepilot.ai_clarify import assess_requirement
+    from codepilot.config import load_project_config
+
+    qa_history = list(qa_history or [])
+
+    cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+    if cfg and not getattr(cfg.automation, "clarify_vague_requirements", True):
+        return {
+            "status": "ready",
+            "refined_title": title.strip(),
+            "source": "disabled",
+            "qa_history": qa_history,
+        }
+
+    classifier_cfg = getattr(cfg, "classifier", None) if cfg else None
+    classifier_provider = classifier_cfg.provider if classifier_cfg and classifier_cfg.enabled else ""
+    classifier_model = classifier_cfg.model if classifier_cfg and classifier_cfg.enabled else ""
+    classifier_timeout = classifier_cfg.timeout if classifier_cfg and classifier_cfg.enabled else 45
+    api_key = None
+    if cfg and classifier_provider:
+        api_key = cfg.get_provider_api_key(classifier_provider)
+
+    result = assess_requirement(
+        title,
+        project_path=project_info.get("path", ""),
+        qa_history=qa_history,
+        max_turns=max_turns,
+        classifier_provider=classifier_provider,
+        classifier_model=classifier_model,
+        api_key=api_key,
+        planner=planner,
+        timeout=classifier_timeout or 45,
+    )
+    result["qa_history"] = qa_history
+    return result
+
+
 def resolve_project_for_prompt(project: Optional[str] = None, cwd: Optional[Path] = None) -> dict:
     """Resolve the target project, preferring the current working tree."""
     db.init_db()
@@ -212,8 +268,22 @@ def run_requirement_workflow(
     max_retries = effective["max_retries"]
     task_agent = shell._resolve_task_agent(project_info, task_agent, executor)
 
+    cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+    two_stage_enabled = True
+    if cfg and not getattr(cfg.automation, "two_stage_planning", True):
+        two_stage_enabled = False
+
+    # Pull open tasks so the planner can dedup against the live backlog.
+    existing_tasks = [
+        t for t in db.list_tasks(project=project_name)
+        if t.get("status") in {"backlog", "in_progress"}
+    ]
+
     echo(f"[cyan]收到需求：{title}[/cyan]")
-    echo(f"[dim]  正在用 {planner} 规划任务，请稍候...[/dim]")
+    if two_stage_enabled:
+        echo(f"[dim]  正在用 {planner} 侦察项目 → 拆分任务，请稍候...[/dim]")
+    else:
+        echo(f"[dim]  正在用 {planner} 规划任务，请稍候...[/dim]")
     try:
         breakdown = shell.generate_task_breakdown(
             title=title,
@@ -221,6 +291,8 @@ def run_requirement_workflow(
             planner=planner,
             max_tasks=max_tasks,
             config_ref=_provider_context(project_info),
+            two_stage=two_stage_enabled,
+            existing_tasks=existing_tasks,
         )
     except Exception as exc:
         if normalize_agent_name(planner) == "codex" and _should_fallback_codex_planning(exc):
@@ -260,6 +332,16 @@ def run_requirement_workflow(
     should_split = breakdown.get("should_split")
     if should_split is None:
         should_split = len(breakdown["tasks"]) > 1
+
+    # Surface dedup decisions up-front so the user knows why nothing / less
+    # than expected got created.
+    dedup_skipped = breakdown.get("dedup_skipped") or []
+    for dup in dedup_skipped:
+        echo(
+            f"[yellow]跳过重复任务：[/yellow]「{dup.get('proposed_title') or ''}」"
+            f" 已存在 #{dup.get('matched_existing_id')}"
+            f"「{dup.get('matched_existing_title') or ''}」"
+        )
 
     created_tasks = []
     previous_task_id: int | None = None

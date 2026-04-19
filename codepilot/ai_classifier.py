@@ -1,25 +1,18 @@
 """Intent classification and quick-answer helpers.
 
-Split out from ai.py. Re-exported via `codepilot.ai`.
+Split out from ai.py. Re-exported via `codepilot.ai`. The API / CLI
+routing itself lives in :mod:`codepilot.ai_gateway`; this module only
+owns the heuristic, the intent schema + prompt, and the thin wrappers
+that call the gateway.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import re
-import subprocess
-from dataclasses import replace
-from pathlib import Path
 from typing import Optional
 
-from codepilot.ai_providers import (
-    API_PROVIDERS,
-    CLI_PROVIDERS,
-    _ensure_claude_git_bash_env,
-    _run_api_provider,
-    resolve_cli_provider,
-)
+from codepilot.ai_providers import _collect_project_context
+from codepilot.prompts import load_prompt as _load_prompt
 
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -36,99 +29,8 @@ INTENT_SCHEMA = {
     "additionalProperties": False,
 }
 
-INTENT_PROMPT = """你是一个输入意图分类器。请把用户下面的一句话分到下列四类之一，并以 JSON 返回：
-
-- question: 用户是在问问题、求解释或求建议，不需要你去改代码或建任务。
-- task: 用户想做一件具体小事，一步就能完成，不需要拆分。
-- requirement: 用户想做一个较大的需求，涉及多步或多模块，需要拆分成子任务。
-- command: 用户想直接调 codepilot 自身的某个命令（查看状态、日志、重试、停止、巡检、发布等），不是对代码本身下需求。
-
-只输出 JSON，字段：intent, reason（一句中文说明判断依据）。
-
-用户输入：
-{text}
-"""
-
-
-def _classify_via_api(
-    provider: APIProvider,
-    text: str,
-    timeout: int = 30,
-) -> dict:
-    """Call an API provider with the intent classification prompt."""
-    _ = timeout  # API clients have their own timeouts
-    raw = _run_api_provider(provider, INTENT_PROMPT.format(text=text))
-    # 宽松解析：可能带 ``` 或前缀
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        if "\n" in raw:
-            raw = raw.split("\n", 1)[1]
-        if raw.endswith("```"):
-            raw = raw[:-3]
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start != -1 and end > start:
-        raw = raw[start : end + 1]
-    return json.loads(raw)
-
-
-def _classify_via_codex(
-    text: str,
-    project_path: str = "",
-    timeout: int = 30,
-) -> dict:
-    """Fallback: use local codex CLI with schema-constrained output."""
-    # Late import to avoid circular import: ai.py re-exports from this module.
-    # Using the canonical `codepilot.ai` attribute also lets tests monkeypatch
-    # `codepilot.ai._run_codex_schema_prompt`.
-    from codepilot import ai as _ai
-    return _ai._run_codex_schema_prompt(
-        INTENT_PROMPT.format(text=text),
-        INTENT_SCHEMA,
-        project_path=project_path,
-        timeout=timeout,
-    )
-
-
-def _classify_via_claude_cli(
-    text: str,
-    project_path: str = "",
-    timeout: int = 30,
-) -> dict:
-    """Use local claude CLI with --json-schema for intent classification."""
-    provider = resolve_cli_provider("claude", project_path or None)
-    exe = provider.find_executable()
-    if not exe:
-        raise RuntimeError("claude CLI 不可用")
-
-    prompt = INTENT_PROMPT.format(text=text)
-    cmd = [
-        str(exe),
-        "--output-format", "json",
-        "--json-schema", json.dumps(INTENT_SCHEMA, ensure_ascii=False),
-        "--dangerously-skip-permissions",
-        "-p", prompt,
-    ]
-    result = subprocess.run(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
-    if result.returncode != 0:
-        raise RuntimeError("claude 分类失败")
-    output = (result.stdout or "").strip()
-    if not output:
-        raise RuntimeError("claude 分类返回空内容")
-    payload = json.loads(output)
-    # claude --output-format json wraps result in envelope
-    if isinstance(payload, dict) and "structured_output" in payload:
-        return payload["structured_output"]
-    return payload
+# Template body lives in codepilot/prompts/intent.md.
+INTENT_PROMPT = _load_prompt("intent")
 
 
 def _heuristic_intent(text: str) -> Optional[str]:
@@ -192,9 +94,8 @@ def classify_intent(
 
     Strategy:
       1. Heuristic pre-filter (free, instant).
-      2. Configured API provider if available.
-      3. Local codex CLI fallback.
-      4. On any failure, default to 'requirement' (preserves current behavior).
+      2. Unified AI gateway: configured API provider, then local CLI fallback.
+      3. On any failure, default to 'requirement' (preserves prior behavior).
     """
     text = text.strip()
     if not text:
@@ -204,61 +105,35 @@ def classify_intent(
     if guess:
         return {"intent": guess, "reason": "启发式规则命中", "source": "heuristic"}
 
-    # API path
     valid_intents = {"question", "task", "requirement", "command"}
-    if classifier_provider and classifier_provider in API_PROVIDERS:
-        provider = replace(API_PROVIDERS[classifier_provider])
-        if classifier_model:
-            provider.model = classifier_model
-        if api_key:
-            provider.api_key = api_key
-        try:
-            if not provider.requires_api_key() or provider.resolve_api_key():
-                payload = _classify_via_api(provider, text, timeout=timeout)
-                intent = payload.get("intent")
-                if intent in valid_intents:
-                    return {
-                        "intent": intent,
-                        "reason": payload.get("reason", ""),
-                        "source": f"api:{classifier_provider}",
-                    }
-        except Exception as exc:
-            # API 失败 → 继续尝试本地
-            last_error = str(exc)
-        else:
-            last_error = ""
-    else:
-        last_error = ""
 
-    # Local claude CLI fallback（比 codex 快）
-    try:
-        payload = _classify_via_claude_cli(text, project_path=project_path, timeout=timeout)
-        intent = payload.get("intent")
+    from codepilot.ai_gateway import GatewayRequest, call_structured
+
+    response = call_structured(
+        GatewayRequest(
+            prompt=INTENT_PROMPT.format(text=text),
+            schema=INTENT_SCHEMA,
+            classifier_provider=classifier_provider,
+            classifier_model=classifier_model,
+            api_key=api_key,
+            project_path=project_path,
+            planner="claude",  # classification is latency-sensitive; prefer claude
+            timeout=timeout,
+        )
+    )
+
+    if response.ok and response.payload:
+        intent = response.payload.get("intent")
         if intent in valid_intents:
             return {
                 "intent": intent,
-                "reason": payload.get("reason", ""),
-                "source": "claude-cli",
+                "reason": response.payload.get("reason", ""),
+                "source": response.source,
             }
-    except Exception:
-        pass
-
-    # Local codex fallback
-    try:
-        payload = _classify_via_codex(text, project_path=project_path, timeout=timeout)
-        intent = payload.get("intent")
-        if intent in valid_intents:
-            return {
-                "intent": intent,
-                "reason": payload.get("reason", ""),
-                "source": "codex",
-            }
-    except Exception as exc:
-        last_error = str(exc)
 
     return {
         "intent": "requirement",
-        "reason": f"分类失败，默认当作需求处理（{last_error or '未知原因'}）",
+        "reason": f"分类失败，默认当作需求处理（{response.error or '未知原因'}）",
         "source": "default",
     }
 
@@ -271,7 +146,11 @@ def answer_question_via_api(
     api_key: Optional[str] = None,
     history: list[dict] | None = None,
 ) -> str:
-    """Answer a user question directly without creating a task."""
+    """Answer a user question directly without creating a task.
+
+    Routes through :mod:`codepilot.ai_gateway` so API / CLI fallback and
+    key-resolution behaviour stay consistent with ``classify_intent``.
+    """
     context = _collect_project_context(project_path)
     history_block = ""
     if history:
@@ -286,49 +165,18 @@ def answer_question_via_api(
         "用简洁中文直接回答用户的问题。如果不确定，明确说不确定。\n\n"
         f"## 项目上下文\n{context}\n{history_block}\n## 用户问题\n{question}"
     )
-    if provider_key and provider_key in API_PROVIDERS:
-        provider = replace(API_PROVIDERS[provider_key])
-        if model_override:
-            provider.model = model_override
-        if api_key:
-            provider.api_key = api_key
-        return _run_api_provider(provider, prompt)
-    # 无 API 时用本地 claude CLI 回答
-    return _answer_via_local_cli(prompt, project_path=project_path)
 
+    from codepilot.ai_gateway import GatewayRequest, call_text
 
-def _answer_via_local_cli(prompt: str, project_path: str = "", timeout: int = 120) -> str:
-    """Use claude or codex CLI to answer a question directly."""
-    # 优先 claude
-    for cli_name in ("claude", "codex"):
-        try:
-            provider = resolve_cli_provider(cli_name, project_path or None)
-            exe = provider.find_executable()
-        except Exception:
-            continue
-        if not exe:
-            continue
-
-        if cli_name == "codex":
-            cmd = [str(exe), "exec", "--skip-git-repo-check", "--ephemeral",
-                   "--dangerously-bypass-approvals-and-sandbox"]
-            if project_path:
-                cmd = [str(exe), "-C", project_path] + cmd[1:]
-        else:
-            cmd = [str(exe), "-p", "--output-format", "text", "--dangerously-skip-permissions"]
-
-        try:
-            result = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-            if result.returncode == 0 and (result.stdout or "").strip():
-                return result.stdout.strip()
-        except Exception:
-            continue
-    return ""
+    response = call_text(
+        GatewayRequest(
+            prompt=prompt,
+            classifier_provider=provider_key,
+            classifier_model=model_override,
+            api_key=api_key,
+            project_path=project_path,
+            planner="claude",
+            timeout=120,
+        )
+    )
+    return response.text if response.ok else ""

@@ -121,4 +121,78 @@ def notify_task_status(
             "error_message": error_message,
         })
 
+    # Also fire a best-effort desktop toast so the user doesn't need to look
+    # at the terminal to know a long task finished. Failures here never
+    # affect the webhook success return.
+    if status in {"done", "failed"}:
+        try:
+            _send_desktop_notification(
+                title=f"CodePilot: 任务 {status_text} (#{task_id})",
+                body=f"{project_name} — {task_title}",
+            )
+        except Exception:
+            pass
+
     return ok
+
+
+def _send_desktop_notification(*, title: str, body: str) -> bool:
+    """Best-effort cross-platform desktop notification.
+
+    Windows: PowerShell BurntToast / Windows.UI.Notifications ToastNotification
+             via `msg` command fallback.
+    macOS:   osascript.
+    Linux:   notify-send.
+
+    Skipped silently when ``CODEPILOT_DESKTOP_NOTIFY`` is set to ``0``, when
+    the tool is absent, or when the process has no attached user session.
+    """
+    import platform
+    import shutil
+    import subprocess
+
+    if os.environ.get("CODEPILOT_DESKTOP_NOTIFY", "").strip() in {"0", "false", "no"}:
+        return False
+
+    title = (title or "CodePilot")[:120]
+    body = (body or "")[:500]
+    system = platform.system().lower()
+
+    try:
+        if system == "darwin":
+            script = f'display notification "{body}" with title "{title}"'
+            subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, timeout=3,
+            )
+            return True
+        if system == "linux":
+            if shutil.which("notify-send"):
+                subprocess.run(
+                    ["notify-send", title, body],
+                    capture_output=True, timeout=3,
+                )
+                return True
+            return False
+        if system == "windows":
+            # PowerShell one-liner using Windows Runtime ToastNotification.
+            # Escape single quotes by doubling them (PowerShell convention).
+            ps_title = title.replace("'", "''")
+            ps_body = body.replace("'", "''")
+            ps_cmd = (
+                "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;"
+                "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null;"
+                "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
+                f"$template.GetElementsByTagName('text').Item(0).AppendChild($template.CreateTextNode('{ps_title}')) > $null;"
+                f"$template.GetElementsByTagName('text').Item(1).AppendChild($template.CreateTextNode('{ps_body}')) > $null;"
+                "$toast = [Windows.UI.Notifications.ToastNotification]::new($template);"
+                "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('CodePilot').Show($toast);"
+            )
+            subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True, timeout=5,
+            )
+            return True
+    except Exception:
+        return False
+    return False

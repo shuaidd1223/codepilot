@@ -6,6 +6,21 @@ CP.Components.JobDetail = Vue.defineComponent({
   computed: {
     s() { return this.cp.state; },
     job() { return this.cp.currentJob; },
+    /* Live progress events pushed via SSE. Filtered down to events for
+     * any of this job's tasks plus "no task" events (planner/recon signals
+     * emitted before a task ID exists). */
+    liveEvents() {
+      if (!this.job) return [];
+      return this.cp.liveEventsForJob(this.job.id);
+    },
+  },
+  watch: {
+    liveEvents() {
+      this.$nextTick(() => {
+        const pre = this.$refs.livelog;
+        if (pre) pre.scrollTop = pre.scrollHeight;
+      });
+    },
   },
   template: `
     <div class="view">
@@ -43,6 +58,13 @@ CP.Components.JobDetail = Vue.defineComponent({
           <div v-if="job.log && job.log.length" class="block">
             <div class="block-label">日志</div>
             <pre class="code tall">{{ job.log.join('\\n') }}</pre>
+          </div>
+          <div v-if="liveEvents.length" class="block">
+            <div class="block-label">
+              实时进度
+              <span v-if="$cp.isJobActive(job)" class="spinner" style="margin-left:6px"></span>
+            </div>
+            <pre ref="livelog" class="code tall" style="max-height:240px;overflow:auto">{{ liveEvents.map(e => \`[\${(e.timestamp||'').slice(11,19)}] [\${e.stage || '?'}\${e.extra && e.extra.round ? \` r\${e.extra.round}/\${e.extra.round_total}\` : ''}] \${e.message || ''}\`).join('\\n') }}</pre>
           </div>
         </div>
       </section>

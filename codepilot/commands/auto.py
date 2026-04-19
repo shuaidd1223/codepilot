@@ -51,6 +51,7 @@ from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
     _resolve_task_agent,
     _should_execute,
     _should_fallback_codex_planning,
+    clarify_requirement,
     resolve_project_for_prompt,
     run_requirement_workflow,
 )

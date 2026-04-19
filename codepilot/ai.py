@@ -42,10 +42,6 @@ from codepilot.ai_prompts import (  # noqa: F401 (re-export)
     TASK_PROMPT_TEMPLATE,
 )
 from codepilot.ai_classifier import (  # noqa: F401 (re-export)
-    _answer_via_local_cli,
-    _classify_via_api,
-    _classify_via_claude_cli,
-    _classify_via_codex,
     _heuristic_intent,
     answer_question_via_api,
     classify_intent,
@@ -781,20 +777,164 @@ def build_task_markdown_from_plan(task: dict) -> str:
 
 
 
+def _run_recon_stage(
+    title: str,
+    project_path: str,
+    *,
+    planner_normalized: str,
+    config_ref: str | Path | None,
+    project_context: str,
+    progress_prefix: str = "  [recon]",
+) -> dict:
+    """Run the reconnaissance stage: let the planner read the project before planning.
+
+    Returns a dict matching :data:`RECON_SCHEMA`. Errors are swallowed and
+    replaced with an empty-but-valid result so the planning stage still runs
+    (better to plan with less context than to fail the whole workflow).
+    """
+    from codepilot.ai_prompts import RECON_PROMPT_TEMPLATE, RECON_SCHEMA
+
+    prompt = RECON_PROMPT_TEMPLATE.format(
+        title=title,
+        project_context=project_context or "（无项目上下文，自己用工具探索）",
+    )
+
+    cb = _planner_progress_callback
+    if cb:
+        try:
+            cb(f"{progress_prefix} 启动侦察：读取相关文件，梳理现状...")
+        except Exception:
+            pass
+
+    try:
+        if planner_normalized in {"claude", "claude-node", "claude-sonnet", "claude-opus", "claude-haiku"}:
+            payload = _run_claude_schema_prompt(
+                prompt,
+                RECON_SCHEMA,
+                planner=planner_normalized,
+                project_path=project_path,
+                config_ref=config_ref,
+            )
+        elif planner_normalized == "codex":
+            payload = _run_codex_schema_prompt(
+                prompt,
+                RECON_SCHEMA,
+                project_path=project_path,
+                config_ref=config_ref,
+            )
+        else:
+            payload = {}
+    except Exception as exc:
+        if cb:
+            try:
+                cb(f"{progress_prefix} 侦察失败，跳过直接进规划：{exc}")
+            except Exception:
+                pass
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    # Sanitize hallucinated paths. Any file the recon claims we should
+    # touch has to actually exist on disk; otherwise downstream tasks will
+    # carry forward fake paths and the executor will choke. When validation
+    # drops everything we backfill with keyword-matched real files.
+    from codepilot.ai_planner_context import validate_recon_payload
+
+    cleaned, dropped = validate_recon_payload(payload, project_path, title=title)
+    if cb:
+        try:
+            kept = cleaned.get("relevant_files") or []
+            if dropped:
+                cb(
+                    f"{progress_prefix} 侦察完成：认定 {len(kept)} 个相关文件；"
+                    f"丢弃 {len(dropped)} 个不存在的路径（{', '.join(dropped[:3])}{'…' if len(dropped) > 3 else ''}）"
+                )
+            else:
+                cb(f"{progress_prefix} 侦察完成：认定 {len(kept)} 个相关文件")
+        except Exception:
+            pass
+    return cleaned
+
+
+def _format_recon_block(recon: dict) -> str:
+    """Render recon payload as a readable block for the planner prompt."""
+    if not recon:
+        return "（本次未生成侦察结论；请基于项目上下文自行判断。）"
+    lines: list[str] = []
+    current = (recon.get("current_state") or "").strip()
+    if current:
+        lines.append(f"现状：{current}")
+    files = [f for f in (recon.get("relevant_files") or []) if isinstance(f, str) and f.strip()]
+    if files:
+        lines.append("相关文件：")
+        for f in files[:12]:
+            lines.append(f"  - {f}")
+    findings = [x for x in (recon.get("key_findings") or []) if isinstance(x, str) and x.strip()]
+    if findings:
+        lines.append("关键发现：")
+        for x in findings[:8]:
+            lines.append(f"  - {x}")
+    risks = [x for x in (recon.get("risks") or []) if isinstance(x, str) and x.strip()]
+    if risks:
+        lines.append("风险：")
+        for x in risks[:6]:
+            lines.append(f"  - {x}")
+    approach = (recon.get("suggested_approach") or "").strip()
+    if approach:
+        lines.append(f"建议路径：{approach}")
+    return "\n".join(lines) if lines else "（侦察返回为空。）"
+
+
 def generate_task_breakdown(
     title: str,
     project_path: str = "",
     planner: str = "codex",
     max_tasks: int = 5,
     config_ref: str | Path | None = None,
+    *,
+    two_stage: bool = True,
+    existing_tasks: Optional[list[dict]] = None,
 ) -> dict:
-    """Generate a structured subtask breakdown for a high-level goal."""
+    """Generate a structured subtask breakdown for a high-level goal.
+
+    When ``two_stage`` is True (default) the planner runs a preliminary
+    reconnaissance stage where it is encouraged to read relevant project
+    files, then the breakdown stage consumes the recon output. Setting it to
+    False falls back to a single-shot planning call (legacy behavior).
+
+    When ``existing_tasks`` is provided (open backlog + in-progress rows for
+    the project), they are surfaced to the planner and used to filter
+    near-duplicate titles after the fact. Pass ``None`` from unit tests that
+    don't care about dedup.
+    """
+    from codepilot.ai_backlog_dedup import (
+        filter_duplicate_tasks,
+        format_existing_block,
+    )
+    from codepilot.ai_planner_context import collect_planner_context
+
     max_tasks = max(1, min(max_tasks, 8))
     normalized = normalize_agent_name(planner)
-    context = _collect_project_context(project_path)
+    context = collect_planner_context(project_path, title)
+
+    recon: dict = {}
+    if two_stage:
+        recon = _run_recon_stage(
+            title,
+            project_path,
+            planner_normalized=normalized,
+            config_ref=config_ref,
+            project_context=context,
+        )
+
+    recon_block = _format_recon_block(recon)
+    existing_block = format_existing_block(existing_tasks)
     prompt = TASK_BREAKDOWN_PROMPT_TEMPLATE.format(
         title=title,
-        project_context=context,
+        project_context=context or "（上下文收集失败，按用户需求尽力拆分）",
+        recon_block=recon_block,
+        existing_tasks_block=existing_block,
         max_tasks=max_tasks,
     )
 
@@ -890,9 +1030,44 @@ def generate_task_breakdown(
     # ─────────────────────────────────────────────────────────────────────
     # ─────────────────────────────────────────────────────────────────────
 
-    breakdown["tasks"] = valid_tasks[:max_tasks]
+    capped_tasks = valid_tasks[:max_tasks]
+
+    # ── Backlog dedup ────────────────────────────────────────────────────
+    # Planner was shown the existing backlog, but we still post-filter as a
+    # safety net. Tasks whose titles are too similar to an open backlog /
+    # in_progress task get dropped here and reported via the progress
+    # callback + stderr.
+    dedup_skipped: list[dict] = []
+    if existing_tasks:
+        kept_tasks, dedup_skipped = filter_duplicate_tasks(capped_tasks, existing_tasks)
+        if dedup_skipped:
+            progress_cb = _planner_progress_callback
+            for dup in dedup_skipped:
+                msg = (
+                    f"  [planner] 跳过重复任务 '{(dup.get('title') or '')[:40]}' "
+                    f"（已存在 #{dup.get('_dedup_matched_id')} "
+                    f"'{(dup.get('_dedup_matched_title') or '')[:40]}'）"
+                )
+                sys.stderr.write(msg + "\n")
+                if progress_cb:
+                    try:
+                        progress_cb(msg.strip())
+                    except Exception:
+                        pass
+            capped_tasks = kept_tasks
+
+    breakdown["tasks"] = capped_tasks
     breakdown.setdefault("complexity", "simple" if len(breakdown["tasks"]) <= 1 else "complex")
     breakdown.setdefault("should_split", len(breakdown["tasks"]) > 1)
+    if dedup_skipped:
+        breakdown["dedup_skipped"] = [
+            {
+                "proposed_title": dup.get("title"),
+                "matched_existing_id": dup.get("_dedup_matched_id"),
+                "matched_existing_title": dup.get("_dedup_matched_title"),
+            }
+            for dup in dedup_skipped
+        ]
     return breakdown
 
 

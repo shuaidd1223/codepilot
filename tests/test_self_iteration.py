@@ -100,10 +100,14 @@ def test_self_iteration_full_lifecycle(tmp_path, monkeypatch):
     assert updated["status"] == "done", f"expected done, got {updated['status']}"
 
     # 2. Feature branch was created (commit history should contain merge commit)
+    # NOTE: on Windows default subprocess encoding is GBK; commit messages from
+    # the builtin executor contain UTF-8 Chinese, so decoding fails silently
+    # and stdout ends up None. Pin encoding/errors explicitly.
     log_output = subprocess.run(
         ["git", "log", "--oneline", "--all", "--graph"],
         cwd=project_path, capture_output=True, text=True,
-    ).stdout
+        encoding="utf-8", errors="replace",
+    ).stdout or ""
     assert "task #" in log_output.lower() or "merge" in log_output.lower(), (
         f"Expected merge evidence in log:\n{log_output}"
     )
@@ -115,16 +119,18 @@ def test_self_iteration_full_lifecycle(tmp_path, monkeypatch):
     # 4. Task branch deleted after merge
     branches = subprocess.run(
         ["git", "branch"], cwd=project_path, capture_output=True, text=True,
-    ).stdout
+        encoding="utf-8", errors="replace",
+    ).stdout or ""
     assert f"feat/task-{task_id}" not in branches, (
         f"Task branch should have been deleted, but found:\n{branches}"
     )
 
     # 5. Currently back on the base branch
-    current = subprocess.run(
+    current = (subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         cwd=project_path, capture_output=True, text=True,
-    ).stdout.strip()
+        encoding="utf-8", errors="replace",
+    ).stdout or "").strip()
     assert current == "main", f"expected main, on {current}"
 
     # 6. Stats

@@ -150,13 +150,24 @@ def test_classify_intent_uses_heuristic_first(monkeypatch):
 
 def test_classify_intent_defaults_to_requirement_on_failure(monkeypatch):
     """When heuristic misses and all AI fails, default to requirement."""
+    from codepilot import ai_classifier as classifier_mod
+    from codepilot import ai_gateway
     from codepilot.ai import classify_intent
-    import codepilot.ai as ai_mod
 
-    # Force heuristic to miss
-    monkeypatch.setattr(ai_mod, "_heuristic_intent", lambda t: None)
-    # Force codex classifier to fail
-    monkeypatch.setattr(ai_mod, "_classify_via_codex", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no codex")))
+    # Heuristic must miss so we exercise the AI path.
+    monkeypatch.setattr(classifier_mod, "_heuristic_intent", lambda t: None)
+
+    # Force the unified gateway to report total failure.
+    def _gateway_fail(request):
+        return ai_gateway.GatewayResponse(
+            ok=False,
+            source="cli:none",
+            error="backend disabled for this test",
+        )
+
+    monkeypatch.setattr(classifier_mod, "call_structured", _gateway_fail, raising=False)
+    # The module imports call_structured lazily, so patch in ai_gateway too.
+    monkeypatch.setattr(ai_gateway, "call_structured", _gateway_fail)
 
     result = classify_intent("some ambiguous input")
     assert result["intent"] == "requirement"

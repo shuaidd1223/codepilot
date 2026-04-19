@@ -26,11 +26,17 @@ const RootApp = {
       toasts: [], toastSeq: 0,
       answer: null,
 
+      /* live progress events from SSE — ring buffer, most-recent last */
+      liveEvents: [],
+
       /* forms */
       goalText: '', goalCategory: 'auto',
       composerMode: 'requirement',
       composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
       chatText: '', chatCategory: 'auto',
+      /* active clarification (intent=clarify) state per session. Map
+       * sessionId -> {questions: [...], answerDraft: ''} */
+      clarifyDrafts: {},
     });
 
     let chatScrollEl = null;
@@ -313,17 +319,87 @@ const RootApp = {
       }, 3000);
     }
 
+    /* ── SSE live progress stream ────────────────────── */
+    let sseHandle = null;
+    function openEventStream() {
+      if (sseHandle) return;
+      sseHandle = CP.sse.open('/api/events/stream', (event) => {
+        state.liveEvents.push(event);
+        if (state.liveEvents.length > 200) {
+          state.liveEvents.splice(0, state.liveEvents.length - 200);
+        }
+      });
+    }
+    function closeEventStream() {
+      if (sseHandle) { sseHandle.close(); sseHandle = null; }
+    }
+
+    /* ── Keyboard shortcuts ──────────────────────────── */
+    function installKeyboardShortcuts() {
+      document.addEventListener('keydown', (e) => {
+        /* Ignore when typing in an input / textarea / contentEditable. */
+        const tag = (e.target && e.target.tagName) || '';
+        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) || (e.target && e.target.isContentEditable)) return;
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        /* `?` — open a simple toast with the cheatsheet. */
+        if (e.key === '?') {
+          pushToast('快捷键: d=切换深色 · r=手动刷新 · n=新建会话 · /=聚焦输入', 'info');
+          e.preventDefault(); return;
+        }
+        if (e.key === 'd') { toggleDark(); e.preventDefault(); return; }
+        if (e.key === 'r') { loadDashboard(); e.preventDefault(); return; }
+        if (e.key === 'n') { newSession(); e.preventDefault(); return; }
+        if (e.key === '/') {
+          const inp = document.querySelector('.chat-input-bar input, .goal-input input, input[placeholder]');
+          if (inp) { inp.focus(); e.preventDefault(); }
+        }
+      });
+    }
+
     onMounted(() => {
       try { state.dark = localStorage.getItem('cp-dark') === '1'; } catch (e) { /* ignore */ }
       document.documentElement.dataset.theme = state.dark ? 'dark' : 'light';
       loadDashboard();
       schedule();
+      openEventStream();
+      installKeyboardShortcuts();
     });
-    onUnmounted(() => clearInterval(state.timer));
+    onUnmounted(() => { clearInterval(state.timer); closeEventStream(); });
 
     /* ── Provided to all descendants ──────────────────
      * Computed refs are NOT auto-unwrapped when accessed via `cp.xxx`,
      * so we expose them through getters that read `.value` internally. */
+    /* ── Live-events helpers for detail panes ────────── */
+    const liveEventsForJob = (jobId) => {
+      /* Events aren't labelled by job ID today; we show all events emitted
+       * after the job started as an approximation. Future: correlate via
+       * task_ids. */
+      return state.liveEvents.slice();
+    };
+    const liveEventsForTask = (taskId) => {
+      if (!taskId) return [];
+      return state.liveEvents.filter(ev => ev && (ev.task_id === taskId || ev.task_id == null));
+    };
+
+    /* ── Clarification quick-reply ───────────────────── */
+    async function submitClarifyAnswer(sessionId, answerText) {
+      if (!answerText || !answerText.trim()) return;
+      state.sending = true;
+      try {
+        await CP.api.post(`/api/sessions/${sessionId}/messages`, {
+          text: answerText.trim(),
+          category: 'auto',
+        });
+        delete state.clarifyDrafts[sessionId];
+        await loadSessionChat();
+        await loadSessions();
+      } catch (err) {
+        pushToast(err.message, 'error');
+      } finally {
+        state.sending = false;
+      }
+    }
+
     const cp = {
       state,
       get currentProject() { return currentProject.value; },
@@ -342,8 +418,11 @@ const RootApp = {
       /* actions */
       taskAction, submitGoal, submitComposer,
       newSession, sendChat, deleteSession,
+      submitClarifyAnswer,
       pushToast, dismissToast,
       registerChatScroll,
+      /* live events */
+      liveEventsForJob, liveEventsForTask,
     };
     CP.app = cp;  /* debugging / extensions */
     provide('cp', cp);

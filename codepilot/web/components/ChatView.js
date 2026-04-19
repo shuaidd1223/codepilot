@@ -3,14 +3,43 @@
 CP.Components.ChatView = Vue.defineComponent({
   name: 'CpChatView',
   inject: ['cp'],
+  data() { return { clarifyReply: '' }; },
   computed: {
     s() { return this.cp.state; },
     session() { return this.s.sessionDetail; },
     messages() { return this.s.sessionMessages; },
+    /* If the most recent assistant message is intent=clarify, surface its
+     * questions as a prompt card with a dedicated reply box. */
+    pendingClarify() {
+      const msgs = this.messages || [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m.role === 'assistant') {
+          if (m.intent === 'clarify') {
+            return { message: m, questions: this._parseQuestions(m.content || '') };
+          }
+          return null;
+        }
+      }
+      return null;
+    },
   },
   methods: {
     send() { this.cp.sendChat(); },
     del() { this.cp.deleteSession(); },
+    _parseQuestions(content) {
+      return (content || '')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => /^\d+\./.test(line) || /^-\s/.test(line))
+        .map(line => line.replace(/^\d+\.\s*|^-\s*/, ''));
+    },
+    async sendClarify() {
+      const text = this.clarifyReply.trim();
+      if (!text || !this.session) return;
+      await this.cp.submitClarifyAnswer(this.session.id, text);
+      this.clarifyReply = '';
+    },
   },
   mounted() { this.cp.registerChatScroll(this.$refs.scroll); },
   updated() { this.cp.registerChatScroll(this.$refs.scroll); },
@@ -32,14 +61,29 @@ CP.Components.ChatView = Vue.defineComponent({
         <div ref="scroll" class="chat-messages">
           <div v-if="!messages.length" class="chat-empty">会话刚创建，发送第一条消息开始对话</div>
           <div v-for="m in messages" :key="m.id" class="chat-row" :class="m.role">
-            <div class="bubble" :class="m.role">
-              <div class="bubble-body">{{ m.content }}</div>
+            <div class="bubble" :class="[m.role, m.intent === 'clarify' ? 'clarify' : '']">
+              <div v-if="m.intent === 'clarify'" class="clarify-head">🤔 需要澄清几个点</div>
+              <div class="bubble-body" style="white-space:pre-wrap">{{ m.content }}</div>
               <div class="bubble-meta">
                 <span>{{ $cp.fmtTime(m.created_at) }}</span>
                 <cp-chip v-if="m.intent" tiny :tone="$cp.toneClass(m.intent)">{{ $cp.statusLabel(m.intent) }}</cp-chip>
                 <span v-if="m.task_ids && m.task_ids.length">任务: <span v-for="(id, i) in m.task_ids" :key="id">#{{ id }}<span v-if="i<m.task_ids.length-1">, </span></span></span>
               </div>
             </div>
+          </div>
+        </div>
+        <!-- Quick-reply for outstanding clarification -->
+        <div v-if="pendingClarify" class="clarify-panel" style="border-top:1px solid var(--border);padding:12px;background:var(--bg-subtle, #fafafa)">
+          <div class="muted tiny" style="margin-bottom:6px">等待你回答上面的澄清问题（一次性回答全部即可）：</div>
+          <div style="display:flex;gap:8px">
+            <input v-model="clarifyReply" @keydown.enter.exact.prevent="sendClarify"
+              maxlength="4096"
+              placeholder="例如：想优化 webui 的首屏加载；目标 &lt; 1 秒"
+              style="flex:1">
+            <button class="btn btn-primary" @click="sendClarify" :disabled="s.sending || !clarifyReply.trim()">
+              <span v-if="s.sending" class="spinner"></span>
+              回答
+            </button>
           </div>
         </div>
         <div class="chat-input-bar">

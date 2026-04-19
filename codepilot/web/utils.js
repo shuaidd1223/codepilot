@@ -58,6 +58,47 @@ CP.api = {
   },
 };
 
+/* Server-sent events client. Wraps EventSource with a small reconnect policy
+ * so dashboard panels can subscribe to live progress without rolling their
+ * own. Returns a handle with .close() for teardown. */
+CP.sse = {
+  open(url, onEvent, onError) {
+    let es = null;
+    let closed = false;
+    const connect = () => {
+      if (closed) return;
+      try {
+        es = new EventSource(url);
+      } catch (err) {
+        if (onError) onError(err);
+        return;
+      }
+      es.onmessage = (ev) => {
+        if (!ev || !ev.data) return;
+        try {
+          onEvent(JSON.parse(ev.data));
+        } catch (err) {
+          /* ignore malformed frames */
+        }
+      };
+      es.onerror = () => {
+        if (closed) return;
+        try { es.close(); } catch (e) { /* ignore */ }
+        /* Browser EventSource auto-reconnects on most transient failures.
+         * We only re-open if the connection fully closed. */
+        setTimeout(connect, 2000);
+      };
+    };
+    connect();
+    return {
+      close() {
+        closed = true;
+        if (es) try { es.close(); } catch (e) { /* ignore */ }
+      },
+    };
+  },
+};
+
 /* Register helper so components can use `this.$cp.fmtTime(...)` etc. */
 CP.install = (app) => {
   app.config.globalProperties.$cp = {

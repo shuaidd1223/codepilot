@@ -50,6 +50,7 @@ from codepilot.webui_actions import (  # noqa: F401 (re-export)
     promote_task_action,
     retry_task_action,
     send_session_message_action,
+    split_task_action,
     stop_task_action,
     submit_goal_action,
     submit_requirement_action,
@@ -154,6 +155,63 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as exc:
             raise RuntimeError("请求体不是合法 JSON。") from exc
 
+    def _stream_progress_events(self) -> None:
+        """GET /api/events/stream — SSE endpoint backed by :mod:`progress_bus`.
+
+        The client opens one long-lived connection; every event published via
+        ``progress_bus.emit`` is forwarded as an ``data: {...}\\n\\n`` SSE
+        frame. Heartbeats are sent every 15s so intermediate proxies keep
+        the connection alive; disconnects tear down the subscription.
+        """
+        import queue as _queue
+        from codepilot import progress_bus
+
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")  # disable proxy buffering
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            try:
+                self.wfile.write(b"retry: 5000\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
+        event_queue: "_queue.Queue[dict]" = _queue.Queue(maxsize=256)
+
+        def _forward(event: dict) -> None:
+            try:
+                event_queue.put_nowait(event)
+            except _queue.Full:
+                # If the client can't drain fast enough, drop the oldest
+                # event in favour of the newest — better than blocking emit.
+                try:
+                    event_queue.get_nowait()
+                    event_queue.put_nowait(event)
+                except Exception:
+                    pass
+
+        token = progress_bus.subscribe(_forward)
+        try:
+            while True:
+                try:
+                    event = event_queue.get(timeout=15)
+                    frame = f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except _queue.Empty:
+                    # Heartbeat to keep the connection open.
+                    frame = ": ping\n\n"
+                try:
+                    self.wfile.write(frame.encode("utf-8"))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    break
+        finally:
+            progress_bus.unsubscribe(token)
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/":
@@ -170,6 +228,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/health":
             self._send_json({"ok": True})
+            return
+        if path == "/api/events/stream":
+            # Server-sent events: push live progress to the dashboard so the
+            # user sees builder/reviewer output in real time instead of polling.
+            self._stream_progress_events()
             return
         if path == "/api/projects":
             self._send_json(dashboard_payload())
@@ -210,11 +273,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             if path == "/api/goal":
                 body = self._read_json_body()
+                raw_history = body.get("qa_history") or []
+                if not isinstance(raw_history, list):
+                    raw_history = []
                 self._send_json(
                     submit_goal_action(
                         body.get("project") or "",
                         body.get("text") or "",
                         category=body.get("category") or "auto",
+                        qa_history=raw_history,
+                        original_title=(body.get("original_title") or "").strip(),
                     )
                 )
                 return
@@ -249,7 +317,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
-            match = re.fullmatch(r"/api/tasks/(\d+)/(retry|stop|promote)", path)
+            match = re.fullmatch(r"/api/tasks/(\d+)/(retry|stop|promote|split)", path)
             if match:
                 task_id = int(match.group(1))
                 action = match.group(2)
@@ -257,6 +325,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     payload = retry_task_action(task_id)
                 elif action == "stop":
                     payload = stop_task_action(task_id)
+                elif action == "split":
+                    payload = split_task_action(task_id)
                 else:
                     payload = promote_task_action(task_id)
                 self._send_json(payload)

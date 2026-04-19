@@ -98,7 +98,7 @@ def test_builtin_executor_commits_and_merges_to_base(tmp_path, monkeypatch):
     task = db.create_task("demo", "add hello.txt", agent="codex", max_retries=1)
 
     # Mock the builtin executor: simulate writing a file + staging + committing
-    def fake_run_builtin(task_dict, project, task_file, auto_commit=True):
+    def fake_run_builtin(task_dict, project, task_file, auto_commit=True, **kwargs):
         # Simulate builder: create a file and commit
         hello = project_path / "hello.txt"
         hello.write_text("hello world\n", encoding="utf-8")
@@ -147,7 +147,7 @@ def test_failed_execution_keeps_feature_branch(tmp_path, monkeypatch):
 
     task = db.create_task("demo", "will fail", agent="codex", max_retries=1)
 
-    def fake_run_builtin(task_dict, project, task_file, auto_commit=True):
+    def fake_run_builtin(task_dict, project, task_file, auto_commit=True, **kwargs):
         return run_cmd.ExecutionResult(
             exit_code=1,
             output="something broke",
@@ -215,7 +215,7 @@ def test_cli_plain_text_plan_and_execute(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_mod, "generate_task_breakdown", lambda **kw: breakdown)
 
     # Mock executor
-    def fake_run_builtin(task_dict, project, task_file, auto_commit=True):
+    def fake_run_builtin(task_dict, project, task_file, auto_commit=True, **kwargs):
         (project_path / "output.txt").write_text("done", encoding="utf-8")
         subprocess.run(["git", "add", "."], cwd=str(project_path), capture_output=True)
         subprocess.run(

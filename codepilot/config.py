@@ -15,6 +15,12 @@ else:
 
 
 CONFIG_FILENAME = "AGENTS.toml"
+SECRETS_FILENAME = ".codepilot.secrets.toml"  # sibling file; never commit
+
+# Preferred env var holding a secrets file path. When set, it overrides
+# the default sibling-file discovery — useful for CI / containerised runs
+# where the secrets file lives outside the repo.
+SECRETS_PATH_ENV = "CODEPILOT_SECRETS_PATH"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -57,6 +63,15 @@ class AutomationConfig:
     max_tasks: int = 5
     max_retries: int = 3
     per_task_branch: bool = True
+    # 两阶段规划：先让 planner 读代码（侦察），再拆任务。关闭后变回一次性规划。
+    two_stage_planning: bool = True
+    # 需求不具体时主动反问澄清。关闭后遇到模糊需求直接硬拆。
+    clarify_vague_requirements: bool = True
+    # 一次规划最多反问多少轮。用户答到这个上限后强制进规划。
+    clarify_max_turns: int = 3
+    # Builder-Reviewer 闭环最大轮数。reviewer 判 FAIL 时, builder 拿 reviewer
+    # 反馈再做一次, 循环最多这么多轮。设为 1 等于关闭闭环（老行为）。
+    max_review_rounds: int = 2
 
 
 @dataclass
@@ -173,6 +188,10 @@ class AgentsConfig:
                 max_tasks=automation.get("max_tasks", 5),
                 max_retries=automation.get("max_retries", 3),
                 per_task_branch=automation.get("per_task_branch", True),
+                two_stage_planning=automation.get("two_stage_planning", True),
+                clarify_vague_requirements=automation.get("clarify_vague_requirements", True),
+                clarify_max_turns=automation.get("clarify_max_turns", 3),
+                max_review_rounds=automation.get("max_review_rounds", 2),
             ),
             classifier=ClassifierConfig(
                 provider=classifier.get("provider", ""),
@@ -257,10 +276,92 @@ def find_config(start_dir: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
+def _locate_secrets_file(config_path: Optional[Path]) -> Optional[Path]:
+    """Find the secrets file that should overlay ``config_path``.
+
+    Search order:
+
+    1. ``$CODEPILOT_SECRETS_PATH`` — explicit override.
+    2. ``<AGENTS.toml dir>/.codepilot.secrets.toml`` — sibling of the
+       resolved config file (most common case).
+    3. ``~/.codepilot/.codepilot.secrets.toml`` — user-global fallback
+       for users who don't want per-project secret files.
+    """
+    override = os.environ.get(SECRETS_PATH_ENV, "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        return candidate if candidate.is_file() else None
+
+    if config_path is not None:
+        sibling = config_path.parent / SECRETS_FILENAME
+        if sibling.is_file():
+            return sibling
+
+    global_file = Path.home() / ".codepilot" / SECRETS_FILENAME
+    return global_file if global_file.is_file() else None
+
+
+def _overlay_secrets(config: AgentsConfig, secrets_path: Path) -> None:
+    """Merge ``[providers.<name>]`` api_key entries from a secrets file.
+
+    Only the ``api_key`` field is read — other keys in the secrets file
+    are ignored so users can't accidentally override model or endpoint
+    settings from a file that shouldn't hold configuration choices.
+    """
+    try:
+        with open(secrets_path, "rb") as handle:
+            data = tomllib.load(handle)
+    except Exception:
+        return
+
+    providers = data.get("providers", {})
+    if not isinstance(providers, dict):
+        return
+
+    for name, cfg in providers.items():
+        if not isinstance(cfg, dict):
+            continue
+        key = str(cfg.get("api_key", "")).strip()
+        if not key:
+            continue
+        if name not in config.providers:
+            config.providers[name] = ProviderAPIConfig(api_key=key)
+        else:
+            # Only overwrite api_key; keep the rest from AGENTS.toml.
+            config.providers[name].api_key = key
+
+
+def _warn_on_inline_secrets(config: AgentsConfig, config_path: Path) -> None:
+    """Emit a one-line deprecation nudge when AGENTS.toml holds secrets.
+
+    Mixing secrets into the committed AGENTS.toml is the concrete risk
+    this refactor addresses; we log (not raise) so existing installs keep
+    working while giving users a visible prompt to migrate.
+    """
+    leaked = [name for name, cfg in config.providers.items() if cfg.api_key]
+    if not leaked:
+        return
+    try:
+        from codepilot.logger import get_logger
+        get_logger("config").warning(
+            "AGENTS.toml at %s contains inline api_key for %s; "
+            "move these to %s (sibling file) to avoid committing secrets.",
+            config_path,
+            ", ".join(sorted(leaked)),
+            SECRETS_FILENAME,
+        )
+    except Exception:  # logger setup must never break config load
+        pass
+
+
 def load_config(config_path: Optional[Path] = None) -> Optional[AgentsConfig]:
     """
     加载 AGENTS.toml 配置文件.
     如果 config_path 为 None，自动查找.
+
+    如果同目录存在 ``.codepilot.secrets.toml``，会把其中的
+    ``[providers.<name>].api_key`` 覆盖到返回的配置里，从而让用户可以
+    把敏感字段从 AGENTS.toml 里分离出去（建议 gitignore 后者）。
     """
     if config_path is None:
         config_path = find_config()
@@ -271,9 +372,33 @@ def load_config(config_path: Optional[Path] = None) -> Optional[AgentsConfig]:
     try:
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
-        return AgentsConfig.from_dict(data, config_file_path=str(config_path))
+        config = AgentsConfig.from_dict(data, config_file_path=str(config_path))
     except Exception:
         return None
+
+    _warn_on_inline_secrets(config, config_path)
+
+    secrets_path = _locate_secrets_file(config_path)
+    if secrets_path is not None:
+        _overlay_secrets(config, secrets_path)
+
+    return config
+
+
+def sanitize_config_for_display(config: AgentsConfig) -> AgentsConfig:
+    """Return a copy of ``config`` with all api_key values scrubbed.
+
+    Use whenever the config is about to be serialised for display — logs,
+    diagnostic dumps, the ``codepilot doctor`` command — so leaking a
+    printed config into a screenshot or support ticket is safe.
+    """
+    import copy
+
+    clone = copy.deepcopy(config)
+    for provider_cfg in clone.providers.values():
+        if provider_cfg.api_key:
+            provider_cfg.api_key = "***"
+    return clone
 
 
 def resolve_config_path(

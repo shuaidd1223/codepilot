@@ -249,6 +249,8 @@ def _run_command_live(
         recent_lines: list[str] = []
         recent_lock = threading.Lock()
 
+        from codepilot import progress_bus
+
         def _emit(raw: str) -> None:
             if not raw:
                 return
@@ -259,12 +261,24 @@ def _run_command_live(
                 pass
             stripped = raw.rstrip()
             if stripped:
-                # Only show concise progress lines, not full code output
+                # Only surface concise progress lines (the CLI tools emit
+                # a lot of raw code); both the terminal and subscribers on
+                # the progress bus (Web UI job log, SSE) see the same filter.
                 _show = _should_show_line(stripped)
                 if _show:
                     try:
                         from rich.markup import escape as _rich_escape
                         STATUS_CONSOLE.print(f"    [dim]{_rich_escape(stripped[:160])}[/dim]")
+                    except Exception:
+                        pass
+                    try:
+                        progress_bus.emit(
+                            task_id=task_id,
+                            stage=phase,
+                            level="info",
+                            message=stripped[:200],
+                            extra={"source": "subprocess"},
+                        )
                     except Exception:
                         pass
             with recent_lock:

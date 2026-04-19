@@ -7,8 +7,34 @@ CP.Components.TaskDetail = Vue.defineComponent({
     s() { return this.cp.state; },
     task() { return this.s.taskDetail; },
   },
+  computed: {
+    /* Expose events SSE pushed for this specific task so the user sees live
+     * builder/reviewer output instead of waiting for the 3s polling tick. */
+    liveEvents() {
+      if (!this.task) return [];
+      return this.cp.liveEventsForTask(this.task.id);
+    },
+    canSplit() {
+      const t = this.task;
+      if (!t) return false;
+      /* Offer split on failed / attention / backlog tasks where the user
+       * likely regrets the scope. Not on in-progress / done. */
+      return ['failed', 'cancelled', 'backlog'].includes(t.status);
+    },
+  },
   methods: {
-    action(id, act) { this.cp.taskAction(id, act); },
+    action(id, act) {
+      if (act === 'split' && !confirm('将此任务关闭并拆成更小的新任务？')) return;
+      this.cp.taskAction(id, act);
+    },
+    formatEta(seconds) {
+      if (!seconds) return '';
+      if (seconds < 60) return `${Math.round(seconds)}s`;
+      if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+      const h = Math.floor(seconds / 3600);
+      const m = Math.round((seconds % 3600) / 60);
+      return m ? `${h}h${m}m` : `${h}h`;
+    },
   },
   template: `
     <div class="view">
@@ -23,11 +49,13 @@ CP.Components.TaskDetail = Vue.defineComponent({
                 <cp-chip>{{ task.priority }}</cp-chip>
                 <cp-chip>{{ task.agent || '-' }}</cp-chip>
                 <cp-chip>重试 {{ task.retry_count || 0 }}/{{ task.max_retries || 0 }}</cp-chip>
+                <cp-chip v-if="task.eta_seconds">预计 ~{{ formatEta(task.eta_seconds) }}</cp-chip>
               </div>
             </div>
             <div class="row gap-xs">
               <button v-if="task.actions && task.actions.promote" class="btn btn-outline btn-sm" @click="action(task.id, 'promote')">插队 P0</button>
               <button v-if="task.actions && task.actions.retry" class="btn btn-warning btn-sm" @click="action(task.id, 'retry')">重试</button>
+              <button v-if="canSplit" class="btn btn-outline btn-sm" @click="action(task.id, 'split')" title="把这个任务重新拆成更小的几个任务">拆分</button>
               <button v-if="task.actions && task.actions.stop" class="btn btn-danger btn-sm" @click="action(task.id, 'stop')">停止</button>
             </div>
           </div>
@@ -54,6 +82,10 @@ CP.Components.TaskDetail = Vue.defineComponent({
           <div class="block">
             <div class="block-label">任务内容</div>
             <pre class="code">{{ task.content || '暂无任务内容' }}</pre>
+          </div>
+          <div v-if="liveEvents.length" class="block">
+            <div class="block-label">实时进度（来自 SSE）</div>
+            <pre class="code" style="max-height:200px;overflow:auto">{{ liveEvents.map(e => \`[\${(e.timestamp||'').slice(11,19)}] [\${e.stage || '?'}\${e.extra && e.extra.round ? \` r\${e.extra.round}/\${e.extra.round_total}\` : ''}] \${e.message || ''}\`).join('\\n') }}</pre>
           </div>
           <div class="block">
             <div class="block-label">实时日志 / 最近输出</div>
