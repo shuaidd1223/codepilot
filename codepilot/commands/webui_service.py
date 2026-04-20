@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import os
-import signal
+import platform
 import subprocess
 import sys
 import time
@@ -19,7 +19,7 @@ from pathlib import Path
 import click
 
 from codepilot.output import echo, safe
-from codepilot.runtime import is_process_alive
+from codepilot.runtime import is_process_alive, stop_process_tree
 
 
 STATE_DIR = Path.home() / ".codepilot"
@@ -63,10 +63,13 @@ def _read_pid() -> int | None:
 
 def _alive_pid() -> int | None:
     """Return the live PID of the running service, or None if not running."""
-    pid = _read_pid()
-    if pid and is_process_alive(pid):
-        return pid
-    return None
+    targets = _service_targets()
+    if not targets:
+        return None
+    listener_pids = _listening_service_pids()
+    live_pid = listener_pids[0] if listener_pids else targets[0]
+    _sync_state_pid(live_pid)
+    return live_pid
 
 
 def _cleanup_files() -> None:
@@ -75,6 +78,104 @@ def _cleanup_files() -> None:
             p.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def _service_host_port() -> tuple[str, int]:
+    meta = _read_meta()
+    host = str(meta.get("host") or DEFAULT_HOST)
+    try:
+        port = int(meta.get("port") or DEFAULT_PORT)
+    except Exception:
+        port = DEFAULT_PORT
+    return host, port
+
+
+def _sync_state_pid(pid: int) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    PID_FILE.write_text(str(int(pid)), encoding="utf-8")
+    meta = _read_meta()
+    meta["pid"] = int(pid)
+    if "host" not in meta:
+        meta["host"] = DEFAULT_HOST
+    if "port" not in meta:
+        meta["port"] = DEFAULT_PORT
+    if "started_at" not in meta:
+        meta["started_at"] = _now_iso()
+    META_FILE.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _listening_service_pids() -> list[int]:
+    host, port = _service_host_port()
+    if platform.system().lower() != "windows":
+        return []
+
+    script = (
+        "$ErrorActionPreference='SilentlyContinue'; "
+        f"Get-NetTCPConnection -State Listen -LocalPort {int(port)} | "
+        "Select-Object LocalAddress,OwningProcess | ConvertTo-Json -Compress"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except Exception:
+        return []
+
+    raw = (result.stdout or "").strip()
+    if result.returncode != 0 or not raw:
+        return []
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+    rows = payload if isinstance(payload, list) else [payload]
+    pids: list[int] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        local_address = str(row.get("LocalAddress") or "")
+        if host not in {"0.0.0.0", "::", ""} and local_address not in {host, "0.0.0.0", "::"}:
+            continue
+        try:
+            pid = int(row.get("OwningProcess"))
+        except Exception:
+            continue
+        if pid > 0 and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def _service_targets() -> list[int]:
+    targets: list[int] = []
+    pid = _read_pid()
+    if pid and is_process_alive(pid):
+        targets.append(int(pid))
+    for listener_pid in _listening_service_pids():
+        if is_process_alive(listener_pid) and listener_pid not in targets:
+            targets.append(listener_pid)
+    return targets
+
+
+def _remaining_service_pids(targets: list[int], *, wait_seconds: float = 2.0) -> list[int]:
+    deadline = time.monotonic() + max(wait_seconds, 0.0)
+    while True:
+        remaining: list[int] = []
+        for pid in targets:
+            if is_process_alive(pid) and pid not in remaining:
+                remaining.append(pid)
+        for pid in _listening_service_pids():
+            if is_process_alive(pid) and pid not in remaining:
+                remaining.append(pid)
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
+        time.sleep(0.2)
 
 
 def _spawn_detached(host: str, port: int) -> subprocess.Popen:
@@ -114,32 +215,13 @@ def _spawn_detached(host: str, port: int) -> subprocess.Popen:
     return subprocess.Popen(cmd, **popen_kwargs)
 
 
-def _send_stop(pid: int) -> None:
-    """Best-effort stop: SIGTERM, fall back to harder kill if needed."""
+def _send_stop(pid: int) -> bool:
+    """Stop the detached Web UI process tree."""
     try:
-        if os.name == "nt":
-            # On Windows, os.kill with SIGTERM maps to TerminateProcess.
-            os.kill(pid, signal.SIGTERM)
-        else:
-            os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
+        return stop_process_tree(pid, wait_seconds=5)
     except Exception as exc:
-        echo(f"[yellow]发送停止信号失败：{safe(exc)}[/yellow]")
-
-    for _ in range(50):  # up to 5s
-        if not is_process_alive(pid):
-            return
-        time.sleep(0.1)
-
-    # Still alive — force kill
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False)
-        else:
-            os.kill(pid, signal.SIGKILL)
-    except Exception as exc:
-        echo(f"[yellow]强制结束失败：{safe(exc)}[/yellow]")
+        echo(f"[yellow]停止 Web UI 失败：{safe(exc)}[/yellow]")
+        return False
 
 
 @click.group("webui")
@@ -202,24 +284,32 @@ def start_cmd(host: str, port: int, open_browser: bool) -> None:
 @webui.command("stop")
 def stop_cmd() -> None:
     """停止后台 Web UI 服务。"""
-    pid = _read_pid()
-    if not pid:
+    raw_pid = _read_pid()
+    targets = _service_targets()
+    if not raw_pid and not targets:
         echo("[dim]Web UI 未在运行[/dim]")
         _cleanup_files()
         return
-    if not is_process_alive(pid):
-        echo(f"[dim]Web UI 已不存在（PID={pid} 已退出），清理状态文件[/dim]")
+    if not targets:
+        echo(f"[dim]Web UI 已不存在（PID={raw_pid} 已退出），清理状态文件[/dim]")
         _cleanup_files()
         return
 
-    _send_stop(pid)
+    failures: list[int] = []
+    for pid in targets:
+        if is_process_alive(pid) and not _send_stop(pid):
+            failures.append(pid)
 
-    if is_process_alive(pid):
-        echo(f"[red]无法停止 PID={pid}[/red]")
+    survivors = _remaining_service_pids(targets)
+    if survivors:
+        echo(f"[red]无法停止 PID={','.join(str(pid) for pid in survivors)}[/red]")
         raise click.Abort()
+    if failures:
+        echo(f"[yellow]以下 PID 停止时返回失败，但进程已退出：{','.join(str(pid) for pid in failures)}[/yellow]")
 
     _cleanup_files()
-    echo(f"[green]Web UI 已停止[/green]  (PID={pid})")
+    stopped = ",".join(str(pid) for pid in targets)
+    echo(f"[green]Web UI 已停止[/green]  (PID={stopped})")
 
 
 @webui.command("restart")
@@ -233,9 +323,17 @@ def restart_cmd(ctx: click.Context, host: str | None, port: int | None, open_bro
     resolved_host = host or meta.get("host") or DEFAULT_HOST
     resolved_port = port if port is not None else int(meta.get("port") or DEFAULT_PORT)
 
-    pid = _read_pid()
-    if pid and is_process_alive(pid):
-        _send_stop(pid)
+    targets = _service_targets()
+    failures: list[int] = []
+    for pid in targets:
+        if is_process_alive(pid) and not _send_stop(pid):
+            failures.append(pid)
+    survivors = _remaining_service_pids(targets)
+    if survivors:
+        echo(f"[red]无法停止 PID={','.join(str(pid) for pid in survivors)}[/red]")
+        raise click.Abort()
+    if failures:
+        echo(f"[yellow]以下 PID 停止时返回失败，但进程已退出：{','.join(str(pid) for pid in failures)}[/yellow]")
     _cleanup_files()
     time.sleep(0.3)
     ctx.invoke(start_cmd, host=resolved_host, port=resolved_port, open_browser=open_browser)
@@ -244,12 +342,9 @@ def restart_cmd(ctx: click.Context, host: str | None, port: int | None, open_bro
 @webui.command("status")
 def status_cmd() -> None:
     """查看 Web UI 服务运行状态。"""
-    pid = _read_pid()
+    pid = _alive_pid()
     if not pid:
         echo("[dim]Web UI 未在运行[/dim]")
-        return
-    if not is_process_alive(pid):
-        echo(f"[yellow]PID 文件记录 PID={pid}，但该进程已不存在。可执行 codepilot webui stop 清理状态。[/yellow]")
         return
     meta = _read_meta()
     url = f"http://{meta.get('host', DEFAULT_HOST)}:{meta.get('port', DEFAULT_PORT)}/"

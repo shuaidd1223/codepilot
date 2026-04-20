@@ -1622,6 +1622,33 @@ def test_stop_process_tree_windows_kills_descendants_even_if_root_is_gone(monkey
     assert any(cmd[:4] == ["taskkill", "/PID", "201", "/T"] for cmd in calls)
 
 
+def test_stop_process_tree_windows_falls_back_to_stop_process_when_taskkill_denied(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(runtime_mod.platform, "system", lambda: "Windows")
+
+    alive = {61432: True}
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[0].lower() == "taskkill":
+            return subprocess.CompletedProcess(cmd, 1, "", "Access is denied.")
+        if cmd[:2] == ["powershell.exe", "-Command"] and "Stop-Process -Id 61432 -Force" in cmd[2]:
+            alive[61432] = False
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(runtime_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: alive.get(int(pid), False) if pid else False)
+
+    runtime_mod._windows_kill_pid(61432)
+
+    assert alive[61432] is False
+    assert any(cmd[0].lower() == "taskkill" for cmd in calls)
+    assert any(cmd[:2] == ["powershell.exe", "-Command"] for cmd in calls)
+
+
 def test_run_command_live_cleans_process_tree_on_unexpected_exception(tmp_path, monkeypatch):
     import sys
 

@@ -216,7 +216,7 @@ def _windows_kill_pid(pid: int, *, include_tree: bool = False) -> None:
         cmd.append("/T")
     cmd.append("/F")
     try:
-        subprocess.run(
+        result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
@@ -225,7 +225,29 @@ def _windows_kill_pid(pid: int, *, include_tree: bool = False) -> None:
             timeout=15,
         )
     except Exception:
-        pass
+        result = None
+
+    if not is_process_alive(pid):
+        return
+
+    # ``taskkill`` can fail with "Access is denied" for some detached Python
+    # children even when PowerShell's Stop-Process can terminate them.
+    try:
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-Command",
+                f"Stop-Process -Id {int(pid)} -Force -ErrorAction Stop",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except Exception:
+        if result is None:
+            return
 
 
 def stop_process_tree(pid: Optional[int], *, wait_seconds: int = 5) -> bool:
