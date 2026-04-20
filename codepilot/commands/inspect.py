@@ -21,7 +21,7 @@ from codepilot.ai import (
     normalize_agent_name,
 )
 from codepilot.commands.add import _resolve_project_strict
-from codepilot.config import load_project_config
+from codepilot.config import load_project_config, resolve_planner
 from codepilot.output import echo
 
 INSPECT_SCHEMA = {
@@ -427,7 +427,7 @@ def _print_result(result: dict, dry_run: bool) -> None:
 @click.option(
     "--planner",
     default=None,
-    help="巡检用的 LLM（默认 claude，从 [inspect].planner 读取；可选 claude / codex）",
+    help="巡检用的 LLM；优先级：显式参数 > [inspect].planner > [agents].planner > codex",
 )
 @click.option("--json", "json_mode", is_flag=True, help="以 JSON 输出结果，便于脚本和其他 AI 调用")
 @click.option("--interval", type=int, default=None, help="巡检间隔秒数（默认 1800）")
@@ -457,7 +457,7 @@ def inspect(
     ins = cfg.inspect
     limit = max_new if max_new is not None else ins.max_new_tasks_per_round
     sleep_seconds = interval if interval is not None else ins.interval_seconds
-    effective_planner = planner or ins.planner or "claude"
+    effective_planner = resolve_planner(cfg, "inspect", explicit=planner)
 
     round_num = 0
     while True:

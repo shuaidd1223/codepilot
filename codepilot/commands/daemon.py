@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from codepilot import db
 from codepilot.commands.inspect import run_inspection
 from codepilot.commands.run import run_backlog
-from codepilot.config import load_project_config
+from codepilot.config import load_project_config, resolve_planner
 from codepilot.output import echo, safe
 from codepilot.runtime import is_process_alive, reap_stalled_tasks
 from codepilot.webui import start_ui_server
@@ -222,7 +222,7 @@ def _maybe_run_inspect(project: str | None, last_at: dict[str, float], verbose: 
                 auto_execute=ins.auto_execute,
                 priority=ins.priority,
                 agent="codex",                # 执行器：写代码默认 codex
-                planner=ins.planner or "claude",  # 巡检 LLM：默认 claude
+                planner=resolve_planner(cfg, "inspect"),
             )
         except Exception as exc:
             echo(f"[yellow]巡检 {name} 失败：{safe(exc)}[/yellow]")
