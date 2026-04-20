@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -20,16 +21,33 @@ from codepilot.output import echo, safe
 class CheckResult:
     """Single diagnostic check result."""
 
-    __slots__ = ("name", "ok", "detail", "fix")
+    __slots__ = ("name", "ok", "severity", "detail", "fix")
 
-    def __init__(self, name: str, ok: bool, detail: str, fix: Optional[str] = None):
+    def __init__(
+        self,
+        name: str,
+        ok: bool,
+        detail: str,
+        fix: Optional[str] = None,
+        *,
+        severity: Optional[str] = None,
+    ):
+        resolved_severity = severity or ("ok" if ok else "error")
+        if resolved_severity not in {"ok", "warning", "error"}:
+            raise ValueError(f"unsupported severity: {resolved_severity}")
         self.name = name
-        self.ok = ok
+        self.ok = resolved_severity != "error"
+        self.severity = resolved_severity
         self.detail = detail
         self.fix = fix  # suggested remediation command / hint
 
     def to_dict(self) -> dict:
-        d: dict = {"name": self.name, "ok": self.ok, "detail": self.detail}
+        d: dict = {
+            "name": self.name,
+            "ok": self.ok,
+            "severity": self.severity,
+            "detail": self.detail,
+        }
         if self.fix:
             d["fix"] = self.fix
         return d
@@ -167,34 +185,127 @@ def _check_cli_tools() -> list[CheckResult]:
 
 def _check_api_keys() -> list[CheckResult]:
     """Check API key availability for commonly used providers."""
-    from codepilot.ai import API_PROVIDERS
+    from codepilot.ai import API_PROVIDERS, normalize_agent_name
+    from codepilot.config import load_config
 
     results: list[CheckResult] = []
-    # Only check providers whose env vars are partially expected.
-    key_groups: dict[str, tuple[str, list[str]]] = {}
-    for key, provider in API_PROVIDERS.items():
-        if not provider.api_env_vars or not provider.requires_api_key():
-            continue
-        env_var = provider.api_env_vars[0]
-        if env_var not in key_groups:
-            key_groups[env_var] = (env_var, [])
-        key_groups[env_var][1].append(key)
+    cfg = load_config()
+    key_groups: dict[str, dict[str, object]] = {}
+    required_provider = ""
 
-    for env_var, (_, provider_names) in key_groups.items():
-        value = os.environ.get(env_var, "").strip()
-        label = f"api_key_{env_var.lower()}"
-        names_str = ", ".join(provider_names[:3])
-        if value:
-            results.append(CheckResult(
-                label, True,
-                f"{env_var} 已设置（可用: {names_str}）",
-            ))
+    if cfg and cfg.classifier.enabled:
+        classifier_provider = normalize_agent_name((cfg.classifier.provider or "").strip())
+        if classifier_provider in API_PROVIDERS:
+            classifier_cfg = cfg.providers.get(classifier_provider)
+            required_candidate = replace(API_PROVIDERS[classifier_provider])
+            if classifier_cfg:
+                if classifier_cfg.api_key:
+                    required_candidate.api_key = classifier_cfg.api_key.strip()
+                if classifier_cfg.base_url:
+                    required_candidate.base_url = classifier_cfg.base_url.strip()
+            if required_candidate.requires_api_key():
+                required_provider = classifier_provider
+
+    for key, base_provider in API_PROVIDERS.items():
+        provider = replace(base_provider)
+        provider_cfg = cfg.providers.get(key) if cfg else None
+        if provider_cfg:
+            if provider_cfg.api_key:
+                provider.api_key = provider_cfg.api_key.strip()
+            if provider_cfg.base_url:
+                provider.base_url = provider_cfg.base_url.strip()
+
+        if not provider.requires_api_key():
+            group = key_groups.setdefault("__local__", {"local": []})
+            group["local"].append(key)
+            continue
+
+        env_var = provider.api_env_vars[0] if provider.api_env_vars else key
+        group = key_groups.setdefault(env_var, {
+            "env_var": env_var,
+            "resolved": [],
+            "missing": [],
+        })
+        source = ""
+        if provider.api_key:
+            source = "配置文件"
         else:
+            for candidate in provider.api_env_vars:
+                if os.environ.get(candidate, "").strip():
+                    source = f"环境变量 {candidate}"
+                    break
+
+        if provider.resolve_api_key():
+            group["resolved"].append((key, source))
+        else:
+            group["missing"].append(key)
+
+    for group_key, group in key_groups.items():
+        if group_key == "__local__":
+            local_names = group["local"]
+            if local_names:
+                results.append(CheckResult(
+                    "api_key_local",
+                    True,
+                    f"本地 provider 无需 API Key（可用: {', '.join(local_names[:3])}）",
+                ))
+            continue
+
+        env_var = str(group["env_var"])
+        resolved = list(group["resolved"])
+        missing = list(group["missing"])
+        label = f"api_key_{env_var.lower()}"
+        is_required = required_provider in missing
+        source_items = sorted({source for _, source in resolved if source})
+
+        if not missing:
+            resolved_names = [name for name, _ in resolved]
+            detail = f"{env_var} 已配置（可用: {', '.join(resolved_names[:3])}"
+            if source_items:
+                detail += f"；来源: {', '.join(source_items)}"
+            detail += "）"
+            results.append(CheckResult(label, True, detail, severity="ok"))
+            continue
+
+        missing_str = ", ".join(missing[:3])
+        resolved_names = [name for name, _ in resolved]
+        if is_required:
+            if resolved_names:
+                detail = (
+                    f"{env_var} 仅部分配置（已配置: {', '.join(resolved_names[:3])}"
+                    f"；未配置: {missing_str}；当前配置必需: {required_provider}）"
+                )
+            else:
+                detail = (
+                    f"{env_var} 未设置（影响: {missing_str}；当前配置必需: "
+                    f"{required_provider}）"
+                )
             results.append(CheckResult(
-                label, False,
-                f"{env_var} 未设置（影响: {names_str}）",
+                label,
+                False,
+                detail,
                 fix=f"设置环境变量 {env_var}，或在 AGENTS.toml [providers] 中配置 api_key",
+                severity="error",
             ))
+            continue
+
+        if resolved_names:
+            detail = (
+                f"{env_var} 仅部分配置（已配置: {', '.join(resolved_names[:3])}"
+                f"；其余可选未配置: {missing_str}"
+            )
+            if source_items:
+                detail += f"；来源: {', '.join(source_items)}"
+            detail += "）"
+        else:
+            detail = f"{env_var} 未设置（影响: {missing_str}；当前为可选）"
+        results.append(CheckResult(
+            label,
+            True,
+            detail,
+            fix=f"设置环境变量 {env_var}，或在 AGENTS.toml [providers] 中配置 api_key",
+            severity="warning",
+        ))
 
     return results
 
@@ -271,7 +382,7 @@ def doctor(ctx: click.Context):
     if json_mode:
         payload = {
             "checks": [r.to_dict() for r in results],
-            "ok": all(r.ok for r in results),
+            "ok": not any(r.severity == "error" for r in results),
         }
         click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -281,21 +392,34 @@ def doctor(ctx: click.Context):
     echo("[bold]codepilot doctor[/bold]  环境自检报告")
     echo("─" * 50)
 
-    issues: list[CheckResult] = []
+    errors: list[CheckResult] = []
+    warnings: list[CheckResult] = []
     for r in results:
-        icon = "[green]✔[/green]" if r.ok else "[red]✘[/red]"
+        if r.severity == "error":
+            icon = "[red]✘[/red]"
+            errors.append(r)
+        elif r.severity == "warning":
+            icon = "[yellow]![/yellow]"
+            warnings.append(r)
+        else:
+            icon = "[green]✔[/green]"
         echo(f"  {icon}  {safe(r.name):24s}  {safe(r.detail)}")
-        if not r.ok:
-            issues.append(r)
 
     echo("─" * 50)
-    if not issues:
+    if not errors and not warnings:
         echo("[green]所有检查通过，环境正常。[/green]")
     else:
-        echo(f"[yellow]发现 {len(issues)} 个问题：[/yellow]")
+        if errors:
+            echo(f"[yellow]发现 {len(errors)} 个错误，{len(warnings)} 个警告。[/yellow]")
+        else:
+            echo(f"[yellow]发现 0 个错误，{len(warnings)} 个警告。[/yellow]")
         echo()
-        for r in issues:
+        for r in errors:
             echo(f"  [red]✘ {safe(r.name)}[/red]")
+            if r.fix:
+                echo(f"    [dim]修复建议:[/dim]  {safe(r.fix)}")
+        for r in warnings:
+            echo(f"  [yellow]! {safe(r.name)}[/yellow]")
             if r.fix:
                 echo(f"    [dim]修复建议:[/dim]  {safe(r.fix)}")
         echo()
