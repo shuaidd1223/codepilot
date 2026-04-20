@@ -308,10 +308,33 @@ def _batch_add(
         item_title = item.get("title") or item.get("name") or str(item)
         item_priority = item.get("priority", priority)
         item_agent = _resolve_agent(None, None, item.get("agent", agent))
-        item_dep = dep_list  # 批量模式下使用共同的依赖
+
+        # 允许每条任务覆盖全局 --depends（JSON 中 depends/depends_on/dependsOn 均可）
+        item_dep_raw = (
+            item.get("depends")
+            if "depends" in item
+            else item.get("depends_on")
+            if "depends_on" in item
+            else item.get("dependsOn")
+        )
+        if item_dep_raw is not None:
+            if isinstance(item_dep_raw, (list, tuple)):
+                item_dep = [int(x) for x in item_dep_raw if str(x).strip()]
+            elif isinstance(item_dep_raw, str):
+                item_dep = [int(x.strip()) for x in item_dep_raw.split(",") if x.strip().isdigit()]
+            else:
+                item_dep = [int(item_dep_raw)]
+        else:
+            item_dep = dep_list  # 回退到批量命令行 --depends
+
+        # 用户若在 JSON 里直接给出 content / body / description，就优先采用，
+        # 不再触发 AI 生成或被 --no-ai 清空。
+        user_content = item.get("content") or item.get("body") or item.get("description")
 
         echo(f"[dim]{i}/{len(items)}[/dim] {item_title} ", nl=False)
-        if no_ai:
+        if isinstance(user_content, str) and user_content.strip():
+            content = user_content
+        elif no_ai:
             content = ""
         else:
             try:
