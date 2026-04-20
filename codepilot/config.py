@@ -96,8 +96,8 @@ class InspectConfig:
     signals: tuple[str, ...] = ("git_log", "failed_tasks", "todos")
     auto_execute: bool = False
     priority: str = "P3"
-    # 巡检默认用 claude（推理快、适合分析），写代码走 codex 交由 --agent 决定。
-    planner: str = "claude"
+    # 留空时走统一 planner 解析：显式参数 / [inspect] / [agents] / codex。
+    planner: Optional[str] = None
 
 
 @dataclass
@@ -139,6 +139,7 @@ class AgentsConfig:
     base_branch: str = "dev"
     default_mode: str = "codex"
     worktree_base: Optional[str] = None
+    planner: Optional[str] = None
     builder: Optional[str] = None
     reviewer: Optional[str] = None
     codex_cmd: str = "codex"
@@ -220,7 +221,7 @@ class AgentsConfig:
                 max_new_tasks_per_round=inspect.get("max_new_tasks_per_round", 3),
                 signals=tuple(inspect.get("signals", ["git_log", "failed_tasks", "todos"])),
                 auto_execute=inspect.get("auto_execute", False),
-                planner=inspect.get("planner", "claude"),
+                planner=_normalize_optional_agent_name(inspect.get("planner")),
                 priority=inspect.get("priority", "P3"),
             ),
             notifications=notifications,
@@ -230,6 +231,7 @@ class AgentsConfig:
             base_branch=proj.get("base_branch", "dev"),
             default_mode=proj.get("default_mode", "codex"),
             worktree_base=proj.get("worktree_base"),
+            planner=_normalize_optional_agent_name(agents.get("planner")),
             builder=_normalize_optional_agent_name(agents.get("builder")),
             reviewer=_normalize_optional_agent_name(agents.get("reviewer")),
             codex_cmd=agents.get("codex_cmd", "codex"),
@@ -416,6 +418,46 @@ def sanitize_config_for_display(config: AgentsConfig) -> AgentsConfig:
         if provider_cfg.api_key:
             provider_cfg.api_key = "***"
     return clone
+
+
+def resolve_planner(
+    config: Optional[AgentsConfig],
+    scope: str = "automation",
+    *,
+    explicit: Optional[str] = None,
+) -> str:
+    """Resolve the effective planner with a shared precedence order.
+
+    Resolution order:
+    1. Explicit CLI/runtime override
+    2. Scope-specific config (currently ``automation`` / ``inspect``)
+    3. ``[agents].planner``
+    4. Built-in fallback ``codex``
+    """
+    explicit_planner = _normalize_optional_agent_name(explicit)
+    if explicit_planner:
+        return explicit_planner
+
+    if config:
+        normalized_scope = (scope or "automation").strip().lower()
+        if normalized_scope == "inspect":
+            inspect_planner = _normalize_optional_agent_name(
+                getattr(getattr(config, "inspect", None), "planner", None)
+            )
+            if inspect_planner:
+                return inspect_planner
+        elif normalized_scope == "automation":
+            automation_planner = _normalize_optional_agent_name(
+                getattr(getattr(config, "automation", None), "planner", None)
+            )
+            if automation_planner:
+                return automation_planner
+
+        agents_planner = _normalize_optional_agent_name(getattr(config, "planner", None))
+        if agents_planner:
+            return agents_planner
+
+    return "codex"
 
 
 def resolve_config_path(
