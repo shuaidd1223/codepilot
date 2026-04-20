@@ -23,6 +23,19 @@ SECRETS_FILENAME = ".codepilot.secrets.toml"  # sibling file; never commit
 SECRETS_PATH_ENV = "CODEPILOT_SECRETS_PATH"
 
 
+def _normalize_optional_agent_name(value: object) -> Optional[str]:
+    """Normalize an optional agent name from ``[agents]`` config values."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    from codepilot.ai import normalize_agent_name
+
+    normalized = normalize_agent_name(text).strip()
+    return normalized or None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 配置数据模型
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -126,6 +139,8 @@ class AgentsConfig:
     base_branch: str = "dev"
     default_mode: str = "codex"
     worktree_base: Optional[str] = None
+    builder: Optional[str] = None
+    reviewer: Optional[str] = None
     codex_cmd: str = "codex"
     claude_cmd: str = "claude"
     interval_seconds: int = 600
@@ -215,6 +230,8 @@ class AgentsConfig:
             base_branch=proj.get("base_branch", "dev"),
             default_mode=proj.get("default_mode", "codex"),
             worktree_base=proj.get("worktree_base"),
+            builder=_normalize_optional_agent_name(agents.get("builder")),
+            reviewer=_normalize_optional_agent_name(agents.get("reviewer")),
             codex_cmd=agents.get("codex_cmd", "codex"),
             claude_cmd=agents.get("claude_cmd", "claude"),
             interval_seconds=dispatch.get("interval_seconds", 600),
