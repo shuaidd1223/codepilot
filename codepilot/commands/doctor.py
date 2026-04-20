@@ -53,6 +53,13 @@ class CheckResult:
         return d
 
 
+def _summary_status_emoji(results: list["CheckResult"]) -> str:
+    """Return a compact emoji for the aggregated doctor result."""
+    if any(item.severity == "error" for item in results):
+        return "✘"
+    return "✓"
+
+
 # ── Individual checks ────────────────────────────────────────────────────────
 
 def _check_python_version() -> CheckResult:
@@ -383,6 +390,7 @@ def doctor(ctx: click.Context):
         payload = {
             "checks": [r.to_dict() for r in results],
             "ok": not any(r.severity == "error" for r in results),
+            "status_emoji": _summary_status_emoji(results),
         }
         click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
