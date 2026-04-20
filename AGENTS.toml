@@ -12,6 +12,10 @@ default_mode = "dual"
 worktree_base = ""
 
 [agents]
+# dual phase 覆盖示例：当 default_mode="dual" 时，可显式指定 builder / reviewer
+# builder = "codex"
+# reviewer = "claude"
+# 注意：这里必须填具体 agent，不能再写 dual；留空则回退到默认 builder=codex、reviewer=claude
 # AI Agent 命令
 codex_cmd = "codex"
 claude_cmd = "claude"
