@@ -262,4 +262,49 @@ def test_doctor_json_ok_depends_only_on_error_severity(monkeypatch):
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["ok"] is True
+    assert payload["status_emoji"] == "✓"
     assert payload["checks"][0]["severity"] == "warning"
+
+
+@pytest.mark.parametrize(
+    ("results", "expected_emoji"),
+    [
+        ([doctor_mod.CheckResult("python_version", True, "Python 3.12")], "✓"),
+        (
+            [
+                doctor_mod.CheckResult(
+                    "api_key_openai_api_key",
+                    True,
+                    "OPENAI_API_KEY 未设置（当前为可选）",
+                    severity="warning",
+                ),
+            ],
+            "✓",
+        ),
+        (
+            [
+                doctor_mod.CheckResult(
+                    "task_db",
+                    False,
+                    "任务数据库目录不可写",
+                    severity="error",
+                ),
+            ],
+            "✘",
+        ),
+    ],
+)
+def test_doctor_json_status_emoji_depends_on_error_severity(
+    monkeypatch,
+    results,
+    expected_emoji,
+):
+    monkeypatch.setattr(doctor_mod, "run_all_checks", lambda: results)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--json", "doctor"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is (expected_emoji != "✘")
+    assert payload["status_emoji"] == expected_emoji
