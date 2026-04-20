@@ -99,13 +99,14 @@ def test_builtin_executor_commits_and_merges_to_base(tmp_path, monkeypatch):
 
     # Mock the builtin executor: simulate writing a file + staging + committing
     def fake_run_builtin(task_dict, project, task_file, auto_commit=True, **kwargs):
+        execution_path = Path(kwargs["execution_path"])
         # Simulate builder: create a file and commit
-        hello = project_path / "hello.txt"
+        hello = execution_path / "hello.txt"
         hello.write_text("hello world\n", encoding="utf-8")
-        subprocess.run(["git", "add", "."], cwd=str(project_path), capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=str(execution_path), capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", f"task #{task_dict['id']}: add hello"],
-            cwd=str(project_path), capture_output=True,
+            cwd=str(execution_path), capture_output=True,
             env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
                  "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
         )
@@ -216,11 +217,12 @@ def test_cli_plain_text_plan_and_execute(tmp_path, monkeypatch):
 
     # Mock executor
     def fake_run_builtin(task_dict, project, task_file, auto_commit=True, **kwargs):
-        (project_path / "output.txt").write_text("done", encoding="utf-8")
-        subprocess.run(["git", "add", "."], cwd=str(project_path), capture_output=True)
+        execution_path = Path(kwargs["execution_path"])
+        (execution_path / "output.txt").write_text("done", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(execution_path), capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", "task done"],
-            cwd=str(project_path), capture_output=True,
+            cwd=str(execution_path), capture_output=True,
             env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
                  "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
         )

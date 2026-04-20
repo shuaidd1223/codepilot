@@ -5,6 +5,7 @@ Split out from run.py for maintainability. Re-exported by run.py.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Optional
@@ -68,7 +69,9 @@ def _resolve_project_worktree_base(project_info: dict, config=None) -> Path:
             candidate = (project_path / candidate).resolve()
         return candidate
     project_name = (project_info.get("name") or project_path.name or "project").strip()
-    return Path.home() / ".codepilot" / "worktrees" / _slugify_path_part(project_name, max_length=64, fallback="project")
+    slug = _slugify_path_part(project_name, max_length=48, fallback="project")
+    fingerprint = hashlib.sha1(str(project_path).encode("utf-8")).hexdigest()[:10]
+    return Path.home() / ".codepilot" / "worktrees" / f"{slug}-{fingerprint}"
 
 
 def _task_worktree_path(project_info: dict, *, task_id: int, title: str, config=None) -> Path:
@@ -161,6 +164,11 @@ def _git_prune_worktrees(project_path: Path) -> None:
         raise RuntimeError(f"清理 git worktree 元数据失败:\n{output}")
 
 
+def _git_merge_in_progress(project_path: Path) -> bool:
+    code, _ = _run_command(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=project_path, timeout=30)
+    return code == 0
+
+
 def _path_is_empty_directory(path: Path) -> bool:
     return path.is_dir() and not any(path.iterdir())
 
@@ -175,17 +183,16 @@ def _git_prepare_task_worktree(
 ) -> tuple[str, Path]:
     if not _git_is_repo(project_path):
         return "", project_path.resolve()
+    _git_prune_worktrees(project_path)
     if not _git_local_branch_exists(project_path, base_branch):
-        current = _git_current_branch(project_path)
-        if current:
-            base_branch = current
-        else:
-            return "", project_path.resolve()
+        raise RuntimeError(
+            f"配置的 base_branch `{base_branch}` 在本地不存在，无法创建任务 worktree。"
+            "请先创建该分支，或修正项目配置。"
+        )
 
     target_path = Path(worktree_path).expanduser().resolve()
     task_branch = _task_branch_name(task_id, title)
     target_detail = _git_get_worktree_detail(project_path, target_path)
-    reusing_existing_branch = False
     if target_detail:
         if target_path == project_path.resolve():
             raise RuntimeError(f"目标 worktree 路径不能指向主工作区: {target_path}")
@@ -196,8 +203,7 @@ def _git_prepare_task_worktree(
                 f"目标 worktree 路径已被其他分支占用: {target_path} ({branch_label})\n"
                 "请先手动清理该 worktree 或更换 worktree_base。"
             )
-        reusing_existing_branch = True
-        _git_cleanup_task_worktree(project_path, worktree_path=target_path, task_branch=task_branch, keep_branch=True)
+        return task_branch, target_path
     elif target_path.exists() and not _path_is_empty_directory(target_path):
         raise RuntimeError(
             f"目标 worktree 路径已存在且不属于当前仓库: {target_path}\n"
@@ -211,16 +217,16 @@ def _git_prepare_task_worktree(
             f"任务分支已被其他 worktree 占用: {task_branch} ({conflict_path})\n"
             "请先清理旧 worktree，避免覆盖已有任务上下文。"
         )
-    if _git_local_branch_exists(project_path, task_branch) and not reusing_existing_branch:
-        raise RuntimeError(
-            f"任务分支已存在，拒绝直接重置: {task_branch}\n"
-            "请先手动删除/合并该分支，或清理对应 worktree 后重试。"
-        )
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["git", "worktree", "add", "--force"]
+    if _git_local_branch_exists(project_path, task_branch):
+        cmd.extend([str(target_path), task_branch])
+    else:
+        cmd.extend(["-b", task_branch, str(target_path), base_branch])
 
     code, output = _run_command(
-        ["git", "worktree", "add", "--force", "-B", task_branch, str(target_path), base_branch],
+        cmd,
         cwd=project_path,
         timeout=300,
     )
@@ -300,13 +306,18 @@ def _git_merge_task_worktree(
 ) -> str:
     """Merge a task-branch worktree back into base_branch on the main project.
 
-    主工作目录 (``project_path``) 会先 checkout 到 ``base_branch``，再对
-    ``task_branch`` 做 ``git merge --no-ff --no-edit``；合并成功后会
-    ``_git_cleanup_task_worktree`` 掉整个 worktree 目录并删除对应的 task 分支。
-    合并失败时直接向上抛异常，**不吞错**，由调用方决定是否进入 triage 流程。
+    任务执行发生在独立 ``worktree_path``；主工作目录 ``project_path`` 只负责
+    保持在 ``base_branch`` 并执行最终 merge。若任务 worktree 仍有未提交改动，
+    会先报错并保留现场，避免把未提交结果直接清理掉。
     """
     if not _git_is_repo(project_path) or not task_branch or task_branch == base_branch:
         return ""
+    task_worktree = Path(worktree_path).expanduser().resolve()
+    if _git_has_changes(task_worktree):
+        raise RuntimeError(
+            "任务 worktree 存在未提交改动，无法自动合并回 base_branch。"
+            "请先在该 worktree 内提交改动，或在本次执行启用 auto-commit。"
+        )
     _git_checkout(project_path, base_branch)
     merge_code, merge_output = _run_command(
         ["git", "merge", "--no-ff", "--no-edit", task_branch],
@@ -314,16 +325,29 @@ def _git_merge_task_worktree(
         timeout=300,
     )
     if merge_code != 0:
-        raise RuntimeError(f"合并任务分支失败:\n{merge_output}")
-    _git_cleanup_task_worktree(
-        project_path,
-        worktree_path=worktree_path,
-        task_branch=task_branch,
-        keep_branch=False,
-    )
+        recovery_note = ""
+        if _git_merge_in_progress(project_path):
+            abort_code, abort_output = _run_command(["git", "merge", "--abort"], cwd=project_path, timeout=120)
+            if abort_code != 0:
+                recovery_note = f"\n另外，自动执行 `git merge --abort` 失败:\n{abort_output}"
+            else:
+                recovery_note = "\n已自动执行 `git merge --abort`，主工作区保持在 base_branch。"
+        raise RuntimeError(f"合并任务分支失败:\n{merge_output}{recovery_note}")
     safe_title = " ".join((title or "").strip().split())[:60]
     merged_title = safe_title or f"task #{task_id}"
-    return f"已合并 `{task_branch}` -> `{base_branch}` ({merged_title}) [worktree]"
+    summary = f"已合并 `{task_branch}` -> `{base_branch}` ({merged_title}) [worktree]"
+    try:
+        _git_cleanup_task_worktree(
+            project_path,
+            worktree_path=worktree_path,
+            task_branch=task_branch,
+            keep_branch=False,
+        )
+    except Exception as exc:
+        cleanup_note = f"已合并成功，但清理任务 worktree 失败: {exc}"
+        click.echo(f"  [warn] {cleanup_note}")
+        summary = f"{summary} | cleanup: {cleanup_note}"
+    return summary
 
 
 def _git_merge_task_branch(
