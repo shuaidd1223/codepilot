@@ -35,6 +35,7 @@ _LOG_DIR = Path.home() / ".codepilot" / "logs"
 _LOG_FILE = _LOG_DIR / "codepilot.log"
 _LOGGER_NAME = "codepilot"
 _CONFIGURED = False
+_PYTEST_CAPTURE_HANDLER = ("_pytest.logging", "LogCaptureHandler")
 
 
 def _resolve_log_level() -> int:
@@ -51,10 +52,11 @@ def _ensure_configured() -> logging.Logger:
     global _CONFIGURED
     logger = logging.getLogger(_LOGGER_NAME)
     if _CONFIGURED:
+        _sync_pytest_capture_handler(logger)
         return logger
 
     logger.setLevel(_resolve_log_level())
-    logger.propagate = False  # don't duplicate into root logger / pytest capture
+    logger.propagate = False  # don't duplicate into root logger; pytest capture is bridged explicitly
 
     fmt = logging.Formatter(
         fmt="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
@@ -86,7 +88,43 @@ def _ensure_configured() -> logging.Logger:
     logger.addHandler(stream_handler)
 
     _CONFIGURED = True
+    _sync_pytest_capture_handler(logger)
     return logger
+
+
+def _is_pytest_capture_handler(handler: logging.Handler) -> bool:
+    handler_type = handler.__class__
+    return (
+        handler_type.__module__,
+        handler_type.__name__,
+    ) == _PYTEST_CAPTURE_HANDLER
+
+
+def _sync_pytest_capture_handler(logger: logging.Logger) -> None:
+    """Mirror pytest's caplog handler while keeping ``propagate`` disabled.
+
+    ``caplog`` listens through a ``LogCaptureHandler`` attached to the
+    root logger. Since ``codepilot`` deliberately keeps ``propagate``
+    disabled to avoid duplicate console output, pytest would otherwise
+    miss our records. When pytest's capture handler is present, attach
+    that exact handler object to the base logger as well.
+    """
+    root_handlers = [
+        handler
+        for handler in logging.getLogger().handlers
+        if _is_pytest_capture_handler(handler)
+    ]
+    attached_handlers = [
+        handler for handler in logger.handlers if _is_pytest_capture_handler(handler)
+    ]
+
+    for handler in attached_handlers:
+        if handler not in root_handlers:
+            logger.removeHandler(handler)
+
+    for handler in root_handlers:
+        if handler not in logger.handlers:
+            logger.addHandler(handler)
 
 
 def get_logger(suffix: Optional[str] = None) -> logging.Logger:

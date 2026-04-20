@@ -72,9 +72,8 @@ def test_inline_api_key_in_agents_toml_logs_warning(_isolate, monkeypatch, caplo
         '[providers.openai-gpt4o]\napi_key = "sk-inline"\n',
     )
 
-    # Make sure the codepilot logger forwards into caplog. The handler
-    # configured by codepilot.logger has propagate=False, so we attach
-    # our own listener on it.
+    # codepilot keeps propagate=False to avoid duplicate console output;
+    # logger.py mirrors pytest's capture handler so caplog still sees it.
     from codepilot import logger as logger_mod
 
     logger_mod.reset_for_tests()

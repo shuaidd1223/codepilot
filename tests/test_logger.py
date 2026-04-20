@@ -43,3 +43,16 @@ def test_log_respects_env_level(monkeypatch, tmp_path):
 
     logger = logger_mod.get_logger()
     assert logger.level == logging.DEBUG
+
+
+def test_caplog_captures_warning_without_enabling_propagation(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(logger_mod, "_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(logger_mod, "_LOG_FILE", tmp_path / "logs" / "codepilot.log")
+
+    logger = logger_mod.get_logger("config")
+    caplog.set_level(logging.WARNING, logger=logger.name)
+
+    logger.warning("inline secret warning")
+
+    assert [rec.getMessage() for rec in caplog.records] == ["inline secret warning"]
+    assert logger_mod.get_logger().propagate is False
