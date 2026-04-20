@@ -265,7 +265,7 @@ dist/release/codepilot-<version>
 
 ## 配置说明
 
-`AGENTS.toml` 当前重点使用这些配置：
+当前仓库的 `AGENTS.toml` 当前重点使用这些配置：
 
 ```toml
 [project]
@@ -278,6 +278,10 @@ executor = "builtin"
 auto_execute = true
 auto_commit = true
 
+[inspect]
+planner = "codex"
+auto_execute = false
+
 [agents]
 codex_cmd = "codex"
 claude_cmd = "claude"
@@ -287,12 +291,15 @@ claude_cmd = "claude"
 
 - `default_mode = "codex"` 表示默认任务智能体
 - `planner = "codex"` 表示默认规划器
+- `[inspect].planner = "codex"` 表示默认巡检规划器
 - `[agents]` 中的 `codex_cmd / claude_cmd` 会真正覆盖运行时 CLI 路径
 
-## 当前默认行为
+## 当前仓库配置行为
 
-- 默认项目模式是 `codex`
-- 默认规划器是 `codex`
+- 当前仓库的 `AGENTS.toml` 把项目模式设为 `codex`
+- 当前仓库的 `AGENTS.toml` 把规划器设为 `codex`
+- 当前仓库的 `AGENTS.toml` 把巡检规划器设为 `codex`
+- 运行时仍可按任务或命令动态指定其他智能体
 - Codex 规划超时时，会自动降级成单任务继续执行
 - 内置执行器会在执行前检查 Git 状态
 - 如果工作区已脏、还没初始化 Git，或者 reviewer 无法正常运行，会提前给出自然语言提示

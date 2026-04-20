@@ -42,8 +42,8 @@ per_task_branch = true
 [inspect]
 # 定时巡检开关；开启后配合 `codepilot daemon` 会自动周期扫描
 enabled = true
-# 巡检 LLM —— 用 claude 做分析、推理（快）
-planner = "claude"
+# 当前项目巡检配置走 codex；如需切回 claude，直接改这里
+planner = "codex"
 # 每多久跑一轮（秒）
 interval_seconds = 1800
 # 每轮最多产出几条候选任务
