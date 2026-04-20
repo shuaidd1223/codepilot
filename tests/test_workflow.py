@@ -1684,6 +1684,62 @@ def test_run_backlog_requeues_when_merge_back_fails_with_uncommitted_changes(tmp
     assert output.strip() == base_branch
 
 
+def test_run_backlog_keeps_builtin_worktree_changes_isolated_before_merge(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    db.register_project("demo", str(project_path), base_branch=base_branch)
+    task = db.create_task("demo", "isolate worktree writes", agent="dual", max_retries=2)
+    captured = {}
+
+    def _fake_executor(*args, **kwargs):
+        execution_path = Path(kwargs["execution_path"]).resolve()
+        captured["execution_path"] = execution_path
+        (execution_path / "isolated.txt").write_text("worktree only\n", encoding="utf-8")
+        return run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin")
+
+    def _fake_merge(project_root, **kwargs):
+        execution_path = Path(kwargs["worktree_path"]).resolve()
+        captured["merge_path"] = execution_path
+        captured["main_branch"] = run_cmd._git_current_branch(project_root)
+        captured["main_has_file"] = (project_root / "isolated.txt").exists()
+        captured["worktree_has_file"] = (execution_path / "isolated.txt").exists()
+        return "merge skipped for isolation test"
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", _fake_executor)
+    monkeypatch.setattr(run_cmd, "_git_merge_task_worktree", _fake_merge)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+
+    assert stats["done"] == 1
+    assert current["status"] == "done"
+    assert captured["execution_path"] != project_path.resolve()
+    assert captured["merge_path"] == captured["execution_path"]
+    assert captured["main_branch"] == base_branch
+    assert captured["main_has_file"] is False
+    assert captured["worktree_has_file"] is True
+    assert current["worktree_path"] != str(project_path.resolve())
+    assert (project_path / "isolated.txt").exists() is False
+
+    run_cmd._git_cleanup_task_worktree(
+        project_path,
+        worktree_path=captured["execution_path"],
+        task_branch=current["branch_name"],
+    )
+
+
 def test_git_merge_task_worktree_aborts_conflicted_merge_and_keeps_main_clean(tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()
@@ -1832,6 +1888,67 @@ def test_run_backlog_requires_main_worktree_on_base_branch_for_builtin_worktree_
     assert stats["requeued"] == 1
     assert current["status"] == "backlog"
     assert "主工作区当前位于" in (current["error_message"] or "")
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
+    assert code == 0
+    assert output.strip() == "topic"
+
+
+def test_run_backlog_falls_back_to_main_workspace_when_per_task_branch_disabled(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    subprocess.run(["git", "checkout", "-b", "topic"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "AGENTS.toml").write_text(
+        f"""
+[project]
+name = "demo"
+base_branch = "{base_branch}"
+
+[automation]
+per_task_branch = false
+""".strip(),
+        encoding="utf-8",
+    )
+
+    db.register_project("demo", str(project_path), base_branch=base_branch)
+    task = db.create_task("demo", "compat fallback", agent="dual", max_retries=2)
+    captured = {}
+
+    def _forbid_worktree(*args, **kwargs):
+        raise AssertionError("per_task_branch=false should not prepare or merge worktrees")
+
+    def _fake_executor(*args, **kwargs):
+        execution_path = Path(kwargs["execution_path"]).resolve()
+        captured["execution_path"] = execution_path
+        (execution_path / "compat.txt").write_text("main workspace\n", encoding="utf-8")
+        return run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin")
+
+    monkeypatch.setattr(run_cmd, "_git_prepare_task_worktree", _forbid_worktree)
+    monkeypatch.setattr(run_cmd, "_git_merge_task_worktree", _forbid_worktree)
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", _fake_executor)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+
+    assert stats["done"] == 1
+    assert current["status"] == "done"
+    assert current["branch_name"] == "topic"
+    assert current["worktree_path"] == str(project_path.resolve())
+    assert captured["execution_path"] == project_path.resolve()
+    assert (project_path / "compat.txt").read_text(encoding="utf-8") == "main workspace\n"
+    assert run_cmd._git_list_worktrees(project_path) == [project_path.resolve()]
+
     code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
     assert code == 0
     assert output.strip() == "topic"
