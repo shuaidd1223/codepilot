@@ -356,6 +356,7 @@ def _build_review_prompt(
     task: dict,
     *,
     review_round: int = 1,
+    previous_findings: str = "",
 ) -> str:
     """Compose the Reviewer prompt with acceptance-criteria-driven checklist."""
     sections = _extract_task_sections(task.get("content") or "")
@@ -366,7 +367,11 @@ def _build_review_prompt(
         f"请审查当前仓库中为任务 #{task['id']} `{task['title']}` 产生的未提交改动。",
     ]
     if review_round > 1:
-        lines.append(f"（这是第 {review_round} 轮审查，之前有过 FAIL 结论，请重新判断）")
+        lines.append(
+            f"（这是第 {review_round} 轮审查。根据 reviewer_rules 的硬约束，"
+            "本轮你只能复核上一轮已经提出过的阻塞点是否修复；"
+            "任何新发现的问题都放到「非阻塞观察」里，不计入 FAIL 理由。）"
+        )
 
     if acceptance:
         lines.append("")
@@ -382,6 +387,11 @@ def _build_review_prompt(
         lines.append("【补充检查项（来自规划器的 reviewer 提示）】")
         for item in reviewer_notes:
             lines.append(f"  - {item}")
+
+    if review_round > 1 and previous_findings.strip():
+        lines.append("")
+        lines.append("【上一轮给 builder 的阻塞意见（本轮只复核这些是否已修复）】")
+        lines.append(previous_findings.strip())
 
     lines.append("")
     lines.append(_load_prompt("reviewer_rules").rstrip())
@@ -433,8 +443,15 @@ def _run_builtin_phase(
     output_path: Path,
     timeout: int,
     config_ref: str | Path | None = None,
+    display_phase: Optional[str] = None,
 ) -> tuple[str, int, str]:
-    """Execute one builtin phase with the requested agent."""
+    """Execute one builtin phase with the requested agent.
+
+    ``phase`` drives CLI behavior (``builder`` vs ``reviewer``). ``display_phase``
+    is what gets persisted on ``tasks.run_phase`` for the dashboard — use it to
+    surface round info like ``"builder r2/4"`` without breaking the phase
+    dispatch checks below.
+    """
     # stub 注入钩子：e2e 测试可通过 ai._phase_stub 替换真实 CLI 调用
     from codepilot import ai as _ai_hook
     if _ai_hook._phase_stub is not None:
@@ -442,6 +459,7 @@ def _run_builtin_phase(
 
     runner, model = _resolve_builtin_phase_agent(task.get("agent", "dual"), phase)
     task_id = int(task.get("id") or 0)
+    heartbeat_phase = display_phase or phase
     provider_ref = config_ref or project_path
     available, message = check_provider_availability(runner, project_path=provider_ref)
     if not available:
@@ -481,7 +499,7 @@ def _run_builtin_phase(
             exit_code, console = _run_command_live(
                 cmd,
                 task_id=task_id,
-                phase=phase,
+                phase=heartbeat_phase,
                 log_path=console_log,
                 cwd=project_path,
                 timeout=timeout,
@@ -515,7 +533,7 @@ def _run_builtin_phase(
         exit_code, console = _run_command_live(
             cmd,
             task_id=task_id,
-            phase=phase,
+            phase=heartbeat_phase,
             log_path=console_log,
             cwd=project_path,
             timeout=timeout,
@@ -629,6 +647,11 @@ def _run_builder_round(
         review_round=round_num,
         previous_review_feedback=previous_findings,
     )
+    display_phase = (
+        "builder"
+        if round_num == 1
+        else f"builder r{round_num}/{ctx.max_rounds}"
+    )
     agent, exit_code, output = _run_builtin_phase(
         task=ctx.task,
         project_path=ctx.project_path,
@@ -637,6 +660,7 @@ def _run_builder_round(
         output_path=output_path,
         timeout=3600,
         config_ref=ctx.config_ref,
+        display_phase=display_phase,
     )
     phase_name = "builder" if round_num == 1 else f"builder-r{round_num}"
     _write_task_log(ctx.task["id"], agent, phase_name, output, exit_code, started)
@@ -647,6 +671,7 @@ def _run_reviewer_round(
     ctx: _ExecutorContext,
     *,
     round_num: int,
+    previous_findings: str = "",
 ) -> _PhaseOutcome:
     """Run one reviewer invocation; persist a task_log row on completion."""
     from codepilot import progress_bus
@@ -662,7 +687,16 @@ def _run_reviewer_round(
     )
 
     started = datetime.now()
-    prompt = _build_review_prompt(ctx.task, review_round=round_num)
+    prompt = _build_review_prompt(
+        ctx.task,
+        review_round=round_num,
+        previous_findings=previous_findings,
+    )
+    display_phase = (
+        "reviewer"
+        if round_num == 1
+        else f"reviewer r{round_num}/{ctx.max_rounds}"
+    )
     agent, exit_code, output = _run_builtin_phase(
         task=ctx.task,
         project_path=ctx.project_path,
@@ -671,6 +705,7 @@ def _run_reviewer_round(
         output_path=output_path,
         timeout=1800,
         config_ref=ctx.config_ref,
+        display_phase=display_phase,
     )
     phase_name = "reviewer" if round_num == 1 else f"reviewer-r{round_num}"
     _write_task_log(ctx.task["id"], agent, phase_name, output, exit_code, started)
@@ -753,7 +788,11 @@ def _run_builtin_executor(
                 executor="builtin",
             )
 
-        reviewer = _run_reviewer_round(ctx, round_num=round_num)
+        reviewer = _run_reviewer_round(
+            ctx,
+            round_num=round_num,
+            previous_findings=previous_findings,
+        )
         if reviewer.exit_code != 0:
             return ExecutionResult(
                 exit_code=reviewer.exit_code,
