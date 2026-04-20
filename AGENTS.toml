@@ -6,8 +6,8 @@
 name = "codepilot-dev"
 # Git 主分支
 base_branch = "dev"
-# 默认任务智能体（写代码 / 执行任务 —— codex）
-default_mode = "codex"
+# 默认任务智能体：dual = builder=codex（写代码） + reviewer=claude（审核）
+default_mode = "dual"
 # Worktree 隔离目录，空值则自动推导到 ~/.codepilot/worktrees/<project>/
 worktree_base = ""
 
@@ -23,8 +23,8 @@ interval_seconds = 600
 stale_minutes = 30
 
 [automation]
-# 纯文本需求 —— 规划和执行统一走 codex（擅长写代码）
-planner = "codex"
+# 规划走 claude（分析/审核强），执行由 dual 驱动（builder=codex，reviewer=claude）
+planner = "claude"
 executor = "builtin"
 # 输入需求后默认直接执行；如果只想先规划，可命令行加 --no-execute
 auto_execute = true
@@ -36,14 +36,16 @@ auto_commit = true
 max_tasks = 5
 # 每个子任务最多重试次数
 max_retries = 3
+# builder ↔ reviewer 闭环最大轮数；reviewer 判 FAIL 时 builder 会收到意见继续迭代
+max_review_rounds = 4
 # 为每个任务自动创建 feat/task-<id>-<slug> 分支，成功后合并回 base_branch
 per_task_branch = true
 
 [inspect]
 # 定时巡检开关；开启后配合 `codepilot daemon` 会自动周期扫描
 enabled = true
-# 当前项目巡检配置走 codex；如需切回 claude，直接改这里
-planner = "codex"
+# 巡检规划走 claude，和 [automation].planner 保持一致
+planner = "claude"
 # 每多久跑一轮（秒）
 interval_seconds = 1800
 # 每轮最多产出几条候选任务

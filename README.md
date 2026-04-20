@@ -270,16 +270,17 @@ dist/release/codepilot-<version>
 ```toml
 [project]
 name = "demo"
-default_mode = "codex"
+default_mode = "dual"
 
 [automation]
-planner = "codex"
+planner = "claude"
 executor = "builtin"
 auto_execute = true
 auto_commit = true
+max_review_rounds = 4
 
 [inspect]
-planner = "codex"
+planner = "claude"
 auto_execute = false
 
 [agents]
@@ -289,16 +290,18 @@ claude_cmd = "claude"
 
 关键点：
 
-- `default_mode = "codex"` 表示默认任务智能体
-- `planner = "codex"` 表示默认规划器
-- `[inspect].planner = "codex"` 表示默认巡检规划器
+- `default_mode = "dual"` 表示 builder=codex（写代码）+ reviewer=claude（审核）
+- `planner = "claude"` 表示默认规划器使用 claude
+- `[inspect].planner = "claude"` 表示默认巡检规划器使用 claude
+- `max_review_rounds = 4` 给 reviewer ↔ builder 闭环足够迭代空间；reviewer 判 FAIL 时，意见会作为 `【上一轮 reviewer 的阻塞意见】` 注入下一轮 builder prompt，让它针对性修复而非重写
 - `[agents]` 中的 `codex_cmd / claude_cmd` 会真正覆盖运行时 CLI 路径
 
 ## 当前仓库配置行为
 
-- 当前仓库的 `AGENTS.toml` 把项目模式设为 `codex`
-- 当前仓库的 `AGENTS.toml` 把规划器设为 `codex`
-- 当前仓库的 `AGENTS.toml` 把巡检规划器设为 `codex`
+- 当前仓库的 `AGENTS.toml` 把项目模式设为 `dual`（builder=codex，reviewer=claude）
+- 当前仓库的 `AGENTS.toml` 把规划器设为 `claude`
+- 当前仓库的 `AGENTS.toml` 把巡检规划器设为 `claude`
+- 当前仓库的 `AGENTS.toml` 把 builder/reviewer 闭环轮数设为 4
 - 运行时仍可按任务或命令动态指定其他智能体
 - Codex 规划超时时，会自动降级成单任务继续执行
 - 内置执行器会在执行前检查 Git 状态
