@@ -65,6 +65,7 @@ from codepilot.commands.run_git import (  # noqa: F401
     _git_is_repo,
     _git_local_branch_exists,
     _git_merge_task_branch,
+    _git_merge_task_worktree,
     _git_prepare_task_worktree,
     _git_prune_worktrees,
     _git_prepare_task_branch,
@@ -199,11 +200,26 @@ def _builtin_preflight_error(project_path: Path, auto_commit: bool, agent_mode: 
         )
     if auto_commit and _git_has_changes(project_path):
         return (
-            "内置执行器检测到当前工作区已有未提交改动。"
-            "为避免把现有改动和任务结果混在同一次自动提交中，本次跳过执行且不消耗重试次数。"
+            "内置执行器检测到主工作区已有未提交改动。"
+            "为避免 run 结束后回合并到 base_branch 时卡住，本次跳过执行且不消耗重试次数。"
             "请先提交/暂存现有改动，或改用 --no-auto-commit 再执行。"
         )
     return ""
+
+
+def _builtin_base_branch_lock_error(project_path: Path, base_branch: str) -> str:
+    """Ensure the main worktree stays pinned to ``base_branch`` during builtin runs."""
+    if not _git_is_repo(project_path):
+        return ""
+    if not _git_local_branch_exists(project_path, base_branch):
+        return ""
+    current_branch = _git_current_branch(project_path)
+    if current_branch == base_branch:
+        return ""
+    return (
+        f"主工作区当前位于 `{current_branch}`，run 前请先切回 base_branch `{base_branch}`。"
+        "独立 worktree 执行要求主目录固定在 base_branch。"
+    )
 
 
 def _task_phase_override(task: Optional[dict], key: str) -> Optional[str]:
@@ -819,6 +835,7 @@ def _run_builtin_executor(
     auto_commit: bool = True,
     *,
     max_review_rounds: int = 2,
+    execution_path: Path | None = None,
 ) -> ExecutionResult:
     """Execute a task with Codex/Claude CLI, review, and retry on FAIL.
 
@@ -828,13 +845,14 @@ def _run_builtin_executor(
     in ``_run_builder_round`` / ``_run_reviewer_round``; this function only
     owns the loop, the verdict decision, and the final commit/summary step.
     """
-    project_path = Path(project["path"])
+    project_path = Path(project["path"]).resolve()
+    working_path = Path(execution_path).resolve() if execution_path is not None else project_path
     effective_agent_mode = (
         "codex"
         if _builtin_review_requires_git(task.get("agent", "codex"), task=task, project_ref=project)
         else "dual"
     )
-    preflight_error = _builtin_preflight_error(project_path, auto_commit, effective_agent_mode)
+    preflight_error = _builtin_preflight_error(working_path, auto_commit, effective_agent_mode)
     if preflight_error:
         raise RuntimeError(preflight_error)
 
@@ -843,7 +861,7 @@ def _run_builtin_executor(
     ctx = _ExecutorContext(
         task=task,
         project=project,
-        project_path=project_path,
+        project_path=working_path,
         config_ref=project.get("config_file") or project_path,
         output_dir=_builtin_runtime_dir(project),
         task_file=task_file,
@@ -1033,7 +1051,7 @@ def run_backlog(
         )
         return {"processed": 0, "done": 0, "failed": 0, "requeued": 0, "cancelled": 0, "executor": executor}
 
-    project_path = Path(proj["path"])
+    project_path = Path(proj["path"]).resolve()
     config = _project_config(proj)
     base_branch = _resolve_project_base_branch(proj, config)
     preferred_shell = shell if shell != "auto" else ((config.shell.preferred if config else "") or "")
@@ -1081,21 +1099,27 @@ def run_backlog(
             )
             preflight_error = _builtin_preflight_error(project_path, auto_commit, effective_agent_mode)
         task_branch = _git_current_branch(project_path)
-        # 只在 builtin 执行器启用自动分支；dispatch 模式会在工作区写任务文件，行为不受影响
+        execution_path = project_path
+        # builtin 默认在独立 worktree 中执行；关闭该开关时回退到主工作区直接执行。
         per_task_branch_enabled = (
             resolved_executor == "builtin"
             and bool(getattr(getattr(config, "automation", None), "per_task_branch", True))
         )
         if per_task_branch_enabled and not preflight_error and not dry_run:
             try:
-                prepared_branch = _git_prepare_task_branch(
+                lock_error = _builtin_base_branch_lock_error(project_path, base_branch)
+                if lock_error:
+                    raise RuntimeError(lock_error)
+                prepared_branch, prepared_worktree = _git_prepare_task_worktree(
                     project_path,
                     task_id=task_id,
                     title=task["title"],
                     base_branch=base_branch,
+                    worktree_path=_task_worktree_path(proj, task_id=task_id, title=task["title"], config=config),
                 )
                 if prepared_branch:
                     task_branch = prepared_branch
+                execution_path = prepared_worktree
             except Exception as exc:
                 preflight_error = str(exc)
         if preflight_error:
@@ -1123,7 +1147,7 @@ def run_backlog(
             status="in_progress",
             started_at=datetime.now().isoformat(),
             branch_name=task_branch,
-            worktree_path=str(project_path),
+            worktree_path=str(execution_path),
             stop_requested=0,
             stop_reason=None,
             run_phase="pending",
@@ -1161,6 +1185,7 @@ def run_backlog(
                     task_file,
                     auto_commit=auto_commit,
                     max_review_rounds=max_review_rounds,
+                    execution_path=execution_path,
                 )
         except TaskCancelled as exc:
             clear_task_runtime(
@@ -1207,12 +1232,13 @@ def run_backlog(
 
         if result.exit_code == 0 and per_task_branch_enabled:
             try:
-                merge_summary = _git_merge_task_branch(
+                merge_summary = _git_merge_task_worktree(
                     project_path,
                     task_id=task_id,
                     title=task["title"],
                     task_branch=task_branch,
                     base_branch=base_branch,
+                    worktree_path=execution_path,
                 )
                 if merge_summary:
                     result.summary = " | ".join(part for part in [result.summary, merge_summary] if part)

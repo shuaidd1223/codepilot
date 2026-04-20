@@ -1330,6 +1330,129 @@ def test_git_prepare_task_worktree_allows_existing_empty_dir(tmp_path):
     assert worktree_path.exists() is False
 
 
+def test_git_prepare_task_worktree_reuses_existing_task_worktree_without_reset(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    expected_path = run_cmd._task_worktree_path(project_info, task_id=9, title="Reuse worktree")
+
+    branch_name, worktree_path = run_cmd._git_prepare_task_worktree(
+        project_path,
+        task_id=9,
+        title="Reuse worktree",
+        base_branch=base_branch,
+        worktree_path=expected_path,
+    )
+    dirty_file = worktree_path / "dirty.txt"
+    dirty_file.write_text("preserve me", encoding="utf-8")
+
+    branch_name2, worktree_path2 = run_cmd._git_prepare_task_worktree(
+        project_path,
+        task_id=9,
+        title="Reuse worktree",
+        base_branch=base_branch,
+        worktree_path=expected_path,
+    )
+
+    assert branch_name2 == branch_name
+    assert worktree_path2 == worktree_path
+    assert dirty_file.exists()
+    assert dirty_file.read_text(encoding="utf-8") == "preserve me"
+
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=worktree_path, task_branch=branch_name)
+
+
+def test_git_prepare_task_worktree_attaches_existing_task_branch_without_reset(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    task_branch = run_cmd._task_branch_name(10, "Attach branch")
+    subprocess.run(["git", "checkout", "-b", task_branch], cwd=project_path, capture_output=True, check=True)
+    (project_path / "feature.txt").write_text("keep branch history\n", encoding="utf-8")
+    subprocess.run(["git", "add", "feature.txt"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "feature"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "checkout", base_branch], cwd=project_path, capture_output=True, check=True)
+
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    expected_path = run_cmd._task_worktree_path(project_info, task_id=10, title="Attach branch")
+
+    branch_name, worktree_path = run_cmd._git_prepare_task_worktree(
+        project_path,
+        task_id=10,
+        title="Attach branch",
+        base_branch=base_branch,
+        worktree_path=expected_path,
+    )
+
+    assert branch_name == task_branch
+    assert worktree_path == expected_path.resolve()
+    assert (worktree_path / "feature.txt").read_text(encoding="utf-8") == "keep branch history\n"
+
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=worktree_path, task_branch=branch_name)
+
+
+def test_git_prepare_task_worktree_requires_existing_base_branch(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    expected_path = run_cmd._task_worktree_path(project_info, task_id=11, title="Missing base")
+
+    with pytest.raises(RuntimeError, match="base_branch `missing` .*不存在"):
+        run_cmd._git_prepare_task_worktree(
+            project_path,
+            task_id=11,
+            title="Missing base",
+            base_branch="missing",
+            worktree_path=expected_path,
+        )
+
+
 def test_git_prepare_task_worktree_refuses_other_branch_on_same_path(tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()
@@ -1507,6 +1630,7 @@ def test_run_backlog_creates_task_branch_and_checks_out_base_after_merge(tmp_pat
     assert stats["done"] == 1
     assert current["status"] == "done"
     assert current["branch_name"] == expected_branch
+    assert current["worktree_path"] != str(project_path)
 
     code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
     assert code == 0
@@ -1536,7 +1660,8 @@ def test_run_backlog_requeues_when_merge_back_fails_with_uncommitted_changes(tmp
     task = db.create_task("demo", "leave dirty file", agent="dual", max_retries=3)
 
     def _fake_executor(*args, **kwargs):
-        (project_path / "dirty.txt").write_text("left dirty", encoding="utf-8")
+        execution_path = Path(kwargs["execution_path"])
+        (execution_path / "dirty.txt").write_text("left dirty", encoding="utf-8")
         return run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin")
 
     monkeypatch.setattr(run_cmd, "_run_builtin_executor", _fake_executor)
@@ -1549,10 +1674,167 @@ def test_run_backlog_requeues_when_merge_back_fails_with_uncommitted_changes(tmp
     assert current["status"] == "backlog"
     assert current["retry_count"] == 1
     assert "回合并失败" in (current["error_message"] or "")
+    assert current["worktree_path"] != str(project_path)
+    assert Path(current["worktree_path"]).exists()
+    assert (Path(current["worktree_path"]) / "dirty.txt").exists()
+    assert (project_path / "dirty.txt").exists() is False
 
     code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
     assert code == 0
-    assert output.strip() == expected_branch
+    assert output.strip() == base_branch
+
+
+def test_git_merge_task_worktree_aborts_conflicted_merge_and_keeps_main_clean(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "shared.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "shared.txt"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    expected_path = run_cmd._task_worktree_path(project_info, task_id=12, title="Conflicting merge")
+    task_branch, worktree_path = run_cmd._git_prepare_task_worktree(
+        project_path,
+        task_id=12,
+        title="Conflicting merge",
+        base_branch=base_branch,
+        worktree_path=expected_path,
+    )
+
+    (worktree_path / "shared.txt").write_text("task branch\n", encoding="utf-8")
+    subprocess.run(["git", "add", "shared.txt"], cwd=worktree_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "task change"], cwd=worktree_path, capture_output=True, check=True)
+
+    (project_path / "shared.txt").write_text("base branch\n", encoding="utf-8")
+    subprocess.run(["git", "add", "shared.txt"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "base change"], cwd=project_path, capture_output=True, check=True)
+
+    with pytest.raises(RuntimeError, match="已自动执行 `git merge --abort`"):
+        run_cmd._git_merge_task_worktree(
+            project_path,
+            task_id=12,
+            title="Conflicting merge",
+            task_branch=task_branch,
+            base_branch=base_branch,
+            worktree_path=worktree_path,
+        )
+
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
+    assert code == 0
+    assert output.strip() == base_branch
+    assert run_cmd._git_has_changes(project_path) is False
+    merge_head_code, _ = run_cmd._run_command(
+        ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        cwd=project_path,
+        timeout=30,
+    )
+    assert merge_head_code != 0
+    assert run_cmd._git_worktree_exists(project_path, worktree_path) is True
+    assert (project_path / "shared.txt").read_text(encoding="utf-8") == "base branch\n"
+
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=worktree_path, task_branch=task_branch)
+
+
+def test_git_merge_task_worktree_keeps_success_when_cleanup_fails(tmp_path, monkeypatch):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+    from codepilot.commands import run_git as run_git_cmd
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "shared.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "shared.txt"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    expected_path = run_cmd._task_worktree_path(project_info, task_id=13, title="Cleanup failure")
+    task_branch, worktree_path = run_cmd._git_prepare_task_worktree(
+        project_path,
+        task_id=13,
+        title="Cleanup failure",
+        base_branch=base_branch,
+        worktree_path=expected_path,
+    )
+
+    (worktree_path / "shared.txt").write_text("merged change\n", encoding="utf-8")
+    subprocess.run(["git", "add", "shared.txt"], cwd=worktree_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "task change"], cwd=worktree_path, capture_output=True, check=True)
+
+    monkeypatch.setattr(
+        run_git_cmd,
+        "_git_cleanup_task_worktree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("cleanup exploded")),
+    )
+
+    summary = run_cmd._git_merge_task_worktree(
+        project_path,
+        task_id=13,
+        title="Cleanup failure",
+        task_branch=task_branch,
+        base_branch=base_branch,
+        worktree_path=worktree_path,
+    )
+
+    assert "已合并" in summary
+    assert "cleanup exploded" in summary
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
+    assert code == 0
+    assert output.strip() == base_branch
+    assert (project_path / "shared.txt").read_text(encoding="utf-8") == "merged change\n"
+    assert run_cmd._git_local_branch_exists(project_path, task_branch) is True
+    assert run_cmd._git_worktree_exists(project_path, worktree_path) is True
+
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=worktree_path, task_branch=task_branch)
+
+
+def test_run_backlog_requires_main_worktree_on_base_branch_for_builtin_worktree_mode(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "checkout", "-b", "topic"], cwd=project_path, capture_output=True, check=True)
+
+    db.register_project("demo", str(project_path), base_branch="master")
+    task = db.create_task("demo", "needs base branch lock", agent="dual", max_retries=2)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=True)
+    current = db.get_task(task["id"])
+
+    assert stats["requeued"] == 1
+    assert current["status"] == "backlog"
+    assert "主工作区当前位于" in (current["error_message"] or "")
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
+    assert code == 0
+    assert output.strip() == "topic"
 
 
 def test_run_builtin_phase_codex_review_omits_prompt(monkeypatch, tmp_path):
