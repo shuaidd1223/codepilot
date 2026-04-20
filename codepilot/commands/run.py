@@ -58,15 +58,23 @@ from codepilot.commands.run_shell import (  # noqa: F401
 # Re-export git helpers
 from codepilot.commands.run_git import (  # noqa: F401
     _git_auto_commit,
+    _git_cleanup_task_worktree,
     _git_checkout,
     _git_current_branch,
     _git_has_changes,
     _git_is_repo,
     _git_local_branch_exists,
     _git_merge_task_branch,
+    _git_prepare_task_worktree,
+    _git_prune_worktrees,
     _git_prepare_task_branch,
+    _git_worktree_exists,
+    _git_list_worktrees,
     _resolve_project_base_branch,
+    _resolve_project_worktree_base,
+    _slugify_path_part,
     _slugify_branch_part,
+    _task_worktree_path,
     _task_branch_name,
 )
 
