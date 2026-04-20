@@ -50,6 +50,7 @@ class GatewayRequest:
     classifier_model: str = ""
     api_key: Optional[str] = None
     project_path: str = ""
+    config_ref: str = ""
     planner: str = "codex"  # CLI fallback family
     timeout: int = 60
 
@@ -155,6 +156,7 @@ def _try_cli_structured(request: GatewayRequest) -> GatewayResponse:
                 schema,
                 planner=normalized,
                 project_path=request.project_path,
+                config_ref=request.config_ref or None,
                 timeout=request.timeout,
             )
         except Exception as exc:  # noqa: BLE001
@@ -170,6 +172,7 @@ def _try_cli_structured(request: GatewayRequest) -> GatewayResponse:
             request.prompt,
             schema,
             project_path=request.project_path,
+            config_ref=request.config_ref or None,
             timeout=request.timeout,
         )
     except Exception as exc:  # noqa: BLE001
@@ -192,6 +195,7 @@ def _try_cli_text(request: GatewayRequest) -> GatewayResponse:
     from codepilot.ai_providers import resolve_cli_provider  # noqa: WPS433
 
     normalized = normalize_agent_name(request.planner) if request.planner else "codex"
+    provider_ref = request.config_ref or request.project_path or None
 
     # Prefer the caller's chosen family, then claude, then codex.
     order: list[str] = []
@@ -204,7 +208,7 @@ def _try_cli_text(request: GatewayRequest) -> GatewayResponse:
     last_error = ""
     for cli_name in order:
         try:
-            provider = resolve_cli_provider(cli_name, request.project_path or None)
+            provider = resolve_cli_provider(cli_name, provider_ref)
             exe = provider.find_executable()
         except Exception as exc:  # noqa: BLE001
             last_error = f"resolve {cli_name}: {exc}"

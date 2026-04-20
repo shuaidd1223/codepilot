@@ -48,12 +48,12 @@ def gateway_state(monkeypatch):
             raise RuntimeError("boom")
         return json.dumps({"intent": "task", "reason": "from api"})
 
-    def _fake_run_claude_schema_prompt(prompt, schema, **_kw):
-        cli_calls.append({"cli": "claude", "prompt": prompt, "schema": schema})
+    def _fake_run_claude_schema_prompt(prompt, schema, **kw):
+        cli_calls.append({"cli": "claude", "prompt": prompt, "schema": schema, "kwargs": kw})
         return {"intent": "requirement", "reason": "from claude CLI"}
 
-    def _fake_run_codex_schema_prompt(prompt, schema, **_kw):
-        cli_calls.append({"cli": "codex", "prompt": prompt, "schema": schema})
+    def _fake_run_codex_schema_prompt(prompt, schema, **kw):
+        cli_calls.append({"cli": "codex", "prompt": prompt, "schema": schema, "kwargs": kw})
         return {"intent": "requirement", "reason": "from codex CLI"}
 
     monkeypatch.setattr("codepilot.ai_providers._run_api_provider", _fake_run_api_provider)
@@ -130,6 +130,23 @@ def test_call_structured_falls_through_api_error_to_cli(gateway_state):
     assert resp.ok is True
     assert resp.source == "cli:codex"
     assert gateway_state["cli_calls"][0]["cli"] == "codex"
+
+
+def test_call_structured_passes_config_ref_to_cli(gateway_state):
+    resp = ai_gateway.call_structured(
+        GatewayRequest(
+            prompt="hi",
+            schema=SCHEMA,
+            planner="claude",
+            project_path="C:/project",
+            config_ref="C:/config-root/AGENTS.toml",
+        )
+    )
+
+    assert resp.ok is True
+    assert resp.source == "cli:claude"
+    assert gateway_state["cli_calls"][0]["kwargs"]["project_path"] == "C:/project"
+    assert gateway_state["cli_calls"][0]["kwargs"]["config_ref"] == "C:/config-root/AGENTS.toml"
 
 
 def test_call_structured_reports_combined_error_when_both_fail(gateway_state, monkeypatch):
