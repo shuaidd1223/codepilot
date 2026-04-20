@@ -5,6 +5,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import click
+import pytest
 from click.testing import CliRunner
 
 from codepilot.agent_support import ai_guide_markdown, command_manifest
@@ -1222,6 +1223,257 @@ claude_cmd = "claude"
 def test_task_branch_name_uses_slug_and_fallback():
     assert run_cmd._task_branch_name(20, "Add API endpoint") == "feat/task-20-add-api-endpoint"
     assert run_cmd._task_branch_name(21, "实现中文能力") == "feat/task-21-task"
+
+
+def test_task_worktree_path_uses_configured_relative_base(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": "var/worktrees",
+    }
+
+    resolved_base = run_cmd._resolve_project_worktree_base(project_info)
+    worktree_path = run_cmd._task_worktree_path(project_info, task_id=7, title="Add API endpoint")
+
+    assert resolved_base == (project_path / "var" / "worktrees").resolve()
+    assert worktree_path == resolved_base / "task-7-add-api-endpoint"
+
+
+def test_git_prepare_and_cleanup_task_worktree(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    expected_path = run_cmd._task_worktree_path(project_info, task_id=7, title="Add API endpoint")
+
+    branch_name, worktree_path = run_cmd._git_prepare_task_worktree(
+        project_path,
+        task_id=7,
+        title="Add API endpoint",
+        base_branch=base_branch,
+        worktree_path=expected_path,
+    )
+
+    assert branch_name == run_cmd._task_branch_name(7, "Add API endpoint")
+    assert worktree_path == expected_path.resolve()
+    assert worktree_path.exists()
+    assert run_cmd._git_worktree_exists(project_path, worktree_path) is True
+
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=worktree_path, timeout=30)
+    assert code == 0
+    assert output.strip() == branch_name
+
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=worktree_path, task_branch=branch_name)
+
+    assert worktree_path.exists() is False
+    assert run_cmd._git_worktree_exists(project_path, worktree_path) is False
+
+    code, output = run_cmd._run_command(["git", "branch", "--list", branch_name], cwd=project_path, timeout=30)
+    assert code == 0
+    assert branch_name not in output
+
+
+def test_git_prepare_task_worktree_allows_existing_empty_dir(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    expected_path = run_cmd._task_worktree_path(project_info, task_id=8, title="Existing empty dir")
+    expected_path.mkdir(parents=True)
+
+    branch_name, worktree_path = run_cmd._git_prepare_task_worktree(
+        project_path,
+        task_id=8,
+        title="Existing empty dir",
+        base_branch=base_branch,
+        worktree_path=expected_path,
+    )
+
+    assert branch_name == run_cmd._task_branch_name(8, "Existing empty dir")
+    assert worktree_path == expected_path.resolve()
+    assert worktree_path.exists()
+    assert run_cmd._git_worktree_exists(project_path, worktree_path) is True
+
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=worktree_path, task_branch=branch_name)
+    assert worktree_path.exists() is False
+
+
+def test_git_prepare_task_worktree_refuses_other_branch_on_same_path(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    expected_path = run_cmd._task_worktree_path(project_info, task_id=7, title="Add API endpoint")
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feat/other", str(expected_path), base_branch],
+        cwd=project_path,
+        capture_output=True,
+        check=True,
+    )
+
+    with pytest.raises(RuntimeError, match="已被其他分支占用"):
+        run_cmd._git_prepare_task_worktree(
+            project_path,
+            task_id=7,
+            title="Add API endpoint",
+            base_branch=base_branch,
+            worktree_path=expected_path,
+        )
+
+    assert run_cmd._git_worktree_exists(project_path, expected_path) is True
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=expected_path, timeout=30)
+    assert code == 0
+    assert output.strip() == "feat/other"
+
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=expected_path, task_branch="feat/other")
+
+
+def test_git_prepare_task_worktree_refuses_same_task_branch_on_other_worktree(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    task_branch = run_cmd._task_branch_name(7, "Add API endpoint")
+    occupied_path = worktree_base / "occupied"
+    target_path = worktree_base / "target"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", task_branch, str(occupied_path), base_branch],
+        cwd=project_path,
+        capture_output=True,
+        check=True,
+    )
+
+    with pytest.raises(RuntimeError, match="任务分支已被其他 worktree 占用"):
+        run_cmd._git_prepare_task_worktree(
+            project_path,
+            task_id=7,
+            title="Add API endpoint",
+            base_branch=base_branch,
+            worktree_path=target_path,
+        )
+
+    assert run_cmd._git_worktree_exists(project_path, occupied_path) is True
+    assert run_cmd._git_worktree_exists(project_path, target_path) is False
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=occupied_path, task_branch=task_branch)
+
+
+def test_git_cleanup_task_worktree_refuses_branch_mismatch(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    worktree_path = worktree_base / "task-7-add-api-endpoint"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feat/other", str(worktree_path), base_branch],
+        cwd=project_path,
+        capture_output=True,
+        check=True,
+    )
+
+    with pytest.raises(RuntimeError, match="拒绝移除不属于任务分支"):
+        run_cmd._git_cleanup_task_worktree(
+            project_path,
+            worktree_path=worktree_path,
+            task_branch=run_cmd._task_branch_name(7, "Add API endpoint"),
+        )
+
+    assert run_cmd._git_worktree_exists(project_path, worktree_path) is True
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=worktree_path, timeout=30)
+    assert code == 0
+    assert output.strip() == "feat/other"
+
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=worktree_path, task_branch="feat/other")
+
+
+def test_git_cleanup_task_worktree_does_not_delete_branch_without_matching_worktree(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    task_branch = run_cmd._task_branch_name(7, "Add API endpoint")
+    subprocess.run(["git", "branch", task_branch], cwd=project_path, capture_output=True, check=True)
+
+    missing_path = tmp_path / "missing-worktree"
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=missing_path, task_branch=task_branch)
+
+    code, output = run_cmd._run_command(["git", "branch", "--list", task_branch], cwd=project_path, timeout=30)
+    assert code == 0
+    assert task_branch in output
 
 
 def test_run_backlog_creates_task_branch_and_checks_out_base_after_merge(tmp_path, monkeypatch):
