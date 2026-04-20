@@ -44,3 +44,6 @@ include = ["codepilot*"]
 
 [tool.setuptools.package-data]
 "codepilot" = ["templates/*.md", "web/*.html", "web/*.css", "web/*.js", "web/components/*.js"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

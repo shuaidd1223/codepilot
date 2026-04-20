@@ -664,3 +664,61 @@ def test_generate_task_breakdown_passes_existing_tasks_to_prompt(tmp_path, monke
     text = prompt_seen["text"]
     assert "#7" in text
     assert "已经在做的事" in text
+
+
+def test_parse_automation_planner_result_accepts_json_string():
+    result = ai_mod.parse_automation_planner_result(
+        """
+        {
+          "summary": "x",
+          "tasks": [
+            {
+              "title": "do x",
+              "priority": "P2",
+              "goal": "g",
+              "acceptance_criteria": ["a"],
+              "builder_notes": [],
+              "reviewer_notes": [],
+              "files": [],
+              "notes": []
+            }
+          ]
+        }
+        """,
+        title="do x",
+        max_tasks=3,
+    )
+
+    assert result["summary"] == "x"
+    assert result["tasks"][0]["title"] == "do x"
+    assert result["should_split"] is False
+
+
+def test_generate_task_breakdown_can_return_raw_payload(tmp_path, monkeypatch):
+    raw_payload = {
+        "summary": "x",
+        "tasks": [
+            {
+                "title": "do x",
+                "priority": "P2",
+                "goal": "g",
+                "acceptance_criteria": ["a"],
+                "builder_notes": [],
+                "reviewer_notes": [],
+                "files": [],
+                "notes": [],
+            }
+        ],
+    }
+
+    monkeypatch.setattr(ai_mod, "_run_codex_schema_prompt", lambda *args, **kwargs: raw_payload)
+
+    result = ai_mod.generate_task_breakdown(
+        "do x",
+        project_path=str(tmp_path),
+        planner="codex",
+        two_stage=False,
+        parse_result=False,
+    )
+
+    assert result is raw_payload

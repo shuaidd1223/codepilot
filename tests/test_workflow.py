@@ -894,6 +894,168 @@ def test_generate_task_breakdown_uses_codex_planner(monkeypatch):
     assert captured["config_ref"] is None
 
 
+def test_run_requirement_workflow_routes_breakdown_through_parser(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path), default_mode="codex")
+    project = db.get_project("demo")
+    captured = {}
+
+    monkeypatch.setattr(
+        auto_cmd,
+        "generate_task_breakdown",
+        lambda **kwargs: (
+            captured.setdefault("planner_kwargs", kwargs),
+            """
+            {
+              "summary": "raw",
+              "tasks": [
+                {
+                  "title": "raw step",
+                  "priority": "P2",
+                  "goal": "g",
+                  "acceptance_criteria": ["a"],
+                  "builder_notes": [],
+                  "reviewer_notes": [],
+                  "files": [],
+                  "notes": []
+                }
+              ]
+            }
+            """,
+        )[1],
+    )
+
+    def fake_parse(breakdown, *, title, max_tasks, existing_tasks=None):
+        captured["breakdown"] = breakdown
+        captured["title"] = title
+        captured["max_tasks"] = max_tasks
+        return {
+            "summary": "raw",
+            "complexity": "simple",
+            "should_split": False,
+            "tasks": [
+                {
+                    "title": "parsed step",
+                    "priority": "P1",
+                    "goal": "g",
+                    "acceptance_criteria": ["a"],
+                    "builder_notes": [],
+                    "reviewer_notes": [],
+                    "files": [],
+                    "notes": [],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(auto_cmd, "parse_automation_planner_result", fake_parse)
+
+    payload = auto_cmd.run_requirement_workflow(
+        project_info=project,
+        title="让 workflow 入口走统一解析",
+        planner="codex",
+        execute=False,
+        executor="builtin",
+        auto_commit=False,
+    )
+
+    assert captured["planner_kwargs"]["parse_result"] is False
+    assert captured["title"] == "让 workflow 入口走统一解析"
+    assert captured["max_tasks"] == 5
+    assert isinstance(captured["breakdown"], str)
+    assert payload["tasks"][0]["title"] == "parsed step"
+
+
+def test_run_requirement_workflow_supports_legacy_breakdown_stub_without_parse_flag(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path), default_mode="codex")
+    project = db.get_project("demo")
+    captured = {}
+
+    def legacy_breakdown(*, title, project_path, planner, max_tasks, config_ref, two_stage, existing_tasks):
+        captured["planner"] = planner
+        captured["two_stage"] = two_stage
+        return {
+            "summary": "legacy",
+            "tasks": [
+                {
+                    "title": title,
+                    "priority": "P2",
+                    "goal": "g",
+                    "acceptance_criteria": ["a"],
+                    "builder_notes": [],
+                    "reviewer_notes": [],
+                    "files": [],
+                    "notes": [],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(auto_cmd, "generate_task_breakdown", legacy_breakdown)
+    monkeypatch.setattr(
+        auto_cmd,
+        "parse_automation_planner_result",
+        lambda breakdown, **kwargs: {
+            **breakdown,
+            "complexity": "simple",
+            "should_split": False,
+        },
+    )
+
+    payload = auto_cmd.run_requirement_workflow(
+        project_info=project,
+        title="兼容旧版 breakdown stub",
+        planner="codex",
+        execute=False,
+        executor="builtin",
+        auto_commit=False,
+    )
+
+    assert captured["planner"] == "codex"
+    assert captured["two_stage"] is True
+    assert payload["tasks"][0]["title"] == "兼容旧版 breakdown stub"
+
+
+def test_run_requirement_workflow_wraps_parser_error_in_click_exception(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path), default_mode="codex")
+    project = db.get_project("demo")
+
+    monkeypatch.setattr(
+        auto_cmd,
+        "generate_task_breakdown",
+        lambda **kwargs: {"summary": "raw", "tasks": [{"title": "raw step", "priority": "P2"}]},
+    )
+    monkeypatch.setattr(
+        auto_cmd,
+        "parse_automation_planner_result",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("planner parse failed")),
+    )
+
+    try:
+        auto_cmd.run_requirement_workflow(
+            project_info=project,
+            title="入口解析失败要走统一异常语义",
+            planner="codex",
+            execute=False,
+            executor="builtin",
+            auto_commit=False,
+        )
+    except Exception as exc:
+        assert isinstance(exc, click.ClickException)
+        assert "planner parse failed" in exc.format_message()
+    else:
+        raise AssertionError("expected ClickException")
+
+
 def test_run_codex_schema_prompt_kills_process_and_raises_runtime_error_on_interrupt(monkeypatch):
     class _FakeProvider:
         name = "Codex"

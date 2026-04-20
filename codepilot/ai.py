@@ -947,6 +947,163 @@ def _format_recon_block(recon: dict) -> str:
     return "\n".join(lines) if lines else "（侦察返回为空。）"
 
 
+def parse_automation_planner_result(
+    breakdown: dict | str,
+    *,
+    title: str,
+    max_tasks: int = 5,
+    existing_tasks: Optional[list[dict]] = None,
+) -> dict:
+    """Normalize, validate and deduplicate automation planner output.
+
+    Accepts either the already-decoded planner payload or a raw JSON string.
+    This keeps ``generate_task_breakdown`` and higher-level workflow entry
+    points on the same parsing rules.
+    """
+    from codepilot.ai_backlog_dedup import filter_duplicate_tasks
+
+    if isinstance(breakdown, str):
+        try:
+            breakdown = json.loads(breakdown)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("自动规划返回的内容不是有效 JSON，暂时无法继续自动规划。") from exc
+
+    if not isinstance(breakdown, dict):
+        raise RuntimeError("自动规划返回的结果格式不正确，暂时无法继续自动规划。")
+
+    raw_tasks = breakdown.get("tasks") or []
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raise RuntimeError("任务拆分结果为空")
+
+    max_tasks = max(1, min(max_tasks, 8))
+
+    _garbage_keywords_zh = ("等待", "请提供", "请输入", "待用户", "请发送", "等待高层")
+    _garbage_keywords_en = ("awaiting", "waiting for", "please provide", "no goal", "user input needed", "awaiting-user")
+
+    def _is_garbage_task(task_item: object) -> bool:
+        if not isinstance(task_item, dict):
+            return True
+        t = (task_item.get("title") or "").strip()
+        g = (task_item.get("goal") or "").strip()
+        combined = t + " " + g
+        combined_lower = combined.lower()
+        for kw in _garbage_keywords_zh:
+            if kw in combined:
+                return True
+        for kw in _garbage_keywords_en:
+            if kw in combined_lower:
+                return True
+        if t.lower() in ("awaiting-user-input", "waiting", "pending", "no-op", "placeholder"):
+            return True
+        return not t
+
+    valid_tasks = [dict(task_item) for task_item in raw_tasks if not _is_garbage_task(task_item)]
+    if not valid_tasks:
+        summary = str(breakdown.get("summary", ""))
+        rejected = "\n".join(
+            f"  - {(item.get('title') or '?')[:60]} :: {(item.get('goal') or '?')[:80]}"
+            for item in raw_tasks[:3]
+            if isinstance(item, dict)
+        ) or "  - （无可展示任务）"
+        raise RuntimeError(
+            f"规划器把这次需求理解成「等待 / 请用户补充」一类的占位任务，全部被过滤掉了。\n"
+            f"规划器摘要：{summary[:200]}\n"
+            f"被过滤的任务示例：\n{rejected}\n"
+            f"通常出现在需求过于宽泛 / 探索性时（比如「看看有没有什么优化点」）。建议：\n"
+            f"  1. 把需求写得更具体：指明要修改 / 新增 / 优化哪一块；\n"
+            f"  2. 想让 AI 主动找改进点：用 `codepilot inspect -p <项目>`；\n"
+            f"  3. 或换 codex 规划器（自带兜底降级），用 --planner codex 重试。"
+        )
+    if len(valid_tasks) < len(raw_tasks):
+        dropped = len(raw_tasks) - len(valid_tasks)
+        sys.stderr.write(f"  [planner] 过滤掉 {dropped} 个无效任务\n")
+
+    import re as _re
+
+    _req_words = set(_re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]{3,}", title.lower()))
+    _req_words -= {"the", "and", "for", "that", "with", "this", "from", "into",
+                   "can", "not", "but", "all", "will", "have", "are", "was",
+                   "then", "just", "one", "also", "use", "using", "some",
+                   "about", "what", "which", "how", "been", "more", "when"}
+    if _req_words:
+        for task_item in valid_tasks:
+            task_text = (
+                (task_item.get("title") or "") + " " +
+                (task_item.get("goal") or "") + " " +
+                " ".join(task_item.get("files") or [])
+            ).lower()
+            task_words = set(_re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]{3,}", task_text))
+            overlap = _req_words & task_words
+            if not overlap:
+                sys.stderr.write(
+                    f"  [planner] 警告: 任务 '{task_item.get('title', '')[:40]}' "
+                    f"与需求无明显关联, 可能跑偏\n"
+                )
+
+    capped_tasks = valid_tasks[:max_tasks]
+
+    dedup_skipped: list[dict] = []
+    for item in breakdown.get("dedup_skipped") or []:
+        if isinstance(item, dict):
+            dedup_skipped.append({
+                "proposed_title": item.get("proposed_title"),
+                "matched_existing_id": item.get("matched_existing_id"),
+                "matched_existing_title": item.get("matched_existing_title"),
+            })
+
+    if existing_tasks:
+        kept_tasks, dropped_tasks = filter_duplicate_tasks(capped_tasks, existing_tasks)
+        if dropped_tasks:
+            progress_cb = _planner_progress_callback
+            seen = {
+                (item.get("proposed_title"), item.get("matched_existing_id"), item.get("matched_existing_title"))
+                for item in dedup_skipped
+            }
+            for dup in dropped_tasks:
+                msg = (
+                    f"  [planner] 跳过重复任务 '{(dup.get('title') or '')[:40]}' "
+                    f"（已存在 #{dup.get('_dedup_matched_id')} "
+                    f"'{(dup.get('_dedup_matched_title') or '')[:40]}'）"
+                )
+                sys.stderr.write(msg + "\n")
+                if progress_cb:
+                    try:
+                        progress_cb(msg.strip())
+                    except Exception:
+                        pass
+
+                normalized_dup = {
+                    "proposed_title": dup.get("title"),
+                    "matched_existing_id": dup.get("_dedup_matched_id"),
+                    "matched_existing_title": dup.get("_dedup_matched_title"),
+                }
+                dedup_key = (
+                    normalized_dup["proposed_title"],
+                    normalized_dup["matched_existing_id"],
+                    normalized_dup["matched_existing_title"],
+                )
+                if dedup_key not in seen:
+                    dedup_skipped.append(normalized_dup)
+                    seen.add(dedup_key)
+            capped_tasks = kept_tasks
+
+    normalized = dict(breakdown)
+    normalized["tasks"] = capped_tasks
+    normalized["complexity"] = normalized.get("complexity") or (
+        "simple" if len(normalized["tasks"]) <= 1 else "complex"
+    )
+    normalized["should_split"] = bool(
+        normalized.get("should_split")
+        if normalized.get("should_split") is not None
+        else len(normalized["tasks"]) > 1
+    )
+    if dedup_skipped:
+        normalized["dedup_skipped"] = dedup_skipped
+    else:
+        normalized.pop("dedup_skipped", None)
+    return normalized
+
+
 def generate_task_breakdown(
     title: str,
     project_path: str = "",
@@ -955,6 +1112,7 @@ def generate_task_breakdown(
     config_ref: str | Path | None = None,
     *,
     two_stage: bool = True,
+    parse_result: bool = True,
     existing_tasks: Optional[list[dict]] = None,
 ) -> dict:
     """Generate a structured subtask breakdown for a high-level goal.
@@ -969,10 +1127,7 @@ def generate_task_breakdown(
     near-duplicate titles after the fact. Pass ``None`` from unit tests that
     don't care about dedup.
     """
-    from codepilot.ai_backlog_dedup import (
-        filter_duplicate_tasks,
-        format_existing_block,
-    )
+    from codepilot.ai_backlog_dedup import format_existing_block
     from codepilot.ai_planner_context import collect_planner_context
 
     max_tasks = max(1, min(max_tasks, 8))
@@ -1018,117 +1173,14 @@ def generate_task_breakdown(
         raise RuntimeError(
             f"当前自动拆分暂时不支持规划器 `{planner}`。请改用 claude 或 codex。"
         )
-    tasks = breakdown.get("tasks") or []
-    if not tasks:
-        raise RuntimeError("任务拆分结果为空")
+    if not parse_result:
+        return breakdown
 
-    # ── Validate planner output ──────────────────────────────────────────
-    # Reject garbage tasks where the planner echoed its instructions
-    # instead of actually planning.
-    _garbage_keywords_zh = ("等待", "请提供", "请输入", "待用户", "请发送", "等待高层")
-    _garbage_keywords_en = ("awaiting", "waiting for", "please provide", "no goal", "user input needed", "awaiting-user")
-
-    def _is_garbage_task(task_item: dict) -> bool:
-        t = (task_item.get("title") or "").strip()
-        g = (task_item.get("goal") or "").strip()
-        combined = t + " " + g
-        combined_lower = combined.lower()
-        for kw in _garbage_keywords_zh:
-            if kw in combined:
-                return True
-        for kw in _garbage_keywords_en:
-            if kw in combined_lower:
-                return True
-        # Title is too generic / meta
-        if t.lower() in ("awaiting-user-input", "waiting", "pending", "no-op", "placeholder"):
-            return True
-        return False
-
-    valid_tasks = [t for t in tasks if not _is_garbage_task(t)]
-    if not valid_tasks:
-        summary = breakdown.get("summary", "")
-        rejected = "\n".join(
-            f"  - {(t.get('title') or '?')[:60]} :: {(t.get('goal') or '?')[:80]}"
-            for t in tasks[:3]
-        )
-        raise RuntimeError(
-            f"规划器把这次需求理解成「等待 / 请用户补充」一类的占位任务，全部被过滤掉了。\n"
-            f"规划器摘要：{summary[:200]}\n"
-            f"被过滤的任务示例：\n{rejected}\n"
-            f"通常出现在需求过于宽泛 / 探索性时（比如「看看有没有什么优化点」）。建议：\n"
-            f"  1. 把需求写得更具体：指明要修改 / 新增 / 优化哪一块；\n"
-            f"  2. 想让 AI 主动找改进点：用 `codepilot inspect -p <项目>`；\n"
-            f"  3. 或换 codex 规划器（自带兜底降级），用 --planner codex 重试。"
-        )
-    if len(valid_tasks) < len(tasks):
-        dropped = len(tasks) - len(valid_tasks)
-        sys.stderr.write(f"  [planner] 过滤掉 {dropped} 个无效任务\n")
-
-    # ── Relevance check ─────────────────────────────────────────────────
-    # Warn if tasks seem unrelated to the original requirement.
-    # Extract keywords from the user's requirement for simple overlap check.
-    import re as _re
-    _req_words = set(_re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]{3,}", title.lower()))
-    # Remove very common words
-    _req_words -= {"the", "and", "for", "that", "with", "this", "from", "into",
-                   "can", "not", "but", "all", "will", "have", "are", "was",
-                   "then", "just", "one", "also", "use", "using", "some",
-                   "about", "what", "which", "how", "been", "more", "when"}
-    if _req_words:
-        for task_item in valid_tasks:
-            task_text = (
-                (task_item.get("title") or "") + " " +
-                (task_item.get("goal") or "") + " " +
-                " ".join(task_item.get("files") or [])
-            ).lower()
-            task_words = set(_re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z]{3,}", task_text))
-            overlap = _req_words & task_words
-            if not overlap:
-                sys.stderr.write(
-                    f"  [planner] 警告: 任务 '{task_item.get('title', '')[:40]}' "
-                    f"与需求无明显关联, 可能跑偏\n"
-                )
-    # ─────────────────────────────────────────────────────────────────────
-    # ─────────────────────────────────────────────────────────────────────
-
-    capped_tasks = valid_tasks[:max_tasks]
-
-    # ── Backlog dedup ────────────────────────────────────────────────────
-    # Planner was shown the existing backlog, but we still post-filter as a
-    # safety net. Tasks whose titles are too similar to an open backlog /
-    # in_progress task get dropped here and reported via the progress
-    # callback + stderr.
-    dedup_skipped: list[dict] = []
-    if existing_tasks:
-        kept_tasks, dedup_skipped = filter_duplicate_tasks(capped_tasks, existing_tasks)
-        if dedup_skipped:
-            progress_cb = _planner_progress_callback
-            for dup in dedup_skipped:
-                msg = (
-                    f"  [planner] 跳过重复任务 '{(dup.get('title') or '')[:40]}' "
-                    f"（已存在 #{dup.get('_dedup_matched_id')} "
-                    f"'{(dup.get('_dedup_matched_title') or '')[:40]}'）"
-                )
-                sys.stderr.write(msg + "\n")
-                if progress_cb:
-                    try:
-                        progress_cb(msg.strip())
-                    except Exception:
-                        pass
-            capped_tasks = kept_tasks
-
-    breakdown["tasks"] = capped_tasks
-    breakdown.setdefault("complexity", "simple" if len(breakdown["tasks"]) <= 1 else "complex")
-    breakdown.setdefault("should_split", len(breakdown["tasks"]) > 1)
-    if dedup_skipped:
-        breakdown["dedup_skipped"] = [
-            {
-                "proposed_title": dup.get("title"),
-                "matched_existing_id": dup.get("_dedup_matched_id"),
-                "matched_existing_title": dup.get("_dedup_matched_title"),
-            }
-            for dup in dedup_skipped
-        ]
-    return breakdown
+    return parse_automation_planner_result(
+        breakdown,
+        title=title,
+        max_tasks=max_tasks,
+        existing_tasks=existing_tasks,
+    )
 
 
