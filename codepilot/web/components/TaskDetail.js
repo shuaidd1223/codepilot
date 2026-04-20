@@ -6,8 +6,6 @@ CP.Components.TaskDetail = Vue.defineComponent({
   computed: {
     s() { return this.cp.state; },
     task() { return this.s.taskDetail; },
-  },
-  computed: {
     /* Expose events SSE pushed for this specific task so the user sees live
      * builder/reviewer output instead of waiting for the 3s polling tick. */
     liveEvents() {
