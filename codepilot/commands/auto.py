@@ -29,6 +29,7 @@ from codepilot.ai import (  # noqa: F401 (re-export)
     classify_intent,
     generate_task_breakdown,
     normalize_agent_name,
+    parse_automation_planner_result,
 )
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands.run import run_backlog  # noqa: F401 (re-export)

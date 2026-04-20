@@ -12,6 +12,7 @@ take effect inside this workflow.
 
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -36,6 +37,26 @@ def _should_fallback_codex_planning(exc: Exception) -> bool:
     """Only fall back to a single Codex task on planner timeouts."""
     message = str(exc).lower()
     return "超时" in str(exc) or "timed out" in message or "timeout" in message
+
+
+def _generate_task_breakdown_via_shell(shell, **kwargs):
+    """Call the shell-exported planner with backward-compatible kwargs.
+
+    ``run_requirement_workflow`` wants the raw planner payload so it can route
+    everything through ``parse_automation_planner_result``. Older tests or
+    external monkeypatches may still stub ``generate_task_breakdown`` with the
+    historical signature that does not accept ``parse_result``; detect that and
+    omit the flag instead of crashing with ``TypeError``.
+    """
+    planner_fn = shell.generate_task_breakdown
+    signature = inspect.signature(planner_fn)
+    supports_parse_flag = any(
+        param.kind is inspect.Parameter.VAR_KEYWORD or name == "parse_result"
+        for name, param in signature.parameters.items()
+    )
+    if supports_parse_flag:
+        return planner_fn(parse_result=False, **kwargs)
+    return planner_fn(**kwargs)
 
 
 def clarify_requirement(
@@ -285,7 +306,8 @@ def run_requirement_workflow(
     else:
         echo(f"[dim]  正在用 {planner} 规划任务，请稍候...[/dim]")
     try:
-        breakdown = shell.generate_task_breakdown(
+        breakdown = _generate_task_breakdown_via_shell(
+            shell,
             title=title,
             project_path=project_path,
             planner=planner,
@@ -327,6 +349,16 @@ def run_requirement_workflow(
             }
         else:
             raise click.ClickException(str(exc)) from exc
+
+    try:
+        breakdown = shell.parse_automation_planner_result(
+            breakdown,
+            title=title,
+            max_tasks=max_tasks,
+            existing_tasks=existing_tasks,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
 
     complexity = breakdown.get("complexity") or ("simple" if len(breakdown["tasks"]) <= 1 else "complex")
     should_split = breakdown.get("should_split")
