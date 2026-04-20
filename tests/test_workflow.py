@@ -17,6 +17,7 @@ from codepilot.cli import main
 from codepilot.commands import add as add_cmd
 from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
+from codepilot.config import load_project_config
 
 
 def _init_test_db(tmp_path, monkeypatch):
@@ -1149,6 +1150,54 @@ def test_resolve_task_agent_preserves_dual(monkeypatch):
 def test_resolve_builtin_phase_agent_uses_dual_split():
     assert run_cmd._resolve_builtin_phase_agent("dual", "builder") == ("codex", None)
     assert run_cmd._resolve_builtin_phase_agent("dual", "reviewer") == ("claude", None)
+
+
+def test_agents_config_reads_and_normalizes_dual_phase_agents(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[agents]
+builder = " codex "
+reviewer = " sonnet "
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_project_config(project_path)
+
+    assert cfg is not None
+    assert cfg.builder == "codex"
+    assert cfg.reviewer == "claude-sonnet"
+
+
+def test_agents_config_treats_blank_dual_phase_agents_as_unset(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[agents]
+builder = "   "
+reviewer = ""
+codex_cmd = "codex"
+claude_cmd = "claude"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfg = load_project_config(project_path)
+
+    assert cfg is not None
+    assert cfg.builder is None
+    assert cfg.reviewer is None
+    assert cfg.codex_cmd == "codex"
+    assert cfg.claude_cmd == "claude"
 
 
 def test_task_branch_name_uses_slug_and_fallback():
