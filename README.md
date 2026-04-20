@@ -284,13 +284,15 @@ planner = "claude"
 auto_execute = false
 
 [agents]
+builder = "codex"
+reviewer = "claude"
 codex_cmd = "codex"
 claude_cmd = "claude"
 ```
 
 关键点：
 
-- `default_mode = "dual"` 表示 builder=codex（写代码）+ reviewer=claude（审核）
+- `default_mode = "dual"` 表示走 builder/reviewer 双阶段执行；默认是 builder=codex、reviewer=claude，也可用 `[agents].builder / reviewer` 覆盖
 - `planner = "claude"` 表示默认规划器使用 claude
 - `[inspect].planner = "claude"` 表示默认巡检规划器使用 claude
 - `max_review_rounds = 4` 给 reviewer ↔ builder 闭环足够迭代空间；reviewer 判 FAIL 时，意见会作为 `【上一轮 reviewer 的阻塞意见】` 注入下一轮 builder prompt，让它针对性修复而非重写

@@ -57,6 +57,16 @@ _planner_progress_callback: Optional[callable] = None
 _phase_stub: Optional[callable] = None
 
 
+BUILTIN_PHASE_AGENTS = {
+    "codex",
+    "claude",
+    "claude-node",
+    "claude-sonnet",
+    "claude-opus",
+    "claude-haiku",
+}
+
+
 def normalize_agent_name(name: str) -> str:
     """规范化 agent 名称，尝试找到匹配的 provider."""
     name = name.lower().strip()
@@ -110,6 +120,32 @@ def normalize_agent_name(name: str) -> str:
             return api_key
 
     return name
+
+
+def is_builtin_phase_agent_supported(agent: str) -> bool:
+    """Return whether ``agent`` can drive a builtin builder/reviewer phase."""
+    return normalize_agent_name(agent) in BUILTIN_PHASE_AGENTS
+
+
+def resolve_dual_phase_agents(
+    project_path: str | Path | None = None,
+    *,
+    builder: Optional[str] = None,
+    reviewer: Optional[str] = None,
+) -> tuple[str, str]:
+    """Resolve the effective builder/reviewer pair for ``dual`` mode.
+
+    Resolution order is: explicit override -> AGENTS.toml -> built-in defaults.
+    ``builder``/``reviewer`` must resolve to concrete agents, not ``dual``.
+    """
+    cfg = load_project_config(project_path)
+    builder_agent = normalize_agent_name(builder or (cfg.builder if cfg and cfg.builder else "codex"))
+    reviewer_agent = normalize_agent_name(reviewer or (cfg.reviewer if cfg and cfg.reviewer else "claude"))
+
+    if builder_agent == "dual" or reviewer_agent == "dual":
+        raise ValueError("dual 模式的 [agents].builder / reviewer 不能再配置为 dual。")
+
+    return builder_agent, reviewer_agent
 
 
 def generate_task_content(
@@ -213,15 +249,40 @@ def check_provider_availability(agent: str, project_path: str | Path | None = No
     normalized = normalize_agent_name(agent)
 
     if normalized == "dual":
-        codex_ok, codex_msg = check_provider_availability("codex", project_path=project_path)
-        claude_ok, claude_msg = check_provider_availability("claude", project_path=project_path)
-        if codex_ok and claude_ok:
-            return True, "可用: dual 模式将使用 codex 负责实现、claude 负责审查"
+        try:
+            builder_agent, reviewer_agent = resolve_dual_phase_agents(project_path)
+        except ValueError as exc:
+            return False, str(exc)
+
+        unsupported = [
+            phase
+            for phase, resolved in (("builder", builder_agent), ("reviewer", reviewer_agent))
+            if not is_builtin_phase_agent_supported(resolved)
+        ]
+        if unsupported:
+            details = ", ".join(
+                f"{phase}={builder_agent if phase == 'builder' else reviewer_agent}"
+                for phase in unsupported
+            )
+            return (
+                False,
+                "当前无法使用 dual 模式："
+                f"{details} 超出内置执行器支持范围。"
+                "请改用 codex、claude、claude-node、claude-sonnet、claude-opus 或 claude-haiku。",
+            )
+
+        builder_ok, builder_msg = check_provider_availability(builder_agent, project_path=project_path)
+        reviewer_ok, reviewer_msg = check_provider_availability(reviewer_agent, project_path=project_path)
+        if builder_ok and reviewer_ok:
+            return True, (
+                "可用: dual 模式将使用 "
+                f"{builder_agent} 负责实现、{reviewer_agent} 负责审查"
+            )
         missing = []
-        if not codex_ok:
-            missing.append(codex_msg)
-        if not claude_ok:
-            missing.append(claude_msg)
+        if not builder_ok:
+            missing.append(f"builder={builder_agent}: {builder_msg}")
+        if not reviewer_ok:
+            missing.append(f"reviewer={reviewer_agent}: {reviewer_msg}")
         return False, "当前无法使用 dual 模式：" + "；".join(missing)
 
     if normalized in CLI_PROVIDERS:
