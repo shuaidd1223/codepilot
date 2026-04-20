@@ -91,6 +91,9 @@ class ExecutionResult:
     review_output: str = ""
     summary: str = ""
     executor: str = "dispatch"
+    # 标记 "同样的任务再跑一遍也会失败" 的确定性失败。例如 reviewer 连续多轮给出 FAIL。
+    # 任务级 retry 只应覆盖瞬时失败（crash/timeout），这里为 True 时直接走 _mark_task_failed。
+    deterministic_failure: bool = False
 
 
 
@@ -932,6 +935,7 @@ def _run_builtin_executor(
                 review_output=reviewer.output,
                 summary=summary,
                 executor="builtin",
+                deterministic_failure=True,
             )
 
         progress_bus.emit(
@@ -1266,7 +1270,11 @@ def run_backlog(
             stats["done"] += 1
         else:
             error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
-            if retry_on_failure:
+            # 确定性失败 (如 reviewer 连 N 轮 FAIL) 不走任务级 retry，直接标 failed 避免重复烧 token
+            if result.deterministic_failure:
+                updated = _mark_task_failed(task, error_message)
+                should_stop = (resolved_executor == "builtin")
+            elif retry_on_failure:
                 updated, should_stop = _handle_failure(task, error_message, stop_on_failure=(resolved_executor == "builtin"))
             else:
                 updated = _mark_task_failed(task, error_message)

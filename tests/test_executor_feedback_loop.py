@@ -230,6 +230,27 @@ def test_review_loop_exhausts_rounds_and_fails(fake_project, monkeypatch, tmp_pa
 
     assert result.exit_code == 2
     assert "用完重做轮次" in (result.summary or "")
+    # deterministic_failure 让调用方跳过任务级 retry，避免同样的 FAIL 再烧一遍 token
+    assert result.deterministic_failure is True
+
+
+def test_builder_crash_is_not_deterministic(fake_project, monkeypatch, tmp_path):
+    """builder 非零退出是瞬时失败，仍允许任务级重试。"""
+    from codepilot import ai as ai_mod
+
+    recorder = _PhaseRecorder([("builder", "boom", 1)])
+    monkeypatch.setattr(ai_mod, "_phase_stub", recorder)
+
+    task = _sample_task()
+    task_file = tmp_path / "42-task.md"
+    task_file.write_text("stub", encoding="utf-8")
+
+    result = run_mod._run_builtin_executor(
+        task, fake_project, task_file, auto_commit=False, max_review_rounds=2,
+    )
+
+    assert result.exit_code != 0
+    assert result.deterministic_failure is False
 
 
 def test_review_loop_disabled_when_max_rounds_one(fake_project, monkeypatch, tmp_path):
