@@ -25,6 +25,7 @@ from codepilot.ai import (
     _get_node_modules_path,
     check_provider_availability,
     normalize_agent_name,
+    resolve_dual_phase_agents,
     resolve_cli_provider,
 )
 from codepilot.commands.status import _resolve_project, render_project_dashboard
@@ -195,6 +196,48 @@ def _builtin_preflight_error(project_path: Path, auto_commit: bool, agent_mode: 
             "请先提交/暂存现有改动，或改用 --no-auto-commit 再执行。"
         )
     return ""
+
+
+def _task_phase_override(task: Optional[dict], key: str) -> Optional[str]:
+    """Return a normalized task-level builder/reviewer override when present."""
+    if not task:
+        return None
+    value = task.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    normalized = normalize_agent_name(text)
+    if normalized == "dual":
+        raise RuntimeError("dual 模式的任务级 builder/reviewer 不能再配置为 dual。")
+    return normalized
+
+
+def _resolve_dual_phase_agents_for_task(task: Optional[dict], project_ref: str | Path | dict | None) -> tuple[str, str]:
+    """Resolve the effective dual builder/reviewer pair for one task."""
+    config_ref = project_ref
+    if isinstance(project_ref, dict):
+        config_ref = project_ref.get("config_file") or project_ref.get("path")
+    return resolve_dual_phase_agents(
+        config_ref,
+        builder=_task_phase_override(task, "builder"),
+        reviewer=_task_phase_override(task, "reviewer"),
+    )
+
+
+def _builtin_review_requires_git(
+    agent_mode: str,
+    *,
+    task: Optional[dict] = None,
+    project_ref: str | Path | dict | None = None,
+) -> bool:
+    """Return whether the effective reviewer uses Codex review."""
+    normalized = normalize_agent_name(agent_mode or "dual")
+    if normalized == "dual":
+        _, reviewer_agent = _resolve_dual_phase_agents_for_task(task, project_ref)
+        return reviewer_agent == "codex"
+    return normalized == "codex"
 
 
 
@@ -415,12 +458,10 @@ def _extract_review_verdict(review_output: str, reviewer_agent: str = "") -> str
     return "unknown"
 
 
-def _resolve_builtin_phase_agent(agent_mode: str, phase: str) -> tuple[str, Optional[str]]:
-    """Resolve which CLI should handle a builtin executor phase."""
-    normalized = normalize_agent_name(agent_mode or "dual")
+def _resolve_builtin_single_agent(agent_mode: str) -> tuple[str, Optional[str]]:
+    """Resolve one concrete agent into a builtin CLI runner + optional model."""
+    normalized = normalize_agent_name(agent_mode or "codex")
 
-    if normalized == "dual":
-        return ("codex", None) if phase == "builder" else ("claude", None)
     if normalized == "codex":
         return "codex", None
     if normalized in {"claude", "claude-node"}:
@@ -432,6 +473,23 @@ def _resolve_builtin_phase_agent(agent_mode: str, phase: str) -> tuple[str, Opti
         f"内置执行器暂时不支持任务智能体 `{agent_mode}`。"
         "请改用 codex、claude、claude-node、claude-sonnet、claude-opus、claude-haiku 或 dual。"
     )
+
+
+def _resolve_builtin_phase_agent(
+    agent_mode: str,
+    phase: str,
+    *,
+    task: Optional[dict] = None,
+    project_ref: str | Path | dict | None = None,
+) -> tuple[str, Optional[str]]:
+    """Resolve which CLI should handle a builtin executor phase."""
+    normalized = normalize_agent_name(agent_mode or "dual")
+
+    if normalized == "dual":
+        builder_agent, reviewer_agent = _resolve_dual_phase_agents_for_task(task, project_ref)
+        selected = builder_agent if phase == "builder" else reviewer_agent
+        return _resolve_builtin_single_agent(selected)
+    return _resolve_builtin_single_agent(normalized)
 
 
 def _run_builtin_phase(
@@ -457,7 +515,12 @@ def _run_builtin_phase(
     if _ai_hook._phase_stub is not None:
         return _ai_hook._phase_stub(task=task, project_path=project_path, phase=phase, prompt=prompt)
 
-    runner, model = _resolve_builtin_phase_agent(task.get("agent", "dual"), phase)
+    runner, model = _resolve_builtin_phase_agent(
+        task.get("agent", "dual"),
+        phase,
+        task=task,
+        project_ref=config_ref or project_path,
+    )
     task_id = int(task.get("id") or 0)
     heartbeat_phase = display_phase or phase
     provider_ref = config_ref or project_path
@@ -758,7 +821,12 @@ def _run_builtin_executor(
     owns the loop, the verdict decision, and the final commit/summary step.
     """
     project_path = Path(project["path"])
-    preflight_error = _builtin_preflight_error(project_path, auto_commit, task.get("agent", "codex"))
+    effective_agent_mode = (
+        "codex"
+        if _builtin_review_requires_git(task.get("agent", "codex"), task=task, project_ref=project)
+        else "dual"
+    )
+    preflight_error = _builtin_preflight_error(project_path, auto_commit, effective_agent_mode)
     if preflight_error:
         raise RuntimeError(preflight_error)
 
@@ -998,7 +1066,12 @@ def run_backlog(
         task_id = task["id"]
         preflight_error = ""
         if resolved_executor == "builtin":
-            preflight_error = _builtin_preflight_error(project_path, auto_commit, task.get("agent", "codex"))
+            effective_agent_mode = (
+                "codex"
+                if _builtin_review_requires_git(task.get("agent", "codex"), task=task, project_ref=proj)
+                else "dual"
+            )
+            preflight_error = _builtin_preflight_error(project_path, auto_commit, effective_agent_mode)
         task_branch = _git_current_branch(project_path)
         # 只在 builtin 执行器启用自动分支；dispatch 模式会在工作区写任务文件，行为不受影响
         per_task_branch_enabled = (

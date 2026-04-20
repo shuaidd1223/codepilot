@@ -1152,6 +1152,25 @@ def test_resolve_builtin_phase_agent_uses_dual_split():
     assert run_cmd._resolve_builtin_phase_agent("dual", "reviewer") == ("claude", None)
 
 
+def test_resolve_builtin_phase_agent_uses_configured_dual_split(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[agents]
+builder = "sonnet"
+reviewer = "codex"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert run_cmd._resolve_builtin_phase_agent("dual", "builder", project_ref=project_path) == ("claude", "sonnet")
+    assert run_cmd._resolve_builtin_phase_agent("dual", "reviewer", project_ref=project_path) == ("codex", None)
+
+
 def test_agents_config_reads_and_normalizes_dual_phase_agents(tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()
@@ -1534,6 +1553,34 @@ def test_run_backlog_builtin_dual_can_proceed_without_git_when_auto_commit_disab
     stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
 
     assert stats["done"] == 1
+
+
+def test_run_backlog_builtin_dual_with_codex_reviewer_requires_git(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[agents]
+builder = "claude"
+reviewer = "codex"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "dual task", agent="dual", max_retries=2)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+
+    assert stats["requeued"] == 1
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 0
+    assert "Codex review" in (current["error_message"] or "")
 
 
 def test_run_backlog_marks_task_cancelled_when_executor_is_stopped(tmp_path, monkeypatch):
