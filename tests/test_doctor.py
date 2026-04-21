@@ -266,6 +266,31 @@ def test_doctor_json_ok_depends_only_on_error_severity(monkeypatch):
     assert payload["checks"][0]["severity"] == "warning"
 
 
+def test_doctor_subcommand_json_outputs_json(monkeypatch):
+    monkeypatch.setattr(
+        doctor_mod,
+        "run_all_checks",
+        lambda: [doctor_mod.CheckResult("python_version", True, "Python 3.12")],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["doctor", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["status_emoji"] == "✓"
+    assert payload["checks"][0]["name"] == "python_version"
+
+
+def test_doctor_help_shows_subcommand_json_option():
+    runner = CliRunner()
+    result = runner.invoke(main, ["doctor", "--help"])
+
+    assert result.exit_code == 0
+    assert "--json" in result.output
+
+
 @pytest.mark.parametrize(
     ("results", "expected_emoji"),
     [

@@ -64,7 +64,7 @@ def command_manifest(
         "description": "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。",
             "calling_principles": [
                 "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
-                "需要结构化结果时，优先使用 `status --json`、`show --json`、`find --json`、`ai manifest`。",
+                "需要结构化结果时，优先使用 `status --json`、`show --json`、`doctor --json`、`find --json`、`ai manifest`。",
                 f"如果目标是提交一个自然语言需求，直接调用 `{command} \"需求文本\"` 或 `{command} go \"需求文本\"`。",
                 f"如果目标是发布产物，优先调用 `{_cmd(command, 'release prepare --version <版本号>')}`。",
                 f"如果任务处于运行中，先用 `{_cmd(command, 'status -p <项目名> -v')}` 查看阶段，再决定是否 `logs` 或 `stop`。",
@@ -90,6 +90,11 @@ def command_manifest(
                 "command": _cmd(command, "show <task_id> --json"),
                 "format": "json",
                 "purpose": "精确获取单个任务的完整详情和历史日志记录。",
+            },
+            {
+                "command": _cmd(command, "doctor --json"),
+                "format": "json",
+                "purpose": "检查本机运行环境、CLI 工具、配置和数据库可用性。",
             },
         ],
         "commands": [
@@ -130,6 +135,13 @@ def command_manifest(
                 "purpose": "精确查看单个任务的完整元数据、任务内容、错误信息、交付记录和日志记录摘要。",
                 "when_to_use": "已经知道任务 ID，需要完整任务详情而不是状态列表摘要时。",
                 "examples": [_cmd(command, "show 7"), _cmd(command, "show 7 --json")],
+            },
+            {
+                "name": "doctor",
+                "syntax": _cmd(command, "doctor [--json]"),
+                "purpose": "检查 CodePilot 当前运行环境、配置、CLI 工具、API Key 和任务数据库。",
+                "when_to_use": "接入新机器、排查环境问题，或需要机器可读环境健康状态时。",
+                "examples": [_cmd(command, "doctor"), _cmd(command, "doctor --json")],
             },
             {
                 "name": "stop",
@@ -298,26 +310,33 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 {_cmd(command, "show <task_id> --json")}
 ```
 
-### 5. 查看日志
+### 5. 环境自检
+
+```bash
+{_cmd(command, "doctor")}
+{_cmd(command, "doctor --json")}
+```
+
+### 6. 查看日志
 
 ```bash
 {_cmd(command, "logs <task_id>")}
 {_cmd(command, "logs <task_id> --tail 80")}
 ```
 
-### 6. 停止任务
+### 7. 停止任务
 
 ```bash
 {_cmd(command, "stop <task_id>")}
 ```
 
-### 7. 手动重试任务
+### 8. 手动重试任务
 
 ```bash
 {_cmd(command, "retry <task_id>")}
 ```
 
-### 8. 发布
+### 9. 发布
 
 最推荐：
 
@@ -337,7 +356,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 {_cmd(command, "release verify")}
 ```
 
-### 9. 图形界面
+### 10. 图形界面
 
 ```bash
 {_cmd(command, "ui")}
@@ -373,6 +392,7 @@ def ai_prompt_text(*, command_name: str = "codepilot") -> str:
         f"提交需求时直接用 `{command} \"需求文本\"`。"
         f"查看状态时优先用 `{_cmd(command, 'status -p <项目名> --json')}`，"
         f"精确查看单个任务用 `{_cmd(command, 'show <task_id> --json')}`，"
+        f"检查本机环境用 `{_cmd(command, 'doctor --json')}`，"
         f"排障时用 `{_cmd(command, 'logs <task_id>')}`，停止任务用 `{_cmd(command, 'stop <task_id>')}`，"
         f"重试失败任务用 `{_cmd(command, 'retry <task_id>')}`。"
         f"如果需要人工介入或图形化查看，启动 `{_cmd(command, 'ui')}`。"

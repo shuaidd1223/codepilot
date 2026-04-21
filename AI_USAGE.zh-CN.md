@@ -52,26 +52,33 @@ codepilot show <task_id>
 codepilot show <task_id> --json
 ```
 
-### 5. 查看日志
+### 5. 环境自检
+
+```bash
+codepilot doctor
+codepilot doctor --json
+```
+
+### 6. 查看日志
 
 ```bash
 codepilot logs <task_id>
 codepilot logs <task_id> --tail 80
 ```
 
-### 6. 停止任务
+### 7. 停止任务
 
 ```bash
 codepilot stop <task_id>
 ```
 
-### 7. 手动重试任务
+### 8. 手动重试任务
 
 ```bash
 codepilot retry <task_id>
 ```
 
-### 8. 发布
+### 9. 发布
 
 最推荐：
 
@@ -91,7 +98,7 @@ codepilot release bundle --build-current
 codepilot release verify
 ```
 
-### 9. 图形界面
+### 10. 图形界面
 
 ```bash
 codepilot ui

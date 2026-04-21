@@ -371,10 +371,12 @@ def run_all_checks() -> list[CheckResult]:
 # ── Click command ─────────────────────────────────────────────────────────────
 
 @click.command()
+@click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
 @click.pass_context
-def doctor(ctx: click.Context):
+def doctor(ctx: click.Context, json_mode: bool):
     """环境自检，检查 Python、Git、AGENTS.toml、CLI 工具、数据库和编码。"""
-    json_mode = (ctx.parent.obj or {}).get("json_mode", False) if ctx.parent else False
+    if not json_mode and ctx.parent:
+        json_mode = (ctx.parent.obj or {}).get("json_mode", False)
     results = run_all_checks()
 
     if json_mode:

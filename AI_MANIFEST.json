@@ -5,7 +5,7 @@
   "description": "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。",
   "calling_principles": [
     "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
-    "需要结构化结果时，优先使用 `status --json`、`show --json`、`find --json`、`ai manifest`。",
+    "需要结构化结果时，优先使用 `status --json`、`show --json`、`doctor --json`、`find --json`、`ai manifest`。",
     "如果目标是提交一个自然语言需求，直接调用 `codepilot \"需求文本\"` 或 `codepilot go \"需求文本\"`。",
     "如果目标是发布产物，优先调用 `codepilot release prepare --version <版本号>`。",
     "如果任务处于运行中，先用 `codepilot status -p <项目名> -v` 查看阶段，再决定是否 `logs` 或 `stop`。",
@@ -31,6 +31,11 @@
       "command": "codepilot show <task_id> --json",
       "format": "json",
       "purpose": "精确获取单个任务的完整详情和历史日志记录。"
+    },
+    {
+      "command": "codepilot doctor --json",
+      "format": "json",
+      "purpose": "检查本机运行环境、CLI 工具、配置和数据库可用性。"
     }
   ],
   "commands": [
@@ -81,6 +86,16 @@
       "examples": [
         "codepilot show 7",
         "codepilot show 7 --json"
+      ]
+    },
+    {
+      "name": "doctor",
+      "syntax": "codepilot doctor [--json]",
+      "purpose": "检查 CodePilot 当前运行环境、配置、CLI 工具、API Key 和任务数据库。",
+      "when_to_use": "接入新机器、排查环境问题，或需要机器可读环境健康状态时。",
+      "examples": [
+        "codepilot doctor",
+        "codepilot doctor --json"
       ]
     },
     {
