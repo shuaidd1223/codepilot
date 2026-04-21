@@ -286,6 +286,31 @@ CLI_COMMAND_ENV_VARS: dict[str, str] = {
 }
 
 
+def resolve_api_provider(
+    provider_key: str,
+    project_path: str | Path | None = None,
+    *,
+    config_file: str | Path | None = None,
+) -> APIProvider:
+    """Return an API provider with AGENTS.toml overrides applied."""
+    if provider_key not in API_PROVIDERS:
+        raise KeyError(provider_key)
+
+    provider = replace(API_PROVIDERS[provider_key])
+    cfg = load_project_config(project_path, config_file=config_file)
+    provider_cfg = cfg.providers.get(provider_key) if cfg else None
+    if not provider_cfg:
+        return provider
+
+    if provider_cfg.api_key:
+        provider.api_key = provider_cfg.api_key.strip()
+    if provider_cfg.model:
+        provider.model = provider_cfg.model.strip()
+    if provider_cfg.base_url:
+        provider.base_url = provider_cfg.base_url.strip()
+    return provider
+
+
 
 
 def _collect_project_context(project_path: str) -> str:

@@ -412,6 +412,7 @@ def run_chat_session(
             cfg = shell._project_config(project_info)
             classifier_cfg = getattr(cfg, "classifier", None)
             api_key = None
+            base_url = None
             classifier_provider = ""
             classifier_model = ""
             classifier_timeout = 30
@@ -421,6 +422,8 @@ def run_chat_session(
                 classifier_timeout = classifier_cfg.timeout or 30
                 if classifier_provider:
                     api_key = cfg.get_provider_api_key(classifier_provider)
+                    provider_cfg = cfg.providers.get(classifier_provider)
+                    base_url = provider_cfg.base_url if provider_cfg else None
             try:
                 result = shell.classify_intent(
                     payload_text,
@@ -429,6 +432,7 @@ def run_chat_session(
                     classifier_model=classifier_model,
                     timeout=classifier_timeout,
                     api_key=api_key,
+                    base_url=base_url,
                 )
                 intent = result["intent"]
             except Exception:
@@ -459,12 +463,15 @@ def run_chat_session(
                 classifier_cfg = getattr(cfg, "classifier", None)
                 provider_key = classifier_cfg.provider if classifier_cfg else ""
                 api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
+                provider_cfg = cfg.providers.get(provider_key) if provider_key else None
+                base_url = provider_cfg.base_url if provider_cfg else None
                 answer = shell.answer_question_via_api(
                     provider_key=provider_key,
                     question=payload_text,
                     project_path=project_info["path"],
                     model_override=classifier_cfg.model if classifier_cfg else "",
                     api_key=api_key,
+                    base_url=base_url,
                     history=chat_history,
                 )
                 spinner.__exit__(None, None, None)

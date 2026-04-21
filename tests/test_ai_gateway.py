@@ -26,6 +26,7 @@ class _FakeAPIProvider:
     name: str = "fake-provider"
     model: str = "fake-model"
     api_key: str = ""
+    base_url: str = ""
     needs_key: bool = True
     raises: bool = False
 
@@ -40,10 +41,12 @@ class _FakeAPIProvider:
 def gateway_state(monkeypatch):
     """Replace the API registry and runners with fakes we can script."""
     api_calls: list[str] = []
+    api_providers: list[_FakeAPIProvider] = []
     cli_calls: list[dict] = []
 
     def _fake_run_api_provider(provider, prompt):
         api_calls.append(prompt)
+        api_providers.append(provider)
         if getattr(provider, "raises", False):
             raise RuntimeError("boom")
         return json.dumps({"intent": "task", "reason": "from api"})
@@ -65,6 +68,7 @@ def gateway_state(monkeypatch):
 
     return {
         "api_calls": api_calls,
+        "api_providers": api_providers,
         "cli_calls": cli_calls,
         "registry": fake_registry,
     }
@@ -92,6 +96,61 @@ def test_call_structured_prefers_api_when_key_available(gateway_state):
     assert resp.payload == {"intent": "task", "reason": "from api"}
     # CLI path must not have been touched.
     assert gateway_state["cli_calls"] == []
+
+
+def test_call_structured_applies_api_overrides(gateway_state):
+    provider = _FakeAPIProvider(needs_key=True, api_key="registry-key")
+    gateway_state["registry"]["openai"] = provider
+
+    resp = ai_gateway.call_structured(
+        GatewayRequest(
+            prompt="hi",
+            schema=SCHEMA,
+            classifier_provider="openai",
+            classifier_model="custom-model",
+            api_key="sk-custom",
+            base_url="https://models.example.invalid/v1",
+            planner="claude",
+        )
+    )
+
+    assert resp.ok is True
+    used = gateway_state["api_providers"][0]
+    assert used.model == "custom-model"
+    assert used.api_key == "sk-custom"
+    assert used.base_url == "https://models.example.invalid/v1"
+
+
+def test_call_structured_uses_provider_model_from_project_config(gateway_state, tmp_path):
+    provider = _FakeAPIProvider(needs_key=True, api_key="")
+    gateway_state["registry"]["openai"] = provider
+    (tmp_path / "AGENTS.toml").write_text(
+        "\n".join(
+            [
+                "[providers.openai]",
+                'api_key = "sk-from-config"',
+                'model = "custom-config-model"',
+                'base_url = "https://models.example.invalid/v1"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    resp = ai_gateway.call_structured(
+        GatewayRequest(
+            prompt="hi",
+            schema=SCHEMA,
+            classifier_provider="openai",
+            project_path=str(tmp_path),
+            planner="claude",
+        )
+    )
+
+    assert resp.ok is True
+    used = gateway_state["api_providers"][0]
+    assert used.model == "custom-config-model"
+    assert used.api_key == "sk-from-config"
+    assert used.base_url == "https://models.example.invalid/v1"
 
 
 def test_call_structured_skips_api_when_key_missing(gateway_state):

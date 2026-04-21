@@ -89,6 +89,7 @@ def classify_intent(
     classifier_model: str = "",
     timeout: int = 30,
     api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> dict:
     """Classify a chat input as question / task / requirement.
 
@@ -116,6 +117,7 @@ def classify_intent(
             classifier_provider=classifier_provider,
             classifier_model=classifier_model,
             api_key=api_key,
+            base_url=base_url,
             project_path=project_path,
             planner="claude",  # classification is latency-sensitive; prefer claude
             timeout=timeout,
@@ -144,6 +146,7 @@ def answer_question_via_api(
     project_path: str = "",
     model_override: str = "",
     api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
     history: list[dict] | None = None,
 ) -> str:
     """Answer a user question directly without creating a task.
@@ -174,6 +177,7 @@ def answer_question_via_api(
             classifier_provider=provider_key,
             classifier_model=model_override,
             api_key=api_key,
+            base_url=base_url,
             project_path=project_path,
             planner="claude",
             timeout=120,

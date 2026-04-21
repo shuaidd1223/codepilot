@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -193,6 +192,7 @@ def _check_cli_tools() -> list[CheckResult]:
 def _check_api_keys() -> list[CheckResult]:
     """Check API key availability for commonly used providers."""
     from codepilot.ai import API_PROVIDERS, normalize_agent_name
+    from codepilot.ai_providers import resolve_api_provider
     from codepilot.config import load_config
 
     results: list[CheckResult] = []
@@ -203,24 +203,15 @@ def _check_api_keys() -> list[CheckResult]:
     if cfg and cfg.classifier.enabled:
         classifier_provider = normalize_agent_name((cfg.classifier.provider or "").strip())
         if classifier_provider in API_PROVIDERS:
-            classifier_cfg = cfg.providers.get(classifier_provider)
-            required_candidate = replace(API_PROVIDERS[classifier_provider])
-            if classifier_cfg:
-                if classifier_cfg.api_key:
-                    required_candidate.api_key = classifier_cfg.api_key.strip()
-                if classifier_cfg.base_url:
-                    required_candidate.base_url = classifier_cfg.base_url.strip()
+            required_candidate = resolve_api_provider(
+                classifier_provider,
+                cfg.config_file_path,
+            )
             if required_candidate.requires_api_key():
                 required_provider = classifier_provider
 
     for key, base_provider in API_PROVIDERS.items():
-        provider = replace(base_provider)
-        provider_cfg = cfg.providers.get(key) if cfg else None
-        if provider_cfg:
-            if provider_cfg.api_key:
-                provider.api_key = provider_cfg.api_key.strip()
-            if provider_cfg.base_url:
-                provider.base_url = provider_cfg.base_url.strip()
+        provider = resolve_api_provider(key, cfg.config_file_path if cfg else None)
 
         if not provider.requires_api_key():
             group = key_groups.setdefault("__local__", {"local": []})

@@ -233,6 +233,7 @@ def _call_llm(
     classifier_provider: str,
     classifier_model: str,
     api_key: Optional[str],
+    base_url: Optional[str],
     project_path: str,
     timeout: int,
     planner: str = "claude",
@@ -246,6 +247,8 @@ def _call_llm(
             provider.model = classifier_model
         if api_key:
             provider.api_key = api_key
+        if base_url:
+            provider.base_url = base_url
         if not provider.requires_api_key() or provider.resolve_api_key():
             raw = _run_api_provider(provider, prompt).strip()
             if raw.startswith("```"):
@@ -314,6 +317,8 @@ def run_inspection(
     provider_key = classifier_cfg.provider if classifier_cfg else ""
     model = classifier_cfg.model if classifier_cfg else ""
     api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
+    provider_cfg = cfg.providers.get(provider_key) if provider_key else None
+    base_url = provider_cfg.base_url if provider_cfg else None
 
     try:
         payload = _call_llm(
@@ -321,6 +326,7 @@ def run_inspection(
             classifier_provider=provider_key,
             classifier_model=model,
             api_key=api_key,
+            base_url=base_url,
             project_path=str(project_path),
             timeout=timeout,
             planner=planner,

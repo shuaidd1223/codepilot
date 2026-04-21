@@ -33,6 +33,7 @@ from codepilot.ai_providers import (  # noqa: F401 (re-export)
     _load_project_config,
     _run_api_provider,
     _run_cli_provider,
+    resolve_api_provider,
     resolve_cli_provider,
 )
 from codepilot.ai_prompts import (  # noqa: F401 (re-export)
@@ -192,7 +193,7 @@ def generate_task_content(
 
     # 根据类型选择执行方式
     if normalized in API_PROVIDERS:
-        provider = API_PROVIDERS[normalized]
+        provider = resolve_api_provider(normalized, project_path)
 
         # 覆盖 API 密钥
         if api_keys and normalized in api_keys:
@@ -302,7 +303,7 @@ def check_provider_availability(agent: str, project_path: str | Path | None = No
         return True, f"可用: {provider.name}"
 
     elif normalized in API_PROVIDERS:
-        provider = API_PROVIDERS[normalized]
+        provider = resolve_api_provider(normalized, project_path)
         if provider.provider_type == "openai" and not OPENAI_AVAILABLE:
             return False, f"当前无法使用 {provider.name}，因为本机没有安装 openai 依赖。"
         if provider.provider_type == "anthropic" and not ANTHROPIC_AVAILABLE:
@@ -322,7 +323,7 @@ def check_provider_availability(agent: str, project_path: str | Path | None = No
 def resolve_agent_with_fallback(
     agent: str,
     project_path: str | Path | None = None,
-    default_mode: str = "codex",
+    default_mode: str = "dual",
 ) -> tuple[str, str | None]:
     """Check if *agent* is usable; if not, fall back to *default_mode*.
 

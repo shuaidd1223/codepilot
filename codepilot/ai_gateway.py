@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -49,6 +49,7 @@ class GatewayRequest:
     classifier_provider: str = ""
     classifier_model: str = ""
     api_key: Optional[str] = None
+    base_url: Optional[str] = None
     project_path: str = ""
     config_ref: str = ""
     planner: str = "codex"  # CLI fallback family
@@ -101,16 +102,19 @@ def _try_api(request: GatewayRequest) -> Optional[GatewayResponse]:
     if not request.classifier_provider:
         return None
 
-    from codepilot.ai_providers import API_PROVIDERS, _run_api_provider
+    from codepilot.ai_providers import API_PROVIDERS, _run_api_provider, resolve_api_provider
 
     if request.classifier_provider not in API_PROVIDERS:
         return None
 
-    provider = replace(API_PROVIDERS[request.classifier_provider])
+    provider_ref = request.config_ref or request.project_path or None
+    provider = resolve_api_provider(request.classifier_provider, provider_ref)
     if request.classifier_model:
         provider.model = request.classifier_model
     if request.api_key:
         provider.api_key = request.api_key
+    if request.base_url:
+        provider.base_url = request.base_url
     if provider.requires_api_key() and not provider.resolve_api_key():
         return None  # key missing → silently skip, try CLI
 
