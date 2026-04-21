@@ -161,6 +161,7 @@ def _invoke_clarifier_ai(
     api_key: Optional[str],
     base_url: Optional[str],
     project_path: str,
+    config_ref: str,
     planner: str,
     timeout: int,
 ) -> dict:
@@ -176,6 +177,7 @@ def _invoke_clarifier_ai(
             api_key=api_key,
             base_url=base_url,
             project_path=project_path,
+            config_ref=config_ref,
             planner=planner or "codex",
             timeout=timeout,
         )
@@ -189,6 +191,7 @@ def assess_requirement(
     title: str,
     *,
     project_path: str = "",
+    config_ref: str = "",
     qa_history: Optional[list[dict]] = None,
     max_turns: int = 3,
     classifier_provider: str = "",
@@ -262,6 +265,7 @@ def assess_requirement(
             api_key=api_key,
             base_url=base_url,
             project_path=project_path,
+            config_ref=config_ref,
             planner=planner,
             timeout=timeout,
         )

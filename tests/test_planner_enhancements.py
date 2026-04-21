@@ -354,6 +354,37 @@ def test_assess_requirement_falls_back_to_ready_on_ai_error(monkeypatch):
     assert result["source"] == "ai-error"
 
 
+def test_assess_requirement_passes_config_ref_to_gateway(monkeypatch):
+    from codepilot import ai_gateway
+    from codepilot.ai_gateway import GatewayResponse
+
+    captured: dict[str, str] = {}
+
+    def _fake_gateway(request):
+        captured["project_path"] = request.project_path
+        captured["config_ref"] = request.config_ref
+        captured["planner"] = request.planner
+        return GatewayResponse(
+            ok=True,
+            source="cli:claude",
+            payload={"status": "ready", "refined_title": "优化 webui 启动"},
+        )
+
+    monkeypatch.setattr(ai_gateway, "call_structured", _fake_gateway)
+
+    result = ai_clarify.assess_requirement(
+        "优化一下",
+        project_path="D:/demo/project",
+        config_ref="D:/demo/config/AGENTS.toml",
+        planner="claude",
+    )
+
+    assert result["status"] == "ready"
+    assert captured["project_path"] == "D:/demo/project"
+    assert captured["config_ref"] == "D:/demo/config/AGENTS.toml"
+    assert captured["planner"] == "claude"
+
+
 # ─── two-stage generate_task_breakdown ─────────────────────────────────────
 
 

@@ -422,7 +422,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         body.get("project") or "",
                         body.get("title") or "",
                         execute=bool(body.get("execute", True)),
-                        planner=body.get("planner") or "codex",
+                        planner=(body.get("planner") or "").strip() or None,
                         agent=None if body.get("agent") in {"", None, "auto"} else body.get("agent"),
                         priority=body.get("priority") or "P2",
                         max_tasks=int(body.get("max_tasks") or 5),

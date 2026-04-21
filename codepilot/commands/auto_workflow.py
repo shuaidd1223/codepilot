@@ -164,6 +164,7 @@ def clarify_requirement(
     result = assess_requirement(
         title,
         project_path=project_info.get("path", ""),
+        config_ref=_provider_context(project_info),
         qa_history=qa_history,
         max_turns=max_turns,
         classifier_provider=classifier_provider,

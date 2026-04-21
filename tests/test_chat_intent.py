@@ -361,3 +361,47 @@ def test_chat_passes_shared_gateway_config_ref_for_classifier_and_answer(tmp_pat
     assert "来自问答路径" in result.output
     assert captured["classify"]["config_ref"] == str(project_path)
     assert captured["answer"]["config_ref"] == str(project_path)
+
+
+def test_webui_session_chat_passes_shared_gateway_config_ref_for_classifier_and_answer(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    config_root = tmp_path / "config-root"
+    project_path.mkdir()
+    config_root.mkdir()
+    config_file = config_root / "AGENTS.toml"
+    config_file.write_text(
+        """
+[project]
+name = "demo"
+[classifier]
+enabled = true
+provider = "openai"
+model = "gpt-test"
+timeout = 17
+""".strip(),
+        encoding="utf-8",
+    )
+    db.register_project("demo", str(project_path), config_file=str(config_file))
+    session = webui_mod.create_session_action("demo", title="chat")
+
+    captured: dict[str, dict] = {}
+
+    def _fake_classify(text, **kwargs):
+        captured["classify"] = kwargs
+        return {"intent": "question", "reason": "test", "source": "test"}
+
+    def _fake_answer(**kwargs):
+        captured["answer"] = kwargs
+        return "来自会话问答路径"
+
+    monkeypatch.setattr("codepilot.ai.classify_intent", _fake_classify)
+    monkeypatch.setattr("codepilot.ai.answer_question_via_api", _fake_answer)
+
+    out = webui_mod.send_session_message_action(session["session"]["id"], "随便说点什么", category="auto")
+
+    assert out["ok"] is True
+    assert out["intent"] == "question"
+    assert out["message"] == "来自会话问答路径"
+    assert captured["classify"]["config_ref"] == str(config_file)
+    assert captured["answer"]["config_ref"] == str(config_file)

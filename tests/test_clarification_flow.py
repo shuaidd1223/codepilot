@@ -396,3 +396,54 @@ def test_webui_submit_requirement_continues_after_clarify_answer(tmp_path, monke
     assert jobs and jobs[0]["task_ids"]
     task = db.get_task(jobs[0]["task_ids"][0])
     assert "先覆盖 Web UI 需求入口" in task["title"]
+
+
+def test_webui_session_clarification_follows_project_planner(tmp_path, monkeypatch):
+    project_path = _register_project(tmp_path, monkeypatch)
+    config_root = tmp_path / "config-root"
+    config_root.mkdir()
+    config_file = config_root / "AGENTS.toml"
+    config_file.write_text(
+        """
+[project]
+name = "demo"
+[automation]
+planner = "claude"
+""".strip(),
+        encoding="utf-8",
+    )
+    db.register_project("demo", str(project_path), config_file=str(config_file))
+    session = webui_mod.create_session_action("demo", title="chat")
+
+    clarify_planners: list[str] = []
+    submit_planners: list[str] = []
+
+    def fake_clarify(title, *, qa_history=None, planner="codex", **kw):
+        clarify_planners.append(planner)
+        if qa_history:
+            return {"status": "ready", "refined_title": f"{title} refined", "qa_history": qa_history}
+        return {"status": "needs_clarification", "questions": ["先做哪块?"], "qa_history": []}
+
+    monkeypatch.setattr("codepilot.webui_actions.clarify_requirement", fake_clarify)
+
+    def fake_submit(project, text, **kw):
+        submit_planners.append(kw.get("planner") or "")
+        return {"ok": True, "message": "queued", "job": {"task_ids": []}}
+
+    monkeypatch.setattr("codepilot.webui_actions.submit_requirement_action", fake_submit)
+
+    first = webui_mod.send_session_message_action(
+        session["session"]["id"],
+        "优化一下",
+        category="requirement",
+    )
+    second = webui_mod.send_session_message_action(
+        session["session"]["id"],
+        "先做 Web UI",
+        category="auto",
+    )
+
+    assert first["intent"] == "clarify"
+    assert second["intent"] == "requirement"
+    assert clarify_planners == ["claude", "claude"]
+    assert submit_planners == ["claude"]

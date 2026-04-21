@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from codepilot import db
-from codepilot.commands.auto import clarify_requirement  # noqa: F401 — patched in tests
+from codepilot.commands.auto import _provider_context, clarify_requirement  # noqa: F401 — patched in tests
 from codepilot.commands.init import initialize_project
 from codepilot.config import load_project_config
 from codepilot.webui_payloads import _now_iso, _task_payload
@@ -30,6 +30,18 @@ _GOAL_MAX_BYTES = 4096
 def _shell():
     """Return the ``codepilot.webui`` shell module for state/dependency access."""
     return sys.modules["codepilot.webui"]
+
+
+def _effective_planner(project_info: dict, planner: str | None = None) -> str:
+    explicit = (planner or "").strip()
+    if explicit:
+        return explicit
+    cfg = load_project_config(project_info)
+    if cfg and getattr(cfg, "automation", None):
+        configured = (cfg.automation.planner or "").strip()
+        if configured:
+            return configured
+    return "codex"
 
 
 def _append_event(message: str, *, level: str = "info", project: str | None = None, task_id: int | None = None) -> None:
@@ -389,7 +401,7 @@ def submit_requirement_action(
     title: str,
     *,
     execute: bool = True,
-    planner: str = "codex",
+    planner: str | None = None,
     agent: str | None = None,
     priority: str = "P2",
     max_tasks: int = 5,
@@ -409,6 +421,7 @@ def submit_requirement_action(
     normalized_title = " ".join((title or "").split())
     if not normalized_title:
         raise RuntimeError("需求文本不能为空。")
+    effective_planner = _effective_planner(project_info, planner)
 
     if clarify:
         seed_title = " ".join((original_title or normalized_title).split())
@@ -419,7 +432,7 @@ def submit_requirement_action(
             seed_title,
             project_info=project_info,
             qa_history=merged_history,
-            planner=planner,
+            planner=effective_planner,
         )
         if assessment.get("status") == "needs_clarification":
             questions = assessment.get("questions") or []
@@ -441,7 +454,7 @@ def submit_requirement_action(
             "type": "requirement",
             "project": project,
             "title": normalized_title,
-            "planner": planner,
+            "planner": effective_planner,
             "agent": (agent or "").lower(),
             "status": "queued",
             "phase": "queued",
@@ -470,7 +483,7 @@ def submit_requirement_action(
 
         _update_job(job_id, status="running", phase="planning", updated_at=_now_iso())
         _append_job_log(f"开始规划：{normalized_title}")
-        _append_job_log(f"使用规划器：{planner}")
+        _append_job_log(f"使用规划器：{effective_planner}")
 
         # Subscribe this job to the progress bus. Every event emitted during
         # this worker's run — regardless of whether it comes from the planner,
@@ -498,7 +511,7 @@ def submit_requirement_action(
                 result = shell.run_requirement_workflow(
                     project_info=db.get_project(project) or project_info,
                     title=normalized_title,
-                    planner=planner,
+                    planner=effective_planner,
                     task_agent=agent or None,
                     priority=priority,
                     max_tasks=max_tasks,
@@ -574,6 +587,8 @@ def submit_goal_action(
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
+    provider_context = _provider_context(project_info)
+    effective_planner = _effective_planner(project_info)
     text = (text or "").strip()
     if not text:
         raise RuntimeError("输入不能为空。")
@@ -599,6 +614,7 @@ def submit_goal_action(
                 result = classify_intent(
                     text,
                     project_path=project_info["path"],
+                    config_ref=provider_context,
                     classifier_provider=classifier_cfg.provider,
                     classifier_model=classifier_cfg.model,
                     timeout=classifier_cfg.timeout,
@@ -645,6 +661,7 @@ def submit_goal_action(
                 provider_key=provider_key,
                 question=text,
                 project_path=project_info["path"],
+                config_ref=provider_context,
                 model_override=classifier_cfg.model if classifier_cfg else "",
                 api_key=api_key,
                 base_url=base_url,
@@ -666,6 +683,7 @@ def submit_goal_action(
         seed_title,
         project_info=project_info,
         qa_history=merged_history,
+        planner=effective_planner,
     )
 
     if assessment.get("status") == "needs_clarification":
@@ -685,6 +703,7 @@ def submit_goal_action(
         project,
         refined,
         execute=True,
+        planner=effective_planner,
         max_tasks=max_tasks,
         run_async=True,
         clarify=False,
@@ -824,6 +843,8 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
+    provider_context = _provider_context(project_info)
+    effective_planner = _effective_planner(project_info)
     text = (text or "").strip()
     if not text:
         raise RuntimeError("输入不能为空。")
@@ -847,6 +868,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
             pending["original_title"],
             project_info=project_info,
             qa_history=merged_history,
+            planner=effective_planner,
         )
         if assessment.get("status") == "needs_clarification":
             questions = assessment.get("questions") or []
@@ -861,7 +883,13 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
             }
         refined = assessment.get("refined_title") or pending["original_title"]
         plan_result = submit_requirement_action(
-            project, refined, execute=True, max_tasks=5, run_async=True, clarify=False,
+            project,
+            refined,
+            execute=True,
+            planner=effective_planner,
+            max_tasks=5,
+            run_async=True,
+            clarify=False,
         )
         task_ids = (plan_result.get("job") or {}).get("task_ids") or []
         reply = plan_result.get("message") or f"已根据澄清结果开始规划：{refined}"
@@ -893,6 +921,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
                 result = classify_intent(
                     text,
                     project_path=project_info["path"],
+                    config_ref=provider_context,
                     classifier_provider=classifier_cfg.provider,
                     classifier_model=classifier_cfg.model,
                     timeout=classifier_cfg.timeout,
@@ -930,6 +959,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
                 provider_key=provider_key,
                 question=text,
                 project_path=project_info["path"],
+                config_ref=provider_context,
                 model_override=classifier_cfg.model if classifier_cfg else "",
                 api_key=api_key,
                 base_url=base_url,
@@ -940,7 +970,12 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
         db.create_session_message(session_id, "assistant", reply, intent="question")
         return {"ok": True, "intent": "question", "message": reply, "task_ids": []}
 
-    assessment = clarify_requirement(text, project_info=project_info, qa_history=[])
+    assessment = clarify_requirement(
+        text,
+        project_info=project_info,
+        qa_history=[],
+        planner=effective_planner,
+    )
     if assessment.get("status") == "needs_clarification":
         questions = assessment.get("questions") or []
         reply = "为了更好地规划，请先确认以下几个点：\n" + "\n".join(
@@ -958,7 +993,13 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
     refined = assessment.get("refined_title") or text
     max_tasks = 1 if intent == "task" else 5
     result = submit_requirement_action(
-        project, refined, execute=True, max_tasks=max_tasks, run_async=True, clarify=False
+        project,
+        refined,
+        execute=True,
+        planner=effective_planner,
+        max_tasks=max_tasks,
+        run_async=True,
+        clarify=False,
     )
     task_ids = []
     job = result.get("job")

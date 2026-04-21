@@ -675,6 +675,48 @@ def test_triage_deterministic_failure_skips_ai_without_resolved_project_path(tmp
     assert called["value"] is False
 
 
+def test_clarify_requirement_passes_config_ref_to_assess_requirement(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    config_root = tmp_path / "config-root"
+    project_path.mkdir()
+    config_root.mkdir()
+    config_file = config_root / "AGENTS.toml"
+    config_file.write_text(
+        """
+[project]
+name = "demo"
+[automation]
+planner = "claude"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    project_info = db.register_project("demo", str(project_path), config_file=str(config_file))
+    captured: dict[str, str] = {}
+
+    def _fake_assess(title, **kwargs):
+        captured["title"] = title
+        captured["project_path"] = kwargs.get("project_path") or ""
+        captured["config_ref"] = kwargs.get("config_ref") or ""
+        captured["planner"] = kwargs.get("planner") or ""
+        return {"status": "ready", "refined_title": title}
+
+    monkeypatch.setattr("codepilot.ai_clarify.assess_requirement", _fake_assess)
+
+    result = auto_cmd.clarify_requirement(
+        "优化一下",
+        project_info=project_info,
+        planner="claude",
+    )
+
+    assert result["status"] == "ready"
+    assert captured["title"] == "优化一下"
+    assert captured["project_path"] == str(project_path)
+    assert captured["config_ref"] == str(config_file)
+    assert captured["planner"] == "claude"
+
+
 def test_resolve_project_for_prompt_uses_current_directory(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
