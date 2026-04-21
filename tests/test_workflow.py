@@ -263,6 +263,10 @@ def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeyp
         }
 
     monkeypatch.setattr(webui_mod, "run_requirement_workflow", fake_run_requirement_workflow)
+    monkeypatch.setattr(
+        "codepilot.webui_actions.clarify_requirement",
+        lambda title, **kw: {"status": "ready", "refined_title": title},
+    )
 
     result = webui_mod.submit_requirement_action(
         "demo",

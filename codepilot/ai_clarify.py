@@ -51,6 +51,12 @@ _CONCRETE_HINTS = re.compile(
     r"|[\u4e00-\u9fff]+\.(?:py|ts|tsx|js|md|vue|go|rs|java)"  # CJK+extension (rare)
 )
 
+_EXPLICIT_OBJECT_HINTS = (
+    "模块", "页面", "接口", "命令", "脚本", "测试", "数据库", "配置", "服务",
+    "组件", "函数", "类", "路由", "任务", "列表", "表单", "流程", "字段",
+    "api", "cli", "webui", "sdk",
+)
+
 
 CLARIFY_SCHEMA = {
     "type": "object",
@@ -120,6 +126,17 @@ def merge_clarification_history(original: str, qa_history: list[dict]) -> str:
         else:
             parts.append(f"补充：{a}")
     return " / ".join(p for p in parts if p)
+
+
+def _looks_explicitly_concrete(title: str) -> bool:
+    """Return whether the requirement already names a concrete object/scope."""
+    t = (title or "").strip()
+    if not t:
+        return False
+    if _CONCRETE_HINTS.search(t):
+        return True
+    low = t.lower()
+    return any(hint in t or hint in low for hint in _EXPLICIT_OBJECT_HINTS)
 
 
 def _strip_json_envelope(raw: str) -> str:
@@ -207,14 +224,17 @@ def assess_requirement(
             "reason": f"澄清轮次超过 {max_turns}，按当前信息规划",
         }
 
-    # First round: cheap heuristic triage.
+    # First round: if the requirement is both concise and concrete, skip AI.
+    # Otherwise, let AI perform a contextual adequacy check (it may still
+    # return ready immediately without follow-up questions).
     if not qa_history and not heuristic_needs_clarification(title):
-        return {
-            "status": "ready",
-            "refined_title": title.strip(),
-            "source": "heuristic",
-            "reason": "需求已包含具体模块/动作",
-        }
+        if _looks_explicitly_concrete(title):
+            return {
+                "status": "ready",
+                "refined_title": title.strip(),
+                "source": "heuristic",
+                "reason": "需求已包含明确作用对象，可直接规划",
+            }
 
     # Otherwise, consult the AI.
     context = collect_planner_context(project_path, merged, max_chars=2500)

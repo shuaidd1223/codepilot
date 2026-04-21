@@ -16,6 +16,12 @@ CP.Components.Composer = Vue.defineComponent({
         <p class="muted">提交自然语言需求，或直接建任务</p>
       </div>
       <form class="form" @submit.prevent="submit">
+        <div v-if="s.composerClarify && s.composerMode === 'requirement'" class="clarify-panel">
+          <div class="clarify-head">需要澄清几个点</div>
+          <ol>
+            <li v-for="q in s.composerClarify.questions" :key="q">{{ q }}</li>
+          </ol>
+        </div>
         <div class="grid grid-2 gap-sm">
           <div class="field">
             <label>模式</label>
@@ -31,8 +37,8 @@ CP.Components.Composer = Vue.defineComponent({
             </select>
           </div>
           <div class="field full">
-            <label>标题</label>
-            <textarea v-model="s.composer.title" rows="2" placeholder="例如：把失败任务的原因直接显示在 UI 里，并一键重试"></textarea>
+            <label>{{ s.composerClarify && s.composerMode === 'requirement' ? '补充回答' : '标题' }}</label>
+            <textarea v-model="s.composer.title" rows="2" :placeholder="s.composerClarify && s.composerMode === 'requirement' ? '回答上面的问题，可以一次性写完' : '例如：把失败任务的原因直接显示在 UI 里，并一键重试'"></textarea>
           </div>
           <div class="field full">
             <label>补充说明</label>

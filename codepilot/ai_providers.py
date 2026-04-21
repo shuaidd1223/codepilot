@@ -10,24 +10,19 @@ import os
 import platform
 import shutil
 import subprocess
+import importlib.util
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
+from codepilot.ai_planner_context import collect_planner_context
 from codepilot.config import load_project_config
 
-# API support libs (optional imports)
-try:
-    import openai
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-
-try:
-    import anthropic
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
+# API support libs (optional and lazily imported).
+# Keep availability flags cheap so CLI startup does not import heavy SDK trees.
+OPENAI_AVAILABLE = importlib.util.find_spec("openai") is not None
+ANTHROPIC_AVAILABLE = importlib.util.find_spec("anthropic") is not None
 
 
 @dataclass
@@ -95,7 +90,9 @@ class APIProvider:
                     f"当前无法使用 {self.name}，因为还没有配置 API Key。"
                     f"请先设置 {env_names}。"
                 )
-            client = openai.OpenAI(
+            from openai import OpenAI
+
+            client = OpenAI(
                 api_key=api_key,
                 base_url=self.base_url or None,
             )
@@ -112,7 +109,9 @@ class APIProvider:
                     f"当前无法使用 {self.name}，因为还没有配置 API Key。"
                     f"请先设置 {env_names}。"
                 )
-            client = anthropic.Anthropic(
+            from anthropic import Anthropic
+
+            client = Anthropic(
                 api_key=api_key,
                 base_url=self.base_url or None,
             )
@@ -309,35 +308,222 @@ def resolve_api_provider(
     if provider_cfg.base_url:
         provider.base_url = provider_cfg.base_url.strip()
     return provider
+_PROJECT_MARKER_FILES = (
+    "AGENTS.toml",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "requirements.txt",
+)
+
+_DISCOVERY_SKIP_DIRS = {
+    "__pycache__",
+    "node_modules",
+    "venv",
+    ".venv",
+    ".git",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".idea",
+    ".vscode",
+    "dist",
+    "build",
+    "target",
+    ".next",
+    "AppData",
+}
+
+_HOME_LIKE_DIR_NAMES = {
+    "desktop",
+    "documents",
+    "downloads",
+    "music",
+    "pictures",
+    "videos",
+    "favorites",
+}
 
 
+def _project_candidate_score(path: Path) -> int:
+    """Score whether ``path`` looks like a project root."""
+    if not path.exists() or not path.is_dir():
+        return 0
+
+    score = 0
+    if (path / "AGENTS.toml").is_file():
+        score += 8
+    if (path / ".git").exists():
+        score += 6
+
+    marker_hits = sum(1 for name in _PROJECT_MARKER_FILES if (path / name).exists())
+    if marker_hits:
+        score += min(8, marker_hits * 2)
+
+    has_readme = any((path / name).is_file() for name in ("README.md", "README", "README.txt"))
+    if has_readme:
+        score += 1
+    if (path / "src").is_dir():
+        score += 1
+    return score
 
 
-def _collect_project_context(project_path: str) -> str:
-    """收集项目顶层结构作为上下文, 不展开所有文件避免诱导规划器发散."""
+def _is_home_like_root(path: Path) -> bool:
+    """Best-effort probe for user-home style directory rather than project root."""
+    if not path.exists() or not path.is_dir():
+        return False
+    if _project_candidate_score(path) >= 5:
+        return False
+
+    names: set[str] = set()
+    try:
+        for child in path.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            names.add(child.name.lower())
+    except Exception:
+        return False
+
+    return len(names & _HOME_LIKE_DIR_NAMES) >= 2
+
+
+def _discover_project_root(base_path: Path, *, max_depth: int = 2, max_dirs: int = 80) -> Path:
+    """Discover a likely project root from ``base_path`` in bounded breadth-first search."""
+    if _project_candidate_score(base_path) >= 5:
+        return base_path
+
+    queue: deque[tuple[Path, int]] = deque([(base_path, 0)])
+    seen: set[Path] = {base_path}
+    candidates: list[tuple[int, int, Path]] = []
+    scanned = 0
+
+    while queue and scanned < max_dirs:
+        current, depth = queue.popleft()
+        if depth >= max_depth:
+            continue
+        try:
+            children = sorted((p for p in current.iterdir() if p.is_dir()), key=lambda p: p.name.lower())
+        except Exception:
+            continue
+        for child in children:
+            if scanned >= max_dirs:
+                break
+            if child in seen:
+                continue
+            seen.add(child)
+            scanned += 1
+
+            if child.name.startswith(".") or child.name in _DISCOVERY_SKIP_DIRS:
+                continue
+            if child.is_symlink():
+                continue
+
+            score = _project_candidate_score(child)
+            if score >= 5:
+                candidates.append((score, depth + 1, child))
+
+            if depth + 1 < max_depth:
+                queue.append((child, depth + 1))
+
+    if not candidates:
+        return base_path
+
+    candidates.sort(key=lambda item: (-item[0], item[1], str(item[2]).lower()))
+    best_score, _, best_path = candidates[0]
+    close_alternatives = [item for item in candidates[1:] if item[0] >= best_score - 1]
+    # Ambiguous candidates: keep current path to avoid random jumps.
+    if close_alternatives and (best_score < 10 or len(close_alternatives) >= 2):
+        return base_path
+    return best_path
+
+
+def _readme_snippet(path: Path, *, max_chars: int = 700) -> str:
+    for name in ("README.md", "README", "README.txt"):
+        candidate = path / name
+        if not candidate.is_file():
+            continue
+        try:
+            text = candidate.read_text(encoding="utf-8", errors="replace").strip()
+        except Exception:
+            continue
+        if not text:
+            continue
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "\n…（已截断）"
+        return f"{name} 摘录:\n{text}"
+    return ""
+
+
+def _lightweight_project_outline(path: Path) -> str:
+    parts: list[str] = []
+    try:
+        top_items = sorted(
+            p.name
+            for p in path.iterdir()
+            if not p.name.startswith(".") and p.name not in _DISCOVERY_SKIP_DIRS
+        )
+    except Exception:
+        top_items = []
+
+    if top_items:
+        parts.append(f"顶层: {', '.join(top_items[:24])}")
+
+    stack_hints: list[str] = []
+    if (path / "pyproject.toml").exists():
+        stack_hints.append("Python (pyproject.toml)")
+    if (path / "package.json").exists():
+        stack_hints.append("Node.js (package.json)")
+    if (path / "Cargo.toml").exists():
+        stack_hints.append("Rust (Cargo.toml)")
+    if (path / "go.mod").exists():
+        stack_hints.append("Go (go.mod)")
+    if stack_hints:
+        parts.append("技术栈: " + "、".join(stack_hints))
+
+    readme = _readme_snippet(path)
+    if readme:
+        parts.append(readme)
+
+    return "\n".join(parts)
+
+
+def _collect_project_context(project_path: str, query_text: str = "") -> str:
+    """Collect context for Q&A and auto-discover likely project root in temporary sessions."""
     if not project_path:
         return ""
 
-    proj = Path(project_path)
-    if not proj.exists():
+    base = Path(project_path)
+    if not base.exists():
         return ""
 
-    parts = ["项目结构(仅供参考, 不要偏离用户需求去分析这些文件):"]
+    resolved = _discover_project_root(base)
+    parts: list[str] = []
+    if resolved != base:
+        parts.append(f"上下文目录: {resolved}（从 {base} 自动探测）")
+    else:
+        parts.append(f"上下文目录: {resolved}")
 
-    # 只列顶层目录和关键文件
-    top_items = sorted(p.name for p in proj.iterdir()
-                       if not p.name.startswith(".") and p.name not in {
-                           "__pycache__", "node_modules", "venv", ".venv",
-                           "dist", "build", ".git", ".pytest_cache",
-                       })
-    if top_items:
-        parts.append(f"顶层: {', '.join(top_items[:20])}")
+    if _is_home_like_root(base) and resolved == base:
+        parts.append(
+            "检测到当前目录更像用户主目录，不是明确项目根。"
+            "回答时先说明这一点，并建议用户在目标目录运行 codepilot init 或使用 /project 切换。"
+        )
+        outline = _lightweight_project_outline(base)
+        if outline:
+            parts.append(outline)
+        return "\n".join(parts)
 
-    # 如果有 package.json / pyproject.toml, 说明技术栈
-    if (proj / "pyproject.toml").exists():
-        parts.append("技术栈: Python (pyproject.toml)")
-    if (proj / "package.json").exists():
-        parts.append("技术栈: Node.js (package.json)")
+    rich_context = collect_planner_context(str(resolved), requirement_title=query_text, max_chars=2600)
+    if rich_context:
+        parts.append(rich_context)
+    else:
+        outline = _lightweight_project_outline(resolved)
+        if outline:
+            parts.append(outline)
 
     return "\n".join(parts)
 

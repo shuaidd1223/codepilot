@@ -184,7 +184,7 @@ def answer_question_via_api(
     Routes through :mod:`codepilot.ai_gateway` so API / CLI fallback and
     key-resolution behaviour stay consistent with ``classify_intent``.
     """
-    context = _collect_project_context(project_path)
+    context = _collect_project_context(project_path, query_text=question)
     history_block = ""
     if history:
         lines = []
@@ -194,8 +194,9 @@ def answer_question_via_api(
                 lines.append(f"助手: {turn['assistant'][:300]}")
         history_block = "\n## 对话历史\n" + "\n".join(lines) + "\n"
     prompt = (
-        "你是当前项目的协作助手。请基于下面的项目上下文和对话历史，"
-        "用简洁中文直接回答用户的问题。如果不确定，明确说不确定。\n\n"
+        "你是当前项目的协作助手。请基于下面的项目上下文和对话历史，用简洁中文直接回答用户问题。"
+        "如果上下文显示当前目录并非明确项目根，请先明确这一点，再给出下一步最短可执行建议。"
+        "不要只回复“我不确定”。\n\n"
         f"## 项目上下文\n{context}\n{history_block}\n## 用户问题\n{question}"
     )
 

@@ -304,6 +304,7 @@ def split_task_action(task_id: int) -> dict:
         execute=False,
         max_tasks=5,
         run_async=True,
+        clarify=False,
     )
     result["intent"] = "split"
     result["original_task_id"] = task_id
@@ -396,6 +397,9 @@ def submit_requirement_action(
     auto_commit: bool = False,
     max_retries: int = 3,
     run_async: bool = True,
+    qa_history: Optional[list[dict]] = None,
+    original_title: str = "",
+    clarify: bool = True,
 ) -> dict:
     shell = _shell()
     db.init_db()
@@ -405,6 +409,31 @@ def submit_requirement_action(
     normalized_title = " ".join((title or "").split())
     if not normalized_title:
         raise RuntimeError("需求文本不能为空。")
+
+    if clarify:
+        seed_title = " ".join((original_title or normalized_title).split())
+        merged_history = list(qa_history or [])
+        if original_title:
+            merged_history.append({"question": "", "answer": normalized_title})
+        assessment = clarify_requirement(
+            seed_title,
+            project_info=project_info,
+            qa_history=merged_history,
+            planner=planner,
+        )
+        if assessment.get("status") == "needs_clarification":
+            questions = assessment.get("questions") or []
+            _append_event(f"需求需要澄清：{seed_title[:60]}", project=project)
+            return {
+                "ok": True,
+                "intent": "clarify",
+                "questions": questions,
+                "original_title": seed_title,
+                "qa_history": assessment.get("qa_history") or merged_history,
+                "message": "为了更好地规划，请先回答几个问题。",
+            }
+        normalized_title = " ".join((assessment.get("refined_title") or seed_title).split())
+
     job_id = _next_job_id()
     with shell._UI_LOCK:
         shell._UI_JOBS[job_id] = {
@@ -451,6 +480,8 @@ def submit_requirement_action(
             stage = event.get("stage") or "?"
             message = event.get("message") or ""
             extra = event.get("extra") or {}
+            if extra.get("task_log_stream"):
+                return
             round_hint = ""
             if "round" in extra and "round_total" in extra:
                 round_hint = f" (round {extra['round']}/{extra['round_total']})"
@@ -656,6 +687,7 @@ def submit_goal_action(
         execute=True,
         max_tasks=max_tasks,
         run_async=True,
+        clarify=False,
     )
     result["intent"] = intent
     result["refined_title"] = refined
@@ -829,7 +861,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
             }
         refined = assessment.get("refined_title") or pending["original_title"]
         plan_result = submit_requirement_action(
-            project, refined, execute=True, max_tasks=5, run_async=True,
+            project, refined, execute=True, max_tasks=5, run_async=True, clarify=False,
         )
         task_ids = (plan_result.get("job") or {}).get("task_ids") or []
         reply = plan_result.get("message") or f"已根据澄清结果开始规划：{refined}"
@@ -925,7 +957,9 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
 
     refined = assessment.get("refined_title") or text
     max_tasks = 1 if intent == "task" else 5
-    result = submit_requirement_action(project, refined, execute=True, max_tasks=max_tasks, run_async=True)
+    result = submit_requirement_action(
+        project, refined, execute=True, max_tasks=max_tasks, run_async=True, clarify=False
+    )
     task_ids = []
     job = result.get("job")
     if job:

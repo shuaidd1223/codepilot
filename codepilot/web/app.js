@@ -63,10 +63,11 @@ const RootApp = {
       daemonHealth: { alive: true, running: false, pid: 0, reason: '', stale_seconds: 0 },
 
       /* forms */
-      goalText: '', goalCategory: 'auto',
+      goalText: '', goalCategory: 'auto', goalClarify: null,
       projectForm: { open: false, path: '', name: '', noConfig: false },
       composerMode: 'requirement',
       composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
+      composerClarify: null,
       chatText: '', chatCategory: 'auto',
       /* active clarification (intent=clarify) state per session. Map
        * sessionId -> {questions: [...], answerDraft: ''} */
@@ -435,6 +436,39 @@ const RootApp = {
         _flushTaskLogPending();
       });
     }
+    function _asFiniteNumber(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    function _handleTaskLogStreamEvent(event) {
+      const extra = (event && event.extra) || null;
+      if (!extra || !extra.task_log_stream) return false;
+      const tid = state.nav.view === 'task' ? state.nav.id : null;
+      if (!tid || event.task_id !== tid) return true;
+      if (state.taskLog.taskId !== tid) {
+        loadTaskLog(tid, { reset: true });
+        return true;
+      }
+      const chunk = (typeof extra.task_log_chunk === 'string') ? extra.task_log_chunk : '';
+      const start = _asFiniteNumber(extra.task_log_start);
+      const end = _asFiniteNumber(extra.task_log_end);
+      const expected = _asFiniteNumber(state.taskLog.nextOffset) || 0;
+      if (!chunk || start == null || end == null || end < start) {
+        loadTaskLog(tid);
+        return true;
+      }
+      if (start !== expected) {
+        /* Gap / reordering (e.g. SSE queue dropped an older stream frame):
+         * fall back to file-delta API to reconcile exact bytes. */
+        loadTaskLog(tid);
+        return true;
+      }
+      _queueTaskLogText(tid, chunk);
+      state.taskLog.nextOffset = end;
+      state.taskLog.size = Math.max(state.taskLog.size || 0, end);
+      state.taskLog.done = false;
+      return true;
+    }
 
     /* Incremental log loader. If `reset` is true (task changed / first open)
      * we drop the previous buffer and fetch from offset 0; otherwise we ask
@@ -565,12 +599,29 @@ const RootApp = {
       if (!text) { pushToast('输入不能为空', 'error'); return; }
       state.sending = true; state.answer = null;
       try {
-        const out = await CP.api.post('/api/goal', {
+        const payload = {
           project: state.nav.project, text, category: state.goalCategory,
-        });
+        };
+        if (state.goalClarify) {
+          payload.original_title = state.goalClarify.original_title;
+          payload.qa_history = state.goalClarify.qa_history || [];
+        }
+        const out = await CP.api.post('/api/goal', payload);
         if (out.intent === 'question' || out.intent === 'command') {
           state.answer = out.message || '完成';
+          state.goalClarify = null;
+        } else if (out.intent === 'clarify') {
+          const questions = out.questions || [];
+          state.goalClarify = {
+            original_title: out.original_title || text,
+            qa_history: out.qa_history || [],
+            questions,
+          };
+          state.answer = `${out.message || '需要补充信息'}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
+          state.goalText = '';
+          return;
         } else {
+          state.goalClarify = null;
           pushToast(out.message || '提交成功', 'success');
           await loadDashboard();
         }
@@ -593,6 +644,10 @@ const RootApp = {
         planner: state.composer.planner,
         execute: state.composer.execute,
       };
+      if (state.composerMode === 'requirement' && state.composerClarify) {
+        payload.original_title = state.composerClarify.original_title;
+        payload.qa_history = state.composerClarify.qa_history || [];
+      }
       try {
         let out;
         if (state.composerMode === 'task') {
@@ -601,6 +656,19 @@ const RootApp = {
           state.composer.content = '';
         } else {
           out = await CP.api.post('/api/requirements', payload);
+          if (out.intent === 'clarify') {
+            const questions = out.questions || [];
+            state.composerClarify = {
+              original_title: out.original_title || title,
+              qa_history: out.qa_history || [],
+              questions,
+            };
+            state.answer = `${out.message || '需要补充信息'}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
+            state.composer.title = '';
+            pushToast('需要补充信息', 'warning');
+            return;
+          }
+          state.composerClarify = null;
         }
         state.composer.title = '';
         pushToast(out.message || '提交成功', 'success');
@@ -783,6 +851,7 @@ const RootApp = {
       if (sseHandle) return;
       const qs = state.nav.project ? `?project=${encodeURIComponent(state.nav.project)}` : '';
       sseHandle = CP.sse.open(`/api/events/stream${qs}`, (event) => {
+        if (_handleTaskLogStreamEvent(event)) return;
         /* Daemon-health events are piggy-backed on the progress stream
          * by the backend (see webui.py::_stream_progress_events). They
          * carry the full health payload in event.extra and only get

@@ -289,6 +289,26 @@ def test_assess_requirement_skips_ai_when_heuristic_is_happy(monkeypatch):
     assert calls["count"] == 0
 
 
+def test_assess_requirement_consults_ai_for_broad_non_vague_input(monkeypatch):
+    calls = {"count": 0}
+
+    def _fake_ai(*a, **kw):
+        calls["count"] += 1
+        return {
+            "status": "needs_clarification",
+            "questions": ["你希望先覆盖哪些模块?"],
+        }
+
+    monkeypatch.setattr(ai_clarify, "_invoke_clarifier_ai", _fake_ai)
+
+    result = ai_clarify.assess_requirement(
+        "做一个全自动编程工作流智能体",
+        project_path="",
+    )
+    assert result["status"] == "needs_clarification"
+    assert calls["count"] == 1
+
+
 def test_assess_requirement_forces_ready_after_max_turns(monkeypatch):
     """After max_turns rounds we stop asking and plan with what we have."""
     monkeypatch.setattr(

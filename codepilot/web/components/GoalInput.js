@@ -23,8 +23,8 @@ CP.Components.GoalInput = Vue.defineComponent({
       <div class="card pad" style="margin-top: 16px">
         <div class="row gap-sm wrap end">
           <div class="field grow">
-            <label>快速输入</label>
-            <input v-model="s.goalText" @keydown.enter.exact.prevent="submit" maxlength="4096" placeholder="输入问题、需求或命令… 由 AI 自动判断">
+            <label>{{ s.goalClarify ? '补充回答' : '快速输入' }}</label>
+            <input v-model="s.goalText" @keydown.enter.exact.prevent="submit" maxlength="4096" :placeholder="s.goalClarify ? '回答上面的问题，可以一次性写完' : '输入问题、需求或命令… 由 AI 自动判断'">
           </div>
           <div class="field w-28">
             <label>类型</label>

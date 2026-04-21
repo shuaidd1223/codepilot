@@ -20,23 +20,74 @@ from typing import Optional
 
 import click
 
+from codepilot import db
+
 # Re-exported dependencies — tests monkeypatch these on ``codepilot.commands.auto``
 # and the implementation modules resolve them via this shell at call time.
-from codepilot.ai import (  # noqa: F401 (re-export)
-    answer_question_via_api,
-    build_task_markdown_from_plan,
-    check_provider_availability,
-    classify_intent,
-    generate_task_breakdown,
-    normalize_agent_name,
-    parse_automation_planner_result,
-)
-from codepilot.commands.add import _resolve_project_strict
-from codepilot.commands.run import run_backlog  # noqa: F401 (re-export)
-from codepilot.commands.status import (  # noqa: F401 (re-export)
-    render_project_dashboard,
-    render_project_stats,
-)
+def _ai_module():
+    from codepilot import ai
+
+    return ai
+
+
+def answer_question_via_api(*args, **kwargs):  # noqa: F401 (re-export)
+    return _ai_module().answer_question_via_api(*args, **kwargs)
+
+
+def build_task_markdown_from_plan(*args, **kwargs):  # noqa: F401 (re-export)
+    return _ai_module().build_task_markdown_from_plan(*args, **kwargs)
+
+
+def check_provider_availability(*args, **kwargs):  # noqa: F401 (re-export)
+    return _ai_module().check_provider_availability(*args, **kwargs)
+
+
+def classify_intent(*args, **kwargs):  # noqa: F401 (re-export)
+    return _ai_module().classify_intent(*args, **kwargs)
+
+
+def generate_task_breakdown(*args, **kwargs):  # noqa: F401 (re-export)
+    return _ai_module().generate_task_breakdown(*args, **kwargs)
+
+
+def normalize_agent_name(*args, **kwargs):  # noqa: F401 (re-export)
+    return _ai_module().normalize_agent_name(*args, **kwargs)
+
+
+def parse_automation_planner_result(*args, **kwargs):  # noqa: F401 (re-export)
+    return _ai_module().parse_automation_planner_result(*args, **kwargs)
+
+
+def run_backlog(*args, **kwargs):  # noqa: F401 (re-export)
+    from codepilot.commands.run import run_backlog as _run_backlog
+
+    return _run_backlog(*args, **kwargs)
+
+
+def render_project_dashboard(*args, **kwargs):  # noqa: F401 (re-export)
+    from codepilot.commands.status import render_project_dashboard as _render_project_dashboard
+
+    return _render_project_dashboard(*args, **kwargs)
+
+
+def render_project_stats(*args, **kwargs):  # noqa: F401 (re-export)
+    from codepilot.commands.status import render_project_stats as _render_project_stats
+
+    return _render_project_stats(*args, **kwargs)
+
+
+def _resolve_project_strict(ctx, param, value):
+    """Require an existing registered project name for strict command modes."""
+    from codepilot.output import echo
+
+    if not value:
+        raise click.BadParameter("需要 --project 参数")
+    db.init_db()
+    proj = db.get_project(value)
+    if not proj:
+        echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
+        raise click.Abort()
+    return value
 
 from codepilot.commands.auto_chat import (  # noqa: F401 (re-export)
     _Spinner,
@@ -68,6 +119,61 @@ def _json_mode(ctx: click.Context, json_mode: bool) -> bool:
 def _root_options(ctx: click.Context) -> dict:
     root = ctx.find_root()
     return root.obj if root and root.obj else {}
+
+
+def _clarify_requirement_for_go(
+    text: str,
+    *,
+    project_info: dict,
+    planner: str,
+) -> str:
+    """Interactive clarification loop for `go` command before planning."""
+    from codepilot.output import echo
+
+    if not click.get_text_stream("stdin").isatty():
+        return text
+
+    cfg = _project_config(project_info)
+    max_turns = (
+        cfg.automation.clarify_max_turns
+        if cfg and getattr(cfg, "automation", None)
+        else 3
+    )
+    qa_history: list[dict] = []
+    assessment = clarify_requirement(
+        text,
+        project_info=project_info,
+        qa_history=qa_history,
+        planner=planner,
+        max_turns=max_turns,
+    )
+
+    while assessment.get("status") == "needs_clarification":
+        questions = assessment.get("questions") or []
+        if not questions:
+            break
+        echo("[cyan]先补充几个关键信息，再开始规划：[/cyan]")
+        for i, q in enumerate(questions, 1):
+            click.echo(f"  {i}. {q}")
+        answer = click.prompt("你的补充", default="", show_default=False).strip()
+        if not answer:
+            echo("[yellow]未收到补充信息，将按当前内容继续规划。[/yellow]")
+            break
+
+        qa_history.append({
+            "question": " | ".join(questions),
+            "answer": answer,
+        })
+        assessment = clarify_requirement(
+            text,
+            project_info=project_info,
+            qa_history=qa_history,
+            planner=planner,
+            max_turns=max_turns,
+        )
+
+    refined = (assessment.get("refined_title") or "").strip()
+    return refined or text
 
 
 @click.command("auto")
@@ -108,6 +214,11 @@ def auto(
         project,
         auto_register=False,
         require_registered=True,
+    )
+    title = _clarify_requirement_for_go(
+        title,
+        project_info=project_info,
+        planner=planner,
     )
     try:
         run_requirement_workflow(
@@ -186,11 +297,17 @@ def go(
         auto_register=False,
         require_registered=True,
     )
+    effective_planner = planner or "codex"
+    text = _clarify_requirement_for_go(
+        text,
+        project_info=project_info,
+        planner=effective_planner,
+    )
     try:
         run_requirement_workflow(
             project_info=project_info,
             title=text,
-            planner=planner or "codex",
+            planner=effective_planner,
             task_agent=task_agent,
             priority=priority,
             max_tasks=max_tasks or 5,

@@ -159,3 +159,173 @@ def test_webui_submit_goal_continues_with_history(tmp_path, monkeypatch):
     assert out["intent"] == "requirement"
     assert "refined" in out.get("refined_title", "")
     assert plan_calls
+
+
+def test_go_runs_interactive_clarification_before_planning(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    def fake_clarify(title, *, project_info, qa_history=None, planner="codex", **kw):
+        if qa_history:
+            answer = qa_history[-1].get("answer", "")
+            return {
+                "status": "ready",
+                "refined_title": f"{title} / 补充: {answer}",
+                "qa_history": qa_history,
+            }
+        return {
+            "status": "needs_clarification",
+            "questions": ["先优先做哪一块?"],
+            "qa_history": [],
+            "turn": 1,
+        }
+
+    monkeypatch.setattr(auto_mod, "clarify_requirement", fake_clarify)
+
+    captured = {}
+
+    def fake_run_requirement_workflow(**kwargs):
+        captured["title"] = kwargs["title"]
+        return {"ok": True, "tasks": []}
+
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", fake_run_requirement_workflow)
+    original_get_stream = auto_mod.click.get_text_stream
+
+    class _TtyIn:
+        @staticmethod
+        def isatty():
+            return True
+
+    monkeypatch.setattr(
+        auto_mod.click,
+        "get_text_stream",
+        lambda name: _TtyIn() if name == "stdin" else original_get_stream(name),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["go", "做一个全自动编程工作流智能体", "--execute"],
+        input="先打通规划-执行闭环\n",
+    )
+
+    assert result.exit_code == 0
+    assert "先补充几个关键信息" in result.output
+    assert "补充: 先打通规划-执行闭环" in captured["title"]
+
+
+def test_auto_command_runs_interactive_clarification_before_planning(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    def fake_clarify(title, *, project_info, qa_history=None, planner="codex", **kw):
+        if qa_history:
+            return {
+                "status": "ready",
+                "refined_title": title + " / 补充: " + qa_history[-1]["answer"],
+                "qa_history": qa_history,
+            }
+        return {
+            "status": "needs_clarification",
+            "questions": ["先落哪个入口?"],
+            "qa_history": [],
+        }
+
+    monkeypatch.setattr(auto_mod, "clarify_requirement", fake_clarify)
+
+    captured = {}
+
+    def fake_run_requirement_workflow(**kwargs):
+        captured["title"] = kwargs["title"]
+        return {"ok": True, "tasks": []}
+
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", fake_run_requirement_workflow)
+    original_get_stream = auto_mod.click.get_text_stream
+
+    class _TtyIn:
+        @staticmethod
+        def isatty():
+            return True
+
+    monkeypatch.setattr(
+        auto_mod.click,
+        "get_text_stream",
+        lambda name: _TtyIn() if name == "stdin" else original_get_stream(name),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["auto", "-p", "demo", "-t", "做一个全自动编程工作流智能体", "--plan-only"],
+        input="先落 Web UI 需求入口\n",
+    )
+
+    assert result.exit_code == 0
+    assert "先补充几个关键信息" in result.output
+    assert "先落 Web UI 需求入口" in captured["title"]
+
+
+def test_webui_submit_requirement_returns_clarify_before_job(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(
+        "codepilot.webui_actions.clarify_requirement",
+        lambda *a, **kw: {
+            "status": "needs_clarification",
+            "questions": ["先覆盖哪个入口?"],
+            "qa_history": [],
+        },
+    )
+
+    out = webui_mod.submit_requirement_action(
+        "demo",
+        "做一个全自动编程工作流智能体",
+        run_async=False,
+    )
+
+    assert out["intent"] == "clarify"
+    assert out["questions"] == ["先覆盖哪个入口?"]
+    assert webui_mod.list_ui_jobs("demo") == []
+
+
+def test_webui_submit_requirement_continues_after_clarify_answer(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    def fake_clarify(title, *, qa_history=None, **kw):
+        if qa_history:
+            return {
+                "status": "ready",
+                "refined_title": title + " / 补充: " + qa_history[-1]["answer"],
+                "qa_history": qa_history,
+            }
+        return {
+            "status": "needs_clarification",
+            "questions": ["先覆盖哪个入口?"],
+            "qa_history": [],
+        }
+
+    monkeypatch.setattr("codepilot.webui_actions.clarify_requirement", fake_clarify)
+
+    def fake_run_requirement_workflow(**kwargs):
+        task = db.create_task(
+            kwargs["project_info"]["name"],
+            kwargs["title"],
+            agent="codex",
+            project_path=kwargs["project_info"]["path"],
+        )
+        return {"summary": "ok", "tasks": [task], "run": {}}
+
+    monkeypatch.setattr(webui_mod, "run_requirement_workflow", fake_run_requirement_workflow)
+
+    out = webui_mod.submit_requirement_action(
+        "demo",
+        "先覆盖 Web UI 需求入口",
+        original_title="做一个全自动编程工作流智能体",
+        qa_history=[],
+        run_async=False,
+    )
+
+    assert out["ok"] is True
+    assert out.get("intent") != "clarify"
+    jobs = webui_mod.list_ui_jobs("demo")
+    assert jobs and jobs[0]["task_ids"]
+    task = db.get_task(jobs[0]["task_ids"][0])
+    assert "先覆盖 Web UI 需求入口" in task["title"]

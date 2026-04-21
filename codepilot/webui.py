@@ -192,7 +192,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
 
-        event_queue: "_queue.Queue[dict]" = _queue.Queue(maxsize=256)
+        # Keep a larger in-memory queue so task_log_stream micro-events can
+        # flow smoothly during heavy output bursts without starving normal
+        # progress events.
+        event_queue: "_queue.Queue[dict]" = _queue.Queue(maxsize=2048)
 
         def _forward(event: dict) -> None:
             try:
@@ -411,6 +414,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/requirements":
                 body = self._read_json_body()
+                raw_history = body.get("qa_history") or []
+                if not isinstance(raw_history, list):
+                    raw_history = []
                 self._send_json(
                     submit_requirement_action(
                         body.get("project") or "",
@@ -424,6 +430,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         auto_commit=bool(body.get("auto_commit", False)),
                         max_retries=int(body.get("max_retries") or 3),
                         run_async=bool(body.get("run_async", True)),
+                        qa_history=raw_history,
+                        original_title=(body.get("original_title") or "").strip(),
                     )
                 )
                 return
