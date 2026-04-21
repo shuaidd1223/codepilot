@@ -3391,6 +3391,88 @@ def test_show_json_outputs_full_task_and_logs(tmp_path, monkeypatch):
     assert payload["logs"][0]["output"] == "full log output"
 
 
+def test_show_global_json_outputs_full_task_payload(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "global json detail", content="global json content", agent="codex")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--json", "show", str(task["id"])])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["task"]["id"] == task["id"]
+    assert payload["task"]["title"] == "global json detail"
+    assert payload["task"]["content"] == "global json content"
+    assert payload["logs"] == []
+
+
+def test_show_logs_flag_prints_full_log_output(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "logs detail", agent="codex")
+    db.create_task_log(task["id"], "codex", "builder", output="full\nlog\nbody", exit_code=None, duration=None)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["show", str(task["id"]), "--logs"])
+
+    assert result.exit_code == 0
+    assert "执行日志" in result.output
+    assert "exit=-" in result.output
+    assert "duration=-" in result.output
+    assert "full\nlog\nbody" in result.output
+    assert "完整日志: codepilot logs" not in result.output
+
+
+def test_show_handles_malformed_depends_on_without_crashing(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "bad depends", agent="codex")
+    with db.get_conn() as conn:
+        conn.execute("UPDATE tasks SET depends_on = ? WHERE id = ?", ("not-json [", task["id"]))
+        conn.commit()
+    db._cache_invalidate("task_by_id")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["show", str(task["id"])])
+
+    assert result.exit_code == 0
+    assert "bad depends" in result.output
+    assert "depends_on: -" in result.output
+    assert "builder: -" in result.output
+    assert "active_pid: -" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_show_json_depends_on_ids_ignore_invalid_entries(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "mixed depends", agent="codex")
+    with db.get_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET depends_on = ? WHERE id = ?",
+            (json.dumps([1, "2", "bad", None, {}, []]), task["id"]),
+        )
+        conn.commit()
+    db._cache_invalidate("task_by_id")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["show", str(task["id"]), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["task"]["depends_on"] == '[1, "2", "bad", null, {}, []]'
+    assert payload["task"]["depends_on_ids"] == [1, 2]
+
+
 def test_show_missing_task_exits_nonzero_in_text_and_json(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
 
