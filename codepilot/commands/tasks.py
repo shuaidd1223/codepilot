@@ -1,9 +1,10 @@
-"""codepilot 任务管理命令：edit / rm / done / retry / find."""
+"""codepilot 任务管理命令：show / edit / rm / done / retry / find."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -17,6 +18,149 @@ from codepilot.runtime import (
     stop_process_tree,
     stop_worktree_leftovers,
 )
+
+
+# ── show ──────────────────────────────────────────────────────────────────────
+
+_SHOW_FIELD_ORDER = [
+    "id",
+    "project",
+    "title",
+    "status",
+    "priority",
+    "agent",
+    "builder",
+    "reviewer",
+    "depends_on",
+    "source",
+    "dedup_key",
+    "fallback_reason",
+    "retry_count",
+    "max_retries",
+    "run_phase",
+    "heartbeat_at",
+    "active_pid",
+    "stop_requested",
+    "stop_reason",
+    "project_path",
+    "branch_name",
+    "worktree_path",
+    "current_log_path",
+    "created_at",
+    "started_at",
+    "completed_at",
+]
+
+
+def _parse_depends_on(raw: Any) -> list[int]:
+    if raw in (None, ""):
+        return []
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    deps: list[int] = []
+    for item in parsed:
+        try:
+            deps.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return deps
+
+
+def _task_show_payload(task: dict, logs: list[dict]) -> dict:
+    payload_task = dict(task)
+    payload_task["depends_on_ids"] = _parse_depends_on(task.get("depends_on"))
+    return {"task": payload_task, "logs": [dict(entry) for entry in logs]}
+
+
+def _show_value(value: Any) -> str:
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _show_block(title: str, text: Any) -> None:
+    if text is None or text == "":
+        return
+    echo(f"[cyan]{title}[/cyan]")
+    click.echo(str(text))
+    click.echo()
+
+
+@click.command()
+@click.argument("task_id", type=int)
+@click.option("--logs", "include_logs", is_flag=True, help="同时显示历史日志完整输出")
+@click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
+@click.pass_context
+def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
+    """精确查看单个任务详情。"""
+    db.init_db()
+    if not json_mode and ctx.parent:
+        json_mode = ctx.parent.obj.get("json_mode", False)
+
+    task = db.get_task(task_id)
+    if not task:
+        if json_mode:
+            click.echo(json.dumps({"task": None, "logs": []}, ensure_ascii=False, indent=2))
+        else:
+            echo(f"[red]任务 #{task_id} 不存在[/red]")
+        ctx.exit(1)
+
+    logs = db.list_task_logs(task_id)
+    payload = _task_show_payload(task, logs)
+    if json_mode:
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    echo(f"[cyan]任务详情[/cyan]  #{task['id']}  {task['title']}")
+    click.echo()
+
+    shown = set()
+    for field in _SHOW_FIELD_ORDER:
+        if field not in task:
+            continue
+        shown.add(field)
+        value = task.get(field)
+        if field == "depends_on":
+            deps = _parse_depends_on(value)
+            value = ", ".join(f"#{dep}" for dep in deps) if deps else "-"
+        click.echo(f"{field}: {_show_value(value)}")
+
+    extra_fields = sorted(key for key in task.keys() if key not in shown and key not in {
+        "content",
+        "error_message",
+        "delivery_record",
+        "last_output",
+    })
+    for field in extra_fields:
+        click.echo(f"{field}: {_show_value(task.get(field))}")
+    click.echo()
+
+    _show_block("任务内容", task.get("content"))
+    _show_block("错误信息", task.get("error_message"))
+    _show_block("交付记录", task.get("delivery_record"))
+    _show_block("最近输出", task.get("last_output"))
+
+    if logs:
+        echo(f"[cyan]执行日志[/cyan]  {len(logs)} 条")
+        for entry in logs:
+            click.echo(
+                f"- #{entry.get('id')} {entry.get('phase') or '-'} "
+                f"agent={entry.get('agent') or '-'} "
+                f"exit={entry.get('exit_code') if entry.get('exit_code') is not None else '-'} "
+                f"duration={entry.get('duration') if entry.get('duration') is not None else '-'} "
+                f"started={entry.get('started_at') or '-'} "
+                f"finished={entry.get('finished_at') or '-'}"
+            )
+            if include_logs and entry.get("output"):
+                click.echo(entry["output"])
+        if not include_logs:
+            click.echo(f"  完整日志: codepilot logs {task_id} --full")
 
 
 # ── done ──────────────────────────────────────────────────────────────────────

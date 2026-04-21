@@ -3339,6 +3339,75 @@ def test_logs_command_reads_live_runtime_log(tmp_path, monkeypatch):
     assert "line 3" in result.output
 
 
+def test_show_command_prints_full_task_detail(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    content = "第一行\n第二行 precise detail should not be truncated"
+    task = db.create_task("demo", "inspect exact task", content=content, agent="codex", depends_on=[1, 2])
+    db.update_task(
+        task["id"],
+        status="failed",
+        error_message="full error message",
+        delivery_record="delivery notes",
+        last_output="last output line",
+    )
+    db.create_task_log(task["id"], "codex", "builder", output="log body", exit_code=1, duration=12)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["show", str(task["id"])])
+
+    assert result.exit_code == 0
+    assert "任务详情" in result.output
+    assert "inspect exact task" in result.output
+    assert "depends_on: #1, #2" in result.output
+    assert content in result.output
+    assert "full error message" in result.output
+    assert "delivery notes" in result.output
+    assert "last output line" in result.output
+    assert "执行日志" in result.output
+    assert "完整日志: codepilot logs" in result.output
+    assert "log body" not in result.output
+
+
+def test_show_json_outputs_full_task_and_logs(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "json detail", content="json content", agent="codex", depends_on=[9])
+    db.create_task_log(task["id"], "codex", "builder", output="full log output", exit_code=0)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["show", str(task["id"]), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["task"]["id"] == task["id"]
+    assert payload["task"]["title"] == "json detail"
+    assert payload["task"]["content"] == "json content"
+    assert payload["task"]["depends_on_ids"] == [9]
+    assert payload["logs"][0]["output"] == "full log output"
+
+
+def test_show_missing_task_exits_nonzero_in_text_and_json(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+
+    runner = CliRunner()
+    text_result = runner.invoke(main, ["show", "99999"])
+
+    assert text_result.exit_code != 0
+    assert "任务 #99999 不存在" in text_result.output
+
+    for args in (["show", "99999", "--json"], ["--json", "show", "99999"]):
+        json_result = runner.invoke(main, args)
+
+        assert json_result.exit_code != 0
+        payload = json.loads(json_result.output)
+        assert payload == {"task": None, "logs": []}
+
+
 def test_status_verbose_shows_runtime_summary_for_in_progress_task(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

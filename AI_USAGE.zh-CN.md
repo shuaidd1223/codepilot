@@ -45,26 +45,33 @@ codepilot status -p <项目名> -v
 codepilot status -p <项目名> --json
 ```
 
-### 4. 查看日志
+### 4. 精确查看单个任务
+
+```bash
+codepilot show <task_id>
+codepilot show <task_id> --json
+```
+
+### 5. 查看日志
 
 ```bash
 codepilot logs <task_id>
 codepilot logs <task_id> --tail 80
 ```
 
-### 5. 停止任务
+### 6. 停止任务
 
 ```bash
 codepilot stop <task_id>
 ```
 
-### 6. 手动重试任务
+### 7. 手动重试任务
 
 ```bash
 codepilot retry <task_id>
 ```
 
-### 7. 发布
+### 8. 发布
 
 最推荐：
 
@@ -84,7 +91,7 @@ codepilot release bundle --build-current
 codepilot release verify
 ```
 
-### 8. 图形界面
+### 9. 图形界面
 
 ```bash
 codepilot ui

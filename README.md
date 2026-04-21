@@ -61,6 +61,12 @@ codepilot chat
 codepilot status -p <项目名> -v
 ```
 
+精确查看单个任务详情：
+
+```bash
+codepilot show <task_id>
+```
+
 查看任务日志：
 
 ```bash
@@ -116,8 +122,9 @@ codepilot ai prompt
 
 1. 用 `codepilot ai manifest` 获取命令和工作流清单
 2. 用 `codepilot status -p <项目名> --json` 拉结构化状态
-3. 用 `codepilot "需求文本"` 直接把高层需求交给 CodePilot
-4. 用 `codepilot logs <task_id>`、`codepilot stop <task_id>` 和 `codepilot retry <task_id>` 做运行期排障
+3. 用 `codepilot show <task_id> --json` 精确拉取单个任务详情
+4. 用 `codepilot "需求文本"` 直接把高层需求交给 CodePilot
+5. 用 `codepilot logs <task_id>`、`codepilot stop <task_id>` 和 `codepilot retry <task_id>` 做运行期排障
 
 ## Web UI
 
