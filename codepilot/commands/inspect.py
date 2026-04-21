@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -254,6 +255,9 @@ INSPECT_PROMPT = """你是当前项目的资深巡检工程师。基于下列信
 ## 信号 6：依赖健康线索
 {deps}
 
+## 信号 7：代码规模与复杂度线索
+{code_metrics}
+
 请以下列 JSON 返回：{{"candidates": [{{"title": "...", "goal": "...", "priority": "P3", "rationale": "...", "kind": "refactor"}}]}}
 如果没有值得提的改进项，返回 {{"candidates": []}}。
 """
@@ -310,6 +314,52 @@ _MD_TODO_RE = re.compile(
     re.IGNORECASE,
 )
 _SCAN_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt", ".md"}
+_CODE_EXTS = {
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".kt",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".php",
+    ".rb",
+    ".swift",
+    ".scala",
+    ".sh",
+    ".ps1",
+}
+_LANG_BY_EXT = {
+    ".py": "Python",
+    ".ts": "TypeScript",
+    ".tsx": "TypeScript",
+    ".js": "JavaScript",
+    ".jsx": "JavaScript",
+    ".go": "Go",
+    ".rs": "Rust",
+    ".java": "Java",
+    ".kt": "Kotlin",
+    ".c": "C/C++",
+    ".cc": "C/C++",
+    ".cpp": "C/C++",
+    ".h": "C/C++",
+    ".hpp": "C/C++",
+    ".cs": "C#",
+    ".php": "PHP",
+    ".rb": "Ruby",
+    ".swift": "Swift",
+    ".scala": "Scala",
+    ".sh": "Shell",
+    ".ps1": "PowerShell",
+}
 _COMMENT_MARKERS_BY_EXT = {
     ".py": ("#",),
     ".js": ("//", "/*", "*"),
@@ -320,6 +370,41 @@ _COMMENT_MARKERS_BY_EXT = {
     ".rs": ("//", "/*", "*"),
     ".java": ("//", "/*", "*"),
     ".kt": ("//", "/*", "*"),
+    ".c": ("//", "/*", "*"),
+    ".cc": ("//", "/*", "*"),
+    ".cpp": ("//", "/*", "*"),
+    ".h": ("//", "/*", "*"),
+    ".hpp": ("//", "/*", "*"),
+    ".cs": ("//", "/*", "*"),
+    ".php": ("//", "/*", "*", "#"),
+    ".rb": ("#",),
+    ".swift": ("//", "/*", "*"),
+    ".scala": ("//", "/*", "*"),
+    ".sh": ("#",),
+    ".ps1": ("#",),
+}
+_COMPLEXITY_RE_BY_EXT = {
+    ".py": re.compile(r"\b(if|elif|for|while|except|with|assert|and|or|case)\b"),
+    ".js": re.compile(r"\b(if|else\s+if|for|while|case|catch|&&|\|\||\?)\b"),
+    ".jsx": re.compile(r"\b(if|else\s+if|for|while|case|catch|&&|\|\||\?)\b"),
+    ".ts": re.compile(r"\b(if|else\s+if|for|while|case|catch|&&|\|\||\?)\b"),
+    ".tsx": re.compile(r"\b(if|else\s+if|for|while|case|catch|&&|\|\||\?)\b"),
+    ".go": re.compile(r"\b(if|for|case|select|&&|\|\|)\b"),
+    ".rs": re.compile(r"\b(if|for|while|match|&&|\|\|)\b"),
+    ".java": re.compile(r"\b(if|else\s+if|for|while|case|catch|&&|\|\||\?)\b"),
+    ".kt": re.compile(r"\b(if|for|while|when|catch|&&|\|\||\?)\b"),
+    ".c": re.compile(r"\b(if|else\s+if|for|while|case|&&|\|\||\?)\b"),
+    ".cc": re.compile(r"\b(if|else\s+if|for|while|case|catch|&&|\|\||\?)\b"),
+    ".cpp": re.compile(r"\b(if|else\s+if|for|while|case|catch|&&|\|\||\?)\b"),
+    ".h": re.compile(r"\b(if|else\s+if|for|while|case|&&|\|\||\?)\b"),
+    ".hpp": re.compile(r"\b(if|else\s+if|for|while|case|catch|&&|\|\||\?)\b"),
+    ".cs": re.compile(r"\b(if|else\s+if|for|while|case|catch|&&|\|\||\?)\b"),
+    ".php": re.compile(r"\b(if|elseif|for|foreach|while|case|catch|&&|\|\||\?)\b"),
+    ".rb": re.compile(r"\b(if|elsif|unless|for|while|rescue|case|&&|\|\|)\b"),
+    ".swift": re.compile(r"\b(if|for|while|case|catch|guard|&&|\|\||\?)\b"),
+    ".scala": re.compile(r"\b(if|for|while|case|catch|&&|\|\|)\b"),
+    ".sh": re.compile(r"\b(if|for|while|case|elif|&&|\|\|)\b"),
+    ".ps1": re.compile(r"\b(if|elseif|foreach|for|while|switch|catch|-and|-or)\b", re.IGNORECASE),
 }
 
 
@@ -545,6 +630,154 @@ def collect_dependency_health(project_path: Path, limit: int = 20) -> str:
     return "\n".join(findings[:limit]) if findings else "（无明显依赖健康问题；未联网检查最新版本）"
 
 
+def _code_line_count(text: str, suffix: str) -> int:
+    markers = _COMMENT_MARKERS_BY_EXT.get(suffix, ())
+    count = 0
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if markers and any(line.startswith(marker) for marker in markers):
+            continue
+        count += 1
+    return count
+
+
+def _generic_complexity_score(text: str, suffix: str) -> int:
+    pattern = _COMPLEXITY_RE_BY_EXT.get(suffix)
+    if not pattern:
+        return 0
+    lines = []
+    markers = _COMMENT_MARKERS_BY_EXT.get(suffix, ())
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or (markers and any(line.startswith(marker) for marker in markers)):
+            continue
+        lines.append(line)
+    return len(pattern.findall("\n".join(lines)))
+
+
+def _python_complexity_for_function(node: ast.AST) -> int:
+    score = 1
+
+    def visit(current: ast.AST) -> None:
+        nonlocal score
+        for child in ast.iter_child_nodes(current):
+            if child is not node and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            if isinstance(child, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.IfExp, ast.ExceptHandler, ast.Assert)):
+                score += 1
+            elif isinstance(child, ast.BoolOp):
+                score += max(1, len(child.values) - 1)
+            elif isinstance(child, ast.Match):
+                score += max(1, len(child.cases))
+            elif isinstance(child, ast.comprehension):
+                score += 1 + len(child.ifs)
+            visit(child)
+
+    visit(node)
+    return score
+
+
+def _python_function_complexities(path: Path, project_path: Path, text: str, threshold: int) -> list[tuple[int, str, str]]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+
+    rel = path.relative_to(project_path).as_posix()
+    hits: list[tuple[int, str, str]] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.scope: list[str] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.scope.append(node.name)
+            self.generic_visit(node)
+            self.scope.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._visit_function(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._visit_function(node)
+
+        def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            name = ".".join([*self.scope, node.name])
+            complexity = _python_complexity_for_function(node)
+            if complexity >= threshold:
+                hits.append((complexity, f"{rel}:{node.lineno}", name))
+            self.scope.append(node.name)
+            self.generic_visit(node)
+            self.scope.pop()
+
+    Visitor().visit(tree)
+    return hits
+
+
+def collect_code_metrics(project_path: Path, limit: int = 20) -> str:
+    """Collect offline code size and rough complexity signals."""
+    totals: dict[str, dict[str, int]] = {}
+    largest: list[tuple[int, int, str]] = []
+    complex_files: list[tuple[int, int, str]] = []
+    complex_functions: list[tuple[int, str, str]] = []
+    total_files = 0
+    total_code_lines = 0
+
+    for path in project_path.rglob("*"):
+        if not path.is_file() or path.suffix not in _CODE_EXTS or _skip_scan_path(path):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        rel = path.relative_to(project_path).as_posix()
+        lang = _LANG_BY_EXT.get(path.suffix, path.suffix.lstrip(".").upper())
+        code_lines = _code_line_count(text, path.suffix)
+        complexity = _generic_complexity_score(text, path.suffix)
+        total_files += 1
+        total_code_lines += code_lines
+        bucket = totals.setdefault(lang, {"files": 0, "lines": 0})
+        bucket["files"] += 1
+        bucket["lines"] += code_lines
+        largest.append((code_lines, complexity, rel))
+        if complexity >= 20:
+            complex_files.append((complexity, code_lines, rel))
+        if path.suffix == ".py":
+            complex_functions.extend(_python_function_complexities(path, project_path, text, threshold=8))
+
+    if not total_files:
+        return "（未发现可扫描的代码文件）"
+
+    largest.sort(reverse=True)
+    complex_files.sort(reverse=True)
+    complex_functions.sort(reverse=True)
+
+    lines = [f"总体：{total_files} 个代码文件，约 {total_code_lines} 行有效代码"]
+    lines.append("语言分布：")
+    for lang, stat in sorted(totals.items(), key=lambda item: item[1]["lines"], reverse=True)[:8]:
+        lines.append(f"- {lang}: {stat['files']} 文件 / {stat['lines']} 行")
+
+    lines.append("大文件：")
+    for code_lines, complexity, rel in largest[: min(5, limit)]:
+        if code_lines <= 0:
+            continue
+        lines.append(f"- {rel}: {code_lines} 行，分支复杂度约 {complexity}")
+
+    if complex_functions:
+        lines.append("复杂函数（Python，估算圈复杂度）：")
+        for complexity, location, name in complex_functions[: min(5, limit)]:
+            lines.append(f"- {location} {name}: 复杂度约 {complexity}")
+
+    if complex_files:
+        lines.append("复杂文件（跨语言粗略估算）：")
+        for complexity, code_lines, rel in complex_files[: min(5, limit)]:
+            lines.append(f"- {rel}: 分支复杂度约 {complexity} / {code_lines} 行")
+
+    return "\n".join(lines)
+
+
 def _existing_titles(project: str) -> str:
     rows = [
         t
@@ -634,6 +867,8 @@ def run_inspection(
     ruff_report = collect_ruff(project_path) if "ruff" in signals else "（跳过）"
     pytest_report = collect_pytest_collect(project_path) if "pytest" in signals else "（跳过）"
     deps_report = collect_dependency_health(project_path) if "deps" in signals else "（跳过）"
+    code_metrics_enabled = bool({"code_metrics", "code_size", "complexity"} & set(signals))
+    code_metrics = collect_code_metrics(project_path) if code_metrics_enabled else "（跳过）"
 
     existing = _existing_titles(project_name)
     prompt = INSPECT_PROMPT.format(
@@ -645,6 +880,7 @@ def run_inspection(
         ruff=ruff_report,
         pytest=pytest_report,
         deps=deps_report,
+        code_metrics=code_metrics,
     )
 
     cfg = load_project_config(project_path)

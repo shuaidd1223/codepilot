@@ -253,7 +253,7 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("inspect", "enabled"): ["是否启用 daemon 定时巡检。"],
     ("inspect", "interval_seconds"): ["巡检间隔秒数。"],
     ("inspect", "max_new_tasks_per_round"): ["每轮巡检最多新增候选任务数。"],
-    ("inspect", "signals"): ["巡检输入信号，可包含 git_log、failed_tasks、todos、deps、ruff、pytest。"],
+    ("inspect", "signals"): ["巡检输入信号，可包含 git_log、failed_tasks、todos、deps、ruff、pytest、code_metrics。"],
     ("inspect", "auto_execute"): ["巡检新增任务后是否自动执行。"],
     ("inspect", "priority"): ["巡检新增任务默认优先级。"],
     ("inspect", "planner"): ["巡检专用 planner；留空时回退到 [agents].planner / codex。"],
