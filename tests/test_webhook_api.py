@@ -10,7 +10,10 @@ import urllib.request
 from click.testing import CliRunner
 
 from codepilot import db
+from codepilot import webui as webui_mod  # noqa: F401 - dashboard payload looks up this module dynamically.
+from codepilot.commands import run as run_cmd
 from codepilot.commands import webhook as webhook_cmd
+from codepilot.webui_payloads import dashboard_payload, task_detail_payload
 from codepilot.webhook import start_webhook_server
 
 
@@ -89,6 +92,107 @@ def test_webhook_tasks_endpoint_creates_backlog_task(tmp_path, monkeypatch):
     assert task["priority"] == "P1"
     assert task["source"] == "webhook"
     assert task["status"] == "backlog"
+
+
+def test_webhook_duplicate_delivery_reuses_active_task(tmp_path, monkeypatch):
+    base_url, server = _start_server(tmp_path, monkeypatch)
+    payload = {
+        "project": "demo",
+        "title": "第三方系统重试投递",
+        "body": "同一个事件被发送了两次",
+        "priority": "P2",
+    }
+    try:
+        first_status, first_body = _post(f"{base_url}/tasks", payload)
+        second_status, second_body = _post(f"{base_url}/tasks", payload)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert first_status == 201
+    assert second_status == 201
+    assert second_body["task"]["id"] == first_body["task"]["id"]
+
+    tasks = db.list_tasks(project="demo")
+    assert len(tasks) == 1
+    assert tasks[0]["title"] == "第三方系统重试投递"
+    assert tasks[0]["source"] == "webhook"
+
+
+def test_webhook_task_flows_through_dashboard_and_runner(tmp_path, monkeypatch):
+    base_url, server = _start_server(tmp_path, monkeypatch)
+    project_path = db.get_project("demo")["path"]
+    (tmp_path / "project" / "AGENTS.toml").write_text(
+        "[automation]\nper_task_branch = false\n",
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def fake_run_builtin(task, project, task_file, **kwargs):
+        captured["task"] = task
+        captured["project"] = project
+        captured["task_file"] = task_file
+        captured["execution_path"] = kwargs["execution_path"]
+        return run_cmd.ExecutionResult(
+            exit_code=0,
+            output="webhook task executed",
+            summary="webhook task done",
+            executor="builtin",
+        )
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", fake_run_builtin)
+    monkeypatch.setattr(run_cmd, "notify_task_status", lambda *args, **kwargs: True)
+
+    try:
+        status, body = _post(
+            f"{base_url}/tasks",
+            {
+                "project": "demo",
+                "title": "执行 webhook 投递任务",
+                "description": "需要进入队列并被执行器消费",
+                "priority": "P0",
+                "agent": "claude",
+                "max_retries": 1,
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert status == 201
+    task_id = body["task"]["id"]
+
+    dashboard = dashboard_payload("demo")
+    queued = next(task for task in dashboard["tasks"] if task["id"] == task_id)
+    assert queued["source"] == "webhook"
+    assert queued["status"] == "backlog"
+    assert queued["priority"] == "P0"
+
+    stats = run_cmd.run_backlog(
+        "demo",
+        once=True,
+        limit=1,
+        executor="builtin",
+        auto_commit=False,
+        quiet=True,
+    )
+
+    assert stats["processed"] == 1
+    assert stats["done"] == 1
+    assert captured["task"]["id"] == task_id
+    assert captured["task"]["content"] == "需要进入队列并被执行器消费"
+    assert captured["project"]["name"] == "demo"
+    assert str(captured["execution_path"]) == project_path
+
+    completed = db.get_task(task_id)
+    assert completed["status"] == "done"
+    assert completed["source"] == "webhook"
+    assert completed["delivery_record"] == "webhook task done"
+
+    detail = task_detail_payload(task_id)
+    assert detail["source"] == "webhook"
+    assert detail["content"] == "需要进入队列并被执行器消费"
 
 
 def test_webhook_tasks_endpoint_rejects_bad_payload(tmp_path, monkeypatch):
