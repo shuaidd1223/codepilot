@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import click
 from click.testing import CliRunner
 
 from codepilot import __version__
@@ -206,27 +207,57 @@ def test_classify_intent_command_guardrail_avoids_non_cli_false_positive(monkeyp
 
 
 def test_chat_ui_starts_via_detached_webui_service(monkeypatch):
-    calls = []
+    calls: list[tuple[list[str], dict]] = []
+    seen = {"called": False, "new_process_group": False}
 
-    class _Result:
-        returncode = 0
-        stdout = "Web UI 已启动"
-        stderr = ""
+    class _Proc:
+        pid = 4242
 
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        return _Result()
+    monkeypatch.setattr(auto_chat_mod, "_is_chat_ui_healthy", lambda port, host="127.0.0.1", timeout=0.25: False)
+    monkeypatch.setattr(
+        auto_chat_mod,
+        "no_window_kwargs",
+        lambda *, new_process_group=False: seen.update(
+            {"called": True, "new_process_group": bool(new_process_group)}
+        )
+        or {"creationflags": 123},
+    )
 
-    monkeypatch.setattr(auto_chat_mod.subprocess, "run", fake_run)
+    def fake_popen(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _Proc()
+
+    monkeypatch.setattr(auto_chat_mod.subprocess, "Popen", fake_popen)
 
     handle = auto_chat_mod._start_chat_ui(9912)
 
     assert handle and handle["managed"] is True
+    assert handle["launcher_pid"] == 4242
     assert calls
-    cmd = calls[0]
+    cmd, kwargs = calls[0]
     assert cmd[:5] == [auto_chat_mod.sys.executable, "-m", "codepilot", "webui", "start"]
     assert "--no-daemon" in cmd
     assert cmd[-2:] == ["--port", "9912"]
+    assert kwargs["close_fds"] is True
+    assert kwargs["creationflags"] == 123
+    assert seen["called"] is True
+    assert seen["new_process_group"] is True
+
+
+def test_chat_ctrl_c_abort_exits_cleanly(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    def _raise_abort(*args, **kwargs):
+        raise click.Abort()
+
+    monkeypatch.setattr(auto_chat_mod.click, "prompt", _raise_abort)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat", "--no-ui"])
+
+    assert result.exit_code == 0
+    assert "会话已结束" in result.output
+    assert "Aborted!" not in result.output
 
 
 def test_chat_exit_does_not_stop_global_webui_service(tmp_path, monkeypatch):

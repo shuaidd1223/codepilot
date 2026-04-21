@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -10,8 +12,10 @@ from click.testing import CliRunner
 
 from codepilot.agent_support import ai_guide_markdown, command_manifest
 from codepilot import binary as binary_mod
+from codepilot import binary_paths as binary_paths_mod
 from codepilot import db
 from codepilot import ai as ai_mod
+from codepilot import progress_bus
 from codepilot.ai_gateway import GatewayResponse
 from codepilot import runtime as runtime_mod
 from codepilot import webui as webui_mod
@@ -3257,6 +3261,46 @@ def test_run_command_live_cleans_process_tree_on_unexpected_exception(tmp_path, 
     assert not runtime_mod.is_process_alive(killed[0])
 
 
+def test_run_command_live_emits_task_log_stream_with_offsets(tmp_path, monkeypatch):
+    log_path = tmp_path / "live.log"
+    monkeypatch.setattr(run_cmd, "update_task_runtime", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "get_stop_request", lambda task_id: (False, ""))
+
+    progress_bus.clear_subscribers_for_tests()
+    events: list[dict] = []
+    with progress_bus.subscription(events.append):
+        exit_code, output = run_cmd._run_command_live(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys,time;"
+                    "sys.stdout.write('abcdef');sys.stdout.flush();"
+                    "time.sleep(0.05);"
+                    "sys.stdout.write('ghi');sys.stdout.flush()"
+                ),
+            ],
+            task_id=7,
+            phase="builder",
+            log_path=log_path,
+            timeout=10,
+        )
+
+    assert exit_code == 0
+    assert "abcdefghi" in output
+
+    stream_events = [e for e in events if (e.get("extra") or {}).get("task_log_stream")]
+    assert stream_events
+    assert stream_events[0]["extra"]["task_log_start"] == 0
+    for item in stream_events:
+        extra = item["extra"]
+        assert isinstance(extra.get("task_log_chunk"), str)
+        assert int(extra.get("task_log_end") or 0) >= int(extra.get("task_log_start") or 0)
+
+    combined = "".join((e.get("extra") or {}).get("task_log_chunk") or "" for e in stream_events)
+    assert "abcdefghi" in combined
+
+
 def test_stop_command_cancels_in_progress_task_without_live_process(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
@@ -3489,6 +3533,97 @@ def test_install_binary_copies_file_and_registers_path(tmp_path, monkeypatch):
     assert captured["directory"] == target_dir.resolve()
 
 
+def test_register_windows_path_promotes_install_dir_to_front_and_deduplicates(monkeypatch, tmp_path):
+    target = (tmp_path / "LocalAppData" / "Programs" / "CodePilot" / "bin").resolve()
+    target_str = str(target)
+    state = {
+        "path": f"C:\\Tools\\A;{target_str};C:\\Tools\\B;{target_str}",
+        "set_calls": 0,
+    }
+
+    class _FakeKey:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def _query_value(_key, _name):
+        return state["path"], 1
+
+    def _set_value(_key, _name, _reserved, _reg_type, value):
+        state["set_calls"] += 1
+        state["path"] = value
+
+    fake_winreg = types.SimpleNamespace(
+        HKEY_CURRENT_USER=object(),
+        KEY_READ=1,
+        KEY_WRITE=2,
+        REG_EXPAND_SZ=2,
+        OpenKey=lambda *args, **kwargs: _FakeKey(),
+        QueryValueEx=_query_value,
+        SetValueEx=_set_value,
+    )
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    notified = {"value": False}
+    monkeypatch.setattr(binary_paths_mod, "_broadcast_windows_env_change", lambda: notified.update({"value": True}))
+
+    changed, message = binary_mod._register_windows_path(target)
+
+    assert changed is True
+    assert "置顶" in message
+    assert notified["value"] is True
+    assert state["set_calls"] == 1
+    entries = [entry for entry in state["path"].split(";") if entry]
+    assert entries[0] == target_str
+    target_norm = binary_mod._normalize_path(target)
+    assert sum(1 for entry in entries if binary_mod._normalize_path(entry) == target_norm) == 1
+
+
+def test_register_windows_path_keeps_existing_front_entry_without_rewrite(monkeypatch, tmp_path):
+    target = (tmp_path / "LocalAppData" / "Programs" / "CodePilot" / "bin").resolve()
+    target_str = str(target)
+    state = {
+        "path": f"{target_str};C:\\Tools\\A;C:\\Tools\\B",
+        "set_calls": 0,
+    }
+
+    class _FakeKey:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def _query_value(_key, _name):
+        return state["path"], 1
+
+    def _set_value(_key, _name, _reserved, _reg_type, value):
+        state["set_calls"] += 1
+        state["path"] = value
+
+    fake_winreg = types.SimpleNamespace(
+        HKEY_CURRENT_USER=object(),
+        KEY_READ=1,
+        KEY_WRITE=2,
+        REG_EXPAND_SZ=2,
+        OpenKey=lambda *args, **kwargs: _FakeKey(),
+        QueryValueEx=_query_value,
+        SetValueEx=_set_value,
+    )
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    notified = {"value": False}
+    monkeypatch.setattr(binary_paths_mod, "_broadcast_windows_env_change", lambda: notified.update({"value": True}))
+
+    changed, message = binary_mod._register_windows_path(target)
+
+    assert changed is False
+    assert "前列" in message
+    assert notified["value"] is False
+    assert state["set_calls"] == 0
+    assert state["path"] == f"{target_str};C:\\Tools\\A;C:\\Tools\\B"
+
+
 def test_binary_build_command_invokes_pyinstaller(tmp_path, monkeypatch):
     (tmp_path / "codepilot").mkdir()
     (tmp_path / "codepilot" / "__main__.py").write_text("print('ok')\n", encoding="utf-8")
@@ -3588,6 +3723,15 @@ def test_create_release_bundle_generates_manifest_checksums_and_archives(tmp_pat
     assert "AI 调用手册" in result.ai_guide_path.read_text(encoding="utf-8")
     assert json.loads(result.ai_manifest_path.read_text(encoding="utf-8"))["name"] == "CodePilot"
     assert "发布摘要" in result.summary_path.read_text(encoding="utf-8")
+
+
+def test_windows_install_script_cleans_legacy_cmd_and_prioritizes_path():
+    script = binary_mod._windows_install_script("codepilot.exe")
+
+    assert "del /F /Q \"%TARGET_DIR%\\codepilot.cmd\"" in script
+    assert "del /F /Q \"%TARGET_DIR%\\codepilot.bat\"" in script
+    assert "$updatedParts=@($dir) + $filtered;" in script
+    assert "$current + ';' + $dir" not in script
 
 
 def test_create_release_bundle_ai_manifest_matches_release_version_and_name(tmp_path):

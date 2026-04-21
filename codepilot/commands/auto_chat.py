@@ -12,6 +12,7 @@ time via ``codepilot.commands.auto``.
 
 from __future__ import annotations
 
+import http.client
 import subprocess
 import sys
 import threading
@@ -21,6 +22,7 @@ from typing import Optional
 import click
 
 from codepilot import __version__
+from codepilot.runtime import no_window_kwargs
 
 
 def _shell():
@@ -111,8 +113,12 @@ class _Spinner:
 
 
 def _start_chat_ui(port: int = 8766):
-    """Start Web UI as an independent service process for chat mode."""
+    """Ensure Web UI is running for chat mode without blocking REPL startup."""
     from codepilot.output import echo, safe
+
+    if _is_chat_ui_healthy(port):
+        echo(f"[dim]Web UI 已在运行: http://127.0.0.1:{port}/[/dim]")
+        return {"managed": False, "port": int(port)}
 
     cmd = [
         sys.executable,
@@ -126,30 +132,41 @@ def _start_chat_ui(port: int = 8766):
         str(int(port)),
     ]
     try:
-        result = subprocess.run(
+        popen_kwargs = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        # Keep the launcher isolated from chat Ctrl+C / session lifecycle.
+        popen_kwargs.update(no_window_kwargs(new_process_group=True))
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
+            **popen_kwargs,
         )
     except Exception as exc:
         echo(f"[yellow]Web UI 启动失败：{safe(exc)}[/yellow]")
         return None
 
-    output = "\n".join(part for part in ((result.stdout or "").strip(), (result.stderr or "").strip()) if part)
-    if result.returncode != 0:
-        if output:
-            echo(f"[yellow]Web UI 启动失败：{output[-800:]}[/yellow]")
-        return None
+    echo(f"[dim]Web UI 启动请求已发送: http://127.0.0.1:{port}/[/dim]")
+    return {"managed": True, "port": int(port), "launcher_pid": int(proc.pid)}
 
-    started = "Web UI 已启动" in output
-    if started:
-        echo(f"[dim]Web UI 已作为独立进程启动: http://127.0.0.1:{port}/[/dim]")
-    else:
-        echo(f"[dim]Web UI 已在运行: http://127.0.0.1:{port}/[/dim]")
-    return {"managed": started, "port": int(port)}
+
+def _is_chat_ui_healthy(port: int, host: str = "127.0.0.1", timeout: float = 0.25) -> bool:
+    """Fast local health probe to avoid redundant startup calls."""
+    conn = http.client.HTTPConnection(host, int(port), timeout=timeout)
+    try:
+        conn.request("GET", "/api/health")
+        resp = conn.getresponse()
+        resp.read()
+        return resp.status == 200
+    except Exception:
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _stop_chat_ui(_handle) -> None:
@@ -223,7 +240,7 @@ def run_chat_session(
     while True:
         try:
             raw = click.prompt("codepilot", prompt_suffix="> ", default="", show_default=False)
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, click.Abort):
             echo()
             _shutdown_ui()
             echo("[dim]会话已结束[/dim]")

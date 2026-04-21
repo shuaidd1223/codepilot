@@ -245,6 +245,13 @@ def _run_command_live(
         and os.environ.get("CODEPILOT_USE_PTY", "").strip() in {"1", "true", "yes"}
     )
     with log_path.open("w", encoding="utf-8", errors="replace") as handle:
+        raw_chunk_size = 64
+        raw_chunk_env = os.environ.get("CODEPILOT_LOG_STREAM_CHUNK_CHARS", "").strip()
+        if raw_chunk_env:
+            try:
+                raw_chunk_size = max(8, min(256, int(raw_chunk_env)))
+            except ValueError:
+                raw_chunk_size = 64
         popen_kwargs = {
             "cwd": str(cwd) if cwd else None,
             "stderr": subprocess.STDOUT,
@@ -291,8 +298,35 @@ def _run_command_live(
         # subprocess — the silence detector below compares this with
         # ``time.monotonic()`` to decide whether the agent has gone quiet.
         last_output_monotonic = [time.monotonic()]
+        emitted_log_bytes = [0]
 
         from codepilot import progress_bus
+
+        def _emit_log_stream(raw: str, start_offset: int) -> None:
+            cursor = start_offset
+            idx = 0
+            while idx < len(raw):
+                piece = raw[idx: idx + raw_chunk_size]
+                idx += len(piece)
+                piece_bytes = len(piece.encode("utf-8", errors="replace"))
+                end_offset = cursor + piece_bytes
+                try:
+                    progress_bus.emit(
+                        task_id=task_id,
+                        stage=phase,
+                        level="info",
+                        message="",
+                        extra={
+                            "source": "subprocess",
+                            "task_log_stream": True,
+                            "task_log_chunk": piece,
+                            "task_log_start": cursor,
+                            "task_log_end": end_offset,
+                        },
+                    )
+                except Exception:
+                    pass
+                cursor = end_offset
 
         def _emit(raw: str) -> None:
             if not raw:
@@ -300,16 +334,20 @@ def _run_command_live(
             # Any inbound byte resets the silence clock — even whitespace
             # counts as "agent still responsive".
             last_output_monotonic[0] = time.monotonic()
+            raw_bytes = raw.encode("utf-8", errors="replace")
+            stream_start = emitted_log_bytes[0]
+            emitted_log_bytes[0] = stream_start + len(raw_bytes)
             try:
                 handle.write(raw)
                 handle.flush()
             except Exception:
                 pass
+            _emit_log_stream(raw, stream_start)
             stripped = raw.rstrip()
             if stripped:
                 # Only surface concise progress lines (the CLI tools emit
-                # a lot of raw code); both the terminal and subscribers on
-                # the progress bus (Web UI job log, SSE) see the same filter.
+                # a lot of raw code); terminal summary events stay filtered.
+                # Raw log bytes are pushed separately via task_log_stream.
                 _show = _should_show_line(stripped)
                 if _show:
                     try:

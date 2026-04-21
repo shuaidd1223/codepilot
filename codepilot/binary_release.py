@@ -120,6 +120,7 @@ def _release_summary_text(name: str, version: str, artifacts: list[ReleaseArtifa
 
 
 def _windows_install_script(binary_name: str) -> str:
+    command_name = Path(binary_name).stem
     return (
         "@echo off\n"
         "setlocal\n"
@@ -127,13 +128,25 @@ def _windows_install_script(binary_name: str) -> str:
         "set TARGET_DIR=%LOCALAPPDATA%\\Programs\\CodePilot\\bin\n"
         "if not exist \"%TARGET_DIR%\" mkdir \"%TARGET_DIR%\"\n"
         f"copy /Y \"%SCRIPT_DIR%{binary_name}\" \"%TARGET_DIR%\\{binary_name}\" >nul\n"
+        f"if exist \"%TARGET_DIR%\\{command_name}.cmd\" del /F /Q \"%TARGET_DIR%\\{command_name}.cmd\" >nul 2>nul\n"
+        f"if exist \"%TARGET_DIR%\\{command_name}.bat\" del /F /Q \"%TARGET_DIR%\\{command_name}.bat\" >nul 2>nul\n"
         "powershell -NoProfile -Command \"$dir=$env:LOCALAPPDATA + '\\Programs\\CodePilot\\bin';"
         "$current=[Environment]::GetEnvironmentVariable('Path','User');"
         "if(-not $current){$current=''};"
-        "$parts=@($current -split ';' | Where-Object { $_ -ne '' });"
-        "if($parts -notcontains $dir){"
-        "$updated=if($current){$current + ';' + $dir}else{$dir};"
-        "[Environment]::SetEnvironmentVariable('Path',$updated,'User')};"
+        "$parts=@($current -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' });"
+        "$dirKey=$dir.TrimEnd('\\').ToLowerInvariant();"
+        "$filtered=@();"
+        "$seen=@{};"
+        "foreach($p in $parts){"
+        "$key=$p.TrimEnd('\\').ToLowerInvariant();"
+        "if($key -eq $dirKey){continue};"
+        "if($seen.ContainsKey($key)){continue};"
+        "$seen[$key]=$true;"
+        "$filtered += $p;"
+        "};"
+        "$updatedParts=@($dir) + $filtered;"
+        "$updated=($updatedParts -join ';');"
+        "if($updated -ne $current){[Environment]::SetEnvironmentVariable('Path',$updated,'User')};"
         "\"\n"
         "echo CodePilot 已安装到 %TARGET_DIR%\n"
         "echo 请重新打开终端后再运行 codepilot --help\n"

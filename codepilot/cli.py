@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import click
 
 from codepilot import __version__
@@ -12,28 +13,69 @@ configure_console_encoding()
 silence_subprocess_windows_if_detached()
 
 from codepilot.db import init_db
-import codepilot.commands.add as add_cmd
-import codepilot.commands.ai as ai_cmd
-import codepilot.commands.auto as auto_cmd
-import codepilot.commands.binary as binary_cmd
-import codepilot.commands.config_cmd as config_cmd
-import codepilot.commands.daemon as daemon_cmd
-import codepilot.commands.init as init_cmd
-import codepilot.commands.providers as providers_cmd
-import codepilot.commands.project as project_cmd
-import codepilot.commands.release as release_cmd
-import codepilot.commands.run as run_cmd
-import codepilot.commands.status as status_cmd
-import codepilot.commands.tasks as tasks_cmd
-import codepilot.commands.ui as ui_cmd
-import codepilot.commands.webui_service as webui_service_cmd
-import codepilot.commands.cleanup as cleanup_cmd
-import codepilot.commands.doctor as doctor_cmd
-import codepilot.commands.webhook as webhook_cmd
+
+_LAZY_COMMANDS: dict[str, tuple[str, str]] = {
+    "init": ("codepilot.commands.init", "init_"),
+    "ai": ("codepilot.commands.ai", "ai"),
+    "binary": ("codepilot.commands.binary", "binary"),
+    "config": ("codepilot.commands.config_cmd", "config_group"),
+    "release": ("codepilot.commands.release", "release"),
+    "status": ("codepilot.commands.status", "status"),
+    "add": ("codepilot.commands.add", "add"),
+    "auto": ("codepilot.commands.auto", "auto"),
+    "go": ("codepilot.commands.auto", "go"),
+    "chat": ("codepilot.commands.auto", "chat"),
+    "run": ("codepilot.commands.run", "run"),
+    "ui": ("codepilot.commands.ui", "ui"),
+    "webui": ("codepilot.commands.webui_service", "webui"),
+    "daemon": ("codepilot.commands.daemon", "daemon"),
+    "inspect": ("codepilot.commands.inspect", "inspect"),
+    "webhook": ("codepilot.commands.webhook", "webhook"),
+    "providers": ("codepilot.commands.providers", "providers"),
+    "project": ("codepilot.commands.project", "project_group"),
+    "cleanup": ("codepilot.commands.cleanup", "cleanup"),
+    "doctor": ("codepilot.commands.doctor", "doctor"),
+    "done": ("codepilot.commands.tasks", "done"),
+    "retry": ("codepilot.commands.tasks", "retry"),
+    "cancel": ("codepilot.commands.tasks", "cancel"),
+    "resume": ("codepilot.commands.tasks", "resume"),
+    "edit": ("codepilot.commands.tasks", "edit"),
+    "rm": ("codepilot.commands.tasks", "rm"),
+    "find": ("codepilot.commands.tasks", "find"),
+    "stop": ("codepilot.commands.tasks", "stop"),
+    "sweep": ("codepilot.commands.tasks", "sweep"),
+    "logs": ("codepilot.commands.tasks", "logs"),
+}
+
+
+def _load_lazy_command(name: str):
+    spec = _LAZY_COMMANDS.get(name)
+    if not spec:
+        return None
+    module_name, attr_name = spec
+    module = importlib.import_module(module_name)
+    return getattr(module, attr_name, None)
 
 
 class NaturalLanguageGroup(click.Group):
     """Treat unknown top-level input as a plain-text requirement."""
+
+    def get_command(self, ctx, cmd_name):
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            return command
+
+        loaded = _load_lazy_command(cmd_name)
+        if loaded is not None:
+            # Register once after lazy import so subsequent lookups are cheap.
+            self.add_command(loaded, name=cmd_name)
+            return super().get_command(ctx, cmd_name)
+        return None
+
+    def list_commands(self, ctx):
+        static = set(super().list_commands(ctx))
+        static.update(_LAZY_COMMANDS.keys())
+        return sorted(static)
 
     def resolve_command(self, ctx, args):
         if args:
@@ -110,42 +152,12 @@ def main(
 
     if ctx.invoked_subcommand is None and not ctx.args:
         if click.get_text_stream("stdin").isatty():
-            ctx.invoke(auto_cmd.chat)
+            chat_cmd = ctx.command.get_command(ctx, "chat")
+            if chat_cmd is None:
+                raise click.ClickException("未找到 chat 命令")
+            ctx.invoke(chat_cmd)
         else:
             click.echo(ctx.get_help())
-
-
-main.add_command(init_cmd.init_)
-main.add_command(ai_cmd.ai)
-main.add_command(binary_cmd.binary)
-main.add_command(config_cmd.config_group)
-main.add_command(release_cmd.release)
-main.add_command(status_cmd.status)
-main.add_command(add_cmd.add)
-main.add_command(auto_cmd.auto)
-main.add_command(auto_cmd.go)
-main.add_command(auto_cmd.chat)
-main.add_command(run_cmd.run)
-main.add_command(ui_cmd.ui)
-main.add_command(webui_service_cmd.webui)
-main.add_command(daemon_cmd.daemon)
-from codepilot.commands import inspect as inspect_cmd  # noqa: E402
-main.add_command(inspect_cmd.inspect)
-main.add_command(webhook_cmd.webhook)
-main.add_command(providers_cmd.providers)
-main.add_command(project_cmd.project_group)
-main.add_command(cleanup_cmd.cleanup)
-main.add_command(doctor_cmd.doctor)
-main.add_command(tasks_cmd.done)
-main.add_command(tasks_cmd.retry)
-main.add_command(tasks_cmd.cancel)
-main.add_command(tasks_cmd.resume)
-main.add_command(tasks_cmd.edit)
-main.add_command(tasks_cmd.rm)
-main.add_command(tasks_cmd.find)
-main.add_command(tasks_cmd.stop)
-main.add_command(tasks_cmd.sweep)
-main.add_command(tasks_cmd.logs)
 
 
 if __name__ == "__main__":

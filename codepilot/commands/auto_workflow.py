@@ -22,13 +22,21 @@ from typing import Optional
 import click
 
 from codepilot import db
-from codepilot.ai import (
-    build_task_markdown_from_plan,
-    normalize_agent_name,
-)
 from codepilot.config import find_config, load_config, load_project_config
 
 TEMP_SESSION_NAME = "公共临时会话"
+
+
+def _normalize_agent_name(value: str) -> str:
+    from codepilot.ai import normalize_agent_name
+
+    return normalize_agent_name(value)
+
+
+def _build_task_markdown_from_plan(item: dict) -> str:
+    from codepilot.ai import build_task_markdown_from_plan
+
+    return build_task_markdown_from_plan(item)
 
 
 def _is_subpath(path: Path, base: Path) -> bool:
@@ -317,7 +325,7 @@ def _resolve_task_agent(project_info: dict, agent: Optional[str], executor: str)
         else project_info.get("default_mode") or "dual"
     )
     raw_agent = (agent or default_agent).strip()
-    normalized = normalize_agent_name(raw_agent)
+    normalized = _normalize_agent_name(raw_agent)
 
     provider_context = _provider_context(project_info)
 
@@ -421,7 +429,7 @@ def run_requirement_workflow(
             existing_tasks=existing_tasks,
         )
     except Exception as exc:
-        if normalize_agent_name(planner) == "codex" and _should_fallback_codex_planning(exc):
+        if _normalize_agent_name(planner) == "codex" and _should_fallback_codex_planning(exc):
             echo("[yellow]Codex 规划没有及时完成，已降级为单任务直接执行。[/yellow]")
             breakdown = {
                 "summary": "Codex 规划未完成，已降级为单任务执行",
@@ -494,7 +502,7 @@ def run_requirement_workflow(
         task = db.create_task(
             project=project_name,
             title=item["title"],
-            content=build_task_markdown_from_plan(item),
+            content=_build_task_markdown_from_plan(item),
             agent=task_agent,
             priority=item.get("priority") or priority,
             depends_on=dep_ids or None,

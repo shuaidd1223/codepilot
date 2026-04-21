@@ -228,17 +228,28 @@ def _register_windows_path(directory: Path) -> tuple[bool, str]:
         except FileNotFoundError:
             current_path = ""
 
-        if path_contains(directory, path_value=current_path):
-            return False, f"`{directory}` 已经在当前用户 PATH 中。新开的终端可以直接使用 `codepilot`。"
+        raw_entries = [entry for entry in str(current_path).split(os.pathsep) if entry.strip()]
+        target_norm = _normalize_path(directory)
+        filtered: list[str] = []
+        seen: set[str] = set()
+        for entry in raw_entries:
+            normalized = _normalize_path(entry)
+            if normalized == target_norm:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            filtered.append(entry)
 
-        updated = current_path
-        if updated and not updated.endswith(os.pathsep):
-            updated += os.pathsep
-        updated += str(directory)
+        updated_entries = [str(directory), *filtered]
+        if raw_entries == updated_entries:
+            return False, f"`{directory}` 已经位于当前用户 PATH 前列。新开的终端可以直接使用 `codepilot`。"
+
+        updated = os.pathsep.join(updated_entries)
         winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, updated)
 
     _broadcast_windows_env_change()
-    return True, f"已把 `{directory}` 写入当前用户 PATH。请重新打开终端后再使用 `codepilot`。"
+    return True, f"已把 `{directory}` 置顶到当前用户 PATH。请重新打开终端后再使用 `codepilot`。"
 
 
 def _preferred_posix_profile() -> Path:
@@ -282,5 +293,4 @@ def register_install_dir(directory: str | Path) -> tuple[bool, str]:
     if platform.system().lower() == "windows":
         return _register_windows_path(target)
     return _register_posix_path(target)
-
 
