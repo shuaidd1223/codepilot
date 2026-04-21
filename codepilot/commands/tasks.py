@@ -10,7 +10,13 @@ import click
 from codepilot import db
 from codepilot.commands.status import _resolve_project
 from codepilot.output import echo
-from codepilot.runtime import clear_task_runtime, is_process_alive, request_task_stop, stop_process_tree
+from codepilot.runtime import (
+    clear_task_runtime,
+    is_process_alive,
+    request_task_stop,
+    stop_process_tree,
+    stop_worktree_leftovers,
+)
 
 
 # ── done ──────────────────────────────────────────────────────────────────────
@@ -95,6 +101,15 @@ def cancel(task_ids: tuple[int, ...], message: str):
             stop_requested=0,
             stop_reason=None,
         )
+        # Sweep any long-lived dev servers (next dev / vite / etc.) the
+        # builder agent left inside the task's worktree.
+        wt = (task or {}).get("worktree_path")
+        project_path = (task or {}).get("project_path")
+        try:
+            if wt and wt != project_path:
+                stop_worktree_leftovers(wt, wait_seconds=3)
+        except Exception:
+            pass
         echo(f"[yellow]已取消 #{tid}[/yellow]  {task['title']}")
         count += 1
     if count:
@@ -349,6 +364,14 @@ def stop(task_id: int, message: str):
         stop_requested=0,
         stop_reason=None,
     )
+    # Sweep any dev servers still inside the task's worktree.
+    wt = (refreshed or task or {}).get("worktree_path")
+    project_path = (refreshed or task or {}).get("project_path")
+    try:
+        if wt and wt != project_path:
+            stop_worktree_leftovers(wt, wait_seconds=3)
+    except Exception:
+        pass
     echo(f"[yellow]任务 #{task_id} 已停止[/yellow]  {task['title']}")
 
 
@@ -359,6 +382,37 @@ def _render_log_text(text: str, tail: int) -> str:
         return ""
     lines = text.splitlines()
     return "\n".join(lines[-tail:]) if tail > 0 else text
+
+
+@click.command()
+@click.argument("task_id", type=int)
+@click.option("--dry-run", is_flag=True, help="只列出候选 PID，不真的杀")
+def sweep(task_id: int, dry_run: bool):
+    """清理任务 worktree 里遗留的长生命进程（next dev / vite / npm run dev 等）。"""
+    from codepilot.runtime import find_worktree_processes
+    db.init_db()
+    task = db.get_task(task_id)
+    if not task:
+        echo(f"[red]任务 #{task_id} 不存在[/red]")
+        return
+    wt = task.get("worktree_path")
+    project_path = task.get("project_path")
+    if not wt:
+        echo(f"[yellow]任务 #{task_id} 没有 worktree，不需要 sweep[/yellow]")
+        return
+    if wt == project_path:
+        echo(f"[yellow]任务 #{task_id} 直接运行在项目根目录（没有隔离 worktree），跳过 sweep 以避免误杀你自己的进程[/yellow]")
+        return
+    pids = find_worktree_processes(wt)
+    if not pids:
+        echo(f"[dim]worktree {wt} 没有遗留进程[/dim]")
+        return
+    echo(f"[cyan]候选 PID:[/cyan] {', '.join(str(p) for p in pids)}")
+    if dry_run:
+        return
+    killed = stop_worktree_leftovers(wt, wait_seconds=4)
+    if killed:
+        echo(f"[green][OK] 已清理 {len(killed)} 个进程[/green]  PID={','.join(str(p) for p in killed)}")
 
 
 @click.command()

@@ -14,7 +14,7 @@ CP.Components.GoalInput = Vue.defineComponent({
     <div>
       <div v-if="s.answer" class="answer-card">
         <svg class="answer-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
-        <div class="answer-body">{{ s.answer }}</div>
+        <cp-markdown class="answer-body" :text="s.answer"></cp-markdown>
         <button class="icon-btn small" @click="clearAnswer">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>

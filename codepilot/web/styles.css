@@ -384,11 +384,652 @@ pre.code {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 220px;
+  /* Fixed viewport with internal scroll — full content is reachable via the
+   * scrollbar but doesn't stretch the page. `content-visibility` below lets
+   * the browser skip painting off-screen rows so very long logs stay fast. */
+  max-height: 240px;
   overflow: auto;
   color: hsl(var(--foreground));
+  /* Make +/- diff rows full-width by hanging the padding on the <pre>
+   * rather than on each line span. */
+  padding: 8px 10px;
+  background: hsl(var(--muted) / .35);
+  border-radius: var(--radius-sm);
+  contain: content;
 }
-pre.code.tall { max-height: 360px; }
+pre.code.tall { max-height: 420px; }
+pre.code.live-log { max-height: 280px; }
+
+/* ── highlight.js palette (themed via our CSS vars so dark mode just works) ── */
+.hljs { background: transparent; color: hsl(var(--foreground)); }
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-section,
+.hljs-name,
+.hljs-strong { color: hsl(var(--primary)); font-weight: 600; }
+.hljs-string,
+.hljs-attr,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition { color: hsl(var(--success)); }
+.hljs-number,
+.hljs-regexp,
+.hljs-meta,
+.hljs-link { color: hsl(var(--warning)); }
+.hljs-comment,
+.hljs-quote { color: hsl(var(--muted-foreground)); font-style: italic; }
+.hljs-title,
+.hljs-built_in,
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-function .hljs-title { color: hsl(221 83% 53%); font-weight: 600; }
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params { color: hsl(var(--foreground)); }
+.hljs-emphasis { font-style: italic; }
+
+/* Unified diff — Codex/Claude-style row tint. */
+.language-diff .hljs-addition,
+.hljs-addition {
+  display: inline-block;
+  width: 100%;
+  background: hsl(var(--success) / .15);
+  color: hsl(142 71% 28%);
+}
+[data-theme="dark"] .hljs-addition { color: hsl(142 71% 65%); }
+.language-diff .hljs-deletion,
+.hljs-deletion {
+  display: inline-block;
+  width: 100%;
+  background: hsl(var(--destructive) / .14);
+  color: hsl(0 72% 40%);
+}
+[data-theme="dark"] .hljs-deletion { color: hsl(0 72% 72%); }
+.language-diff .hljs-meta { color: hsl(262 83% 58%); font-weight: 600; }
+
+/* ── ANSI escape colour classes (ansi_up use_classes = true) ──
+ * Mapped to our semantic tokens so CLI output harmonises with the UI. */
+.ansi-black-fg   { color: hsl(var(--foreground) / .75); }
+.ansi-red-fg     { color: hsl(var(--destructive)); }
+.ansi-green-fg   { color: hsl(var(--success)); }
+.ansi-yellow-fg  { color: hsl(var(--warning)); }
+.ansi-blue-fg    { color: hsl(221 83% 53%); }
+.ansi-magenta-fg { color: hsl(292 76% 55%); }
+.ansi-cyan-fg    { color: hsl(186 72% 45%); }
+.ansi-white-fg   { color: hsl(var(--foreground)); }
+.ansi-bright-black-fg   { color: hsl(var(--muted-foreground)); }
+.ansi-bright-red-fg     { color: hsl(0 72% 60%); }
+.ansi-bright-green-fg   { color: hsl(142 71% 48%); }
+.ansi-bright-yellow-fg  { color: hsl(38 92% 58%); }
+.ansi-bright-blue-fg    { color: hsl(217 91% 65%); }
+.ansi-bright-magenta-fg { color: hsl(292 76% 65%); }
+.ansi-bright-cyan-fg    { color: hsl(186 72% 55%); }
+.ansi-bright-white-fg   { color: hsl(var(--foreground)); }
+.ansi-bold { font-weight: 600; }
+.ansi-italic { font-style: italic; }
+.ansi-underline { text-decoration: underline; }
+
+/* ── Live log (SSE progress stream) ── */
+pre.code.live-log { padding: 6px 10px; }
+.live-row {
+  display: block;
+  /* No per-row top/bottom padding — default markdown-style spacing would
+   * make each event look like its own paragraph. Keep the rows tight so
+   * the log reads like a CLI tail. */
+  padding: 0;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Browser-native windowing: rows outside the scroll viewport are skipped
+   * during layout / paint. Lets us keep every event in the DOM (so the user
+   * can scroll through the full history) without paying the render cost
+   * for the whole list at once. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 18px;
+}
+.live-row .live-ts {
+  color: hsl(var(--muted-foreground));
+  margin-right: 6px;
+}
+.live-row .live-stage {
+  font-weight: 600;
+  margin-right: 6px;
+  color: hsl(var(--muted-foreground));
+}
+.live-row .live-msg { color: hsl(var(--foreground)); }
+
+.live-row.stage-planner   .live-stage { color: hsl(262 83% 58%); }
+.live-row.stage-recon     .live-stage { color: hsl(186 72% 45%); }
+.live-row.stage-clarify   .live-stage { color: hsl(292 76% 55%); }
+.live-row.stage-builder   .live-stage { color: hsl(221 83% 53%); }
+.live-row.stage-reviewer  .live-stage { color: hsl(38 92% 50%); }
+.live-row.stage-commit    .live-stage { color: hsl(142 71% 38%); }
+.live-row.stage-merge     .live-stage { color: hsl(142 71% 38%); }
+.live-row.stage-system    .live-stage { color: hsl(var(--muted-foreground)); }
+
+.live-row.level-warning { background: hsl(var(--warning) / .08); }
+.live-row.level-warning .live-msg { color: hsl(var(--warning)); }
+.live-row.level-error { background: hsl(var(--destructive) / .10); }
+.live-row.level-error .live-msg { color: hsl(var(--destructive)); }
+.live-row.level-heartbeat .live-msg { color: hsl(var(--muted-foreground)); font-style: italic; }
+
+/* ── Agent-style terminal log (task.log_text — sub-agent subprocess tail) ──
+ * Block-level renderer for sub-agent output, matching the Claude Code
+ * VSCode extension / Codex desktop app aesthetic: tool-call *cards* with
+ * an accent rail, framed diff blocks with a filename strip, narrative
+ * prose, and a streaming cursor tail while output is still coming. */
+.agent-log {
+  --agent-bg: #0b1020;
+  --agent-bg-head: #10172a;
+  --agent-bg-card: rgba(255, 255, 255, .04);
+  --agent-fg: #d6deeb;
+  --agent-dim: #8a9bb8;
+  --agent-subtle: rgba(255, 255, 255, .08);
+  --agent-accent: #82aaff;
+  --agent-ok: #7fd1b9;
+  --agent-err: #ff6b6b;
+  --agent-warn: #ffcb6b;
+  --agent-user: #c792ea;
+  --agent-add-bg: rgba(127, 209, 185, .12);
+  --agent-add-fg: #a7e8d5;
+  --agent-del-bg: rgba(255, 107, 107, .12);
+  --agent-del-fg: #ffb3b3;
+  --agent-meta: #c792ea;
+  --agent-hunk: #82aaff;
+  background: var(--agent-bg);
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  overflow: hidden;
+  color: var(--agent-fg);
+  font-family: var(--font-mono);
+  box-shadow: 0 1px 0 hsl(0 0% 0% / .25) inset;
+}
+[data-theme="dark"] .agent-log {
+  --agent-bg: #05080f;
+  --agent-bg-head: #0b1020;
+  box-shadow: none;
+}
+
+.agent-log-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  background: var(--agent-bg-head);
+  border-bottom: 1px solid var(--agent-subtle);
+  font-size: 11px;
+  font-family: var(--font-sans);
+  color: var(--agent-dim);
+}
+.agent-log-head .dots { display: inline-flex; gap: 5px; }
+.agent-log-head .dots i {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: hsl(0 0% 100% / .14);
+}
+.agent-log-head .dots i:nth-child(1) { background: #ff5f56; }
+.agent-log-head .dots i:nth-child(2) { background: #ffbd2e; }
+.agent-log-head .dots i:nth-child(3) { background: #27c93f; }
+.agent-log-head .title { font-weight: 500; letter-spacing: .02em; }
+.agent-log-head .spacer { flex: 1; }
+.agent-log-head .lines { color: var(--agent-dim); font-variant-numeric: tabular-nums; }
+.agent-log-head .streaming-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(130, 170, 255, .16);
+  color: #bcd4ff;
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  position: relative;
+  padding-left: 18px;
+}
+.agent-log-head .streaming-pill::before {
+  content: "";
+  position: absolute;
+  left: 8px; top: 50%;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #82aaff;
+  transform: translateY(-50%);
+  animation: al-pulse 1.2s ease-in-out infinite;
+}
+@keyframes al-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(130, 170, 255, .5); }
+  50% { opacity: .45; box-shadow: 0 0 0 6px rgba(130, 170, 255, 0); }
+}
+
+.agent-log-bodywrap { position: relative; }
+.agent-log-body {
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  max-height: 360px;
+  overflow: auto;
+  color: var(--agent-fg);
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agent-log.tall .agent-log-body { max-height: 560px; }
+
+.agent-log-jump {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-family: var(--font-sans);
+  color: var(--agent-fg);
+  background: rgba(130, 170, 255, .18);
+  border: 1px solid rgba(130, 170, 255, .35);
+  border-radius: 999px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 12px hsl(0 0% 0% / .35);
+  transition: background .15s, transform .15s;
+}
+.agent-log-jump:hover { background: rgba(130, 170, 255, .28); transform: translateY(-1px); }
+
+/* Block: content-visibility on each block keeps perf snappy at 10k+ lines. */
+.al-block {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 32px;
+}
+.al-line {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.al-line.plain { color: var(--agent-fg); }
+.al-line.status-ok   { color: var(--agent-ok); }
+.al-line.status-err  { color: var(--agent-err); }
+.al-line.status-warn { color: var(--agent-warn); }
+.al-line.prompt      { color: var(--agent-user); font-weight: 500; }
+
+/* ── Tool call card ───────────────────────────── */
+.al-tool {
+  border: 1px solid var(--agent-subtle);
+  background: var(--agent-bg-card);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  position: relative;
+}
+.al-tool::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--agent-accent);
+  opacity: .8;
+}
+.al-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--agent-accent);
+  background: linear-gradient(to right, rgba(130, 170, 255, .08), transparent 60%);
+}
+.al-tool-head:hover { background: linear-gradient(to right, rgba(130, 170, 255, .14), transparent 70%); }
+.al-tool-glyph { color: var(--agent-accent); font-weight: 600; }
+.al-tool-name  { color: #fff; font-weight: 600; }
+.al-tool-arg   { color: var(--agent-dim); font-style: italic; }
+.al-tool-trail { color: var(--agent-dim); font-size: 11px; margin-left: auto; }
+.al-tool-caret {
+  margin-left: 6px;
+  color: var(--agent-dim);
+  display: inline-flex; align-items: center;
+  transition: transform .12s;
+}
+.al-tool-body {
+  padding: 4px 12px 8px 18px;
+  border-top: 1px solid var(--agent-subtle);
+  color: var(--agent-dim);
+  font-size: 11.5px;
+}
+.al-tool-body .al-line { color: var(--agent-dim); }
+.al-tool.collapsed .al-tool-body { padding-bottom: 4px; }
+.al-expand {
+  display: block;
+  margin-top: 4px;
+  padding: 2px 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--agent-accent);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.al-expand:hover { text-decoration: underline; }
+
+/* ── Diff block ────────────────────────────────── */
+.al-diff {
+  border: 1px solid var(--agent-subtle);
+  background: var(--agent-bg-card);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.al-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(199, 146, 234, .08);
+  border-bottom: 1px solid var(--agent-subtle);
+  color: var(--agent-meta);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.al-diff-file { font-weight: 600; color: #fff; }
+.al-diff-body {
+  padding: 4px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.al-diff-line {
+  display: block;
+  padding: 0 10px 0 26px;
+  position: relative;
+  white-space: pre;
+  word-break: normal;
+  overflow-x: auto;
+}
+.al-diff-line::before {
+  content: attr(data-marker);
+  position: absolute;
+  left: 10px; top: 0;
+  color: var(--agent-dim);
+  font-weight: 600;
+  font-size: 11px;
+  width: 12px;
+  text-align: center;
+}
+.al-diff-line.k-hdr {
+  color: var(--agent-meta);
+  font-weight: 600;
+  background: rgba(199, 146, 234, .05);
+}
+.al-diff-line.k-meta  { color: var(--agent-meta); }
+.al-diff-line.k-hunk {
+  color: var(--agent-hunk);
+  background: rgba(130, 170, 255, .06);
+  font-weight: 500;
+}
+.al-diff-line.k-add {
+  background: var(--agent-add-bg);
+  color: var(--agent-add-fg);
+}
+.al-diff-line.k-del {
+  background: var(--agent-del-bg);
+  color: var(--agent-del-fg);
+}
+.al-diff-line.k-ctx { color: var(--agent-dim); }
+
+/* ── Streaming cursor ─────────────────────────── */
+.al-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  background: var(--agent-accent);
+  vertical-align: text-bottom;
+  animation: al-blink 1s step-end infinite;
+  margin-left: 2px;
+}
+@keyframes al-blink {
+  0%, 60% { opacity: 1; }
+  60.1%, 100% { opacity: 0; }
+}
+
+/* ── Rendered markdown (output panels, chat bubbles, answer cards) ──
+ * GitHub-flavoured typography scoped to `.md` so it doesn't leak into the
+ * rest of the UI chrome. Code blocks get their own wrapper (`.md-code`)
+ * with a language tag and copy button. Alerts (> [!NOTE] etc.) render as
+ * coloured callouts. Everything adapts to light/dark via the design
+ * tokens already defined in `:root` / `[data-theme="dark"]`. */
+.md {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: hsl(var(--foreground));
+  word-break: break-word;
+}
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+
+.md p { margin: 0 0 10px; }
+.md strong { font-weight: 600; color: hsl(var(--foreground)); }
+.md em { font-style: italic; }
+
+/* Headings — GitHub-style: h1/h2 have a subtle bottom rule. */
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+  margin: 18px 0 8px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+.md > :first-child:where(h1, h2, h3, h4, h5, h6) { margin-top: 4px; }
+.md h1 { font-size: 20px; padding-bottom: 6px; border-bottom: 1px solid hsl(var(--border)); }
+.md h2 { font-size: 17px; padding-bottom: 4px; border-bottom: 1px solid hsl(var(--border)); }
+.md h3 { font-size: 15px; }
+.md h4 { font-size: 14px; }
+.md h5, .md h6 { font-size: 13px; color: hsl(var(--muted-foreground)); }
+
+/* Lists */
+.md ul, .md ol { margin: 0 0 10px; padding-left: 24px; }
+.md ul { list-style: disc; }
+.md ul ul { list-style: circle; }
+.md ul ul ul { list-style: square; }
+.md li { margin-bottom: 3px; }
+.md li > p { margin-bottom: 6px; }
+.md li > :last-child { margin-bottom: 0; }
+/* Task list (GFM) */
+.md li > input[type="checkbox"] {
+  width: 13px; height: 13px;
+  margin: 0 6px 0 -20px;
+  accent-color: hsl(var(--primary));
+  vertical-align: -2px;
+}
+.md li:has(> input[type="checkbox"]) { list-style: none; }
+
+/* Blockquote — left accent rail, muted body. */
+.md blockquote {
+  margin: 0 0 10px;
+  padding: 6px 12px;
+  border-left: 3px solid hsl(var(--primary) / .5);
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted) / .3);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.md blockquote > :last-child { margin-bottom: 0; }
+
+/* GFM-style alerts: > [!NOTE] / [!TIP] / [!WARNING] / [!IMPORTANT] / [!CAUTION] */
+.md .md-alert {
+  margin: 0 0 12px;
+  padding: 10px 14px 10px 16px;
+  border-left: 4px solid;
+  border-radius: var(--radius-sm);
+  background: hsl(var(--muted) / .35);
+}
+.md .md-alert > :last-child { margin-bottom: 0; }
+.md .md-alert-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: 4px;
+}
+.md .md-alert-note      { border-color: hsl(221 83% 53%); }
+.md .md-alert-note      .md-alert-label { color: hsl(221 83% 53%); }
+.md .md-alert-tip       { border-color: hsl(var(--success)); }
+.md .md-alert-tip       .md-alert-label { color: hsl(var(--success)); }
+.md .md-alert-important { border-color: hsl(262 83% 58%); }
+.md .md-alert-important .md-alert-label { color: hsl(262 83% 58%); }
+.md .md-alert-warning   { border-color: hsl(var(--warning)); }
+.md .md-alert-warning   .md-alert-label { color: hsl(var(--warning)); }
+.md .md-alert-caution   { border-color: hsl(var(--destructive)); }
+.md .md-alert-caution   .md-alert-label { color: hsl(var(--destructive)); }
+
+/* Inline code — subtle tinted chip. */
+.md :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: .88em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: hsl(var(--muted) / .65);
+  border: 1px solid hsl(var(--border) / .6);
+  color: hsl(var(--foreground));
+}
+
+/* Code block container (emitted by marked renderer.code hook) */
+.md-code {
+  margin: 0 0 12px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / .2);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  position: relative;
+}
+.md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 4px 12px;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted) / .45);
+  border-bottom: 1px solid hsl(var(--border));
+  font-variant: tabular-nums;
+}
+.md-code-lang {
+  font-family: var(--font-mono);
+  letter-spacing: .02em;
+  text-transform: lowercase;
+}
+.md-code-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.md-code-copy:hover {
+  background: hsl(var(--background));
+  border-color: hsl(var(--border));
+  color: hsl(var(--foreground));
+}
+.md-code-copy.copied { color: hsl(var(--success)); border-color: hsl(var(--success) / .4); }
+.md-code pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 400px;
+  overflow: auto;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+  word-break: normal;
+}
+.md-code pre code {
+  background: transparent;
+  padding: 0;
+  border: 0;
+  font-size: inherit;
+  white-space: inherit;
+}
+
+/* Standalone pre (if any survive outside .md-code — defensive) */
+.md > pre.hljs {
+  padding: 10px 12px;
+  background: hsl(var(--muted) / .35);
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  overflow: auto;
+}
+
+.md a {
+  color: hsl(var(--primary));
+  text-decoration: none;
+  border-bottom: 1px solid hsl(var(--primary) / .3);
+  transition: border-color .12s;
+}
+.md a:hover { border-bottom-color: hsl(var(--primary)); }
+
+.md hr {
+  border: 0;
+  border-top: 1px solid hsl(var(--border));
+  margin: 16px 0;
+}
+
+/* Tables — zebra stripes + sticky header if tall. */
+.md table {
+  border-collapse: collapse;
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  width: max-content;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+}
+.md th, .md td {
+  border-bottom: 1px solid hsl(var(--border));
+  border-right: 1px solid hsl(var(--border));
+  padding: 6px 10px;
+  text-align: left;
+}
+.md th:last-child, .md td:last-child { border-right: 0; }
+.md tr:last-child td { border-bottom: 0; }
+.md th {
+  background: hsl(var(--muted) / .55);
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+.md tbody tr:nth-child(odd) { background: hsl(var(--muted) / .18); }
+
+.md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+.md kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: hsl(var(--foreground));
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
+/* Chat bubble uses .md (because cp-markdown sits where the old bubble-body
+ * div was) — keep the tight spacing and inherit bubble colours. */
+.bubble .md { font-size: 13px; }
+.bubble.user .md { color: hsl(var(--primary-foreground)); }
+.bubble.user .md a { color: hsl(var(--primary-foreground)); text-decoration: underline; }
+.bubble.user .md code { background: hsl(0 0% 100% / .18); color: inherit; }
+.bubble.user .md pre.hljs { background: hsl(0 0% 100% / .12); }
+.bubble.user .md blockquote { border-left-color: hsl(0 0% 100% / .4); background: hsl(0 0% 100% / .1); color: inherit; }
 
 /* Metrics */
 .metrics {
@@ -612,6 +1253,17 @@ input::placeholder, textarea::placeholder { color: hsl(var(--muted-foreground));
 .toast.warning { background: hsl(var(--warning) / .15); border-color: hsl(var(--warning) / .4); color: hsl(var(--warning)); }
 .toast.info { background: hsl(var(--card)); color: hsl(var(--foreground)); }
 .toast-body { flex: 1; white-space: pre-wrap; word-break: break-word; }
+.toast-count {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  background: currentColor;
+  color: hsl(var(--card));
+  opacity: .85;
+}
 
 /* Animations */
 .spinner {

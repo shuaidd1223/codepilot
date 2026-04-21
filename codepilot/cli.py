@@ -140,6 +140,7 @@ main.add_command(tasks_cmd.edit)
 main.add_command(tasks_cmd.rm)
 main.add_command(tasks_cmd.find)
 main.add_command(tasks_cmd.stop)
+main.add_command(tasks_cmd.sweep)
 main.add_command(tasks_cmd.logs)
 
 

@@ -32,6 +32,35 @@ def _git_has_changes(project_path: Path) -> bool:
     return code == 0 and bool(output.strip())
 
 
+def _git_changed_files(project_path: Path) -> list[str]:
+    """List tracked+untracked file paths changed in the working tree.
+
+    Used by the reviewer prompt so it can cross-check the builder's edits
+    against the task's declared scope. Falls back to an empty list when
+    the repo is inaccessible.
+    """
+    code, output = _run_command(
+        ["git", "status", "--short", "--untracked-files=all"],
+        cwd=project_path,
+        timeout=30,
+    )
+    if code != 0 or not output.strip():
+        return []
+    files: list[str] = []
+    for line in output.splitlines():
+        line = line.rstrip()
+        if len(line) < 4:
+            continue
+        # Line format: "XY path" or "XY path -> renamed"
+        body = line[3:].strip()
+        if " -> " in body:
+            body = body.split(" -> ", 1)[1]
+        body = body.strip('"')
+        if body:
+            files.append(body)
+    return files
+
+
 def _slugify_path_part(text: str, max_length: int = 48, fallback: str = "task") -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
     if len(slug) > max_length:

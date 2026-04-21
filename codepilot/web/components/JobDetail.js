@@ -14,14 +14,6 @@ CP.Components.JobDetail = Vue.defineComponent({
       return this.cp.liveEventsForJob(this.job.id);
     },
   },
-  watch: {
-    liveEvents() {
-      this.$nextTick(() => {
-        const pre = this.$refs.livelog;
-        if (pre) pre.scrollTop = pre.scrollHeight;
-      });
-    },
-  },
   template: `
     <div class="view">
       <div v-if="!job" class="big-empty">需求不存在或已过期</div>
@@ -49,22 +41,22 @@ CP.Components.JobDetail = Vue.defineComponent({
           </div>
           <div v-if="job.summary" class="block">
             <div class="block-label">摘要</div>
-            <div class="tiny">{{ job.summary }}</div>
+            <cp-markdown :text="job.summary"></cp-markdown>
           </div>
           <div v-if="job.error" class="block danger">
             <div class="block-label">错误</div>
-            <pre class="code">{{ job.error }}</pre>
+            <cp-markdown :text="job.error"></cp-markdown>
           </div>
           <div v-if="job.log && job.log.length" class="block">
             <div class="block-label">日志</div>
-            <pre class="code tall">{{ job.log.join('\\n') }}</pre>
+            <cp-code-block :text="job.log.join('\\n')" tall follow></cp-code-block>
           </div>
           <div v-if="liveEvents.length" class="block">
             <div class="block-label">
               实时进度
               <span v-if="$cp.isJobActive(job)" class="spinner" style="margin-left:6px"></span>
             </div>
-            <pre ref="livelog" class="code tall" style="max-height:240px;overflow:auto">{{ liveEvents.map(e => \`[\${(e.timestamp||'').slice(11,19)}] [\${e.stage || '?'}\${e.extra && e.extra.round ? \` r\${e.extra.round}/\${e.extra.round_total}\` : ''}] \${e.message || ''}\`).join('\\n') }}</pre>
+            <cp-live-log :events="liveEvents" tall follow></cp-live-log>
           </div>
         </div>
       </section>

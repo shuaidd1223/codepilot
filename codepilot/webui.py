@@ -67,6 +67,7 @@ from codepilot.webui_payloads import (  # noqa: F401 (re-export)
     dashboard_payload,
     project_summary,
     task_detail_payload,
+    task_log_delta,
 )
 
 
@@ -245,6 +246,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if match:
             try:
                 self._send_json(task_detail_payload(int(match.group(1))))
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, status=404)
+            return
+        # Incremental log fetch — frontend tracks its own offset and polls
+        # (or refetches on SSE event) to append only the new bytes.
+        match = re.fullmatch(r"/api/tasks/(\d+)/log", path)
+        if match:
+            from urllib.parse import parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                offset = int((qs.get("offset", ["0"]) or ["0"])[0] or "0")
+            except ValueError:
+                offset = 0
+            try:
+                self._send_json(task_log_delta(int(match.group(1)), offset=offset))
             except RuntimeError as exc:
                 self._send_json({"error": str(exc)}, status=404)
             return

@@ -26,11 +26,28 @@ CP.Components.Sidebar = Vue.defineComponent({
       return this.allSessions.filter(se => se.project === projName);
     },
     projectTasks(projName) {
-      /* tasks only loaded for current project via loadDashboard */
-      return projName === this.s.nav.project ? (this.s.tasks || []) : [];
+      /* Read from the per-project map so this project's tasks never show
+       * some other project's content during a nav switch. The map is
+       * populated by loadDashboard whenever a project is selected; other
+       * projects simply stay at [] until their dashboard is fetched. */
+      return (this.s.tasksByProject && this.s.tasksByProject[projName]) || [];
     },
     projectJobs(projName) {
-      return projName === this.s.nav.project ? (this.s.jobs || []) : [];
+      return (this.s.jobsByProject && this.s.jobsByProject[projName]) || [];
+    },
+    /* Count helpers: look at project summary first so numbers stay correct
+     * across projects even when we only loaded the current project's list. */
+    taskCount(p) {
+      if (p && p.stats && typeof p.stats.total === 'number') return p.stats.total;
+      return this.projectTasks(p.name).length;
+    },
+    sessionCount(p) {
+      if (p && typeof p.session_count === 'number') return p.session_count;
+      return this.projectSessions(p.name).length;
+    },
+    jobCount(p) {
+      if (p && typeof p.job_count === 'number') return p.job_count;
+      return this.projectJobs(p.name).length;
     },
   },
   template: `
@@ -67,7 +84,7 @@ CP.Components.Sidebar = Vue.defineComponent({
               <svg class="tree-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
               <span class="tree-label">{{ p.name }}</span>
               <span v-if="p.stats && p.stats.in_progress" class="chip info tiny">{{ p.stats.in_progress }}</span>
-              <span v-else-if="p.stats && p.stats.total" class="chip neutral tiny">{{ p.stats.total }}</span>
+              <span v-else-if="taskCount(p)" class="chip neutral tiny">{{ taskCount(p) }}</span>
             </div>
 
             <!-- Children (only when expanded) -->
@@ -82,7 +99,7 @@ CP.Components.Sidebar = Vue.defineComponent({
                 </button>
                 <svg class="tree-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                 <span class="tree-label">会话</span>
-                <span class="muted tiny">{{ projectSessions(p.name).length }}</span>
+                <span class="muted tiny">{{ sessionCount(p) }}</span>
               </div>
               <div v-show="isExpanded(p.name + '/sessions')" class="tree-leaf-wrap">
                 <div v-if="!projectSessions(p.name).length" class="tree-empty">暂无会话</div>
@@ -111,7 +128,7 @@ CP.Components.Sidebar = Vue.defineComponent({
                 </button>
                 <svg class="tree-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
                 <span class="tree-label">任务</span>
-                <span class="muted tiny">{{ projectTasks(p.name).length }}</span>
+                <span class="muted tiny">{{ taskCount(p) }}</span>
               </div>
               <div v-show="isExpanded(p.name + '/tasks')" class="tree-leaf-wrap">
                 <div v-if="!projectTasks(p.name).length" class="tree-empty">暂无任务</div>
@@ -136,7 +153,7 @@ CP.Components.Sidebar = Vue.defineComponent({
                 </button>
                 <svg class="tree-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 <span class="tree-label">需求</span>
-                <span class="muted tiny">{{ projectJobs(p.name).length }}</span>
+                <span class="muted tiny">{{ jobCount(p) }}</span>
               </div>
               <div v-show="isExpanded(p.name + '/jobs')" class="tree-leaf-wrap">
                 <div v-if="!projectJobs(p.name).length" class="tree-empty">暂无需求</div>

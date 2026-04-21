@@ -63,7 +63,7 @@ CP.Components.ChatView = Vue.defineComponent({
           <div v-for="m in messages" :key="m.id" class="chat-row" :class="m.role">
             <div class="bubble" :class="[m.role, m.intent === 'clarify' ? 'clarify' : '']">
               <div v-if="m.intent === 'clarify'" class="clarify-head">🤔 需要澄清几个点</div>
-              <div class="bubble-body" style="white-space:pre-wrap">{{ m.content }}</div>
+              <cp-markdown class="bubble-body" :text="m.content"></cp-markdown>
               <div class="bubble-meta">
                 <span>{{ $cp.fmtTime(m.created_at) }}</span>
                 <cp-chip v-if="m.intent" tiny :tone="$cp.toneClass(m.intent)">{{ $cp.statusLabel(m.intent) }}</cp-chip>

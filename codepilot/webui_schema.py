@@ -109,14 +109,25 @@ class ProjectSummary(TypedDict):
     name: str
     path: str
     stats: ProjectStats
+    session_count: int
+    job_count: int
     active_summary: str
 
 
 class DashboardPayload(TypedDict):
-    """Top-level envelope returned by ``/api/dashboard``."""
+    """Top-level envelope returned by ``/api/dashboard``.
+
+    ``tasks_by_project`` / ``jobs_by_project`` ship every project's data in
+    one response so the frontend can hydrate its per-project cache once;
+    project switching then becomes a purely navigational operation.
+    ``tasks`` / ``jobs`` remain as convenience aliases for the currently-
+    selected project's slice.
+    """
 
     projects: list[ProjectSummary]
     selected_project: Optional[str]
+    tasks_by_project: dict[str, list[TaskListItem]]
+    jobs_by_project: dict[str, list[dict]]
     tasks: list[TaskListItem]
     jobs: list[dict]    # Job schema still lives in webui; tracked separately.
     events: list[dict]  # Event schema intentionally loose for now.

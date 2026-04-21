@@ -40,6 +40,7 @@ from codepilot.runtime import (
     list_live_tasks,
     reap_stalled_tasks,
     stop_process_tree,
+    stop_worktree_leftovers,
     tail_text,
     update_task_runtime,
 )
@@ -60,6 +61,7 @@ from codepilot.commands.run_shell import (  # noqa: F401
 # Re-export git helpers
 from codepilot.commands.run_git import (  # noqa: F401
     _git_auto_commit,
+    _git_changed_files,
     _git_cleanup_task_worktree,
     _git_checkout,
     _git_current_branch,
@@ -490,6 +492,7 @@ def _build_review_prompt(
     *,
     review_round: int = 1,
     previous_findings: str = "",
+    changed_files: list[str] | None = None,
 ) -> str:
     """Compose the Reviewer prompt with acceptance-criteria-driven checklist."""
     sections = _extract_task_sections(task.get("content") or "")
@@ -497,10 +500,24 @@ def _build_review_prompt(
     reviewer_notes = _bullet_lines(sections.get("Reviewer 职责") or "")
     goal = (sections.get("任务目标") or "").strip()
     forbidden = (sections.get("禁区") or "").strip()
+    not_in_scope = (sections.get("不涉及") or "").strip()
 
     lines = [
         f"请审查当前仓库中为任务 #{task['id']} `{task['title']}` 产生的未提交改动。",
     ]
+
+    if changed_files:
+        lines.append("")
+        lines.append("【本次 builder 实际改动的文件】")
+        for path in changed_files[:40]:
+            lines.append(f"  - {path}")
+        if len(changed_files) > 40:
+            lines.append(f"  - ... 共 {len(changed_files)} 个文件（截断显示前 40）")
+        lines.append(
+            "判定守则：如果任何一个文件不在任务【唯一目标】/【新建文件】/【追加内容】"
+            "声明的路径里，即视为**越界修改**，必须判 FAIL 并在 '需要修复的点' "
+            "里要求 builder 回滚那些越界改动。"
+        )
     if review_round > 1:
         lines.append(
             f"（这是第 {review_round} 轮审查。根据 reviewer_rules 的硬约束，"
@@ -888,10 +905,16 @@ def _run_reviewer_round(
     )
 
     started = datetime.now()
+    # 列出 builder 在 worktree 里实际改动的文件，提供给 reviewer 做越界守卫。
+    try:
+        changed_files = _git_changed_files(ctx.project_path)
+    except Exception:
+        changed_files = []
     prompt = _build_review_prompt(
         ctx.task,
         review_round=round_num,
         previous_findings=previous_findings,
+        changed_files=changed_files,
     )
     display_phase = (
         "reviewer"
@@ -1326,6 +1349,36 @@ def _mark_task_failed(task: dict, error_message: str) -> dict:
     )
 
 
+def _cleanup_worktree_leftovers(
+    worktree_path: Path | str | None,
+    project_path: Path | str | None,
+    *,
+    task_id: int,
+) -> None:
+    """Best-effort: kill long-lived dev servers (``next dev`` / ``vite`` /
+    ``npm run dev``) the builder agent left running in the task worktree.
+
+    Only fires for real worktrees — if the task ran in-place on the project
+    root we skip, otherwise we'd kill the user's own dev server. Failures
+    are swallowed so a cleanup hiccup never masks the task's real result.
+    """
+    if not worktree_path:
+        return
+    try:
+        wt = Path(worktree_path).resolve()
+        pp = Path(project_path).resolve() if project_path else None
+    except Exception:
+        return
+    if pp is not None and wt == pp:
+        return
+    try:
+        killed = stop_worktree_leftovers(wt, wait_seconds=4)
+    except Exception:
+        return
+    if killed:
+        echo(f"[dim]任务 #{task_id} worktree 遗留进程已清理（PID={','.join(str(p) for p in killed)}）[/dim]")
+
+
 def _tail_lines(text: str, max_lines: int = 12) -> list[str]:
     lines = [line.rstrip() for line in (text or "").splitlines() if line.strip()]
     return lines[-max_lines:]
@@ -1530,6 +1583,7 @@ def run_backlog(
                 stop_requested=0,
                 stop_reason=None,
             )
+            _cleanup_worktree_leftovers(execution_path, project_path, task_id=task_id)
             echo(f"[yellow]任务 #{task_id} 已停止[/yellow]")
             notify_task_status(str(project_path), task_id, task["title"], "cancelled", str(exc))
             stats["cancelled"] += 1
@@ -1612,6 +1666,7 @@ def run_backlog(
                 stop_requested=0,
                 stop_reason=None,
             )
+            _cleanup_worktree_leftovers(execution_path, project_path, task_id=task_id)
             echo(f"[green][OK] 任务 #{task_id} 完成[/green]")
             notify_task_status(str(project_path), task_id, task["title"], "done")
             stats["done"] += 1
@@ -1627,6 +1682,7 @@ def run_backlog(
             else:
                 updated = _mark_task_failed(task, error_message)
                 should_stop = True
+            _cleanup_worktree_leftovers(execution_path, project_path, task_id=task_id)
             if updated["status"] == "failed":
                 stats["failed"] += 1
                 notify_task_status(str(project_path), task_id, task["title"], "failed", error_message)

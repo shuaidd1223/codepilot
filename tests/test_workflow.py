@@ -2417,22 +2417,41 @@ def test_run_builtin_phase_codex_review_omits_prompt(monkeypatch, tmp_path):
 
 
 def test_extract_review_verdict_uses_codex_review_markers():
-    fail_output = """
-The change breaks behavior.
+    """Verdict extraction recognises the three strong signals documented in
+    reviewer_rules.md:
 
-Review comment:
-
-- [P1] Keep add returning a sum
-""".strip()
-
+    1. Explicit ``VERDICT: PASS|FAIL`` anchor (required by the reviewer
+       prompt, takes precedence over everything else).
+    2. A ``需要修复的点 / 需要修复 / 需要处理 / 修复建议`` section header,
+       which the reviewer opens only when it intends to block.
+    3. Non-blocking observations (e.g. bare ``- [PX]`` bullets) are NOT
+       treated as FAIL anymore — that older heuristic misfired on
+       informational notes and caused spurious retries.
+    """
+    # Strong FAIL: explicit section header.
+    fail_header = "需要修复的点:\n- [P1] Keep add returning a sum"
+    # Strong FAIL: explicit verdict line.
+    verdict_fail = "**VERDICT: FAIL**"
+    # PASS: short affirmative prose, no blocker anchor.
     pass_output = "The only change adds a comment and does not affect behavior."
+    # Observation-only: bullets without a section header should NOT fail.
+    soft_note = "Review comment:\n- [P1] Keep add returning a sum"
 
-    assert run_cmd._extract_review_verdict(fail_output, "codex-review") == "fail"
+    assert run_cmd._extract_review_verdict(fail_header, "codex-review") == "fail"
+    assert run_cmd._extract_review_verdict(verdict_fail, "claude-review") == "fail"
     assert run_cmd._extract_review_verdict(pass_output, "codex-review") == "pass"
-    assert run_cmd._extract_review_verdict("**VERDICT: FAIL**", "claude-review") == "fail"
+    assert run_cmd._extract_review_verdict(soft_note, "codex-review") == "pass"
 
 
 def test_run_builtin_executor_fails_when_review_verdict_is_unknown(monkeypatch, tmp_path):
+    """When the reviewer returns empty output, the verdict extractor emits
+    ``unknown`` and the executor stops with exit_code=2 + a clear summary.
+
+    Previously this test used a short non-empty string ("没有输出 verdict"),
+    which — under the current verdict policy — is treated as PASS because
+    it carries no explicit FAIL anchor. Empty output is the canonical
+    "reviewer broke / produced nothing" signal we want to flag as unknown.
+    """
     project_path = tmp_path / "project"
     project_path.mkdir()
     task_file = project_path / "task.md"
@@ -2441,7 +2460,7 @@ def test_run_builtin_executor_fails_when_review_verdict_is_unknown(monkeypatch, 
     phases = iter(
         [
             ("codex", 0, "builder ok"),
-            ("claude-review", 0, "没有输出 verdict"),
+            ("claude-review", 0, ""),
         ]
     )
 

@@ -250,6 +250,134 @@ def _windows_kill_pid(pid: int, *, include_tree: bool = False) -> None:
             return
 
 
+def _normalise_path(p: str | Path | None) -> str:
+    if not p:
+        return ""
+    try:
+        return str(Path(p).resolve()).replace("\\", "/").rstrip("/").lower()
+    except Exception:
+        return str(p).replace("\\", "/").rstrip("/").lower()
+
+
+def _path_contains(haystack: str, needle: str) -> bool:
+    """Case-insensitive, slash-normalised substring check."""
+    if not haystack or not needle:
+        return False
+    h = haystack.replace("\\", "/").lower()
+    return needle in h
+
+
+def find_worktree_processes(worktree_path: str | Path) -> list[int]:
+    """Return PIDs whose command line or cwd points inside *worktree_path*.
+
+    Used to hunt down long-lived dev servers (``next dev``, ``vite``, etc.)
+    that a task's builder agent spun up but never stopped. Runs a single
+    PowerShell query on Windows; on POSIX falls back to scanning
+    ``/proc/*/cwd`` symlinks and ``/proc/*/cmdline`` contents.
+
+    Returns an empty list on any error — best-effort, never raises.
+    """
+    needle = _normalise_path(worktree_path)
+    if not needle:
+        return []
+
+    system = platform.system().lower()
+    if system == "windows":
+        script = (
+            "$ErrorActionPreference='SilentlyContinue'; "
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath | "
+            "ConvertTo-Json -Compress"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-Command", script],
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=20,
+            )
+        except Exception:
+            return []
+        raw = (result.stdout or "").strip()
+        if result.returncode != 0 or not raw:
+            return []
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        rows = payload if isinstance(payload, list) else [payload]
+        hits: list[int] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            blob = " ".join(
+                str(row.get(k) or "") for k in ("CommandLine", "ExecutablePath")
+            )
+            if _path_contains(blob, needle):
+                try:
+                    hits.append(int(row.get("ProcessId")))
+                except Exception:
+                    continue
+        return hits
+
+    # POSIX — best-effort via /proc.
+    hits = []
+    try:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                cwd = os.readlink(entry / "cwd")
+            except OSError:
+                cwd = ""
+            cmdline = ""
+            try:
+                cmdline = (entry / "cmdline").read_text(errors="replace").replace("\x00", " ")
+            except OSError:
+                pass
+            blob = cwd + " " + cmdline
+            if _path_contains(blob, needle):
+                try:
+                    hits.append(int(entry.name))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return hits
+
+
+def stop_worktree_leftovers(
+    worktree_path: str | Path | None,
+    *,
+    keep_pids: Optional[list[int]] = None,
+    wait_seconds: int = 5,
+) -> list[int]:
+    """Kill processes still running inside *worktree_path* (and their trees).
+
+    Meant to be invoked right after a task finishes so dev servers like
+    ``next dev`` / ``vite`` / ``npm run dev`` that the builder agent left
+    behind don't linger and pop up console windows forever.
+
+    *keep_pids* lets callers keep specific PIDs alive (e.g. the task runner
+    itself if it happens to match). Returns the list of PIDs that were
+    targeted. Never raises; failures are silently tolerated since this is
+    a cleanup best-effort.
+    """
+    if not worktree_path:
+        return []
+    pids = find_worktree_processes(worktree_path)
+    if not pids:
+        return []
+    keep = set(int(p) for p in (keep_pids or []) if p)
+    pids = [p for p in pids if p not in keep]
+    for pid in pids:
+        try:
+            stop_process_tree(pid, wait_seconds=wait_seconds)
+        except Exception:
+            continue
+    return pids
+
+
 def stop_process_tree(pid: Optional[int], *, wait_seconds: int = 5) -> bool:
     """Stop a process tree and return whether it is no longer alive."""
     if not pid:
@@ -339,14 +467,18 @@ def update_task_runtime(
 
 
 def clear_task_runtime(task_id: int, **extra_fields) -> dict | None:
-    """Clear live runtime metadata when a task finishes or is cancelled."""
+    """Clear live runtime metadata when a task finishes or is cancelled.
+
+    Intentionally keeps ``current_log_path`` and ``last_output`` populated so
+    the Web UI can still render the final log / preview after the task stops
+    running. The pointer is only reset when a brand-new run starts
+    (``save_task_runtime``) or when cleanup finds the file missing.
+    """
     return db.update_task(
         task_id,
         run_phase=None,
         heartbeat_at=None,
         active_pid=None,
-        current_log_path=None,
-        last_output=None,
         **extra_fields,
     )
 

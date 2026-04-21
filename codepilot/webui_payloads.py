@@ -57,6 +57,73 @@ def _parse_depends(raw: str | None) -> list[int]:
     return [int(item) for item in items if str(item).strip()]
 
 
+# Cap per-request log delta at 2 MiB so a one-shot `/log?offset=0` on a huge
+# file doesn't block the event loop or fill the client buffer. The frontend
+# loops on `next_offset` until `done` to page in the rest.
+_LOG_CHUNK_MAX_BYTES = 2 * 1024 * 1024
+
+
+def task_log_delta(task_id: int, *, offset: int = 0) -> dict:
+    """Return a `{offset, next_offset, size, text, done, path}` slice of the
+    task's current log file starting at *offset* bytes.
+
+    Used by the Web UI to stream the full log incrementally instead of
+    re-tailing on every poll — the frontend keeps a running buffer, asks for
+    `?offset=<bytes_consumed>` on each update, and appends the returned
+    `text` until `done=True`.
+    """
+    db.init_db()
+    task = db.get_task(task_id)
+    if not task:
+        raise RuntimeError(f"任务 #{task_id} 不存在。")
+
+    path_str = task.get("current_log_path") or ""
+    out: dict = {
+        "task_id": task_id,
+        "path": path_str,
+        "offset": max(0, int(offset or 0)),
+        "next_offset": max(0, int(offset or 0)),
+        "size": 0,
+        "text": "",
+        "done": True,
+    }
+
+    if not path_str:
+        return out
+
+    target = Path(path_str)
+    if not target.exists():
+        return out
+
+    try:
+        size = target.stat().st_size
+    except OSError:
+        return out
+
+    out["size"] = size
+    start = out["offset"]
+    if start >= size:
+        out["next_offset"] = size
+        out["done"] = True
+        return out
+
+    # Read only the delta so large tails stay fast. Binary-safe open + decode
+    # with replace to tolerate partial multibyte writes.
+    end = min(size, start + _LOG_CHUNK_MAX_BYTES)
+    try:
+        with target.open("rb") as fh:
+            fh.seek(start)
+            raw = fh.read(end - start)
+    except OSError:
+        return out
+
+    text = raw.decode("utf-8", errors="replace")
+    out["text"] = text
+    out["next_offset"] = end
+    out["done"] = end >= size
+    return out
+
+
 def _compose_log_text(task: dict) -> str:
     live = _read_text(task.get("current_log_path"))
     if live:
@@ -119,29 +186,64 @@ def _sorted_tasks(tasks: list[dict]) -> list[dict]:
     return sorted(tasks, key=lambda item: (STATUS_ORDER.get(item["status"], 9), item["priority"], item["id"]))
 
 
-def project_summary(project: dict) -> dict:
+def project_summary(project: dict, *, job_count: int | None = None) -> dict:
+    """Summary tile for the sidebar. ``job_count`` is optional because jobs
+    live in in-memory shell state (``_UI_JOBS``) — the dashboard entry point
+    injects it so we don't pull the shell import from every call site."""
     stats = db.get_task_stats(project["name"])
     tasks = _sorted_tasks(db.list_tasks(project=project["name"]))
     live = next((task for task in tasks if task["status"] == "in_progress"), None)
+    session_count = len(db.list_sessions(project=project["name"]))
     return {
         "name": project["name"],
         "path": project["path"],
         "stats": stats,
+        "session_count": session_count,
+        "job_count": int(job_count or 0),
         "active_summary": runtime_summary(live) if live else "",
     }
 
 
 def dashboard_payload(selected_project: str | None = None) -> dict:
+    """Snapshot of the full workspace for the sidebar + current-project view.
+
+    Returns tasks/jobs **for every known project** (keyed by name) so the
+    frontend can hydrate its per-project cache once and then make project
+    switching a pure navigation update — no extra round-trip, no
+    "wrong-project tasks briefly show up" race.
+
+    ``tasks`` / ``jobs`` (non-plural-keyed) are retained as a convenience
+    alias of the currently-selected project's slice so existing callers
+    and tests don't break.
+    """
     shell = _shell()
     db.init_db()
-    projects = [project_summary(project) for project in db.list_projects()]
+    project_rows = db.list_projects()
+
+    tasks_by_project: dict[str, list[dict]] = {}
+    jobs_by_project: dict[str, list[dict]] = {}
+    for proj in project_rows:
+        name = proj["name"]
+        raw_tasks = _sorted_tasks(db.list_tasks(project=name))
+        tasks_by_project[name] = [_task_payload(task) for task in raw_tasks]
+        try:
+            jobs_by_project[name] = shell.list_ui_jobs(name)
+        except Exception:
+            jobs_by_project[name] = []
+
+    projects = [
+        project_summary(proj, job_count=len(jobs_by_project.get(proj["name"], [])))
+        for proj in project_rows
+    ]
     resolved = selected_project or (projects[0]["name"] if projects else None)
-    tasks = _sorted_tasks(db.list_tasks(project=resolved)) if resolved else []
     return {
         "projects": projects,
         "selected_project": resolved,
-        "tasks": [_task_payload(task) for task in tasks],
-        "jobs": shell.list_ui_jobs(resolved),
+        "tasks_by_project": tasks_by_project,
+        "jobs_by_project": jobs_by_project,
+        # Back-compat aliases for the currently-selected project.
+        "tasks": tasks_by_project.get(resolved, []) if resolved else [],
+        "jobs": jobs_by_project.get(resolved, []) if resolved else [],
         "events": shell.list_ui_events(resolved),
     }
 

@@ -7,6 +7,13 @@
 <link rel="stylesheet" href="/static/styles.css">
 <!-- Must use the FULL build (with template compiler), not vue.global.prod.js, because we compile templates in the browser. -->
 <script src="https://unpkg.com/vue@3.5.13/dist/vue.global.js"></script>
+<!-- Syntax highlighting (core + diff + common languages), ANSI escape rendering, and
+     markdown parsing (AI output is GFM; DOMPurify sanitises the rendered HTML). -->
+<script src="https://unpkg.com/@highlightjs/cdn-assets@11.10.0/highlight.min.js"></script>
+<script src="https://unpkg.com/@highlightjs/cdn-assets@11.10.0/languages/diff.min.js"></script>
+<script src="https://unpkg.com/ansi_up@5.2.1/ansi_up.js"></script>
+<script src="https://unpkg.com/marked@12.0.2/marked.min.js"></script>
+<script src="https://unpkg.com/dompurify@3.1.6/dist/purify.min.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -16,6 +23,10 @@
 
 <!-- Base components -->
 <script src="/static/components/Chip.js"></script>
+<script src="/static/components/CodeBlock.js"></script>
+<script src="/static/components/LiveLog.js"></script>
+<script src="/static/components/AgentLog.js"></script>
+<script src="/static/components/Markdown.js"></script>
 <script src="/static/components/ToastStack.js"></script>
 <script src="/static/components/MainHeader.js"></script>
 

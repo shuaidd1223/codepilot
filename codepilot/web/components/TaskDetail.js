@@ -75,27 +75,31 @@ CP.Components.TaskDetail = Vue.defineComponent({
           </div>
           <div v-if="task.error_message" class="block danger">
             <div class="block-label">失败原因</div>
-            <pre class="code">{{ task.error_message }}</pre>
+            <cp-markdown :text="task.error_message"></cp-markdown>
           </div>
           <div class="block">
             <div class="block-label">任务内容</div>
-            <pre class="code">{{ task.content || '暂无任务内容' }}</pre>
+            <cp-markdown :text="task.content || '暂无任务内容'"></cp-markdown>
           </div>
           <div v-if="liveEvents.length" class="block">
             <div class="block-label">实时进度（来自 SSE）</div>
-            <pre class="code" style="max-height:200px;overflow:auto">{{ liveEvents.map(e => \`[\${(e.timestamp||'').slice(11,19)}] [\${e.stage || '?'}\${e.extra && e.extra.round ? \` r\${e.extra.round}/\${e.extra.round_total}\` : ''}] \${e.message || ''}\`).join('\\n') }}</pre>
+            <cp-live-log :events="liveEvents" follow></cp-live-log>
           </div>
           <div class="block">
-            <div class="block-label">实时日志 / 最近输出</div>
-            <pre class="code tall">{{ task.log_text || '还没有可显示的日志' }}</pre>
+            <div class="block-label">实时日志</div>
+            <cp-agent-log
+              :text="s.taskLog.text || '还没有可显示的日志'"
+              :title="(task.agent || 'agent') + ' · ' + (task.current_log_path ? task.current_log_path.split(/[\\\\/]/).pop() : 'log')"
+              :done="s.taskLog.done"
+              tall follow></cp-agent-log>
           </div>
           <div v-if="task.delivery_record" class="block">
             <div class="block-label">交付记录</div>
-            <pre class="code">{{ task.delivery_record }}</pre>
+            <cp-markdown :text="task.delivery_record"></cp-markdown>
           </div>
           <div v-if="task.logs && task.logs.length" class="block">
             <div class="block-label">阶段日志摘要</div>
-            <pre class="code">{{ $cp.formatLogs(task.logs) }}</pre>
+            <cp-markdown :text="$cp.formatLogs(task.logs)"></cp-markdown>
           </div>
         </div>
       </section>

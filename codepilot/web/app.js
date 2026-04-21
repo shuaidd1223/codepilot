@@ -7,8 +7,15 @@ const RootApp = {
   setup() {
     /* ── Reactive state ──────────────────────────────── */
     const state = reactive({
-      /* data from server */
+      /* data from server. `tasks` / `jobs` always reflect the currently
+       * selected project and live as a reactive alias on top of
+       * `tasksByProject[nav.project]` / `jobsByProject[nav.project]`. The
+       * per-project maps exist so the sidebar can render each project's
+       * tree without the "wrong project's tasks briefly show under the
+       * newly selected one" race we had before (caused by updating
+       * `state.tasks` only AFTER the dashboard fetch completed). */
       projects: [], tasks: [], jobs: [], events: [], sessions: [],
+      tasksByProject: {}, jobsByProject: {},
 
       /* navigation: {project, view, id} */
       nav: { project: null, view: 'overview', id: null },
@@ -18,6 +25,11 @@ const RootApp = {
       taskDetail: null,
       sessionDetail: null,
       sessionMessages: [],
+
+      /* Incremental task-log buffer: frontend owns the full text, backend
+       * ships only the delta from `nextOffset` each tick. Reset whenever
+       * navigation switches to a different task. */
+      taskLog: { taskId: null, text: '', nextOffset: 0, size: 0, done: true, loading: false },
 
       /* global UI */
       autoRefresh: true, timer: null,
@@ -42,13 +54,34 @@ const RootApp = {
     let chatScrollEl = null;
     const registerChatScroll = (el) => { chatScrollEl = el; };
 
-    /* ── Toast helpers ───────────────────────────────── */
+    /* ── Toast helpers ───────────────────────────────── *
+     * Identical (message, type) toasts are coalesced: instead of stacking N
+     * duplicate cards on failed-poll storms, we bump a `count` on the
+     * existing toast. Non-error toasts also reset their auto-dismiss timer so
+     * the merged toast stays visible long enough for the user to notice it
+     * was updated. */
+    const _toastTimers = new Map();
     function pushToast(message, type = 'info') {
+      const existing = state.toasts.find(t => t.message === message && t.type === type);
+      if (existing) {
+        existing.count = (existing.count || 1) + 1;
+        if (type !== 'error') {
+          clearTimeout(_toastTimers.get(existing.id));
+          _toastTimers.set(existing.id, setTimeout(() => dismissToast(existing.id), 4000));
+        }
+        return;
+      }
       const id = ++state.toastSeq;
-      state.toasts.push({ id, message, type });
-      if (type !== 'error') setTimeout(() => dismissToast(id), 4000);
+      state.toasts.push({ id, message, type, count: 1 });
+      if (type !== 'error') {
+        _toastTimers.set(id, setTimeout(() => dismissToast(id), 4000));
+      }
     }
-    function dismissToast(id) { state.toasts = state.toasts.filter(t => t.id !== id); }
+    function dismissToast(id) {
+      const timer = _toastTimers.get(id);
+      if (timer) { clearTimeout(timer); _toastTimers.delete(id); }
+      state.toasts = state.toasts.filter(t => t.id !== id);
+    }
 
     /* ── Computed ────────────────────────────────────── */
     const currentProject = computed(() =>
@@ -77,9 +110,97 @@ const RootApp = {
       return state.jobs.find(j => j.id === state.nav.id) || null;
     });
 
-    /* ── Navigation ──────────────────────────────────── */
+    /* ── Navigation ──────────────────────────────────── *
+     * Nav state is mirrored to ``location.hash`` and ``localStorage`` so a
+     * page refresh / reopen lands the user back on the same task / session
+     * view (and keeps the 阶段日志摘要 / live log panes populated). Writing
+     * both is belt-and-braces: the hash survives sharing links, and
+     * localStorage handles the case where the user clears the URL. */
+    const NAV_STORAGE_KEY = 'cp-nav-v1';
+    let _navSyncing = false;  /* suppress recursion when hashchange triggers setNav */
+
+    function _navToHash(n) {
+      if (!n || !n.project) return '';
+      const p = encodeURIComponent(n.project);
+      if (n.view === 'task'    && n.id) return `#/p/${p}/task/${n.id}`;
+      if (n.view === 'session' && n.id) return `#/p/${p}/session/${n.id}`;
+      if (n.view === 'job'     && n.id) return `#/p/${p}/job/${n.id}`;
+      if (n.view === 'tasks'    ) return `#/p/${p}/tasks`;
+      if (n.view === 'sessions' ) return `#/p/${p}/sessions`;
+      if (n.view === 'jobs'     ) return `#/p/${p}/jobs`;
+      return `#/p/${p}`;
+    }
+    function _navFromHash(hash) {
+      if (!hash || hash.length < 2) return null;
+      const raw = hash.replace(/^#\/?/, '');
+      const parts = raw.split('/').filter(Boolean);
+      if (parts.length < 2 || parts[0] !== 'p') return null;
+      const project = decodeURIComponent(parts[1]);
+      if (!project) return null;
+      if (parts.length === 2) return { project, view: 'overview', id: null };
+      const view = parts[2];
+      if (['task', 'session', 'job'].includes(view)) {
+        const idNum = Number(parts[3]);
+        if (!Number.isFinite(idNum)) return { project, view: 'overview', id: null };
+        return { project, view, id: idNum };
+      }
+      if (['tasks', 'sessions', 'jobs', 'overview'].includes(view)) {
+        return { project, view, id: null };
+      }
+      return { project, view: 'overview', id: null };
+    }
+    function _persistNav() {
+      try { localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify(state.nav)); } catch (e) { /* ignore */ }
+      const target = _navToHash(state.nav);
+      if (target && target !== location.hash) {
+        _navSyncing = true;
+        try { history.replaceState(null, '', target); } finally { _navSyncing = false; }
+      }
+    }
+    function _readStoredNav() {
+      /* Prefer hash (shareable, survives tab reopen with the same URL);
+       * fall back to localStorage for browsers that strip hashes. */
+      const fromHash = _navFromHash(location.hash);
+      if (fromHash) return fromHash;
+      try {
+        const raw = localStorage.getItem(NAV_STORAGE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && parsed.project) return parsed;
+      } catch (e) { /* ignore */ }
+      return null;
+    }
+    function _applyRestoredNav(restored) {
+      if (!restored || !restored.project) return;
+      state.nav.project = restored.project;
+      state.nav.view = restored.view || 'overview';
+      state.nav.id = restored.id ?? null;
+      state.expanded[restored.project] = true;
+      if (restored.view && restored.view !== 'overview') {
+        state.expanded[`${restored.project}/${restored.view.replace(/^(task|session|job)$/, (v) => v + 's')}`] = true;
+      }
+      /* Kick the appropriate loaders so panes repopulate. */
+      if (state.nav.view === 'task' && state.nav.id) {
+        loadTaskDetail();
+        loadTaskLog(state.nav.id, { reset: true });
+      } else if (state.nav.view === 'session' && state.nav.id) {
+        loadSessionChat();
+      }
+    }
     function setNav(partial) {
+      const prevProject = state.nav.project;
       Object.assign(state.nav, partial);
+      /* Pivot the current tasks/jobs aliases immediately when the project
+       * changes. Without this, Sidebar's `projectTasks(newProject)` — which
+       * reads `state.tasks` when the project matches nav — would briefly
+       * show the OLD project's tasks labelled under the new project
+       * (classic async race we call "串"). */
+      if (partial.project !== undefined && partial.project !== prevProject) {
+        const np = partial.project;
+        state.tasks = (np && state.tasksByProject[np]) || [];
+        state.jobs  = (np && state.jobsByProject[np])  || [];
+      }
+      _persistNav();
     }
     function toggleExpanded(key) {
       state.expanded[key] = !state.expanded[key];
@@ -89,10 +210,13 @@ const RootApp = {
     }
 
     function selectProject(name) {
-      /* click on project name — select + show overview, auto-expand */
+      /* Clicking a project name is now a pure navigation operation —
+       * tasks/jobs for every project were already hydrated on the
+       * initial dashboard load, and setNav's pivot swaps state.tasks /
+       * state.jobs to the newly selected project instantly. Any freshness
+       * that's needed comes through the SSE-driven refresh path. */
       state.expanded[name] = true;
       setNav({ project: name, view: 'overview', id: null });
-      loadDashboard();
     }
     function toggleProject(name) {
       /* click on chevron — just toggle expand */
@@ -115,6 +239,7 @@ const RootApp = {
       state.expanded[`${project}/tasks`] = true;
       setNav({ project, view: 'task', id });
       loadTaskDetail();
+      loadTaskLog(id, { reset: true });
     }
     function selectJob(project, id) {
       state.expanded[project] = true;
@@ -129,23 +254,32 @@ const RootApp = {
       try { localStorage.setItem('cp-dark', state.dark ? '1' : '0'); } catch (e) { /* ignore */ }
     }
 
-    /* ── Data loading ────────────────────────────────── */
+    /* ── Data loading ────────────────────────────────── *
+     * Every request that writes into ``state`` captures the current nav at
+     * call time and bails out if the user has since switched context. This
+     * prevents a slow response for project A from overwriting state after
+     * the user jumped to project B (classic async race in dashboards). */
     async function loadDashboard() {
       if (state.sending) return;
       state.loading = true;
       try {
-        const url = state.nav.project
-          ? `/api/projects/${encodeURIComponent(state.nav.project)}`
-          : '/api/projects';
-        const data = await CP.api.get(url);
+        /* One bulk fetch hydrates EVERY project's tasks/jobs. Switching
+         * projects after this is a pure nav update — no network, no
+         * loading flicker, no cross-project data leaks. */
+        const data = await CP.api.get('/api/projects');
         state.projects = data.projects || [];
-        state.tasks = data.tasks || [];
-        state.jobs = data.jobs || [];
         state.events = data.events || [];
+        state.tasksByProject = data.tasks_by_project || {};
+        state.jobsByProject = data.jobs_by_project || {};
+        /* Pivot the aliases to whichever project is currently selected. */
+        const active = state.nav.project || data.selected_project || null;
+        state.tasks = (active && state.tasksByProject[active]) || [];
+        state.jobs = (active && state.jobsByProject[active]) || [];
         /* auto-pick first project on first load */
         if (!state.nav.project && data.selected_project) {
           state.nav.project = data.selected_project;
           state.expanded[data.selected_project] = true;
+          _persistNav();
         }
         await loadSessions();
         /* if viewing a task/session that went away, fall back */
@@ -165,27 +299,77 @@ const RootApp = {
 
     async function loadTaskDetail() {
       if (state.nav.view !== 'task' || !state.nav.id) return;
+      const targetId = state.nav.id;
       try {
-        state.taskDetail = await CP.api.get(`/api/tasks/${state.nav.id}`);
+        const data = await CP.api.get(`/api/tasks/${targetId}`);
+        if (state.nav.view === 'task' && state.nav.id === targetId) {
+          state.taskDetail = data;
+        }
       } catch (err) {
-        state.taskDetail = null;
+        if (state.nav.view === 'task' && state.nav.id === targetId) {
+          state.taskDetail = null;
+        }
+      }
+    }
+
+    /* Incremental log loader. If `reset` is true (task changed / first open)
+     * we drop the previous buffer and fetch from offset 0; otherwise we ask
+     * the backend only for bytes past `nextOffset` and append. Called by:
+     *   - selectTask → reset fetch.
+     *   - SSE event with task_id == current task → delta fetch.
+     *   - loadTaskDetail fallback while the task is still running.
+     * Keeps looping until `done` is true so a single change-event can drain
+     * multi-chunk backlogs without waiting for the next trigger. */
+    async function loadTaskLog(taskId, { reset = false } = {}) {
+      if (!taskId) return;
+      if (reset || state.taskLog.taskId !== taskId) {
+        state.taskLog = { taskId, text: '', nextOffset: 0, size: 0, done: false, loading: false };
+      }
+      if (state.taskLog.loading) return;
+      state.taskLog.loading = true;
+      try {
+        /* Drain in a loop so a huge initial file or a big burst of writes
+         * gets paged in fully before we stop. The per-request chunk is
+         * capped at 2 MiB server-side, so 2048 iterations = up to ~4 GiB
+         * of log — effectively unbounded for real agent output. */
+        let guard = 2048;
+        while (guard-- > 0) {
+          if (state.taskLog.taskId !== taskId) return;  /* user switched tasks */
+          const off = state.taskLog.nextOffset || 0;
+          const data = await CP.api.get(`/api/tasks/${taskId}/log?offset=${off}`);
+          if (state.taskLog.taskId !== taskId) return;
+          if (data && typeof data.text === 'string' && data.text) {
+            state.taskLog.text += data.text;
+          }
+          state.taskLog.nextOffset = Number.isFinite(data && data.next_offset) ? data.next_offset : off;
+          state.taskLog.size = Number.isFinite(data && data.size) ? data.size : state.taskLog.size;
+          state.taskLog.done = !!(data && data.done);
+          if (state.taskLog.done) break;
+        }
+      } catch (_err) {
+        /* Silent — transient fetch failure; next trigger will retry. */
+      } finally {
+        state.taskLog.loading = false;
       }
     }
 
     async function loadSessions() {
+      /* Always fetch every project's sessions: the sidebar needs the full
+       * list to show per-project counts and expanded session entries
+       * regardless of which project is currently selected. */
       try {
-        const url = state.nav.project
-          ? `/api/sessions?project=${encodeURIComponent(state.nav.project)}`
-          : '/api/sessions';
-        const data = await CP.api.get(url);
+        const data = await CP.api.get('/api/sessions');
         state.sessions = data.sessions || [];
       } catch (err) { /* silent */ }
     }
 
     async function loadSessionChat() {
       if (state.nav.view !== 'session' || !state.nav.id) return;
+      const targetId = state.nav.id;
       try {
-        const data = await CP.api.get(`/api/sessions/${state.nav.id}`);
+        const data = await CP.api.get(`/api/sessions/${targetId}`);
+        /* Guard: user may have switched to another session while we waited. */
+        if (state.nav.view !== 'session' || state.nav.id !== targetId) return;
         state.sessionDetail = data.session;
         state.sessionMessages = data.messages || [];
         await nextTick();
@@ -308,25 +492,68 @@ const RootApp = {
       } finally { state.sending = false; }
     }
 
-    /* ── Auto refresh ────────────────────────────────── */
+    /* ── Refresh scheduling ──────────────────────────── *
+     * Live updates are push-driven via SSE (see openEventStream below): any
+     * event calls :func:`scheduleRefresh` which debounces a dashboard /
+     * session / task-log reload into a single tick. The periodic timer
+     * below is just a safety net for when SSE drops or the server emits
+     * nothing despite state changing (e.g. rare sqlite concurrency paths).
+     * It runs every :data:`FALLBACK_REFRESH_MS`, far less often than the
+     * old 3s loop so the UI doesn't flicker / thrash during quiet periods.
+     */
+    const FALLBACK_REFRESH_MS = 30000;
+    const REFRESH_DEBOUNCE_MS = 250;
+    let _refreshTimer = 0;
+    function scheduleRefresh({ immediate = false } = {}) {
+      if (immediate) {
+        if (_refreshTimer) { clearTimeout(_refreshTimer); _refreshTimer = 0; }
+        _runRefresh();
+        return;
+      }
+      if (_refreshTimer) return;
+      _refreshTimer = setTimeout(() => {
+        _refreshTimer = 0;
+        _runRefresh();
+      }, REFRESH_DEBOUNCE_MS);
+    }
+    function _runRefresh() {
+      if (state.sending) return;
+      loadDashboard();
+      if (state.nav.view === 'session' && state.nav.id) loadSessionChat();
+      /* loadTaskLog is kicked directly from the SSE handler with the exact
+       * task_id so switching tasks doesn't re-stream the previous one. */
+    }
     function schedule() {
       clearInterval(state.timer);
       if (!state.autoRefresh) return;
-      state.timer = setInterval(() => {
-        if (state.sending) return;
-        loadDashboard();
-        if (state.nav.view === 'session' && state.nav.id) loadSessionChat();
-      }, 3000);
+      state.timer = setInterval(() => scheduleRefresh(), FALLBACK_REFRESH_MS);
     }
 
-    /* ── SSE live progress stream ────────────────────── */
+    /* ── SSE live progress stream ────────────────────── *
+     * Keep the full event history (up to LIVE_EVENTS_MAX) so the user can
+     * scroll back through a long-running job's output. CSS
+     * `content-visibility: auto` on `.live-row` lets the browser skip
+     * off-screen rows, so a 10k-deep buffer still renders smoothly. */
+    const LIVE_EVENTS_MAX = 10000;
     let sseHandle = null;
     function openEventStream() {
       if (sseHandle) return;
       sseHandle = CP.sse.open('/api/events/stream', (event) => {
         state.liveEvents.push(event);
-        if (state.liveEvents.length > 200) {
-          state.liveEvents.splice(0, state.liveEvents.length - 200);
+        if (state.liveEvents.length > LIVE_EVENTS_MAX) {
+          state.liveEvents.splice(0, state.liveEvents.length - LIVE_EVENTS_MAX);
+        }
+        /* Progress event → debounced dashboard/session refresh. This is
+         * what replaces the old 3s polling: the UI updates in near-real
+         * time, and bursts of events collapse into a single state reload. */
+        scheduleRefresh();
+        /* Live log delta — fetch immediately for the task we're viewing so
+         * the terminal pane feels streamed rather than tick-based. Events
+         * without a task_id (global planner / recon hooks) also qualify
+         * because they typically precede builder writes. */
+        const tid = state.nav.view === 'task' ? state.nav.id : null;
+        if (tid && (event.task_id === tid || event.task_id == null)) {
+          loadTaskLog(tid);
         }
       });
     }
@@ -356,24 +583,61 @@ const RootApp = {
       });
     }
 
+    /* Hashchange listener keeps browser back/forward in sync with state.nav.
+     * The `_navSyncing` flag suppresses feedback when setNav itself wrote
+     * the hash via history.replaceState. */
+    function _onHashChange() {
+      if (_navSyncing) return;
+      const parsed = _navFromHash(location.hash);
+      if (!parsed) return;
+      if (parsed.project === state.nav.project
+        && parsed.view === state.nav.view
+        && parsed.id === state.nav.id) return;
+      _applyRestoredNav(parsed);
+    }
+
     onMounted(() => {
       try { state.dark = localStorage.getItem('cp-dark') === '1'; } catch (e) { /* ignore */ }
       document.documentElement.dataset.theme = state.dark ? 'dark' : 'light';
-      loadDashboard();
+      /* Restore prior nav (hash first, then localStorage) BEFORE the first
+       * dashboard load so loadDashboard sees the intended project. */
+      const restored = _readStoredNav();
+      if (restored && restored.project) {
+        state.nav.project = restored.project;
+        state.nav.view = restored.view || 'overview';
+        state.nav.id = restored.id ?? null;
+        state.expanded[restored.project] = true;
+      }
+      loadDashboard().then(() => {
+        /* After the dashboard populates state.tasks/sessions/jobs, kick the
+         * detail loaders so task-log / chat panes repopulate. */
+        if (state.nav.view === 'task' && state.nav.id) {
+          loadTaskDetail();
+          loadTaskLog(state.nav.id, { reset: true });
+        } else if (state.nav.view === 'session' && state.nav.id) {
+          loadSessionChat();
+        }
+      });
       schedule();
       openEventStream();
       installKeyboardShortcuts();
+      window.addEventListener('hashchange', _onHashChange);
     });
-    onUnmounted(() => { clearInterval(state.timer); closeEventStream(); });
+    onUnmounted(() => {
+      clearInterval(state.timer);
+      closeEventStream();
+      window.removeEventListener('hashchange', _onHashChange);
+    });
 
     /* ── Provided to all descendants ──────────────────
      * Computed refs are NOT auto-unwrapped when accessed via `cp.xxx`,
      * so we expose them through getters that read `.value` internally. */
     /* ── Live-events helpers for detail panes ────────── */
-    const liveEventsForJob = (jobId) => {
+    const liveEventsForJob = (_jobId) => {
       /* Events aren't labelled by job ID today; we show all events emitted
        * after the job started as an approximation. Future: correlate via
-       * task_ids. */
+       * task_ids. The argument is intentionally ignored for now but kept
+       * so call sites are explicit about the scope they want. */
       return state.liveEvents.slice();
     };
     const liveEventsForTask = (taskId) => {
@@ -414,7 +678,7 @@ const RootApp = {
       selectSession, selectTask, selectJob,
       toggleAuto, toggleDark,
       /* data */
-      loadDashboard, loadTaskDetail, loadSessions, loadSessionChat,
+      loadDashboard, loadTaskDetail, loadTaskLog, loadSessions, loadSessionChat,
       /* actions */
       taskAction, submitGoal, submitComposer,
       newSession, sendChat, deleteSession,
