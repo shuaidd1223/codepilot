@@ -35,6 +35,13 @@ CP.Components.Sidebar = Vue.defineComponent({
     projectJobs(projName) {
       return (this.s.jobsByProject && this.s.jobsByProject[projName]) || [];
     },
+    submitProject() {
+      this.cp.submitProject();
+    },
+    deleteProject(project, ev) {
+      ev.stopPropagation();
+      this.cp.deleteProject(project.name);
+    },
     /* Count helpers: look at project summary first so numbers stay correct
      * across projects even when we only loaded the current project's list. */
     taskCount(p) {
@@ -67,9 +74,36 @@ CP.Components.Sidebar = Vue.defineComponent({
       </div>
 
       <div class="sidebar-scroll">
-        <div class="group-title"><span>项目</span><span class="muted">{{ s.projects.length }}</span></div>
+        <div class="group-title">
+          <span>项目</span>
+          <button class="mini-action" @click="cp.toggleProjectForm()" :title="s.projectForm.open ? '收起' : '新建项目'">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
 
-        <div v-if="!s.projects.length" class="empty-block">还没有项目，先执行 codepilot init</div>
+        <form v-if="s.projectForm.open" class="project-form" @submit.prevent="submitProject">
+          <div class="field">
+            <label>工作目录</label>
+            <input v-model="s.projectForm.path" type="text" placeholder="D:\\myCode\\workflow">
+          </div>
+          <div class="field">
+            <label>项目名</label>
+            <input v-model="s.projectForm.name" type="text" placeholder="默认取目录名">
+          </div>
+          <label class="checkbox">
+            <input type="checkbox" v-model="s.projectForm.noConfig">
+            不生成 AGENTS.toml
+          </label>
+          <div class="row gap-xs">
+            <button type="submit" class="btn btn-primary btn-sm grow" :disabled="s.projectSubmitting">
+              <span v-if="s.projectSubmitting" class="spinner"></span>
+              注册
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" @click="cp.toggleProjectForm(false)" :disabled="s.projectSubmitting">取消</button>
+          </div>
+        </form>
+
+        <div v-if="!s.projects.length" class="empty-block">还没有项目</div>
 
         <div v-else class="tree">
           <div v-for="p in s.projects" :key="p.name" class="tree-project">
@@ -85,6 +119,10 @@ CP.Components.Sidebar = Vue.defineComponent({
               <span class="tree-label">{{ p.name }}</span>
               <span v-if="p.stats && p.stats.in_progress" class="chip info tiny">{{ p.stats.in_progress }}</span>
               <span v-else-if="taskCount(p)" class="chip neutral tiny">{{ taskCount(p) }}</span>
+              <button class="tree-action" @click="deleteProject(p, $event)" :disabled="s.deletingProject === p.name" title="删除项目">
+                <span v-if="s.deletingProject === p.name" class="spinner tiny-spinner"></span>
+                <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+              </button>
             </div>
 
             <!-- Children (only when expanded) -->
@@ -136,7 +174,12 @@ CP.Components.Sidebar = Vue.defineComponent({
                      class="tree-row tree-leaf-row"
                      :class="{active: isActive({view: 'task', id: t.id})}"
                      @click="cp.selectTask(p.name, t.id)">
-                  <span class="dot-status" :class="$cp.toneClass(t.status)"></span>
+                  <!-- Tasks that hit a preflight skip still show as backlog
+                       (待办) in status, but should wear a warning tone here
+                       so users spot "this one needs me to act" at a glance
+                       instead of blending into the regular gray backlog. -->
+                  <span class="dot-status" :class="t.skip_reason ? 'warning' : $cp.toneClass(t.status)"
+                        :title="t.skip_reason ? '预检跳过' : $cp.statusLabel(t.status)"></span>
                   <span class="tree-label">
                     <span class="muted tiny">#{{ t.id }}</span> {{ t.title }}
                   </span>

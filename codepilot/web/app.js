@@ -1,7 +1,7 @@
 /* CodePilot main app — state, navigation, actions, root component. */
 /* global Vue, CP */
 
-const { createApp, reactive, computed, onMounted, onUnmounted, nextTick, ref, provide } = Vue;
+const { createApp, reactive, computed, onMounted, onUnmounted, nextTick, ref, provide, watch } = Vue;
 
 const RootApp = {
   setup() {
@@ -34,6 +34,11 @@ const RootApp = {
       /* global UI */
       autoRefresh: true, timer: null,
       loading: false, sending: false, newSessionLoading: false,
+      projectSubmitting: false, deletingProject: '',
+      /* Map of taskId → pending action name (retry / stop / promote / split).
+       * Used by per-row buttons to show their own spinner without freezing
+       * the rest of the page. */
+      pendingTasks: {},
       dark: false,
       toasts: [], toastSeq: 0,
       answer: null,
@@ -41,8 +46,14 @@ const RootApp = {
       /* live progress events from SSE — ring buffer, most-recent last */
       liveEvents: [],
 
+      /* Local daemon health — pushed over SSE (see openEventStream).
+       * A single HTTP fallback on mount seeds the state before the SSE
+       * priming event lands; after that it updates in near-real-time. */
+      daemonHealth: { alive: true, running: false, pid: 0, reason: '', stale_seconds: 0 },
+
       /* forms */
       goalText: '', goalCategory: 'auto',
+      projectForm: { open: false, path: '', name: '', noConfig: false },
       composerMode: 'requirement',
       composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
       chatText: '', chatCategory: 'auto',
@@ -117,6 +128,7 @@ const RootApp = {
      * both is belt-and-braces: the hash survives sharing links, and
      * localStorage handles the case where the user clears the URL. */
     const NAV_STORAGE_KEY = 'cp-nav-v1';
+    const EXPAND_STORAGE_KEY = 'cp-expand-v1';
     let _navSyncing = false;  /* suppress recursion when hashchange triggers setNav */
 
     function _navToHash(n) {
@@ -353,6 +365,13 @@ const RootApp = {
       }
     }
 
+    async function loadDaemonHealth() {
+      try {
+        const data = await CP.api.get('/api/daemon/health');
+        state.daemonHealth = data || state.daemonHealth;
+      } catch (_e) { /* silent — network errors already toasted elsewhere */ }
+    }
+
     async function loadSessions() {
       /* Always fetch every project's sessions: the sidebar needs the full
        * list to show per-project counts and expanded session entries
@@ -381,17 +400,45 @@ const RootApp = {
 
     /* ── Actions ─────────────────────────────────────── */
     async function taskAction(taskId, action) {
-      state.sending = true;
+      /* Per-task in-flight tracking — previously we set the global
+       * `state.sending` which disabled every button on the page for a
+       * remote click elsewhere. Now only this task's row shows the
+       * pending visual, other interactions stay live. */
+      state.pendingTasks[taskId] = action;
       try {
         const out = await CP.api.post(`/api/tasks/${taskId}/${action}`, {});
         pushToast(out.message || '操作完成', 'success');
+        /* Optimistically update the task in state immediately so the UI
+         * reflects the new status without waiting for the full dashboard
+         * round-trip. The subsequent loadDashboard reconciles. */
+        if (out && out.task) {
+          _mergeTaskIntoState(out.task);
+          if (state.nav.view === 'task' && state.nav.id === taskId) {
+            state.taskDetail = { ...(state.taskDetail || {}), ...out.task };
+          }
+        }
         await loadDashboard();
         if (state.nav.view === 'task' && state.nav.id === taskId) await loadTaskDetail();
       } catch (err) {
         pushToast(err.message, 'error');
       } finally {
-        state.sending = false;
+        delete state.pendingTasks[taskId];
       }
+    }
+
+    /* Merge a single task's fresh payload into every cached location so the
+     * UI reflects the update before the next full refresh lands. */
+    function _mergeTaskIntoState(t) {
+      if (!t || !t.id) return;
+      const pname = t.project;
+      const patch = (arr) => {
+        if (!Array.isArray(arr)) return arr;
+        const i = arr.findIndex(x => x.id === t.id);
+        if (i >= 0) { arr.splice(i, 1, { ...arr[i], ...t }); return arr; }
+        return arr;
+      };
+      patch(state.tasks);
+      if (pname) patch(state.tasksByProject[pname]);
     }
 
     async function submitGoal() {
@@ -456,6 +503,52 @@ const RootApp = {
       } catch (err) {
         pushToast(err.message, 'error');
       } finally { state.newSessionLoading = false; }
+    }
+
+    function toggleProjectForm(open = null) {
+      state.projectForm.open = open == null ? !state.projectForm.open : !!open;
+    }
+
+    async function submitProject() {
+      const path = state.projectForm.path.trim();
+      if (!path) { pushToast('工作目录不能为空', 'error'); return; }
+      state.projectSubmitting = true;
+      try {
+        const out = await CP.api.post('/api/projects', {
+          path,
+          name: state.projectForm.name.trim(),
+          no_config: !!state.projectForm.noConfig,
+        });
+        state.projectForm = { open: false, path: '', name: '', noConfig: false };
+        await loadDashboard();
+        if (out.project && out.project.name) selectProject(out.project.name);
+        pushToast(out.message || '项目已注册', 'success');
+      } catch (err) {
+        pushToast(err.message, 'error');
+      } finally {
+        state.projectSubmitting = false;
+      }
+    }
+
+    async function deleteProject(name) {
+      if (!name) return;
+      if (!confirm(`确定要删除项目 "${name}" 吗？\n工作目录不会被删除。`)) return;
+      state.deletingProject = name;
+      try {
+        const out = await CP.api.del(`/api/projects/${encodeURIComponent(name)}`);
+        if (state.nav.project === name) {
+          setNav({ project: null, view: 'overview', id: null });
+          state.taskDetail = null;
+          state.sessionDetail = null;
+          state.sessionMessages = [];
+        }
+        await loadDashboard();
+        pushToast(out.message || '项目已删除', 'success');
+      } catch (err) {
+        pushToast(err.message, 'error');
+      } finally {
+        state.deletingProject = '';
+      }
     }
 
     async function sendChat() {
@@ -539,6 +632,16 @@ const RootApp = {
     function openEventStream() {
       if (sseHandle) return;
       sseHandle = CP.sse.open('/api/events/stream', (event) => {
+        /* Daemon-health events are piggy-backed on the progress stream
+         * by the backend (see webui.py::_stream_progress_events). They
+         * carry the full health payload in event.extra and only get
+         * pushed when the state actually changed, so updating the
+         * banner is near-instant (~2s) and doesn't need a separate
+         * polling timer. */
+        if (event && event.stage === 'daemon-health' && event.extra) {
+          state.daemonHealth = event.extra;
+          return;  /* not a progress event — don't pollute liveEvents */
+        }
         state.liveEvents.push(event);
         if (state.liveEvents.length > LIVE_EVENTS_MAX) {
           state.liveEvents.splice(0, state.liveEvents.length - LIVE_EVENTS_MAX);
@@ -599,6 +702,31 @@ const RootApp = {
     onMounted(() => {
       try { state.dark = localStorage.getItem('cp-dark') === '1'; } catch (e) { /* ignore */ }
       document.documentElement.dataset.theme = state.dark ? 'dark' : 'light';
+      /* Restore sidebar expanded state BEFORE the first render so the
+       * tree paints with the same nodes open / closed as before. */
+      try {
+        const raw = localStorage.getItem(EXPAND_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            Object.assign(state.expanded, parsed);
+          }
+        }
+      } catch (e) { /* ignore */ }
+      /* Keep localStorage in sync with every future mutation (toggle
+       * chevrons, selectTask auto-expansions, etc.). Debounced via a
+       * trailing rAF so we don't thrash on rapid toggles. */
+      let _expandSaveQueued = false;
+      watch(() => state.expanded, () => {
+        if (_expandSaveQueued) return;
+        _expandSaveQueued = true;
+        requestAnimationFrame(() => {
+          _expandSaveQueued = false;
+          try {
+            localStorage.setItem(EXPAND_STORAGE_KEY, JSON.stringify(state.expanded));
+          } catch (e) { /* ignore */ }
+        });
+      }, { deep: true });
       /* Restore prior nav (hash first, then localStorage) BEFORE the first
        * dashboard load so loadDashboard sees the intended project. */
       const restored = _readStoredNav();
@@ -618,6 +746,12 @@ const RootApp = {
           loadSessionChat();
         }
       });
+      /* Daemon health is pushed via SSE now (see openEventStream). We
+       * still do a single HTTP GET on mount as a fallback for the small
+       * window before the SSE connection has opened and delivered its
+       * priming event. After that, state.daemonHealth stays fresh in
+       * near-real-time without any polling. */
+      loadDaemonHealth();
       schedule();
       openEventStream();
       installKeyboardShortcuts();
@@ -678,11 +812,15 @@ const RootApp = {
       selectSession, selectTask, selectJob,
       toggleAuto, toggleDark,
       /* data */
-      loadDashboard, loadTaskDetail, loadTaskLog, loadSessions, loadSessionChat,
+      loadDashboard, loadTaskDetail, loadTaskLog, loadSessions, loadSessionChat, loadDaemonHealth,
       /* actions */
       taskAction, submitGoal, submitComposer,
+      toggleProjectForm, submitProject, deleteProject,
       newSession, sendChat, deleteSession,
       submitClarifyAnswer,
+      /* Per-task pending helpers for per-row spinners. */
+      isTaskPending: (taskId) => !!state.pendingTasks[taskId],
+      taskPendingAction: (taskId) => state.pendingTasks[taskId] || '',
       pushToast, dismissToast,
       registerChatScroll,
       /* live events */
@@ -700,6 +838,21 @@ const RootApp = {
         <cp-main-header></cp-main-header>
         <div class="main-scroll">
           <cp-toast-stack></cp-toast-stack>
+          <div v-if="cp.state.daemonHealth && cp.state.daemonHealth.reason && !cp.state.daemonHealth.alive"
+               class="daemon-banner"
+               :class="cp.state.daemonHealth.running ? 'warn' : 'err'">
+            <span class="dot"></span>
+            <div class="body">
+              <b>daemon {{ cp.state.daemonHealth.running ? '假死' : '已停止' }}</b>：
+              {{ cp.state.daemonHealth.reason }}
+              <span v-if="cp.state.daemonHealth.last_heartbeat" class="muted tiny">
+                · 最后心跳 {{ cp.state.daemonHealth.last_heartbeat }}
+              </span>
+            </div>
+            <div class="hint tiny">
+              启动：<code>codepilot daemon -p &lt;project&gt;</code> 或 <code>codepilot webui start</code>
+            </div>
+          </div>
           <cp-content-pane></cp-content-pane>
         </div>
       </main>

@@ -40,8 +40,10 @@ from codepilot.webui_actions import (  # noqa: F401 (re-export)
     _job_result_summary,
     _next_job_id,
     _update_job,
+    create_project_action,
     create_session_action,
     create_task_action,
+    delete_project_action,
     delete_session_action,
     get_session_action,
     list_sessions_action,
@@ -64,6 +66,7 @@ from codepilot.webui_payloads import (  # noqa: F401 (re-export)
     _sorted_tasks,
     _tail_text,
     _task_payload,
+    daemon_health_payload,
     dashboard_payload,
     project_summary,
     task_detail_payload,
@@ -160,11 +163,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """GET /api/events/stream — SSE endpoint backed by :mod:`progress_bus`.
 
         The client opens one long-lived connection; every event published via
-        ``progress_bus.emit`` is forwarded as an ``data: {...}\\n\\n`` SSE
+        ``progress_bus.emit`` is forwarded as a ``data: {...}\\n\\n`` SSE
         frame. Heartbeats are sent every 15s so intermediate proxies keep
         the connection alive; disconnects tear down the subscription.
+
+        Daemon health is piggy-backed onto the same stream: we poll the
+        local heartbeat file every 2s and push a ``stage=daemon-health``
+        event whenever the state changes (alive ↔ stale ↔ dead). That way
+        the Web UI banner reacts in ~2s without a separate polling timer.
         """
         import queue as _queue
+        import time
         from codepilot import progress_bus
 
         try:
@@ -196,20 +205,86 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+        def _health_event() -> dict:
+            payload = daemon_health_payload()
+            return {
+                "timestamp": _now_iso(),
+                "task_id": None,
+                "stage": "daemon-health",
+                "level": "info" if payload.get("alive") else "warning",
+                "message": payload.get("reason") or "daemon ok",
+                "extra": payload,
+            }
+
+        def _health_key(health: dict) -> tuple:
+            """Stable identity of the "health state" — we only re-push on changes."""
+            extra = (health or {}).get("extra") or {}
+            return (
+                bool(extra.get("alive")),
+                bool(extra.get("running")),
+                int(extra.get("pid") or 0),
+                # Bucket stale-seconds to avoid pushing every 2s when numbers tick.
+                int((int(extra.get("stale_seconds") or 0)) // 10),
+            )
+
         token = progress_bus.subscribe(_forward)
+        last_keepalive = time.monotonic()
+        last_health_check = 0.0
+        last_health_key: tuple | None = None
         try:
+            # Prime the stream with current daemon health so the client has
+            # something to render before any progress event arrives.
+            initial_health = _health_event()
+            last_health_key = _health_key(initial_health)
+            try:
+                self.wfile.write(f"data: {json.dumps(initial_health, ensure_ascii=False)}\n\n".encode("utf-8"))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
+
             while True:
                 try:
-                    event = event_queue.get(timeout=15)
+                    # Short poll — lets the daemon-health checker below run
+                    # even when no progress events are flowing, so the UI
+                    # sees state changes within ~2 seconds.
+                    event = event_queue.get(timeout=2)
                     frame = f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    try:
+                        self.wfile.write(frame.encode("utf-8"))
+                        self.wfile.flush()
+                        last_keepalive = time.monotonic()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        break
                 except _queue.Empty:
-                    # Heartbeat to keep the connection open.
-                    frame = ": ping\n\n"
-                try:
-                    self.wfile.write(frame.encode("utf-8"))
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    break
+                    pass  # fall through to health / keepalive below
+
+                now = time.monotonic()
+                # Push daemon-health event whenever the state actually
+                # changed (alive → stale, stopped → running, etc.).
+                if now - last_health_check >= 2.0:
+                    last_health_check = now
+                    health = _health_event()
+                    key = _health_key(health)
+                    if key != last_health_key:
+                        last_health_key = key
+                        try:
+                            self.wfile.write(
+                                f"data: {json.dumps(health, ensure_ascii=False)}\n\n".encode("utf-8")
+                            )
+                            self.wfile.flush()
+                            last_keepalive = now
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            break
+
+                # Keep the connection alive through proxies even when
+                # nothing's changing.
+                if now - last_keepalive >= 15.0:
+                    try:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+                        last_keepalive = now
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        break
         finally:
             progress_bus.unsubscribe(token)
 
@@ -229,6 +304,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/health":
             self._send_json({"ok": True})
+            return
+        if path == "/api/daemon/health":
+            self._send_json(daemon_health_payload())
             return
         if path == "/api/events/stream":
             # Server-sent events: push live progress to the dashboard so the
@@ -299,6 +377,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         category=body.get("category") or "auto",
                         qa_history=raw_history,
                         original_title=(body.get("original_title") or "").strip(),
+                    )
+                )
+                return
+            if path == "/api/projects":
+                body = self._read_json_body()
+                self._send_json(
+                    create_project_action(
+                        body.get("path") or "",
+                        name=body.get("name") or "",
+                        no_config=bool(body.get("no_config", False)),
                     )
                 )
                 return
@@ -376,6 +464,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         try:
+            match = re.fullmatch(r"/api/projects/([^/]+)", path)
+            if match:
+                self._send_json(delete_project_action(unquote(match.group(1))))
+                return
             match = re.fullmatch(r"/api/sessions/(\d+)", path)
             if match:
                 self._send_json(delete_session_action(int(match.group(1))))

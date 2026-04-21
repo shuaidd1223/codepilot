@@ -52,6 +52,15 @@ def _post(url: str, body: dict) -> tuple[int, dict]:
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
+def _delete(url: str) -> tuple[int, dict]:
+    req = urllib.request.Request(url, method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
 # ─── GET endpoints ──────────────────────────────────────────────────────────
 
 def test_health_endpoint(ui_server):
@@ -110,6 +119,27 @@ def test_create_task_empty_title_returns_error(ui_server):
     assert status in (400, 200)
     if status == 200:
         assert "error" in body
+
+
+# ─── POST/DELETE /api/projects ──────────────────────────────────────────────
+
+def test_create_and_delete_project_via_api(ui_server, tmp_path):
+    project_path = tmp_path / "api-project"
+    project_path.mkdir()
+
+    status, body = _post(f"{ui_server}/api/projects", {
+        "path": str(project_path),
+    })
+    assert status == 200
+    assert body.get("ok") is True
+    assert body.get("project", {}).get("name") == "api-project"
+    assert db.get_project("api-project") is not None
+
+    status, body = _delete(f"{ui_server}/api/projects/api-project")
+    assert status == 200
+    assert body.get("ok") is True
+    assert db.get_project("api-project") is None
+    assert project_path.exists()
 
 
 # ─── POST /api/tasks/:id/retry ──────────────────────────────────────────────

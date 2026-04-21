@@ -16,6 +16,7 @@ from codepilot.commands.inspect import run_inspection
 from codepilot.commands.run import run_backlog
 from codepilot.config import load_project_config, resolve_planner
 from codepilot.output import echo, safe
+from codepilot.paths import global_storage_root
 from codepilot.runtime import is_process_alive, reap_stalled_tasks
 from codepilot.webui import start_ui_server
 
@@ -31,7 +32,22 @@ def _resolve_project(ctx, param, value):
     return value
 
 
-LOCK_FILE = Path.home() / ".codepilot" / "daemon.lock"
+DAEMON_STATE_DIR = global_storage_root() / "daemon"
+LOCK_FILE = DAEMON_STATE_DIR / "daemon.lock"
+HEARTBEAT_FILE = DAEMON_STATE_DIR / "daemon.heartbeat"
+
+
+def _tick_heartbeat() -> None:
+    """Write ISO timestamp to the heartbeat file so outside observers
+    (e.g. the Web UI banner) can tell the daemon is alive. Called at the
+    top of every daemon loop iteration — silently ignores IO failures so a
+    transient disk glitch never takes down the loop itself."""
+    from datetime import datetime
+    try:
+        HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_FILE.write_text(datetime.now().isoformat(timespec="seconds"), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _start_ui_background(port: int = 8766):
@@ -63,6 +79,10 @@ def _acquire_lock() -> bool:
 def _release_lock() -> None:
     try:
         LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+    try:
+        HEARTBEAT_FILE.unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -144,6 +164,7 @@ def _run_loop(
     last_inspect_at: dict[str, float] = {}
 
     while True:
+        _tick_heartbeat()
         reaped = reap_stalled_tasks(project)
         for task in reaped:
             echo(f"[yellow]已回收卡住任务 #{task['id']}：{task['title']}[/yellow]")

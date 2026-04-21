@@ -124,6 +124,77 @@ def task_log_delta(task_id: int, *, offset: int = 0) -> dict:
     return out
 
 
+def daemon_health_payload(*, stale_after_seconds: int = 120) -> dict:
+    """Introspect the local daemon's heartbeat file.
+
+    Used by the Web UI to surface a banner when the daemon appears dead —
+    tasks would otherwise silently sit in ``backlog`` forever with no visible
+    hint that nothing is draining the queue.
+
+    Returns ``{alive, running, pid, last_heartbeat, stale_seconds, reason}``:
+    ``alive`` is True iff the daemon process is running AND its heartbeat
+    is fresh. ``running`` means only the PID check, so we can distinguish
+    "stopped" from "frozen".
+    """
+    from codepilot.runtime import is_process_alive
+    from datetime import datetime
+
+    from codepilot.paths import global_storage_root
+
+    daemon_dir = global_storage_root() / "daemon"
+    lock_file = daemon_dir / "daemon.lock"
+    heartbeat_file = daemon_dir / "daemon.heartbeat"
+
+    out = {
+        "alive": False,
+        "running": False,
+        "pid": 0,
+        "last_heartbeat": "",
+        "stale_seconds": 0,
+        "stale_after_seconds": int(stale_after_seconds),
+        "reason": "daemon 未运行",
+    }
+
+    if not lock_file.exists():
+        return out
+    try:
+        pid = int(lock_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        out["reason"] = "daemon.lock 读取失败"
+        return out
+    out["pid"] = pid
+    if not is_process_alive(pid):
+        out["reason"] = f"daemon 进程 {pid} 已不存在（可能已崩溃）"
+        return out
+    out["running"] = True
+
+    if not heartbeat_file.exists():
+        # Old daemon build without heartbeat writing, or daemon just
+        # started — treat as alive but flag missing heartbeat.
+        out["alive"] = True
+        out["reason"] = "心跳文件不存在（可能是旧版本 daemon）"
+        return out
+
+    try:
+        last = heartbeat_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        out["reason"] = "daemon.heartbeat 读取失败"
+        return out
+    out["last_heartbeat"] = last
+    try:
+        delta = (datetime.now() - datetime.fromisoformat(last)).total_seconds()
+    except ValueError:
+        out["reason"] = "心跳时间戳解析失败"
+        return out
+    out["stale_seconds"] = int(max(0, delta))
+    if delta > stale_after_seconds:
+        out["reason"] = f"daemon 心跳 {int(delta)}s 未更新（>{stale_after_seconds}s 阈值），可能已假死"
+    else:
+        out["alive"] = True
+        out["reason"] = ""
+    return out
+
+
 def _compose_log_text(task: dict) -> str:
     live = _read_text(task.get("current_log_path"))
     if live:
@@ -155,6 +226,18 @@ def _task_payload(task: dict) -> dict:
         except Exception:
             eta_seconds = None
 
+    # Preflight skip re-queues the task to backlog and stores the reason in
+    # ``error_message``. That isn't a real failure — it's a "postponed, fix
+    # this thing and I'll retry" warning. Surface it as ``skip_reason`` so
+    # the UI can render it as a neutral / warning block instead of red.
+    raw_error = task.get("error_message") or ""
+    skip_reason = ""
+    error_message = ""
+    if status == "backlog" and raw_error:
+        skip_reason = raw_error
+    else:
+        error_message = raw_error
+
     return {
         "id": task["id"],
         "project": task["project"],
@@ -166,8 +249,9 @@ def _task_payload(task: dict) -> dict:
         "phase": task.get("run_phase") or "",
         "runtime": runtime_summary(task) if status == "in_progress" else "",
         "eta_seconds": eta_seconds,
-        "latest": task.get("last_output") or task.get("error_message") or task.get("delivery_record") or "",
-        "error_message": task.get("error_message") or "",
+        "latest": task.get("last_output") or skip_reason or error_message or task.get("delivery_record") or "",
+        "error_message": error_message,
+        "skip_reason": skip_reason,
         "delivery_record": task.get("delivery_record") or "",
         "created_at": task.get("created_at") or "",
         "started_at": task.get("started_at") or "",

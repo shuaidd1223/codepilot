@@ -6,12 +6,6 @@ CP.Components.TaskDetail = Vue.defineComponent({
   computed: {
     s() { return this.cp.state; },
     task() { return this.s.taskDetail; },
-    /* Expose events SSE pushed for this specific task so the user sees live
-     * builder/reviewer output instead of waiting for the 3s polling tick. */
-    liveEvents() {
-      if (!this.task) return [];
-      return this.cp.liveEventsForTask(this.task.id);
-    },
     canSplit() {
       const t = this.task;
       if (!t) return false;
@@ -43,7 +37,11 @@ CP.Components.TaskDetail = Vue.defineComponent({
             <div class="min-w grow">
               <h3 class="detail-title">#{{ task.id }} {{ task.title }}</h3>
               <div class="chip-row mt-xs">
-                <cp-chip :tone="$cp.toneClass(task.status)">{{ $cp.statusLabel(task.status) }}</cp-chip>
+                <!-- Preflight-skipped tasks wear a yellow 预检跳过 chip
+                     instead of the gray 待办, so the detail page matches
+                     the sidebar / list-card warning tone. -->
+                <cp-chip v-if="task.skip_reason" tone="warning">预检跳过</cp-chip>
+                <cp-chip v-else :tone="$cp.toneClass(task.status)">{{ $cp.statusLabel(task.status) }}</cp-chip>
                 <cp-chip>{{ task.priority }}</cp-chip>
                 <cp-chip>{{ task.agent || '-' }}</cp-chip>
                 <cp-chip>重试 {{ task.retry_count || 0 }}/{{ task.max_retries || 0 }}</cp-chip>
@@ -51,10 +49,22 @@ CP.Components.TaskDetail = Vue.defineComponent({
               </div>
             </div>
             <div class="row gap-xs">
-              <button v-if="task.actions && task.actions.promote" class="btn btn-outline btn-sm" @click="action(task.id, 'promote')">插队 P0</button>
-              <button v-if="task.actions && task.actions.retry" class="btn btn-warning btn-sm" @click="action(task.id, 'retry')">重试</button>
-              <button v-if="canSplit" class="btn btn-outline btn-sm" @click="action(task.id, 'split')" title="把这个任务重新拆成更小的几个任务">拆分</button>
-              <button v-if="task.actions && task.actions.stop" class="btn btn-danger btn-sm" @click="action(task.id, 'stop')">停止</button>
+              <button v-if="task.actions && task.actions.promote" class="btn btn-outline btn-sm"
+                      :disabled="cp.isTaskPending(task.id)" @click="action(task.id, 'promote')">
+                <span v-if="cp.taskPendingAction(task.id) === 'promote'" class="spinner"></span>插队 P0
+              </button>
+              <button v-if="task.actions && task.actions.retry" class="btn btn-warning btn-sm"
+                      :disabled="cp.isTaskPending(task.id)" @click="action(task.id, 'retry')">
+                <span v-if="cp.taskPendingAction(task.id) === 'retry'" class="spinner"></span>重试
+              </button>
+              <button v-if="canSplit" class="btn btn-outline btn-sm"
+                      :disabled="cp.isTaskPending(task.id)" @click="action(task.id, 'split')" title="把这个任务重新拆成更小的几个任务">
+                <span v-if="cp.taskPendingAction(task.id) === 'split'" class="spinner"></span>拆分
+              </button>
+              <button v-if="task.actions && task.actions.stop" class="btn btn-danger btn-sm"
+                      :disabled="cp.isTaskPending(task.id)" @click="action(task.id, 'stop')">
+                <span v-if="cp.taskPendingAction(task.id) === 'stop'" class="spinner"></span>停止
+              </button>
             </div>
           </div>
         </div>
@@ -73,17 +83,17 @@ CP.Components.TaskDetail = Vue.defineComponent({
             <div class="full truncate"><b>路径:</b> {{ task.project_path || '-' }}</div>
             <div class="full truncate"><b>日志文件:</b> {{ task.current_log_path || '-' }}</div>
           </div>
-          <div v-if="task.error_message" class="block danger">
+          <div v-if="task.skip_reason" class="block warning">
+            <div class="block-label">预检跳过（未消耗重试次数，下一轮会自动重试）</div>
+            <cp-markdown :text="task.skip_reason"></cp-markdown>
+          </div>
+          <div v-else-if="task.error_message" class="block danger">
             <div class="block-label">失败原因</div>
             <cp-markdown :text="task.error_message"></cp-markdown>
           </div>
           <div class="block">
             <div class="block-label">任务内容</div>
             <cp-markdown :text="task.content || '暂无任务内容'"></cp-markdown>
-          </div>
-          <div v-if="liveEvents.length" class="block">
-            <div class="block-label">实时进度（来自 SSE）</div>
-            <cp-live-log :events="liveEvents" follow></cp-live-log>
           </div>
           <div class="block">
             <div class="block-label">实时日志</div>

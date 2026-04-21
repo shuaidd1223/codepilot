@@ -66,6 +66,7 @@ class TaskListItem(TypedDict):
     eta_seconds: Optional[int]
     latest: str
     error_message: str
+    skip_reason: str
     delivery_record: str
     created_at: str
     started_at: str

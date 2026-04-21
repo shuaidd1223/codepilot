@@ -42,6 +42,7 @@ CP.Components.Composer = Vue.defineComponent({
             <label>任务智能体</label>
             <select v-model="s.composer.agent">
               <option value="auto">跟随项目默认</option>
+              <option value="dual">dual</option>
               <option value="codex">codex</option>
               <option value="claude">claude</option>
             </select>

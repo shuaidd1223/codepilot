@@ -12,10 +12,12 @@ from __future__ import annotations
 import json
 import sys
 import threading
+from pathlib import Path
 from typing import Optional
 
 from codepilot import db
 from codepilot.commands.auto import clarify_requirement  # noqa: F401 — patched in tests
+from codepilot.commands.init import initialize_project
 from codepilot.config import load_project_config
 from codepilot.webui_payloads import _now_iso, _task_payload
 
@@ -78,7 +80,57 @@ def list_ui_events(project: str | None = None) -> list[dict]:
     return list(reversed(items[-12:]))
 
 
+def create_project_action(path: str, *, name: str = "", no_config: bool = False) -> dict:
+    db.init_db()
+    raw_path = (path or "").strip().strip('"')
+    if not raw_path:
+        raise RuntimeError("工作目录不能为空。")
+    result = initialize_project(Path(raw_path).expanduser(), name.strip() or None, no_config=no_config)
+    project = result["project"]
+    action = "注册" if result["created"] else "更新"
+    _append_event(f"{action}项目：{project['name']}", project=project["name"])
+    return {
+        "ok": True,
+        "created": bool(result["created"]),
+        "message": f"项目 '{project['name']}' 已{action}。",
+        "project": project,
+        "config_file": result.get("config_file") or "",
+    }
+
+
+def delete_project_action(name: str) -> dict:
+    db.init_db()
+    project_name = (name or "").strip()
+    if not project_name:
+        raise RuntimeError("项目名称不能为空。")
+    project = db.get_project(project_name)
+    if not project:
+        raise RuntimeError(f"项目 '{project_name}' 不存在。")
+    stats = db.get_task_stats(project_name)
+    if not db.delete_project(project_name):
+        raise RuntimeError(f"项目 '{project_name}' 删除失败。")
+    _append_event(f"删除项目：{project_name}", level="warning", project=project_name)
+    return {
+        "ok": True,
+        "message": f"项目 '{project_name}' 已删除，工作目录保留。",
+        "project": project_name,
+        "path": project["path"],
+        "deleted_tasks": stats["total"],
+    }
+
+
 def retry_task_action(task_id: int) -> dict:
+    """Retry a task: reset it to backlog AND kick off one execution pass in
+    a background thread so the UI feels like "click retry → task starts".
+
+    Before, retry only reset the DB row and waited for an external daemon
+    (or a manual ``codepilot run``) to pick it up. Without a running
+    daemon, nothing happened — the user saw a green toast but the task
+    sat idle. The background :func:`run_backlog` call below is a single-
+    pass run (``once=True``, ``limit=1``) so it processes at most one
+    runnable task and exits; its own live-task guard ensures it no-ops
+    cleanly if a daemon is already running something.
+    """
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -88,11 +140,42 @@ def retry_task_action(task_id: int) -> dict:
     if task["status"] == "done":
         raise RuntimeError(f"任务 #{task_id} 已完成，不能直接重试。")
     updated = db.reset_task_for_retry(task_id)
-    _append_event(f"任务 #{task_id} 已重新放回 backlog。", project=task["project"], task_id=task_id)
-    return {"ok": True, "message": f"任务 #{task_id} 已重新放回 backlog。", "task": _task_payload(updated)}
+    project_name = task["project"]
+    _append_event(f"任务 #{task_id} 已重试，后台开始执行…", project=project_name, task_id=task_id)
+
+    def _run_worker() -> None:
+        try:
+            from codepilot.commands.run import run_backlog
+            run_backlog(project_name, once=True, limit=1, quiet=True)
+        except Exception as exc:
+            _append_event(
+                f"任务 #{task_id} 后台执行失败：{exc}",
+                level="error",
+                project=project_name,
+                task_id=task_id,
+            )
+
+    threading.Thread(
+        target=_run_worker,
+        name=f"codepilot-ui-retry-{task_id}",
+        daemon=True,
+    ).start()
+
+    return {
+        "ok": True,
+        "message": f"任务 #{task_id} 已重试，后台开始执行。",
+        "task": _task_payload(updated),
+    }
 
 
 def promote_task_action(task_id: int) -> dict:
+    """Promote a task to P0 and kick off a run, mirroring retry semantics.
+
+    Without the background kicker, a promote click also just sits in
+    backlog until something drains the queue. Since the user's intent is
+    clearly "run this next", start one run-pass right after bumping
+    priority.
+    """
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -104,8 +187,32 @@ def promote_task_action(task_id: int) -> dict:
     if task["status"] in {"failed", "cancelled"}:
         task = db.reset_task_for_retry(task_id, reset_retry_count=False)
     updated = db.update_task(task_id, priority="P0", status="backlog")
-    _append_event(f"任务 #{task_id} 已插队到 P0。", project=task["project"], task_id=task_id)
-    return {"ok": True, "message": f"任务 #{task_id} 已提升到 P0 并回到 backlog。", "task": _task_payload(updated)}
+    project_name = task["project"]
+    _append_event(f"任务 #{task_id} 已插队到 P0，后台开始执行…", project=project_name, task_id=task_id)
+
+    def _run_worker() -> None:
+        try:
+            from codepilot.commands.run import run_backlog
+            run_backlog(project_name, once=True, limit=1, quiet=True)
+        except Exception as exc:
+            _append_event(
+                f"任务 #{task_id} 后台执行失败：{exc}",
+                level="error",
+                project=project_name,
+                task_id=task_id,
+            )
+
+    threading.Thread(
+        target=_run_worker,
+        name=f"codepilot-ui-promote-{task_id}",
+        daemon=True,
+    ).start()
+
+    return {
+        "ok": True,
+        "message": f"任务 #{task_id} 已提升到 P0 并开始执行。",
+        "task": _task_payload(updated),
+    }
 
 
 def split_task_action(task_id: int) -> dict:
@@ -191,12 +298,12 @@ def create_task_action(
     normalized_priority = (priority or "P2").upper()
     if normalized_priority not in {"P0", "P1", "P2", "P3"}:
         raise RuntimeError("优先级只支持 P0 / P1 / P2 / P3。")
-    resolved_agent = (agent or project_info.get("default_mode") or "codex").lower()
+    resolved_agent = (agent or project_info.get("default_mode") or "dual").lower()
     if resolved_agent == "auto":
-        resolved_agent = project_info.get("default_mode") or "codex"
+        resolved_agent = project_info.get("default_mode") or "dual"
 
     from codepilot.ai import resolve_agent_with_fallback
-    default_mode = project_info.get("default_mode") or "codex"
+    default_mode = project_info.get("default_mode") or "dual"
     resolved_agent, fallback_reason = resolve_agent_with_fallback(
         resolved_agent,
         project_path=project_info["path"],
@@ -406,9 +513,12 @@ def submit_goal_action(
         cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
         classifier_cfg = getattr(cfg, "classifier", None)
         api_key = None
+        base_url = None
         if classifier_cfg and classifier_cfg.enabled:
             if classifier_cfg.provider:
                 api_key = cfg.get_provider_api_key(classifier_cfg.provider)
+                provider_cfg = cfg.providers.get(classifier_cfg.provider)
+                base_url = provider_cfg.base_url if provider_cfg else None
             try:
                 result = classify_intent(
                     text,
@@ -417,6 +527,7 @@ def submit_goal_action(
                     classifier_model=classifier_cfg.model,
                     timeout=classifier_cfg.timeout,
                     api_key=api_key,
+                    base_url=base_url,
                 )
                 intent = result["intent"]
             except Exception:
@@ -451,6 +562,8 @@ def submit_goal_action(
         classifier_cfg = getattr(cfg, "classifier", None)
         provider_key = classifier_cfg.provider if classifier_cfg else ""
         api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
+        provider_cfg = cfg.providers.get(provider_key) if provider_key else None
+        base_url = provider_cfg.base_url if provider_cfg else None
         try:
             answer = answer_question_via_api(
                 provider_key=provider_key,
@@ -458,6 +571,7 @@ def submit_goal_action(
                 project_path=project_info["path"],
                 model_override=classifier_cfg.model if classifier_cfg else "",
                 api_key=api_key,
+                base_url=base_url,
             )
         except Exception as exc:
             answer = f"回答失败：{exc}"
@@ -692,9 +806,12 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
         cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
         classifier_cfg = getattr(cfg, "classifier", None)
         api_key = None
+        base_url = None
         if classifier_cfg and classifier_cfg.enabled:
             if classifier_cfg.provider:
                 api_key = cfg.get_provider_api_key(classifier_cfg.provider)
+                provider_cfg = cfg.providers.get(classifier_cfg.provider)
+                base_url = provider_cfg.base_url if provider_cfg else None
             try:
                 result = classify_intent(
                     text,
@@ -703,6 +820,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
                     classifier_model=classifier_cfg.model,
                     timeout=classifier_cfg.timeout,
                     api_key=api_key,
+                    base_url=base_url,
                 )
                 intent = result["intent"]
             except Exception:
@@ -728,6 +846,8 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
         classifier_cfg = getattr(cfg, "classifier", None)
         provider_key = classifier_cfg.provider if classifier_cfg else ""
         api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
+        provider_cfg = cfg.providers.get(provider_key) if provider_key else None
+        base_url = provider_cfg.base_url if provider_cfg else None
         try:
             answer = answer_question_via_api(
                 provider_key=provider_key,
@@ -735,6 +855,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
                 project_path=project_info["path"],
                 model_override=classifier_cfg.model if classifier_cfg else "",
                 api_key=api_key,
+                base_url=base_url,
             )
         except Exception as exc:
             answer = f"回答失败：{exc}"

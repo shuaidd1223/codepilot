@@ -19,10 +19,11 @@ from pathlib import Path
 import click
 
 from codepilot.output import echo, safe
+from codepilot.paths import global_storage_root
 from codepilot.runtime import is_process_alive, stop_process_tree
 
 
-STATE_DIR = Path.home() / ".codepilot"
+STATE_DIR = global_storage_root() / "webui"
 PID_FILE = STATE_DIR / "webui.pid"
 META_FILE = STATE_DIR / "webui.json"
 LOG_FILE = STATE_DIR / "webui.log"

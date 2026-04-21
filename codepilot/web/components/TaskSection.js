@@ -29,18 +29,34 @@ CP.Components.TaskSection = Vue.defineComponent({
               <cp-chip>{{ x.agent || '-' }}</cp-chip>
               <cp-chip>重试 {{ x.retry_count || 0 }}/{{ x.max_retries || 0 }}</cp-chip>
               <cp-chip v-if="x.source === 'auto-inspect'" tone="warning">巡检</cp-chip>
+              <cp-chip v-if="x.skip_reason" tone="warning" tiny>预检跳过</cp-chip>
             </div>
             <div class="task-item-meta">
               <span>阶段: {{ x.phase || '-' }}</span>
               <span v-if="x.started_at">开始: {{ $cp.fmtTime(x.started_at) }}</span>
               <span v-if="x.completed_at">完成: {{ $cp.fmtTime(x.completed_at) }}</span>
             </div>
-            <div class="task-item-preview">{{ x.runtime || x.error_message || x.latest || '暂无详细信息' }}</div>
+            <div class="task-item-preview"
+                 :class="{ 'preview-warning': x.skip_reason, 'preview-danger': !x.skip_reason && x.error_message }">
+              {{ x.runtime || x.skip_reason || x.error_message || x.latest || '暂无详细信息' }}
+            </div>
           </div>
           <div class="task-item-actions" @click.stop>
-            <button v-if="x.actions.promote" class="btn btn-outline btn-sm" @click="action(x.id, 'promote')">插队</button>
-            <button v-if="x.actions.retry" class="btn btn-warning btn-sm" @click="action(x.id, 'retry')">重试</button>
-            <button v-if="x.actions.stop" class="btn btn-danger btn-sm" @click="action(x.id, 'stop')">停止</button>
+            <button v-if="x.actions.promote" class="btn btn-outline btn-sm" @click="action(x.id, 'promote')"
+                    :disabled="cp.isTaskPending(x.id)">
+              <span v-if="cp.taskPendingAction(x.id) === 'promote'" class="spinner"></span>
+              插队
+            </button>
+            <button v-if="x.actions.retry" class="btn btn-warning btn-sm" @click="action(x.id, 'retry')"
+                    :disabled="cp.isTaskPending(x.id)">
+              <span v-if="cp.taskPendingAction(x.id) === 'retry'" class="spinner"></span>
+              重试
+            </button>
+            <button v-if="x.actions.stop" class="btn btn-danger btn-sm" @click="action(x.id, 'stop')"
+                    :disabled="cp.isTaskPending(x.id)">
+              <span v-if="cp.taskPendingAction(x.id) === 'stop'" class="spinner"></span>
+              停止
+            </button>
           </div>
         </article>
       </div>
