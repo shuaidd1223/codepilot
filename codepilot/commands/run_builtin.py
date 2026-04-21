@@ -883,7 +883,7 @@ def _run_builtin_executor(
     # main loop can kill wedged agents before the 1h wall-time timeout.
     silence_timeout = 0
     try:
-        _cfg = load_project_config(project_path, config_file=project.get("config_file"))
+        _cfg = load_project_config(project)
         silence_timeout = int(getattr(getattr(_cfg, "automation", None), "agent_silence_timeout_seconds", 0) or 0)
     except Exception:
         silence_timeout = 0

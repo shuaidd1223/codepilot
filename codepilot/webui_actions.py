@@ -586,7 +586,7 @@ def submit_goal_action(
         category = "auto"
 
     if category == "auto":
-        cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+        cfg = load_project_config(project_info)
         classifier_cfg = getattr(cfg, "classifier", None)
         api_key = None
         base_url = None
@@ -634,7 +634,7 @@ def submit_goal_action(
         }
 
     if intent == "question":
-        cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+        cfg = load_project_config(project_info)
         classifier_cfg = getattr(cfg, "classifier", None)
         provider_key = classifier_cfg.provider if classifier_cfg else ""
         api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
@@ -880,7 +880,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
 
     category = (category or "auto").lower()
     if category == "auto":
-        cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+        cfg = load_project_config(project_info)
         classifier_cfg = getattr(cfg, "classifier", None)
         api_key = None
         base_url = None
@@ -919,7 +919,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
         return {"ok": True, "intent": "command", "message": reply, "task_ids": []}
 
     if intent == "question":
-        cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+        cfg = load_project_config(project_info)
         classifier_cfg = getattr(cfg, "classifier", None)
         provider_key = classifier_cfg.provider if classifier_cfg else ""
         api_key = cfg.get_provider_api_key(provider_key) if provider_key else None

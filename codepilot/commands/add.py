@@ -19,6 +19,7 @@ from codepilot.ai import (
     resolve_agent_with_fallback,
 )
 from codepilot.commands.status import _resolve_project
+from codepilot.config import resolve_project_config_reference
 from codepilot.output import echo
 
 
@@ -39,7 +40,7 @@ def _resolve_project_strict(ctx, param, value):
 
 
 def _resolve_agent_info(ctx, value) -> tuple[str, str | None, str | None]:
-    """Resolve agent with fallback.  Returns (agent, fallback_reason, project_path)."""
+    """Resolve agent with fallback.  Returns (agent, fallback_reason, config_ref)."""
     if not value:
         value = "dual"
 
@@ -49,7 +50,7 @@ def _resolve_agent_info(ctx, value) -> tuple[str, str | None, str | None]:
         project_name = ctx.params.get("project")
         project_info = db.get_project(project_name) if project_name else None
         if project_info:
-            project_path = project_info.get("path")
+            project_path = resolve_project_config_reference(project_info)
             default_mode = project_info.get("default_mode") or "dual"
 
     agent, fallback_reason = resolve_agent_with_fallback(
@@ -199,6 +200,7 @@ def add(
         json_mode = ctx.parent.obj.get("json_mode", False)
     proj_info = db.get_project(project)
     proj_path = proj_info.get("path", "") if proj_info else ""
+    config_ref = resolve_project_config_reference(proj_info) if proj_info else proj_path
 
     # 解析依赖
     dep_list: list[int] | None = None
@@ -210,7 +212,7 @@ def add(
     if batch_file:
         return _batch_add(
             project, batch_file, agent, priority, no_ai, dep_list,
-            proj_path, json_mode,
+            proj_path, json_mode, config_ref=config_ref,
         )
 
     # 单条模式
@@ -223,7 +225,7 @@ def add(
 
     _single_add(
         project, title, effective_agent, priority, no_ai, dep_list, proj_path,
-        json_mode, fallback_reason=fallback_reason,
+        json_mode, fallback_reason=fallback_reason, config_ref=config_ref,
     )
 
 
@@ -237,6 +239,7 @@ def _single_add(
     proj_path: str,
     json_mode: bool,
     fallback_reason: str | None = None,
+    config_ref: str | Path | None = None,
 ):
     """添加单个任务."""
     if fallback_reason:
@@ -247,7 +250,12 @@ def _single_add(
         echo("[yellow]跳过 AI 生成，内容为空[/yellow]")
     else:
         echo(f"[cyan]调用 {agent} 生成任务内容...[/cyan]")
-        content = generate_task_content(title, project_path=proj_path, agent=agent)
+        content = generate_task_content(
+            title,
+            project_path=proj_path,
+            agent=agent,
+            config_ref=config_ref,
+        )
         echo("[green][OK] AI 生成完成[/green]")
 
     task = db.create_task(
@@ -291,6 +299,7 @@ def _batch_add(
     dep_list: list[int] | None,
     proj_path: str,
     json_mode: bool,
+    config_ref: str | Path | None = None,
 ):
     """批量添加任务."""
     echo(f"[cyan]批量导入: {batch_file}[/cyan]")
@@ -339,7 +348,10 @@ def _batch_add(
         else:
             try:
                 content = generate_task_content(
-                    item_title, project_path=proj_path, agent=item_agent
+                    item_title,
+                    project_path=proj_path,
+                    agent=item_agent,
+                    config_ref=config_ref,
                 )
             except RuntimeError:
                 content = ""

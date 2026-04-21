@@ -549,7 +549,7 @@ def _maybe_run_inspect(project: str | None, last_at: dict[str, float], verbose: 
         if not proj:
             continue
         try:
-            cfg = load_project_config(Path(proj["path"]))
+            cfg = load_project_config(proj)
         except Exception:
             continue
         ins = getattr(cfg, "inspect", None)
@@ -563,7 +563,7 @@ def _maybe_run_inspect(project: str | None, last_at: dict[str, float], verbose: 
         echo(f"[cyan][{stamp}] 巡检 {name}[/cyan]")
         try:
             result = run_inspection(
-                {"name": name, "path": proj["path"]},
+                {"name": name, "path": proj["path"], "config_file": proj.get("config_file")},
                 max_new_tasks=ins.max_new_tasks_per_round,
                 signals=ins.signals,
                 auto_execute=ins.auto_execute,

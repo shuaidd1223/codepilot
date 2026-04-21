@@ -22,7 +22,12 @@ from typing import Optional
 import click
 
 from codepilot import db
-from codepilot.config import find_config, load_config, load_project_config
+from codepilot.config import (
+    find_config,
+    load_config,
+    load_project_config,
+    resolve_project_config_reference,
+)
 
 TEMP_SESSION_NAME = "公共临时会话"
 
@@ -136,7 +141,7 @@ def clarify_requirement(
 
     qa_history = list(qa_history or [])
 
-    cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+    cfg = load_project_config(project_info)
     if cfg and not getattr(cfg.automation, "clarify_vague_requirements", True):
         return {
             "status": "ready",
@@ -250,12 +255,12 @@ def resolve_project_for_prompt(
 
 
 def _project_config(project_info: dict):
-    return load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+    return load_project_config(project_info)
 
 
 def _provider_context(project_info: dict) -> str:
     """Prefer an explicitly stored AGENTS.toml path when resolving CLI providers."""
-    return project_info.get("config_file") or project_info["path"]
+    return str(resolve_project_config_reference(project_info) or project_info["path"])
 
 
 def _has_explicit_automation_task_agent(project_info: dict, cfg=None) -> bool:
@@ -401,7 +406,7 @@ def run_requirement_workflow(
     max_retries = effective["max_retries"]
     task_agent = shell._resolve_task_agent(project_info, task_agent, executor)
 
-    cfg = load_project_config(project_info.get("path"), config_file=project_info.get("config_file"))
+    cfg = _project_config(project_info)
     two_stage_enabled = True
     if cfg and not getattr(cfg.automation, "two_stage_planning", True):
         two_stage_enabled = False

@@ -167,7 +167,7 @@ def start_inspect_service(
             pass
         raise RuntimeError(f"巡检启动后立即退出（exit={proc.returncode}）\n{tail}")
     proj = db.get_project(project)
-    cfg = load_project_config(Path(proj["path"])) if proj else None
+    cfg = load_project_config(proj) if proj else None
     effective_interval = interval if interval is not None else int(getattr(getattr(cfg, "inspect", None), "interval_seconds", 1800) or 1800)
     effective_planner = planner or (resolve_planner(cfg, "inspect") if cfg else "codex")
     _write_inspect_meta(project, proc.pid, interval=effective_interval, planner=effective_planner, agent=agent)
@@ -883,7 +883,7 @@ def run_inspection(
         code_metrics=code_metrics,
     )
 
-    cfg = load_project_config(project_path)
+    cfg = load_project_config(project_info)
     classifier_cfg = getattr(cfg, "classifier", None)
     provider_key = classifier_cfg.provider if classifier_cfg else ""
     model = classifier_cfg.model if classifier_cfg else ""
@@ -1070,9 +1070,9 @@ def inspect(
             echo(f"[yellow]项目 {project} 巡检已在运行[/yellow]  PID={result['pid']}")
         echo(f"[dim]日志: {result['log']}[/dim]")
         return
-    project_info = {"name": proj["name"], "path": proj["path"]}
+    project_info = {"name": proj["name"], "path": proj["path"], "config_file": proj.get("config_file")}
 
-    cfg = load_project_config(Path(proj["path"]))
+    cfg = load_project_config(proj)
     ins = cfg.inspect
     limit = max_new if max_new is not None else ins.max_new_tasks_per_round
     sleep_seconds = interval if interval is not None else ins.interval_seconds

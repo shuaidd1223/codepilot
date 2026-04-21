@@ -287,7 +287,7 @@ CLI_COMMAND_ENV_VARS: dict[str, str] = {
 
 def resolve_api_provider(
     provider_key: str,
-    project_path: str | Path | None = None,
+    project_path: str | Path | dict | None = None,
     *,
     config_file: str | Path | None = None,
 ) -> APIProvider:
@@ -556,12 +556,12 @@ def _get_node_modules_path() -> str:
     return str(Path(node).parent / "node_modules")
 
 
-def _load_project_config(project_path: str | Path | None = None):
+def _load_project_config(project_path: str | Path | dict | None = None):
     """Load AGENTS.toml from an explicit project path or the current working tree."""
     return load_project_config(project_path)
 
 
-def _configured_cli_command(provider_key: str, project_path: str | Path | None = None) -> str:
+def _configured_cli_command(provider_key: str, project_path: str | Path | dict | None = None) -> str:
     """Resolve CLI command overrides from env vars or AGENTS.toml."""
     env_var = CLI_COMMAND_ENV_VARS.get(provider_key)
     if env_var:
@@ -579,7 +579,7 @@ def _configured_cli_command(provider_key: str, project_path: str | Path | None =
     return ""
 
 
-def resolve_cli_provider(provider_key: str, project_path: str | Path | None = None) -> CLIProvider:
+def resolve_cli_provider(provider_key: str, project_path: str | Path | dict | None = None) -> CLIProvider:
     """Return the effective CLI provider with project-local command overrides applied."""
     provider = CLI_PROVIDERS[provider_key]
     config_key = "claude" if provider_key == "claude" else provider_key

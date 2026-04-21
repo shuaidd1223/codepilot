@@ -129,7 +129,7 @@ def is_builtin_phase_agent_supported(agent: str) -> bool:
 
 
 def resolve_dual_phase_agents(
-    project_path: str | Path | None = None,
+    project_path: str | Path | dict | None = None,
     *,
     builder: Optional[str] = None,
     reviewer: Optional[str] = None,
@@ -154,6 +154,7 @@ def generate_task_content(
     project_path: str = "",
     agent: str = "codex",
     api_keys: Optional[dict[str, str]] = None,
+    config_ref: str | Path | dict | None = None,
 ) -> str:
     """
     调用 AI 生成任务内容。
@@ -173,7 +174,8 @@ def generate_task_content(
     """
     # 规范化 agent 名称
     normalized = normalize_agent_name(agent)
-    available, message = check_provider_availability(normalized, project_path=project_path)
+    provider_ref = config_ref or project_path
+    available, message = check_provider_availability(normalized, project_path=provider_ref)
     if not available:
         raise RuntimeError(message)
     if normalized == "dual":
@@ -193,7 +195,7 @@ def generate_task_content(
 
     # 根据类型选择执行方式
     if normalized in API_PROVIDERS:
-        provider = resolve_api_provider(normalized, project_path)
+        provider = resolve_api_provider(normalized, provider_ref)
 
         # 覆盖 API 密钥
         if api_keys and normalized in api_keys:
@@ -202,7 +204,7 @@ def generate_task_content(
         return _run_api_provider(provider, prompt)
 
     elif normalized in CLI_PROVIDERS:
-        provider = resolve_cli_provider(normalized, project_path)
+        provider = resolve_cli_provider(normalized, provider_ref)
 
         # Claude Node 特殊处理
         if normalized == "claude-node":
@@ -240,7 +242,7 @@ def list_available_providers() -> dict[str, list[str]]:
     }
 
 
-def check_provider_availability(agent: str, project_path: str | Path | None = None) -> tuple[bool, str]:
+def check_provider_availability(agent: str, project_path: str | Path | dict | None = None) -> tuple[bool, str]:
     """
     检查 provider 是否可用。
 
@@ -322,7 +324,7 @@ def check_provider_availability(agent: str, project_path: str | Path | None = No
 
 def resolve_agent_with_fallback(
     agent: str,
-    project_path: str | Path | None = None,
+    project_path: str | Path | dict | None = None,
     default_mode: str = "dual",
 ) -> tuple[str, str | None]:
     """Check if *agent* is usable; if not, fall back to *default_mode*.

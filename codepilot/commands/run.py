@@ -28,7 +28,11 @@ from codepilot.ai import (
 )
 from codepilot.ai_gateway import GatewayRequest, call_structured
 from codepilot.commands.status import _resolve_project, render_project_dashboard
-from codepilot.config import load_project_config, resolve_planner
+from codepilot.config import (
+    load_project_config,
+    resolve_planner,
+    resolve_project_config_reference,
+)
 from codepilot.output import echo, safe
 from codepilot.paths import project_storage_root
 from codepilot.prompts import load_prompt as _load_prompt
@@ -117,8 +121,6 @@ STATUS_CONSOLE = Console()
 
 
 def _project_config(project_ref: str | dict | None):
-    if isinstance(project_ref, dict):
-        return load_project_config(project_ref.get("path"), config_file=project_ref.get("config_file"))
     return load_project_config(project_ref)
 
 
@@ -344,12 +346,9 @@ def _resolve_triage_project_context(task: dict) -> tuple[str, str, object | None
     if not project_path and project:
         project_path = str(project.get("path") or "").strip()
 
-    config_ref = config_file or project_path
-    config = (
-        load_project_config(project_path or "", config_file=config_file or None)
-        if config_ref
-        else None
-    )
+    project_ref = project or {"path": project_path, "config_file": config_file}
+    config_ref = resolve_project_config_reference(project_ref)
+    config = load_project_config(project_ref) if config_ref else None
     return project_path, config_ref, config
 
 

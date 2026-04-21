@@ -7,7 +7,12 @@ from click.testing import CliRunner
 from codepilot import db
 from codepilot.cli import main
 from codepilot.commands import inspect as inspect_cmd
-from codepilot.config import AgentsConfig
+from codepilot.config import (
+    GLOBAL_CONFIG_PATH_ENV,
+    AgentsConfig,
+    load_project_config,
+    resolve_project_config_reference,
+)
 
 
 def _write(path: Path, body: str) -> None:
@@ -16,6 +21,7 @@ def _write(path: Path, body: str) -> None:
 
 
 def _register_project(tmp_path, monkeypatch, name: str, agents_toml: str) -> Path:
+    monkeypatch.setenv(GLOBAL_CONFIG_PATH_ENV, str(tmp_path / "missing-global-AGENTS.toml"))
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     db.init_db()
 
@@ -189,6 +195,77 @@ provider = "deepseek"
     assert parsed["providers"]["deepseek"]["api_key"] == ""
     assert parsed["providers"]["deepseek"]["model"] == ""
     assert parsed["providers"]["deepseek"]["base_url"] == ""
+
+
+def test_load_project_config_accepts_registered_project_config_file(tmp_path, monkeypatch):
+    monkeypatch.setenv(GLOBAL_CONFIG_PATH_ENV, str(tmp_path / "missing-global-AGENTS.toml"))
+    project_path = tmp_path / "project"
+    config_root = tmp_path / "config-root"
+    project_path.mkdir()
+    _write(
+        project_path / "AGENTS.toml",
+        """
+[project]
+name = "local"
+
+[automation]
+planner = "codex"
+""".strip(),
+    )
+    config_file = config_root / "AGENTS.toml"
+    _write(
+        config_file,
+        """
+[project]
+name = "registered"
+
+[automation]
+planner = "claude"
+""".strip(),
+    )
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "config_file": str(config_file),
+    }
+
+    cfg = load_project_config(project_info)
+
+    assert resolve_project_config_reference(project_info) == str(config_file)
+    assert cfg is not None
+    assert cfg.project.name == "registered"
+    assert cfg.automation.planner == "claude"
+
+
+def test_inspect_uses_registered_project_config_file(tmp_path, monkeypatch):
+    monkeypatch.setenv(GLOBAL_CONFIG_PATH_ENV, str(tmp_path / "missing-global-AGENTS.toml"))
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    config_file = tmp_path / "config-root" / "AGENTS.toml"
+    _write(
+        config_file,
+        """
+[project]
+name = "demo"
+
+[inspect]
+planner = "claude"
+max_new_tasks_per_round = 2
+""".strip(),
+    )
+    db.register_project("demo", str(project_path), config_file=str(config_file))
+    captured = {}
+    _stub_inspection(monkeypatch, captured)
+
+    result = CliRunner().invoke(
+        main,
+        ["inspect", "-p", "demo", "--once", "--dry-run", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["demo"] == "claude"
 
 
 def test_inspect_prefers_explicit_planner(tmp_path, monkeypatch):

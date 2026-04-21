@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -540,12 +541,53 @@ def resolve_planner(
     return "codex"
 
 
+def resolve_project_config_inputs(
+    project_ref: Optional[str | Path | Mapping[str, Any]] = None,
+    *,
+    config_file: Optional[str | Path] = None,
+) -> tuple[Optional[str | Path], Optional[str | Path]]:
+    """Normalize a project path/file reference into config-resolution inputs.
+
+    Callers often already hold the DB project row, where ``config_file`` is the
+    authoritative project-level override. This helper is the single place that
+    turns that row into ``(project_path, config_file)`` so runtime entry points
+    do not accidentally ignore the registered override and rediscover a nearby
+    ``AGENTS.toml`` instead.
+    """
+    if isinstance(project_ref, Mapping):
+        explicit_config = project_ref.get("config_file") or None
+        project_path = project_ref.get("path") or None
+        return project_path, config_file or explicit_config
+    return project_ref, config_file
+
+
+def resolve_project_config_reference(
+    project_ref: Optional[str | Path | Mapping[str, Any]] = None,
+    *,
+    config_file: Optional[str | Path] = None,
+) -> Optional[str | Path]:
+    """Return the best reference to use for provider/config lookup."""
+    project_path, resolved_config_file = resolve_project_config_inputs(
+        project_ref,
+        config_file=config_file,
+    )
+    if resolved_config_file:
+        candidate = Path(resolved_config_file).expanduser()
+        if candidate.is_file() or candidate.is_dir():
+            return resolved_config_file
+    return project_path
+
+
 def resolve_config_path(
-    project_path: Optional[str | Path] = None,
+    project_path: Optional[str | Path | Mapping[str, Any]] = None,
     *,
     config_file: Optional[str | Path] = None,
 ) -> Optional[Path]:
     """Resolve the effective AGENTS.toml path from an explicit file or project path."""
+    project_path, config_file = resolve_project_config_inputs(
+        project_path,
+        config_file=config_file,
+    )
     if config_file:
         candidate = Path(config_file).expanduser()
         if candidate.is_file():
@@ -570,11 +612,15 @@ def resolve_config_path(
 
 
 def load_project_config(
-    project_path: Optional[str | Path] = None,
+    project_path: Optional[str | Path | Mapping[str, Any]] = None,
     *,
     config_file: Optional[str | Path] = None,
 ) -> Optional[AgentsConfig]:
     """Load effective config with precedence: global defaults < project overrides."""
+    project_path, config_file = resolve_project_config_inputs(
+        project_path,
+        config_file=config_file,
+    )
     resolved_local = resolve_config_path(project_path, config_file=config_file)
     global_path = find_global_config()
 
