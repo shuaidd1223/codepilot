@@ -297,24 +297,31 @@ def go(
         auto_register=False,
         require_registered=True,
     )
-    effective_planner = planner or "codex"
+    effective = _resolve_effective_options(
+        project_info,
+        planner=planner,
+        executor=executor,
+        auto_commit=auto_commit,
+        max_tasks=max_tasks,
+        max_retries=max_retries,
+    )
     text = _clarify_requirement_for_go(
         text,
         project_info=project_info,
-        planner=effective_planner,
+        planner=effective["planner"],
     )
     try:
         run_requirement_workflow(
             project_info=project_info,
             title=text,
-            planner=effective_planner,
+            planner=planner,
             task_agent=task_agent,
             priority=priority,
-            max_tasks=max_tasks or 5,
+            max_tasks=max_tasks,
             execute=execute,
-            executor=executor or "auto",
-            auto_commit=auto_commit if auto_commit is not None else True,
-            max_retries=max_retries or 3,
+            executor=executor,
+            auto_commit=auto_commit,
+            max_retries=max_retries,
             json_mode=json_mode,
         )
     except click.ClickException:

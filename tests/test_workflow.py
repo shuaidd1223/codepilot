@@ -977,6 +977,100 @@ def test_root_command_passes_selected_task_agent(tmp_path, monkeypatch):
     assert captured["task_agent"] == "codex"
 
 
+def test_plain_text_command_uses_registered_config_file_over_project_agents_toml(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    config_root = tmp_path / "config-root"
+    project_path.mkdir()
+    config_root.mkdir()
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "local"
+default_mode = "codex"
+
+[automation]
+planner = "codex"
+task_agent = "codex"
+executor = "builtin"
+auto_execute = true
+auto_commit = true
+max_tasks = 1
+max_retries = 1
+two_stage_planning = true
+""".strip(),
+        encoding="utf-8",
+    )
+    config_file = config_root / "AGENTS.toml"
+    config_file.write_text(
+        """
+[project]
+name = "demo"
+default_mode = "dual"
+
+[automation]
+planner = "claude"
+task_agent = "claude"
+executor = "builtin"
+auto_execute = false
+auto_commit = false
+max_tasks = 3
+max_retries = 7
+two_stage_planning = false
+""".strip(),
+        encoding="utf-8",
+    )
+    db.register_project("demo", str(project_path), config_file=str(config_file))
+    monkeypatch.chdir(project_path)
+    captured = {"provider_calls": []}
+
+    def fake_check_provider(agent, project_path=None):
+        captured["provider_calls"].append((agent, project_path))
+        return True, f"ok:{agent}"
+
+    def fake_generate_task_breakdown(**kwargs):
+        captured["planner_kwargs"] = kwargs
+        return {
+            "summary": "ok",
+            "complexity": "simple",
+            "should_split": False,
+            "tasks": [
+                {
+                    "title": "config override step",
+                    "priority": "P2",
+                    "goal": "exercise project-level config override parsing",
+                    "acceptance_criteria": ["a"],
+                    "builder_notes": [],
+                    "reviewer_notes": [],
+                    "files": [],
+                    "notes": [],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(auto_cmd, "check_provider_availability", fake_check_provider)
+    monkeypatch.setattr(auto_cmd, "generate_task_breakdown", fake_generate_task_breakdown)
+    monkeypatch.setattr(auto_cmd, "render_project_dashboard", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        auto_cmd,
+        "run_backlog",
+        lambda *args, **kwargs: pytest.fail("auto_execute=false should not run backlog"),
+    )
+
+    result = CliRunner().invoke(main, ["--project", "demo", "config override regression"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["planner_kwargs"]["planner"] == "claude"
+    assert captured["planner_kwargs"]["max_tasks"] == 3
+    assert captured["planner_kwargs"]["two_stage"] is False
+    assert captured["planner_kwargs"]["config_ref"] == str(config_file)
+    assert captured["provider_calls"] == [("claude", str(config_file))]
+    tasks = db.list_tasks(project="demo")
+    assert len(tasks) == 1
+    assert tasks[0]["agent"] == "claude"
+    assert tasks[0]["max_retries"] == 7
+
+
 def test_run_requirement_workflow_executes_without_retry_requeue(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
