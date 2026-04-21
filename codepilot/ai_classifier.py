@@ -114,6 +114,7 @@ def classify_intent(
     timeout: int = 30,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
+    config_ref: str = "",
 ) -> dict:
     """Classify a chat input as question / task / requirement.
 
@@ -143,6 +144,7 @@ def classify_intent(
             api_key=api_key,
             base_url=base_url,
             project_path=project_path,
+            config_ref=config_ref,
             planner="claude",  # classification is latency-sensitive; prefer claude
             timeout=timeout,
         )
@@ -178,6 +180,7 @@ def answer_question_via_api(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     history: list[dict] | None = None,
+    config_ref: str = "",
 ) -> str:
     """Answer a user question directly without creating a task.
 
@@ -210,6 +213,7 @@ def answer_question_via_api(
             api_key=api_key,
             base_url=base_url,
             project_path=project_path,
+            config_ref=config_ref,
             planner="claude",
             timeout=120,
         )

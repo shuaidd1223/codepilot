@@ -281,31 +281,32 @@ def call_structured(request: GatewayRequest) -> GatewayResponse:
     """
     if request.schema is None:
         raise ValueError("call_structured requires a schema; use call_text for free-form output")
-
-    api_result = _try_api(request)
-    if api_result is not None and api_result.ok:
-        return api_result
-
-    cli_result = _try_cli_structured(request)
-    if cli_result.ok:
-        return cli_result
-
-    # Combine the error tail so the caller can log it without losing context.
-    api_err = api_result.error if api_result is not None else ""
-    combined = "; ".join(err for err in (api_err, cli_result.error) if err)
-    return GatewayResponse(ok=False, source=cli_result.source, error=combined)
+    return _call_with_fallback(request, cli_runner=_try_cli_structured)
 
 
 def call_text(request: GatewayRequest) -> GatewayResponse:
     """Run a prompt expecting a free-form textual answer."""
     if request.schema is not None:
         raise ValueError("call_text is for free-form output; use call_structured with a schema")
+    return _call_with_fallback(request, cli_runner=_try_cli_text)
 
+
+def _call_with_fallback(
+    request: GatewayRequest,
+    *,
+    cli_runner,
+) -> GatewayResponse:
+    """Single fallback decision entry for API → CLI routing.
+
+    This keeps the fallback behavior identical for both structured and text
+    calls: try API first (when configured), then fall through to CLI, and
+    surface a merged error tail when both paths fail.
+    """
     api_result = _try_api(request)
     if api_result is not None and api_result.ok:
         return api_result
 
-    cli_result = _try_cli_text(request)
+    cli_result = cli_runner(request)
     if cli_result.ok:
         return cli_result
 

@@ -231,6 +231,25 @@ def test_call_structured_reports_combined_error_when_both_fail(gateway_state, mo
     assert "codex CLI error" in resp.error
 
 
+def test_call_text_reports_combined_error_when_both_fail(monkeypatch):
+    monkeypatch.setattr(
+        ai_gateway,
+        "_try_api",
+        lambda _request: GatewayResponse(ok=False, source="api:test", error="api down"),
+    )
+    monkeypatch.setattr(
+        ai_gateway,
+        "_try_cli_text",
+        lambda _request: GatewayResponse(ok=False, source="cli:none", error="cli down"),
+    )
+
+    resp = ai_gateway.call_text(GatewayRequest(prompt="hi"))
+
+    assert resp.ok is False
+    assert resp.source == "cli:none"
+    assert resp.error == "api down; cli down"
+
+
 def test_call_text_requires_no_schema():
     with pytest.raises(ValueError):
         ai_gateway.call_text(

@@ -335,3 +335,29 @@ def test_chat_exit_does_not_stop_global_webui_service(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert calls == []
+
+
+def test_chat_passes_shared_gateway_config_ref_for_classifier_and_answer(tmp_path, monkeypatch):
+    """Chat should pass a shared gateway config_ref to both classifier and QA paths."""
+    project_path = _register_project(tmp_path, monkeypatch)
+
+    captured: dict[str, dict] = {}
+
+    def _fake_classify(text, **kwargs):
+        captured["classify"] = kwargs
+        return {"intent": "question", "reason": "test", "source": "test"}
+
+    def _fake_answer(**kwargs):
+        captured["answer"] = kwargs
+        return "来自问答路径"
+
+    monkeypatch.setattr(auto_mod, "classify_intent", _fake_classify)
+    monkeypatch.setattr(auto_mod, "answer_question_via_api", _fake_answer)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat", "--no-ui"], input="随便说点什么\n/exit\n")
+
+    assert result.exit_code == 0
+    assert "来自问答路径" in result.output
+    assert captured["classify"]["config_ref"] == str(project_path)
+    assert captured["answer"]["config_ref"] == str(project_path)
