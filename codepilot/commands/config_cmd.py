@@ -378,7 +378,10 @@ def render_agents_toml(canonical: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _resolve_config_target(path: Path | None) -> Path:
+def _resolve_config_target(path: Path | None, *, use_global: bool = False) -> Path:
+    if use_global:
+        return config_mod.resolve_global_config_path()
+
     if path is None:
         found = config_mod.find_config()
         if found is not None:
@@ -397,10 +400,14 @@ def config_group() -> None:
 
 @config_group.command("sync")
 @click.argument("path", required=False, type=click.Path(path_type=Path))
+@click.option("--global", "global_mode", is_flag=True, help="同步全局配置（~/.codepilot/AGENTS.toml）")
 @click.option("--dry-run", is_flag=True, help="只输出同步后的内容，不写文件")
-def sync(path: Path | None, dry_run: bool) -> None:
+def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
     """同步 AGENTS.toml：补默认项、移除未知项、保留已有有效值。"""
-    config_path = _resolve_config_target(path)
+    if global_mode and path is not None:
+        raise click.ClickException("--global 与 PATH 不能同时使用。")
+
+    config_path = _resolve_config_target(path, use_global=global_mode)
     data: dict[str, Any] = {}
     if config_path.exists():
         try:

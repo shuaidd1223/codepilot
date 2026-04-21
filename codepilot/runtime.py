@@ -556,7 +556,12 @@ def list_live_tasks(project: Optional[str] = None) -> list[dict]:
 
 
 def reap_stalled_tasks(project: Optional[str] = None, *, stale_after_seconds: int = STALE_AFTER_SECONDS) -> list[dict]:
-    """Fail in-progress tasks whose heartbeat expired and whose process is gone."""
+    """Recover stale in-progress tasks whose heartbeat expired and process is gone.
+
+    A stale task is treated as a retryable execution failure: increment retry
+    count and requeue to ``backlog`` while retries remain; only mark ``failed``
+    once ``max_retries`` is exhausted.
+    """
     now = datetime.now()
     reaped: list[dict] = []
     for task in db.list_tasks(project=project, status="in_progress"):
@@ -575,23 +580,26 @@ def reap_stalled_tasks(project: Optional[str] = None, *, stale_after_seconds: in
         if active_pid:
             stop_process_tree(active_pid)
 
+        retry_count = int(task.get("retry_count") or 0) + 1
+        max_retries = max(1, int(task.get("max_retries") or 3))
+        exhausted = retry_count >= max_retries
+        action_text = (
+            "系统已将其标记为 failed，避免任务长期卡在 in_progress。"
+            if exhausted
+            else f"系统已回退到 backlog，等待自动重试（{retry_count}/{max_retries}）。"
+        )
         message = (
             f"任务运行心跳已超过 {stale_after_seconds} 秒，且执行进程不存在。"
-            "系统已将其标记为 failed，避免任务长期卡在 in_progress。"
+            f"{action_text}"
         )
-        reaped.append(
-            db.update_task(
+        updated = db.increment_task_retry(task["id"], message[:4000])
+        if exhausted:
+            updated = db.update_task(
                 task["id"],
-                status="failed",
-                error_message=message,
                 completed_at=now.isoformat(),
                 stop_requested=0,
                 stop_reason=None,
-                run_phase=None,
-                heartbeat_at=None,
-                active_pid=None,
-                current_log_path=None,
-                last_output=None,
             )
-        )
+        if updated:
+            reaped.append(updated)
     return [task for task in reaped if task]

@@ -11,11 +11,13 @@ from codepilot import db
 from codepilot import webui as webui_mod
 from codepilot.cli import main
 from codepilot.commands import auto as auto_mod
+from codepilot.commands import auto_chat as auto_chat_mod
 
 
 def _init_test_db(tmp_path, monkeypatch):
     db_path = tmp_path / "tasks.db"
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(db_path))
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
     db.init_db()
     webui_mod._UI_JOBS.clear()
     webui_mod._UI_EVENTS.clear()
@@ -28,6 +30,7 @@ def _register_project(tmp_path, monkeypatch):
     project_path.mkdir()
     (project_path / "README.md").write_text("# Demo", encoding="utf-8")
     db.register_project("demo", str(project_path))
+    monkeypatch.chdir(project_path)
     return project_path
 
 
@@ -56,10 +59,12 @@ def test_chat_question_heuristic_does_not_create_task(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_mod, "classify_intent", _heuristic_only)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["chat"], input="怎么用这个工具\n/exit\n")
+    result = runner.invoke(main, ["chat", "--no-ui"], input="怎么用这个工具\n/exit\n")
 
     assert result.exit_code == 0
     assert "CodePilot 是一个工作流工具" in result.output
+    assert "阶段 1/3：正在识别输入意图" in result.output
+    assert "阶段 2/2：正在检索上下文并回答" in result.output
     # Should NOT have created any task
     tasks = db.list_tasks(project="demo")
     assert len(tasks) == 0
@@ -95,10 +100,13 @@ def test_chat_requirement_heuristic_triggers_planning(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_mod, "classify_intent", _heuristic_only)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["chat"], input="帮我修复登录 bug\n/exit\n")
+    result = runner.invoke(main, ["chat", "--no-ui"], input="帮我修复登录 bug\n/exit\n")
 
     assert result.exit_code == 0
     assert planning_called["count"] >= 1, "Planning should have been triggered"
+    assert "阶段 1/3：正在识别输入意图" in result.output
+    assert "阶段 2/3：正在评估需求完整度" in result.output
+    assert "阶段 3/3：正在生成计划并执行任务" in result.output
 
 
 def test_chat_command_heuristic_shows_help(tmp_path, monkeypatch):
@@ -115,7 +123,7 @@ def test_chat_command_heuristic_shows_help(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_mod, "classify_intent", _heuristic_only)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["chat"], input="查看状态\n/exit\n")
+    result = runner.invoke(main, ["chat", "--no-ui"], input="查看状态\n/exit\n")
 
     assert result.exit_code == 0
     assert "codepilot status" in result.output
@@ -129,7 +137,7 @@ def test_chat_slash_version_shows_current_version_without_creating_task(tmp_path
     _register_project(tmp_path, monkeypatch)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["chat"], input="/version\n/exit\n")
+    result = runner.invoke(main, ["chat", "--no-ui"], input="/version\n/exit\n")
 
     assert result.exit_code == 0
     assert f"CodePilot {__version__}" in result.output
@@ -172,3 +180,75 @@ def test_classify_intent_defaults_to_requirement_on_failure(monkeypatch):
     result = classify_intent("some ambiguous input")
     assert result["intent"] == "requirement"
     assert result["source"] == "default"
+
+
+def test_classify_intent_command_guardrail_avoids_non_cli_false_positive(monkeypatch):
+    """AI returning 'command' for unrelated text should be downgraded."""
+    from codepilot import ai_classifier as classifier_mod
+    from codepilot import ai_gateway
+    from codepilot.ai import classify_intent
+
+    monkeypatch.setattr(classifier_mod, "_heuristic_intent", lambda t: None)
+
+    def _gateway_false_command(_request):
+        return ai_gateway.GatewayResponse(
+            ok=True,
+            source="api:test",
+            payload={"intent": "command", "reason": "误判"},
+        )
+
+    monkeypatch.setattr(classifier_mod, "call_structured", _gateway_false_command, raising=False)
+    monkeypatch.setattr(ai_gateway, "call_structured", _gateway_false_command)
+
+    result = classify_intent("11")
+    assert result["intent"] == "requirement"
+    assert result["source"] == "guardrail"
+
+
+def test_chat_ui_starts_via_detached_webui_service(monkeypatch):
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stdout = "Web UI 已启动"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _Result()
+
+    monkeypatch.setattr(auto_chat_mod.subprocess, "run", fake_run)
+
+    handle = auto_chat_mod._start_chat_ui(9912)
+
+    assert handle and handle["managed"] is True
+    assert calls
+    cmd = calls[0]
+    assert cmd[:5] == [auto_chat_mod.sys.executable, "-m", "codepilot", "webui", "start"]
+    assert "--no-daemon" in cmd
+    assert cmd[-2:] == ["--port", "9912"]
+
+
+def test_chat_exit_does_not_stop_global_webui_service(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(auto_chat_mod, "_start_chat_ui", lambda port=8766: {"managed": True, "port": port})
+
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _Result()
+
+    monkeypatch.setattr(auto_chat_mod.subprocess, "run", fake_run)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat"], input="/exit\n")
+
+    assert result.exit_code == 0
+    assert calls == []

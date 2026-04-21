@@ -104,7 +104,11 @@ def auto(
 ):
     """将一个高层目标拆分为子任务，并可选立即执行."""
     json_mode = _json_mode(ctx, json_mode)
-    project_info = resolve_project_for_prompt(project)
+    project_info = resolve_project_for_prompt(
+        project,
+        auto_register=False,
+        require_registered=True,
+    )
     try:
         run_requirement_workflow(
             project_info=project_info,
@@ -177,7 +181,11 @@ def go(
     if not max_retries:
         max_retries = root_obj.get("max_retries", 0)
 
-    project_info = resolve_project_for_prompt(project)
+    project_info = resolve_project_for_prompt(
+        project,
+        auto_register=False,
+        require_registered=True,
+    )
     try:
         run_requirement_workflow(
             project_info=project_info,

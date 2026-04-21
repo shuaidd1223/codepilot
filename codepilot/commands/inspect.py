@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -23,6 +25,175 @@ from codepilot.ai import (
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.config import load_project_config, resolve_planner
 from codepilot.output import echo
+from codepilot.paths import _slugify_project_name, global_storage_root
+from codepilot.runtime import is_process_alive, stop_process_tree
+
+INSPECT_STATE_DIR = global_storage_root() / "inspect"
+
+
+def _now_iso() -> str:
+    from datetime import datetime
+
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _service_log_path(project: str) -> Path:
+    root = INSPECT_STATE_DIR / _slugify_project_name(project)
+    return root / "inspect.log"
+
+
+def inspect_service_status(project: str) -> dict:
+    state = db.get_service_state("inspect", project)
+    meta = state.get("meta") if state and isinstance(state.get("meta"), dict) else {}
+    try:
+        pid = int(state.get("pid") or 0) if state else 0
+    except Exception:
+        pid = 0
+    running = bool(pid and is_process_alive(pid))
+    return {
+        "running": running,
+        "pid": pid if running else 0,
+        "project": project,
+        "started_at": meta.get("started_at") or "",
+        "log": str(state.get("log_path") or _service_log_path(project)) if state else str(_service_log_path(project)),
+    }
+
+
+def _cleanup_inspect_files(project: str) -> None:
+    db.clear_service_state("inspect", project)
+
+
+def _write_inspect_meta(project: str, pid: int, *, interval: int, planner: str, agent: str) -> None:
+    payload = {
+        "pid": int(pid),
+        "project": project,
+        "interval": int(interval),
+        "planner": planner,
+        "agent": agent,
+        "started_at": _now_iso(),
+    }
+    db.upsert_service_state(
+        "inspect",
+        project,
+        pid=int(pid),
+        status="running",
+        log_path=str(_service_log_path(project)),
+        heartbeat_at=_now_iso(),
+        meta=payload,
+    )
+
+
+def _spawn_detached_inspect(
+    project: str,
+    *,
+    max_new: int | None,
+    dry_run: bool,
+    agent: str,
+    planner: str | None,
+    interval: int | None,
+) -> subprocess.Popen:
+    log_file = _service_log_path(project)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_fp = open(log_file, "ab")
+    try:
+        log_fp.write(f"\n--- start {_now_iso()} project={project} ---\n".encode("utf-8"))
+        log_fp.flush()
+    except Exception:
+        pass
+    cmd = [
+        sys.executable,
+        "-m",
+        "codepilot",
+        "inspect",
+        "--project",
+        project,
+        "--foreground",
+        "--agent",
+        agent,
+    ]
+    if max_new is not None:
+        cmd.extend(["--max", str(max_new)])
+    if dry_run:
+        cmd.append("--dry-run")
+    if planner:
+        cmd.extend(["--planner", planner])
+    if interval is not None:
+        cmd.extend(["--interval", str(interval)])
+    popen_kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_fp,
+        "stderr": log_fp,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = 0x00000008 | 0x00000200
+    else:
+        popen_kwargs["start_new_session"] = True
+    return subprocess.Popen(cmd, **popen_kwargs)
+
+
+def start_inspect_service(
+    project: str,
+    *,
+    max_new: int | None = None,
+    dry_run: bool = False,
+    agent: str = "codex",
+    planner: str | None = None,
+    interval: int | None = None,
+) -> dict:
+    if not project:
+        raise RuntimeError("启动巡检必须指定项目。")
+    existing = inspect_service_status(project)
+    if existing["running"]:
+        existing["started"] = False
+        return existing
+    _cleanup_inspect_files(project)
+    proc = _spawn_detached_inspect(
+        project,
+        max_new=max_new,
+        dry_run=dry_run,
+        agent=agent,
+        planner=planner,
+        interval=interval,
+    )
+    time.sleep(0.8)
+    if proc.poll() is not None:
+        tail = ""
+        try:
+            tail = _service_log_path(project).read_text(encoding="utf-8", errors="replace")[-1500:]
+        except Exception:
+            pass
+        raise RuntimeError(f"巡检启动后立即退出（exit={proc.returncode}）\n{tail}")
+    proj = db.get_project(project)
+    cfg = load_project_config(Path(proj["path"])) if proj else None
+    effective_interval = interval if interval is not None else int(getattr(getattr(cfg, "inspect", None), "interval_seconds", 1800) or 1800)
+    effective_planner = planner or (resolve_planner(cfg, "inspect") if cfg else "codex")
+    _write_inspect_meta(project, proc.pid, interval=effective_interval, planner=effective_planner, agent=agent)
+    return {"running": True, "started": True, "pid": proc.pid, "project": project, "log": str(_service_log_path(project))}
+
+
+def stop_inspect_service(project: str) -> dict:
+    if not project:
+        raise RuntimeError("停止巡检必须指定项目。")
+    status = inspect_service_status(project)
+    if not status["running"]:
+        _cleanup_inspect_files(project)
+        return {"stopped": False, "pids": []}
+    pid = int(status["pid"])
+    db.upsert_service_state(
+        "inspect",
+        project,
+        pid=pid,
+        status="stopping",
+        log_path=str(_service_log_path(project)),
+        heartbeat_at=_now_iso(),
+        meta={"project": project, "pid": pid, "stop_requested_at": _now_iso()},
+    )
+    stop_process_tree(pid, wait_seconds=5)
+    if is_process_alive(pid):
+        raise RuntimeError(f"无法停止巡检 PID={pid}")
+    _cleanup_inspect_files(project)
+    return {"stopped": True, "pids": [pid]}
 
 INSPECT_SCHEMA = {
     "type": "object",
@@ -438,6 +609,9 @@ def _print_result(result: dict, dry_run: bool) -> None:
 @click.option("--json", "json_mode", is_flag=True, help="以 JSON 输出结果，便于脚本和其他 AI 调用")
 @click.option("--interval", type=int, default=None, help="巡检间隔秒数（默认 1800）")
 @click.option("--once", is_flag=True, help="仅巡检一次后退出")
+@click.option("--foreground", is_flag=True, help="以前台持续巡检模式运行")
+@click.option("--status", "show_status", is_flag=True, help="查看项目巡检进程状态")
+@click.option("--stop", "stop_service", is_flag=True, help="停止项目巡检进程")
 def inspect(
     project: str,
     max_new: Optional[int],
@@ -447,6 +621,9 @@ def inspect(
     json_mode: bool,
     interval: Optional[int],
     once: bool,
+    foreground: bool,
+    show_status: bool,
+    stop_service: bool,
 ) -> None:
     """扫描项目信号，将可优化点作为候选任务产出.
 
@@ -457,6 +634,42 @@ def inspect(
     proj = db.get_project(project) if project else None
     if not proj:
         raise click.ClickException("需要用 -p 指定项目，或先 codepilot init")
+    if show_status:
+        status = inspect_service_status(project)
+        if status["running"]:
+            echo(f"[green]巡检运行中[/green]  PID={status['pid']}  项目={project}")
+            echo(f"[dim]日志: {status['log']}[/dim]")
+        else:
+            echo(f"[dim]项目 {project} 巡检未运行[/dim]")
+        return
+    if stop_service:
+        try:
+            result = stop_inspect_service(project)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if result["stopped"]:
+            echo(f"[green]项目 {project} 巡检已停止[/green]  PID={','.join(str(pid) for pid in result['pids'])}")
+        else:
+            echo(f"[dim]项目 {project} 巡检未运行[/dim]")
+        return
+    if not once and not foreground and not json_mode:
+        try:
+            result = start_inspect_service(
+                project,
+                max_new=max_new,
+                dry_run=dry_run,
+                agent=agent,
+                planner=planner,
+                interval=interval,
+            )
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if result["started"]:
+            echo(f"[green]项目 {project} 巡检已后台启动[/green]  PID={result['pid']}")
+        else:
+            echo(f"[yellow]项目 {project} 巡检已在运行[/yellow]  PID={result['pid']}")
+        echo(f"[dim]日志: {result['log']}[/dim]")
+        return
     project_info = {"name": proj["name"], "path": proj["path"]}
 
     cfg = load_project_config(Path(proj["path"]))
@@ -466,41 +679,51 @@ def inspect(
     effective_planner = resolve_planner(cfg, "inspect", explicit=planner)
 
     round_num = 0
-    while True:
-        round_num += 1
-        if not json_mode:
-            head = f"巡检项目 {project_info['name']}"
-            if not once:
-                head += f"  第 {round_num} 轮"
-            echo(
-                f"[cyan]{head}[/cyan]  planner={effective_planner}  agent={agent}  "
-                f"max={limit}  signals={','.join(ins.signals)}"
+    try:
+        while True:
+            db.touch_service_state(
+                "inspect",
+                project,
+                pid=os.getpid(),
+                log_path=str(_service_log_path(project)),
+                status="running",
+            )
+            round_num += 1
+            if not json_mode:
+                head = f"巡检项目 {project_info['name']}"
+                if not once:
+                    head += f"  第 {round_num} 轮"
+                echo(
+                    f"[cyan]{head}[/cyan]  planner={effective_planner}  agent={agent}  "
+                    f"max={limit}  signals={','.join(ins.signals)}"
+                )
+
+            result = run_inspection(
+                project_info,
+                max_new_tasks=limit,
+                signals=ins.signals,
+                auto_execute=ins.auto_execute,
+                priority=ins.priority,
+                agent=agent,
+                planner=effective_planner,
+                dry_run=dry_run,
             )
 
-        result = run_inspection(
-            project_info,
-            max_new_tasks=limit,
-            signals=ins.signals,
-            auto_execute=ins.auto_execute,
-            priority=ins.priority,
-            agent=agent,
-            planner=effective_planner,
-            dry_run=dry_run,
-        )
+            if json_mode:
+                click.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            else:
+                _print_result(result, dry_run)
 
-        if json_mode:
-            click.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        else:
-            _print_result(result, dry_run)
+            if once:
+                break
 
-        if once:
-            break
-
-        if not json_mode:
-            echo(f"[dim]下次巡检将在 {sleep_seconds} 秒后...[/dim]")
-        try:
-            time.sleep(sleep_seconds)
-        except KeyboardInterrupt:
             if not json_mode:
-                echo("[yellow]巡检已停止[/yellow]")
-            break
+                echo(f"[dim]下次巡检将在 {sleep_seconds} 秒后...[/dim]")
+            try:
+                time.sleep(sleep_seconds)
+            except KeyboardInterrupt:
+                if not json_mode:
+                    echo("[yellow]巡检已停止[/yellow]")
+                break
+    finally:
+        db.clear_service_state("inspect", project)

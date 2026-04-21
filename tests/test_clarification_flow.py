@@ -16,6 +16,7 @@ from codepilot.commands import auto_workflow as auto_workflow_mod
 def _init_test_db(tmp_path, monkeypatch):
     db_path = tmp_path / "tasks.db"
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(db_path))
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
     db.init_db()
     webui_mod._UI_JOBS.clear()
     webui_mod._UI_EVENTS.clear()
@@ -28,6 +29,7 @@ def _register_project(tmp_path, monkeypatch):
     project_path.mkdir()
     (project_path / "README.md").write_text("# Demo", encoding="utf-8")
     db.register_project("demo", str(project_path))
+    monkeypatch.chdir(project_path)
     return project_path
 
 

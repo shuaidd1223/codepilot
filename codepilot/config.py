@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import sys
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -21,6 +22,7 @@ SECRETS_FILENAME = ".codepilot.secrets.toml"  # sibling file; never commit
 # the default sibling-file discovery — useful for CI / containerised runs
 # where the secrets file lives outside the repo.
 SECRETS_PATH_ENV = "CODEPILOT_SECRETS_PATH"
+GLOBAL_CONFIG_PATH_ENV = "CODEPILOT_GLOBAL_CONFIG_PATH"
 
 
 def _normalize_optional_agent_name(value: object) -> Optional[str]:
@@ -34,6 +36,26 @@ def _normalize_optional_agent_name(value: object) -> Optional[str]:
 
     normalized = normalize_agent_name(text).strip()
     return normalized or None
+
+
+def resolve_global_config_path() -> Path:
+    """Return the global AGENTS.toml path under the CodePilot root."""
+    override = os.environ.get(GLOBAL_CONFIG_PATH_ENV, "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_dir():
+            return (candidate / CONFIG_FILENAME).resolve()
+        return candidate.resolve()
+
+    from codepilot.paths import global_storage_root
+
+    return (global_storage_root() / CONFIG_FILENAME).resolve()
+
+
+def find_global_config() -> Optional[Path]:
+    """Return the global AGENTS.toml path when it exists."""
+    candidate = resolve_global_config_path()
+    return candidate if candidate.is_file() else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -306,7 +328,11 @@ def find_config(start_dir: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
-def _locate_secrets_file(config_path: Optional[Path]) -> Optional[Path]:
+def _locate_secrets_file(
+    config_path: Optional[Path],
+    *,
+    allow_env_override: bool = True,
+) -> Optional[Path]:
     """Find the secrets file that should overlay ``config_path``.
 
     Search order:
@@ -315,7 +341,7 @@ def _locate_secrets_file(config_path: Optional[Path]) -> Optional[Path]:
     2. ``<AGENTS.toml dir>/.codepilot.secrets.toml`` — sibling of the
        resolved config file (most common case).
     """
-    override = os.environ.get(SECRETS_PATH_ENV, "").strip()
+    override = os.environ.get(SECRETS_PATH_ENV, "").strip() if allow_env_override else ""
     if override:
         candidate = Path(override).expanduser()
         return candidate if candidate.is_file() else None
@@ -328,22 +354,43 @@ def _locate_secrets_file(config_path: Optional[Path]) -> Optional[Path]:
     return None
 
 
-def _overlay_secrets(config: AgentsConfig, secrets_path: Path) -> None:
-    """Merge ``[providers.<name>]`` api_key entries from a secrets file.
-
-    Only the ``api_key`` field is read — other keys in the secrets file
-    are ignored so users can't accidentally override model or endpoint
-    settings from a file that shouldn't hold configuration choices.
-    """
+def _load_toml_dict(path: Path) -> Optional[dict[str, Any]]:
+    """Load a TOML file and ensure the top-level object is a dict."""
     try:
-        with open(secrets_path, "rb") as handle:
+        with open(path, "rb") as handle:
             data = tomllib.load(handle)
     except Exception:
-        return
+        return None
+    return data if isinstance(data, dict) else None
 
-    providers = data.get("providers", {})
+
+def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merge two config dictionaries; ``override`` wins on conflicts."""
+    merged = deepcopy(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _merge_dicts(existing, value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _overlay_secrets_data(data: dict[str, Any], secrets_path: Path) -> dict[str, Any]:
+    """Overlay provider ``api_key`` values from a secrets TOML onto raw data."""
+    secrets = _load_toml_dict(secrets_path)
+    if not secrets:
+        return data
+
+    providers = secrets.get("providers", {})
     if not isinstance(providers, dict):
-        return
+        return data
+
+    merged = deepcopy(data)
+    merged_providers = merged.get("providers")
+    if not isinstance(merged_providers, dict):
+        merged_providers = {}
+        merged["providers"] = merged_providers
 
     for name, cfg in providers.items():
         if not isinstance(cfg, dict):
@@ -351,21 +398,32 @@ def _overlay_secrets(config: AgentsConfig, secrets_path: Path) -> None:
         key = str(cfg.get("api_key", "")).strip()
         if not key:
             continue
-        if name not in config.providers:
-            config.providers[name] = ProviderAPIConfig(api_key=key)
-        else:
-            # Only overwrite api_key; keep the rest from AGENTS.toml.
-            config.providers[name].api_key = key
+        target = merged_providers.get(name)
+        if not isinstance(target, dict):
+            target = {}
+            merged_providers[name] = target
+        target["api_key"] = key
+    return merged
 
 
-def _warn_on_inline_secrets(config: AgentsConfig, config_path: Path) -> None:
+def _warn_on_inline_secrets_data(data: dict[str, Any], config_path: Path) -> None:
     """Emit a one-line deprecation nudge when AGENTS.toml holds secrets.
 
     Mixing secrets into the committed AGENTS.toml is the concrete risk
     this refactor addresses; we log (not raise) so existing installs keep
     working while giving users a visible prompt to migrate.
     """
-    leaked = [name for name, cfg in config.providers.items() if cfg.api_key]
+    providers = data.get("providers", {})
+    if not isinstance(providers, dict):
+        return
+
+    leaked: list[str] = []
+    for name, cfg in providers.items():
+        if not isinstance(cfg, dict):
+            continue
+        if str(cfg.get("api_key", "")).strip():
+            leaked.append(str(name))
+
     if not leaked:
         return
     try:
@@ -381,6 +439,26 @@ def _warn_on_inline_secrets(config: AgentsConfig, config_path: Path) -> None:
         pass
 
 
+def _load_config_data(
+    config_path: Path,
+    *,
+    allow_env_secrets_override: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Load one config file + corresponding secrets overlay into a raw dict."""
+    data = _load_toml_dict(config_path)
+    if data is None:
+        return None
+
+    _warn_on_inline_secrets_data(data, config_path)
+    secrets_path = _locate_secrets_file(
+        config_path,
+        allow_env_override=allow_env_secrets_override,
+    )
+    if secrets_path is not None:
+        data = _overlay_secrets_data(data, secrets_path)
+    return data
+
+
 def load_config(config_path: Optional[Path] = None) -> Optional[AgentsConfig]:
     """
     加载 AGENTS.toml 配置文件.
@@ -392,24 +470,20 @@ def load_config(config_path: Optional[Path] = None) -> Optional[AgentsConfig]:
     """
     if config_path is None:
         config_path = find_config()
+        if config_path is None:
+            config_path = find_global_config()
 
     if config_path is None or not config_path.is_file():
         return None
 
-    try:
-        with open(config_path, "rb") as f:
-            data = tomllib.load(f)
-        config = AgentsConfig.from_dict(data, config_file_path=str(config_path))
-    except Exception:
+    data = _load_config_data(config_path, allow_env_secrets_override=True)
+    if data is None:
         return None
 
-    _warn_on_inline_secrets(config, config_path)
-
-    secrets_path = _locate_secrets_file(config_path)
-    if secrets_path is not None:
-        _overlay_secrets(config, secrets_path)
-
-    return config
+    try:
+        return AgentsConfig.from_dict(data, config_file_path=str(config_path))
+    except Exception:
+        return None
 
 
 def sanitize_config_for_display(config: AgentsConfig) -> AgentsConfig:
@@ -419,9 +493,7 @@ def sanitize_config_for_display(config: AgentsConfig) -> AgentsConfig:
     diagnostic dumps, the ``codepilot doctor`` command — so leaking a
     printed config into a screenshot or support ticket is safe.
     """
-    import copy
-
-    clone = copy.deepcopy(config)
+    clone = deepcopy(config)
     for provider_cfg in clone.providers.values():
         if provider_cfg.api_key:
             provider_cfg.api_key = "***"
@@ -502,9 +574,54 @@ def load_project_config(
     *,
     config_file: Optional[str | Path] = None,
 ) -> Optional[AgentsConfig]:
-    """Load AGENTS.toml using either a stored config file path or a project root."""
-    resolved = resolve_config_path(project_path, config_file=config_file)
-    return load_config(resolved) if resolved else None
+    """Load effective config with precedence: global defaults < project overrides."""
+    resolved_local = resolve_config_path(project_path, config_file=config_file)
+    global_path = find_global_config()
+
+    # Avoid merging the same file twice when project config *is* the global config.
+    if resolved_local and global_path and resolved_local.resolve() == global_path.resolve():
+        global_path = None
+
+    merged: dict[str, Any] = {}
+    loaded_any = False
+
+    if global_path is not None:
+        global_data = _load_config_data(global_path, allow_env_secrets_override=False)
+        if global_data is not None:
+            merged = _merge_dicts(merged, global_data)
+            loaded_any = True
+
+    if resolved_local is not None and resolved_local.is_file():
+        local_data = _load_config_data(resolved_local, allow_env_secrets_override=True)
+        if local_data is not None:
+            merged = _merge_dicts(merged, local_data)
+            loaded_any = True
+
+    if not loaded_any:
+        return None
+
+    config_file_path = (
+        str(resolved_local.resolve())
+        if resolved_local is not None and resolved_local.is_file()
+        else (str(global_path.resolve()) if global_path is not None else None)
+    )
+
+    try:
+        config = AgentsConfig.from_dict(merged, config_file_path=config_file_path)
+    except Exception:
+        return None
+
+    # Global config is cross-project by design; keep project name/path local when absent.
+    if project_path is not None:
+        project_data = merged.get("project", {})
+        has_project_name = isinstance(project_data, dict) and bool(str(project_data.get("name", "")).strip())
+        if not has_project_name:
+            project_name = Path(project_path).expanduser().name.strip()
+            if project_name:
+                config.project.name = project_name
+                config.project_name = project_name
+
+    return config
 
 
 def find_project_root(config_path: Optional[Path] = None) -> Optional[Path]:

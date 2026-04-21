@@ -82,6 +82,30 @@ def _heuristic_intent(text: str) -> Optional[str]:
     return None
 
 
+def _looks_like_codepilot_command(text: str) -> bool:
+    """Return whether ``text`` explicitly looks like a CodePilot CLI command."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    lower = t.lower()
+
+    if lower.startswith("codepilot "):
+        return True
+    if lower == "codepilot":
+        return True
+    if re.match(r"^(status|logs|retry|stop|inspect)\b", lower):
+        return True
+    if re.match(r"^release\s+prepare\b", lower):
+        return True
+
+    command_keywords = (
+        "查看状态", "看一下状态", "看看状态", "列出任务", "看看任务",
+        "查看日志", "看日志", "重试任务", "停止任务", "跑一下巡检", "触发巡检",
+        "发布", "打包", "构建二进制",
+    )
+    return any(kw in t for kw in command_keywords)
+
+
 def classify_intent(
     text: str,
     project_path: str = "",
@@ -127,6 +151,12 @@ def classify_intent(
     if response.ok and response.payload:
         intent = response.payload.get("intent")
         if intent in valid_intents:
+            if intent == "command" and not _looks_like_codepilot_command(text):
+                return {
+                    "intent": "requirement",
+                    "reason": "命令防误判兜底：输入不符合 codepilot 命令形态",
+                    "source": "guardrail",
+                }
             return {
                 "intent": intent,
                 "reason": response.payload.get("reason", ""),

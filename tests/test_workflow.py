@@ -24,6 +24,7 @@ from codepilot.config import load_project_config
 
 def _init_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
     db.init_db()
     webui_mod._UI_JOBS.clear()
     webui_mod._UI_EVENTS.clear()
@@ -221,6 +222,22 @@ def test_webui_task_detail_payload_contains_log_and_content(tmp_path, monkeypatc
     assert detail["depends_on"] == [3, 4]
     assert "line-3" in detail["log_text"]
     assert detail["current_log_path"] == str(log_path)
+
+
+def test_webui_task_detail_payload_tolerates_double_encoded_depends(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "task A", content="x", agent="codex", priority="P2")
+
+    # Simulate historical bad rows where depends_on was double-encoded.
+    db.update_task(task["id"], depends_on='"[]"')
+    db.update_task(task["id"], depends_on='"[1, 2]"')
+
+    detail = webui_mod.task_detail_payload(task["id"])
+
+    assert detail["depends_on"] == [1, 2]
 
 
 def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeypatch):
@@ -1117,7 +1134,7 @@ def test_chat_status_renders_dashboard(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_cmd, "render_project_dashboard", lambda *args, **kwargs: called.update({"args": args, "kwargs": kwargs}))
 
     runner = CliRunner()
-    result = runner.invoke(main, ["chat"], input="/status\n/exit\n")
+    result = runner.invoke(main, ["chat", "--no-ui"], input="/status\n/exit\n")
 
     assert result.exit_code == 0
     assert called["args"][0] == "demo"
@@ -1143,7 +1160,7 @@ def test_chat_stats_outputs_status_summary(tmp_path, monkeypatch):
     db.update_task(cancelled["id"], status="cancelled")
 
     runner = CliRunner()
-    result = runner.invoke(main, ["chat"], input="/stats\n/exit\n")
+    result = runner.invoke(main, ["chat", "--no-ui"], input="/stats\n/exit\n")
 
     assert result.exit_code == 0
     assert "状态统计  demo" in result.output
@@ -3043,7 +3060,7 @@ def test_reap_stalled_tasks_marks_dead_in_progress_task_failed(tmp_path, monkeyp
     project_path = tmp_path / "project"
     project_path.mkdir()
     db.register_project("demo", str(project_path))
-    task = db.create_task("demo", "stuck task", agent="codex")
+    task = db.create_task("demo", "stuck task", agent="codex", max_retries=1)
 
     db.update_task(
         task["id"],
@@ -3059,7 +3076,33 @@ def test_reap_stalled_tasks_marks_dead_in_progress_task_failed(tmp_path, monkeyp
 
     assert len(reaped) == 1
     assert current["status"] == "failed"
+    assert current["retry_count"] == 1
     assert "心跳已超过" in (current["error_message"] or "")
+
+
+def test_reap_stalled_tasks_requeues_when_retries_remain(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "stale but retryable", agent="codex", max_retries=3)
+
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        started_at="2026-01-01T00:00:00",
+        heartbeat_at="2026-01-01T00:00:00",
+        active_pid=None,
+        run_phase="builder",
+    )
+
+    reaped = runtime_mod.reap_stalled_tasks("demo", stale_after_seconds=1)
+    current = db.get_task(task["id"])
+
+    assert len(reaped) == 1
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 1
+    assert "回退到 backlog" in (current["error_message"] or "")
 
 
 def test_reap_stalled_tasks_cleans_dead_process_tree_before_marking_failed(tmp_path, monkeypatch):
@@ -3067,7 +3110,7 @@ def test_reap_stalled_tasks_cleans_dead_process_tree_before_marking_failed(tmp_p
     project_path = tmp_path / "project"
     project_path.mkdir()
     db.register_project("demo", str(project_path))
-    task = db.create_task("demo", "stale task", agent="codex")
+    task = db.create_task("demo", "stale task", agent="codex", max_retries=1)
 
     db.update_task(
         task["id"],

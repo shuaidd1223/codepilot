@@ -12,6 +12,7 @@ time via ``codepilot.commands.auto``.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 import time
@@ -110,20 +111,54 @@ class _Spinner:
 
 
 def _start_chat_ui(port: int = 8766):
-    """Start Web UI in a background daemon thread for chat mode."""
-    from codepilot.output import echo
+    """Start Web UI as an independent service process for chat mode."""
+    from codepilot.output import echo, safe
 
+    cmd = [
+        sys.executable,
+        "-m",
+        "codepilot",
+        "webui",
+        "start",
+        "--no-open",
+        "--no-daemon",
+        "--port",
+        str(int(port)),
+    ]
     try:
-        from codepilot.webui import start_ui_server
-        server = start_ui_server(host="127.0.0.1", port=port, open_browser=False)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        echo(f"[dim]Web UI 已启动: http://127.0.0.1:{port}/[/dim]")
-        return server
-    except OSError:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except Exception as exc:
+        echo(f"[yellow]Web UI 启动失败：{safe(exc)}[/yellow]")
         return None
-    except Exception:
+
+    output = "\n".join(part for part in ((result.stdout or "").strip(), (result.stderr or "").strip()) if part)
+    if result.returncode != 0:
+        if output:
+            echo(f"[yellow]Web UI 启动失败：{output[-800:]}[/yellow]")
         return None
+
+    started = "Web UI 已启动" in output
+    if started:
+        echo(f"[dim]Web UI 已作为独立进程启动: http://127.0.0.1:{port}/[/dim]")
+    else:
+        echo(f"[dim]Web UI 已在运行: http://127.0.0.1:{port}/[/dim]")
+    return {"managed": started, "port": int(port)}
+
+
+def _stop_chat_ui(_handle) -> None:
+    """No-op: Web UI is a global shared singleton service.
+
+    Chat only ensures the service is running, but must not stop it on exit,
+    otherwise other terminals/processes using the same UI would be disrupted.
+    """
+    return
 
 
 def run_chat_session(
@@ -143,7 +178,11 @@ def run_chat_session(
     from codepilot.output import echo, safe
 
     shell = _shell()
-    project_info = shell.resolve_project_for_prompt(project)
+    project_info = shell.resolve_project_for_prompt(
+        project,
+        auto_register=False,
+        allow_temporary=True,
+    )
     effective = shell._resolve_effective_options(
         project_info,
         planner=planner,
@@ -155,9 +194,9 @@ def run_chat_session(
     default_execute = effective["auto_execute"] if execute is None else execute
     default_agent = shell._resolve_task_agent(project_info, task_agent, effective["executor"])
 
-    ui_server = None
+    ui_handle = None
     if enable_ui:
-        ui_server = _start_chat_ui(ui_port)
+        ui_handle = _start_chat_ui(ui_port)
 
     chat_history: list[dict] = []
     # Multi-turn requirement clarification state. When AI asks for more info we
@@ -169,14 +208,17 @@ def run_chat_session(
         f"[cyan]CodePilot Chat[/cyan]  项目: {project_info['name']}  "
         f"planner={effective['planner']} executor={effective['executor']} agent={default_agent}"
     )
+    if project_info.get("is_temporary"):
+        echo(
+            "[yellow]当前为公共临时会话：可继续问答；如需创建需求/任务，请先在目标目录执行 codepilot init，"
+            "或使用 /project 切换到已注册项目。[/yellow]"
+        )
     echo("[dim]直接输入文本即可。问题会直接回答，需求会自动规划执行。[/dim]")
     echo("[dim]输入 /help 查看命令，/history 查看对话记录。[/dim]")
     echo()
 
     def _shutdown_ui():
-        if ui_server:
-            ui_server.shutdown()
-            ui_server.server_close()
+        _stop_chat_ui(ui_handle)
 
     while True:
         try:
@@ -206,6 +248,9 @@ def run_chat_session(
                 click.echo(f"CodePilot {__version__}")
                 continue
             if cmd == "/status":
+                if project_info.get("is_temporary"):
+                    echo("[yellow]临时会话没有任务看板。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
+                    continue
                 watch = len(parts) > 1 and parts[1].lower() in ("watch", "live", "-w")
                 if watch:
                     echo("[dim]实时刷新中，按 Ctrl+C 停止...[/dim]")
@@ -227,6 +272,9 @@ def run_chat_session(
                         echo("\n[dim]已停止刷新[/dim]")
                 continue
             if cmd == "/stats":
+                if project_info.get("is_temporary"):
+                    echo("[yellow]临时会话没有项目统计。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
+                    continue
                 shell.render_project_stats(project_info["name"], title=f"状态统计  {project_info['name']}")
                 continue
             if cmd == "/project":
@@ -404,7 +452,8 @@ def run_chat_session(
             click.echo()
             continue
 
-        spinner = _Spinner("处理中")
+        echo("[dim]阶段 1/3：正在识别输入意图...[/dim]")
+        spinner = _Spinner("正在识别输入意图")
         spinner.__enter__()
 
         intent = forced_intent
@@ -438,8 +487,13 @@ def run_chat_session(
             except Exception:
                 intent = "requirement"
 
-        intent_labels = {"question": "正在思考", "task": "正在执行", "requirement": "正在规划", "command": "处理中"}
-        spinner._message = intent_labels.get(intent, "处理中")
+        intent_labels = {
+            "question": "正在检索上下文并回答",
+            "task": "正在评估并执行任务",
+            "requirement": "正在评估并规划需求",
+            "command": "正在识别命令输入",
+        }
+        spinner._message = intent_labels.get(intent, "正在处理中")
 
         assistant_response = ""
         try:
@@ -459,6 +513,7 @@ def run_chat_session(
                 )
                 click.echo()
             elif intent == "question":
+                echo("[dim]阶段 2/2：正在检索上下文并回答...[/dim]")
                 cfg = shell._project_config(project_info)
                 classifier_cfg = getattr(cfg, "classifier", None)
                 provider_key = classifier_cfg.provider if classifier_cfg else ""
@@ -482,6 +537,7 @@ def run_chat_session(
                     echo("[yellow]未获得回答[/yellow]")
             elif intent in ("task", "requirement"):
                 # ── Step 1: clarify if the requirement looks vague ──
+                echo("[dim]阶段 2/3：正在评估需求完整度...[/dim]")
                 spinner._message = "正在评估需求完整度"
                 assessment = shell.clarify_requirement(
                     payload_text,
@@ -506,6 +562,8 @@ def run_chat_session(
                     assistant_response = "请求澄清：" + " / ".join(questions)
                 else:
                     refined = assessment.get("refined_title") or payload_text
+                    echo("[dim]阶段 3/3：正在生成计划并执行任务...[/dim]")
+                    spinner._message = "正在生成计划并执行任务"
                     max_tasks_override = 1 if intent == "task" else effective["max_tasks"]
                     shell.run_requirement_workflow(
                         project_info=project_info,
