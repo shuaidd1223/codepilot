@@ -183,6 +183,58 @@ def test_classify_intent_defaults_to_requirement_on_failure(monkeypatch):
     assert result["source"] == "default"
 
 
+def test_classify_intent_falls_back_to_cli_when_api_key_missing(monkeypatch, tmp_path):
+    """Configured API without a key should still route through CLI fallback."""
+    from codepilot import ai_classifier as classifier_mod
+    from codepilot import ai_providers
+    from codepilot.ai import classify_intent
+
+    monkeypatch.setattr(classifier_mod, "_heuristic_intent", lambda t: None)
+    monkeypatch.delenv("CODEPILOT_TEST_AI_GATEWAY_KEY", raising=False)
+    monkeypatch.setitem(
+        ai_providers.API_PROVIDERS,
+        "missing-key-test",
+        ai_providers.APIProvider(
+            name="Missing Key Test",
+            provider_type="openai",
+            model="test-model",
+            api_env_vars=("CODEPILOT_TEST_AI_GATEWAY_KEY",),
+        ),
+    )
+
+    api_calls = []
+    cli_calls = []
+
+    def _api_should_be_skipped(provider, prompt):
+        api_calls.append({"provider": provider, "prompt": prompt})
+        return json.dumps({"intent": "task", "reason": "unexpected api"})
+
+    def _fake_claude_schema_prompt(prompt, schema, **kw):
+        cli_calls.append({"prompt": prompt, "schema": schema, "kwargs": kw})
+        return {"intent": "question", "reason": "from CLI fallback"}
+
+    monkeypatch.setattr(ai_providers, "_run_api_provider", _api_should_be_skipped)
+    monkeypatch.setattr("codepilot.ai._run_claude_schema_prompt", _fake_claude_schema_prompt)
+
+    result = classify_intent(
+        "需要判断这段输入的类型",
+        project_path=str(tmp_path),
+        classifier_provider="missing-key-test",
+        timeout=7,
+    )
+
+    assert result == {
+        "intent": "question",
+        "reason": "from CLI fallback",
+        "source": "cli:claude",
+    }
+    assert api_calls == []
+    assert len(cli_calls) == 1
+    assert cli_calls[0]["schema"] == classifier_mod.INTENT_SCHEMA
+    assert cli_calls[0]["kwargs"]["project_path"] == str(tmp_path)
+    assert cli_calls[0]["kwargs"]["timeout"] == 7
+
+
 def test_classify_intent_command_guardrail_avoids_non_cli_false_positive(monkeypatch):
     """AI returning 'command' for unrelated text should be downgraded."""
     from codepilot import ai_classifier as classifier_mod
