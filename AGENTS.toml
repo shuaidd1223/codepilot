@@ -5,7 +5,11 @@
 name = "codepilot-dev"
 base_branch = "dev"
 
-# Example: uncomment to override global automation defaults per project
-# [automation]
-# planner = "claude"
-# task_agent = "dual"
+[agents]
+codex_cmd = "codex"
+claude_cmd = "claude"
+
+# 当前项目任务直接在主工作目录执行，不为每个任务新建分支或 worktree。
+[automation]
+task_workspace = "direct"
+per_task_branch = false
