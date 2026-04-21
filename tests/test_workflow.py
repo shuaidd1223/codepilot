@@ -3157,6 +3157,56 @@ def test_run_backlog_marks_task_cancelled_when_executor_is_stopped(tmp_path, mon
     assert current["error_message"] == "手动停止"
 
 
+def test_run_backlog_cleans_worktree_leftovers_after_builtin_failure(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "fail and clean", agent="dual", max_retries=3)
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(
+            exit_code=1,
+            output="builder crashed",
+            summary="builder crashed",
+            executor="builtin",
+        ),
+    )
+    cleanup_calls: list[dict] = []
+    monkeypatch.setattr(
+        run_cmd,
+        "_cleanup_worktree_leftovers",
+        lambda worktree_path, project_path, *, task_id: cleanup_calls.append(
+            {
+                "worktree_path": str(worktree_path),
+                "project_path": str(project_path),
+                "task_id": task_id,
+            }
+        ),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+
+    assert stats["requeued"] == 1
+    assert cleanup_calls == [
+        {
+            "worktree_path": str(project_path.resolve()),
+            "project_path": str(project_path.resolve()),
+            "task_id": task["id"],
+        }
+    ]
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 1
+    assert current["run_phase"] is None
+    assert current["active_pid"] is None
+    assert current["current_log_path"] is None
+
+
 def test_reap_stalled_tasks_marks_dead_in_progress_task_failed(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

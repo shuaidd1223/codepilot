@@ -180,6 +180,125 @@ def fake_project(tmp_path, monkeypatch):
     }
 
 
+def test_split_phase_helpers_preserve_runtime_phase_log_phase_and_review_bounds(
+    fake_project,
+    monkeypatch,
+    tmp_path,
+):
+    """Builder/reviewer helpers keep the pre-split visible phase semantics."""
+    from codepilot import progress_bus
+
+    calls: list[dict] = []
+    logs: list[dict] = []
+
+    def fake_run_builtin_phase(**kwargs):
+        calls.append(kwargs)
+        label = "codex" if kwargs["phase"] == "builder" else "codex-review"
+        return label, 0, f"{kwargs['phase']} output"
+
+    monkeypatch.setattr(run_mod, "_run_builtin_phase", fake_run_builtin_phase)
+    monkeypatch.setattr(
+        run_mod,
+        "_write_task_log",
+        lambda task_id, agent, phase, output, exit_code, started_at: logs.append(
+            {
+                "task_id": task_id,
+                "agent": agent,
+                "phase": phase,
+                "output": output,
+                "exit_code": exit_code,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        run_mod,
+        "_git_changed_files",
+        lambda project_path: ["codepilot/commands/run.py", "unexpected.txt"],
+    )
+
+    task = _sample_task()
+    task_file = tmp_path / "42-task.md"
+    task_file.write_text("stub", encoding="utf-8")
+    ctx = run_mod._ExecutorContext(
+        task=task,
+        project=fake_project,
+        project_path=Path(fake_project["path"]),
+        config_ref=None,
+        output_dir=tmp_path,
+        task_file=task_file,
+        max_rounds=3,
+        task_id_for_events=task["id"],
+    )
+
+    progress_bus.clear_subscribers_for_tests()
+    events: list[dict] = []
+    with progress_bus.subscription(events.append):
+        builder = run_mod._run_builder_round(ctx, round_num=2, previous_findings="fix the failed AC")
+        reviewer = run_mod._run_reviewer_round(ctx, round_num=2, previous_findings="fix the failed AC")
+
+    assert builder.output == "builder output"
+    assert reviewer.output == "reviewer output"
+
+    assert calls[0]["phase"] == "builder"
+    assert calls[0]["display_phase"] == "builder r2/3"
+    assert "第 2 轮重做" in calls[0]["prompt"]
+    assert "fix the failed AC" in calls[0]["prompt"]
+
+    assert calls[1]["phase"] == "reviewer"
+    assert calls[1]["display_phase"] == "reviewer r2/3"
+    assert "codepilot/commands/run.py" in calls[1]["prompt"]
+    assert "unexpected.txt" in calls[1]["prompt"]
+    assert "越界修改" in calls[1]["prompt"]
+    assert "fix the failed AC" in calls[1]["prompt"]
+
+    assert [entry["phase"] for entry in logs] == ["builder-r2", "reviewer-r2"]
+    assert [event["stage"] for event in events[:2]] == ["builder", "reviewer"]
+    assert events[0]["extra"] == {"round": 2, "round_total": 3}
+    assert events[1]["extra"] == {"round": 2, "round_total": 3}
+
+
+def test_reviewer_round_continues_when_changed_file_detection_fails(
+    fake_project,
+    monkeypatch,
+    tmp_path,
+):
+    """A broken git diff/boundary probe must not skip the reviewer phase."""
+    captured: dict = {}
+
+    def fake_run_builtin_phase(**kwargs):
+        captured.update(kwargs)
+        return "codex-review", 0, "review ok"
+
+    monkeypatch.setattr(run_mod, "_run_builtin_phase", fake_run_builtin_phase)
+    monkeypatch.setattr(run_mod, "_write_task_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        run_mod,
+        "_git_changed_files",
+        lambda project_path: (_ for _ in ()).throw(RuntimeError("diff failed")),
+    )
+
+    task = _sample_task()
+    task_file = tmp_path / "42-task.md"
+    task_file.write_text("stub", encoding="utf-8")
+    ctx = run_mod._ExecutorContext(
+        task=task,
+        project=fake_project,
+        project_path=Path(fake_project["path"]),
+        config_ref=None,
+        output_dir=tmp_path,
+        task_file=task_file,
+        max_rounds=2,
+        task_id_for_events=task["id"],
+    )
+
+    outcome = run_mod._run_reviewer_round(ctx, round_num=1)
+
+    assert outcome.exit_code == 0
+    assert captured["phase"] == "reviewer"
+    assert "diff failed" not in captured["prompt"]
+    assert "本次 builder 实际改动的文件" not in captured["prompt"]
+
+
 def test_review_loop_retries_until_pass(fake_project, monkeypatch, tmp_path):
     """First reviewer says FAIL, builder retries, second reviewer PASS → done."""
     from codepilot import ai as ai_mod
