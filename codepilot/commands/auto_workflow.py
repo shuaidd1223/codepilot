@@ -95,10 +95,13 @@ def clarify_requirement(
     classifier_cfg = getattr(cfg, "classifier", None) if cfg else None
     classifier_provider = classifier_cfg.provider if classifier_cfg and classifier_cfg.enabled else ""
     classifier_model = classifier_cfg.model if classifier_cfg and classifier_cfg.enabled else ""
-    classifier_timeout = classifier_cfg.timeout if classifier_cfg and classifier_cfg.enabled else 45
+    classifier_timeout = classifier_cfg.timeout if classifier_cfg and classifier_cfg.enabled else 30
     api_key = None
+    base_url = None
     if cfg and classifier_provider:
         api_key = cfg.get_provider_api_key(classifier_provider)
+        provider_cfg = cfg.providers.get(classifier_provider)
+        base_url = provider_cfg.base_url if provider_cfg else None
 
     result = assess_requirement(
         title,
@@ -108,8 +111,9 @@ def clarify_requirement(
         classifier_provider=classifier_provider,
         classifier_model=classifier_model,
         api_key=api_key,
+        base_url=base_url,
         planner=planner,
-        timeout=classifier_timeout or 45,
+        timeout=classifier_timeout or 30,
     )
     result["qa_history"] = qa_history
     return result
@@ -137,7 +141,7 @@ def resolve_project_for_prompt(project: Optional[str] = None, cwd: Optional[Path
                 name=matched["name"],
                 path=str(project_root),
                 base_branch=(cfg.base_branch if cfg else matched.get("base_branch", "dev")),
-                default_mode=(cfg.default_mode if cfg else matched.get("default_mode", "codex")),
+                default_mode=(cfg.default_mode if cfg else matched.get("default_mode", "dual")),
                 worktree_base=(cfg.worktree_base if cfg else matched.get("worktree_base")),
                 config_file=str(config_path),
             )
@@ -146,7 +150,7 @@ def resolve_project_for_prompt(project: Optional[str] = None, cwd: Optional[Path
             name=project_name,
             path=str(project_root),
             base_branch=(cfg.base_branch if cfg else "dev"),
-            default_mode=(cfg.default_mode if cfg else "codex"),
+            default_mode=(cfg.default_mode if cfg else "dual"),
             worktree_base=(cfg.worktree_base if cfg else None),
             config_file=str(config_path),
         )
@@ -160,7 +164,7 @@ def resolve_project_for_prompt(project: Optional[str] = None, cwd: Optional[Path
             name=current_dir.name,
             path=str(current_dir),
             base_branch="main",
-            default_mode="codex",
+            default_mode="dual",
             config_file=None,
         )
 
@@ -174,6 +178,25 @@ def _project_config(project_info: dict):
 def _provider_context(project_info: dict) -> str:
     """Prefer an explicitly stored AGENTS.toml path when resolving CLI providers."""
     return project_info.get("config_file") or project_info["path"]
+
+
+def _has_explicit_automation_task_agent(project_info: dict, cfg=None) -> bool:
+    config_ref = project_info.get("config_file")
+    if not config_ref:
+        return bool(
+            cfg
+            and getattr(getattr(cfg, "automation", None), "task_agent", "")
+            and getattr(cfg.automation, "task_agent", "") != "dual"
+        )
+    try:
+        import tomllib
+
+        with open(config_ref, "rb") as handle:
+            data = tomllib.load(handle)
+    except Exception:
+        return False
+    automation = data.get("automation", {}) if isinstance(data, dict) else {}
+    return isinstance(automation, dict) and "task_agent" in automation
 
 
 def _should_execute(project_info: dict, execute: Optional[bool]) -> bool:
@@ -214,9 +237,14 @@ def _resolve_task_agent(project_info: dict, agent: Optional[str], executor: str)
     shell = _shell()
     cfg = shell._project_config(project_info)
     default_agent = (
-        cfg.project.default_mode
+        cfg.automation.task_agent
+        if cfg
+        and cfg.automation
+        and getattr(cfg.automation, "task_agent", "")
+        and shell._has_explicit_automation_task_agent(project_info, cfg)
+        else cfg.project.default_mode
         if cfg and cfg.project and cfg.project.default_mode
-        else project_info.get("default_mode") or "codex"
+        else project_info.get("default_mode") or "dual"
     )
     raw_agent = (agent or default_agent).strip()
     normalized = normalize_agent_name(raw_agent)

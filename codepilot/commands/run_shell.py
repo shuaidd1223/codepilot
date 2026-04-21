@@ -103,6 +103,22 @@ def build_script_command(shell: ShellInfo, script_path: Path, script_args: list[
     return cmd, f"cmd {script_path.name}"
 
 
+# Env vars forced on every ``git`` invocation so the subprocess can never
+# hang waiting for a human. If credentials / a GPG passphrase are needed
+# and not available via the environment, the command fails fast with a
+# visible error instead of blocking forever. ``SSH_ASKPASS`` needs a
+# companion ``DISPLAY`` / ``SSH_ASKPASS_REQUIRE=never`` to take effect on
+# OpenSSH ≥ 8.4, so we set both.
+_GIT_NONINTERACTIVE_ENV = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "echo",
+    "SSH_ASKPASS": "echo",
+    "SSH_ASKPASS_REQUIRE": "never",
+    "GCM_INTERACTIVE": "Never",        # Git Credential Manager
+    "GIT_OPTIONAL_LOCKS": "0",         # skip optional locks that can stall
+}
+
+
 def _run_command(
     cmd: list[str],
     *,
@@ -110,6 +126,10 @@ def _run_command(
     timeout: int = 3600,
     input_text: Optional[str] = None,
 ) -> tuple[int, str]:
+    env = None
+    if cmd and isinstance(cmd[0], str) and os.path.basename(cmd[0]).lower().startswith("git"):
+        # Merge — inherit the user's env, overlay the non-interactive flags.
+        env = {**os.environ, **_GIT_NONINTERACTIVE_ENV}
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -119,6 +139,7 @@ def _run_command(
         errors="replace",
         timeout=timeout,
         input=input_text,
+        env=env,
     )
     output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
     return result.returncode, output
@@ -201,8 +222,15 @@ def _run_command_live(
     cwd: Optional[Path] = None,
     timeout: int = 3600,
     input_text: Optional[str] = None,
+    silence_timeout_seconds: int = 0,
 ) -> tuple[int, str]:
-    """Run a long-lived command while streaming output, updating heartbeat, and honoring stop requests."""
+    """Run a long-lived command while streaming output, updating heartbeat, and honoring stop requests.
+
+    ``silence_timeout_seconds`` > 0 enables an "assumed dead" detector: if no
+    new bytes have been emitted by the subprocess for that many seconds, the
+    whole process tree gets killed and :class:`subprocess.TimeoutExpired` is
+    raised. 0 keeps the old behaviour (only wall-time ``timeout`` applies).
+    """
     # Late-lookup so tests that monkeypatch `codepilot.commands.run.<helper>` take effect
     # even though this function lives in run_shell.py.
     from codepilot.commands import run as _rc
@@ -259,12 +287,19 @@ def _run_command_live(
 
         recent_lines: list[str] = []
         recent_lock = threading.Lock()
+        # Monotonic timestamp of the most recent byte received from the
+        # subprocess — the silence detector below compares this with
+        # ``time.monotonic()`` to decide whether the agent has gone quiet.
+        last_output_monotonic = [time.monotonic()]
 
         from codepilot import progress_bus
 
         def _emit(raw: str) -> None:
             if not raw:
                 return
+            # Any inbound byte resets the silence clock — even whitespace
+            # counts as "agent still responsive".
+            last_output_monotonic[0] = time.monotonic()
             try:
                 handle.write(raw)
                 handle.flush()
@@ -347,6 +382,23 @@ def _run_command_live(
                     stop_process_tree(process.pid)
                     reader.join(timeout=2)
                     raise subprocess.TimeoutExpired(cmd, timeout)
+
+                # Agent silence detector — user opt-in via config. Guards
+                # against the "subprocess alive but wedged" case that the
+                # wall-time timeout takes minutes to catch.
+                if silence_timeout_seconds > 0:
+                    silent_for = time.monotonic() - last_output_monotonic[0]
+                    if silent_for > silence_timeout_seconds:
+                        stop_process_tree(process.pid)
+                        reader.join(timeout=2)
+                        raise subprocess.TimeoutExpired(
+                            cmd,
+                            silence_timeout_seconds,
+                            output=(
+                                f"子进程连续 {int(silent_for)}s 无输出（阈值 {silence_timeout_seconds}s），"
+                                "已按 agent_silence_timeout_seconds 策略终止。"
+                            ),
+                        )
 
                 exit_code = process.poll()
                 now = time.monotonic()

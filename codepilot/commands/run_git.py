@@ -5,14 +5,16 @@ Split out from run.py for maintainability. Re-exported by run.py.
 
 from __future__ import annotations
 
-import hashlib
+import os
 import re
+import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import click
 
 from codepilot.commands.run_shell import _run_command
+from codepilot.paths import project_storage_root
 
 
 def _git_current_branch(project_path: Path) -> str:
@@ -98,9 +100,7 @@ def _resolve_project_worktree_base(project_info: dict, config=None) -> Path:
             candidate = (project_path / candidate).resolve()
         return candidate
     project_name = (project_info.get("name") or project_path.name or "project").strip()
-    slug = _slugify_path_part(project_name, max_length=48, fallback="project")
-    fingerprint = hashlib.sha1(str(project_path).encode("utf-8")).hexdigest()[:10]
-    return Path.home() / ".codepilot" / "worktrees" / f"{slug}-{fingerprint}"
+    return project_storage_root(project_info, project_name=project_name, project_path=project_path) / "worktrees"
 
 
 def _task_worktree_path(project_info: dict, *, task_id: int, title: str, config=None) -> Path:
@@ -202,6 +202,147 @@ def _path_is_empty_directory(path: Path) -> bool:
     return path.is_dir() and not any(path.iterdir())
 
 
+DEFAULT_WORKTREE_CONTEXT_PATTERNS = (".env*",)
+DEFAULT_WORKTREE_CONTEXT_LINK_PATTERNS = (
+    # JavaScript / TypeScript
+    "node_modules",
+    # Python
+    ".venv",
+    "venv",
+    "env",
+    ".tox",
+    ".nox",
+    # PHP / Go vendoring
+    "vendor",
+    # JVM / Android
+    ".gradle",
+    # Rust / Java build dependency caches are often project-local here.
+    "target",
+    # C / C++ / CMake generators commonly keep dependency state in build dirs.
+    "build",
+    "cmake-build-*",
+    # Dart / Flutter
+    ".dart_tool",
+    # Apple ecosystems
+    "Pods",
+    "Carthage",
+    # Infra/tooling that commonly downloads providers/modules locally.
+    ".terraform",
+    ".serverless",
+)
+
+
+def _normalize_worktree_context_patterns(patterns: Sequence[str] | None) -> tuple[str, ...]:
+    if patterns is None:
+        return DEFAULT_WORKTREE_CONTEXT_PATTERNS
+    normalized = tuple(str(pattern).strip() for pattern in patterns if str(pattern).strip())
+    return normalized or DEFAULT_WORKTREE_CONTEXT_PATTERNS
+
+
+def _safe_relative_context_pattern(raw_pattern: str) -> str:
+    pattern = str(raw_pattern).strip().replace("\\", "/")
+    if not pattern:
+        return ""
+    pattern_path = Path(pattern)
+    if pattern_path.is_absolute() or ".." in pattern_path.parts:
+        return ""
+    return pattern
+
+
+def _link_context_dir(source: Path, target: Path) -> bool:
+    if target.exists():
+        return True
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        code, _ = _run_command(["cmd", "/c", "mklink", "/J", str(target), str(source)], cwd=target.parent, timeout=60)
+        return code == 0
+    try:
+        target.symlink_to(source, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+
+
+def _remove_context_link(path: Path) -> None:
+    try:
+        if path.is_symlink():
+            path.unlink()
+            return
+        is_junction = getattr(path, "is_junction", None)
+        if callable(is_junction) and is_junction():
+            path.rmdir()
+    except OSError:
+        return
+
+
+def _remove_task_worktree_context_links(worktree_path: Path) -> None:
+    for pattern in DEFAULT_WORKTREE_CONTEXT_LINK_PATTERNS:
+        for path in worktree_path.glob(pattern):
+            _remove_context_link(path)
+
+
+def _iter_context_link_dirs(source_root: Path) -> list[Path]:
+    dirs: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in DEFAULT_WORKTREE_CONTEXT_LINK_PATTERNS:
+        for source in source_root.glob(pattern):
+            if not source.is_dir():
+                continue
+            resolved = source.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            dirs.append(source)
+    return dirs
+
+
+def _copy_task_worktree_context(
+    project_path: Path,
+    worktree_path: Path,
+    patterns: Sequence[str] | None = None,
+) -> None:
+    """Copy configured local context files into a task worktree.
+
+    Git worktrees only materialize tracked files. Project-local .env files are
+    commonly ignored but still needed for local verification. Existing targets
+    are preserved.
+    """
+    source_root = Path(project_path).resolve()
+    target_root = Path(worktree_path).resolve()
+    if source_root == target_root or not source_root.is_dir() or not target_root.is_dir():
+        return
+
+    for source in _iter_context_link_dirs(source_root):
+        relative = source.resolve().relative_to(source_root)
+        _link_context_dir(source, target_root / relative)
+
+    effective_patterns = _normalize_worktree_context_patterns(patterns)
+    for raw_pattern in effective_patterns:
+        pattern = _safe_relative_context_pattern(raw_pattern)
+        if not pattern:
+            continue
+        for source in source_root.glob(pattern):
+            if source.name == ".git" or not (source.is_file() or source.is_dir()):
+                continue
+            source_resolved = source.resolve()
+            if source_resolved == target_root or target_root in source_resolved.parents:
+                continue
+            relative = source_resolved.relative_to(source_root)
+            target = target_root / relative
+            if target.exists():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, target, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+            else:
+                shutil.copy2(source, target)
+
+
+def _copy_task_worktree_env_files(project_path: Path, worktree_path: Path) -> None:
+    """Backward-compatible wrapper for tests/imports that expect env copying."""
+    _copy_task_worktree_context(project_path, worktree_path)
+
+
 def _git_prepare_task_worktree(
     project_path: Path,
     *,
@@ -209,6 +350,7 @@ def _git_prepare_task_worktree(
     title: str,
     base_branch: str,
     worktree_path: Path,
+    context_patterns: Sequence[str] | None = None,
 ) -> tuple[str, Path]:
     if not _git_is_repo(project_path):
         return "", project_path.resolve()
@@ -232,12 +374,44 @@ def _git_prepare_task_worktree(
                 f"目标 worktree 路径已被其他分支占用: {target_path} ({branch_label})\n"
                 "请先手动清理该 worktree 或更换 worktree_base。"
             )
+        _copy_task_worktree_context(project_path, target_path, context_patterns)
         return task_branch, target_path
     elif target_path.exists() and not _path_is_empty_directory(target_path):
-        raise RuntimeError(
-            f"目标 worktree 路径已存在且不属于当前仓库: {target_path}\n"
-            "请先手动清理该目录或更换 worktree_base。"
-        )
+        # 路径存在但 git 不认识——多半是上轮 crash 留下的残骸。如果这条路径
+        # 落在我们自己管理的 ~/.codepilot/data/<project>/worktrees 根下，就直接物理清掉；
+        # 否则保守报错让用户处理，避免误删项目里的业务目录。
+        import shutil
+        codepilot_root = (Path.home() / ".codepilot" / "data").resolve()
+        under_codepilot = False
+        try:
+            resolved_target = target_path.resolve()
+            under_codepilot = (
+                resolved_target.is_relative_to(codepilot_root)
+                and "worktrees" in resolved_target.parts
+            )
+        except AttributeError:
+            # Python < 3.9 fallback — we're on 3.11+, but keep defensive
+            try:
+                resolved_target = target_path.resolve()
+                resolved_target.relative_to(codepilot_root)
+                under_codepilot = "worktrees" in resolved_target.parts
+            except ValueError:
+                under_codepilot = False
+        if under_codepilot:
+            try:
+                shutil.rmtree(target_path, ignore_errors=False)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"目标 worktree 路径存在残留且自动清理失败: {target_path}\n"
+                    f"  错误: {exc}\n"
+                    "请手动删除该目录或更换 worktree_base 后重试。"
+                )
+            _git_prune_worktrees(project_path)
+        else:
+            raise RuntimeError(
+                f"目标 worktree 路径已存在且不属于当前仓库: {target_path}\n"
+                "请先手动清理该目录或更换 worktree_base。"
+            )
 
     occupying_worktrees = [path for path in _git_find_branch_worktrees(project_path, task_branch) if path != target_path]
     if occupying_worktrees:
@@ -261,6 +435,7 @@ def _git_prepare_task_worktree(
     )
     if code != 0:
         raise RuntimeError(f"创建任务 worktree 失败:\n{output}")
+    _copy_task_worktree_context(project_path, target_path, context_patterns)
     return task_branch, target_path
 
 
@@ -285,6 +460,7 @@ def _git_cleanup_task_worktree(
             raise RuntimeError(
                 f"拒绝移除不属于任务分支的 worktree: {target_path} ({branch_label})"
             )
+        _remove_task_worktree_context_links(target_path)
         code, output = _run_command(
             ["git", "worktree", "remove", "--force", str(target_path)],
             cwd=project_path,
@@ -320,6 +496,43 @@ def _git_prepare_task_branch(project_path: Path, *, task_id: int, title: str, ba
     else:
         _git_checkout(project_path, base_branch)
     task_branch = _task_branch_name(task_id, title)
+
+    # Clean up any orphaned worktree still holding this task's branch before
+    # we try to check it out in the main project. This is the common
+    # "切换 branch 失败 — already used by worktree" path: a previous run
+    # (or a config switch from ``worktree`` to ``branch`` mode) left a
+    # worktree behind and ``git checkout -B`` can't touch a branch that
+    # another worktree has claimed. ``git worktree remove --force`` handles
+    # both clean worktrees and those with local edits (which have already
+    # been committed by auto-commit for finished runs).
+    try:
+        _git_prune_worktrees(project_path)
+        occupants = [
+            p for p in _git_find_branch_worktrees(project_path, task_branch)
+            if p != project_path.resolve()
+        ]
+        for occupant in occupants:
+            code, output = _run_command(
+                ["git", "worktree", "remove", "--force", str(occupant)],
+                cwd=project_path,
+                timeout=120,
+            )
+            if code != 0:
+                raise RuntimeError(
+                    f"任务分支 `{task_branch}` 被遗留 worktree 占用且无法自动清理:\n"
+                    f"  占用路径: {occupant}\n"
+                    f"  `git worktree remove --force` 失败:\n{output}\n"
+                    "请手动执行 `git worktree remove --force <path>` 后重试。"
+                )
+        if occupants:
+            _git_prune_worktrees(project_path)
+    except RuntimeError:
+        raise
+    except Exception:
+        # Best-effort — if worktree inspection blows up unexpectedly, let
+        # the checkout below surface its own error.
+        pass
+
     _git_checkout(project_path, task_branch, create_from=base_branch, reset=True)
     return task_branch
 

@@ -48,6 +48,7 @@ from codepilot.commands.auto_chat import (  # noqa: F401 (re-export)
 from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
     _project_config,
     _provider_context,
+    _has_explicit_automation_task_agent,
     _resolve_effective_options,
     _resolve_task_agent,
     _should_execute,

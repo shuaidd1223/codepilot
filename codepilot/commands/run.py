@@ -6,7 +6,6 @@ Shell/command helpers live in `run_shell.py`; git operations live in
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import subprocess
@@ -32,6 +31,7 @@ from codepilot.ai_gateway import GatewayRequest, call_structured
 from codepilot.commands.status import _resolve_project, render_project_dashboard
 from codepilot.config import load_project_config, resolve_planner
 from codepilot.output import echo, safe
+from codepilot.paths import project_storage_root
 from codepilot.prompts import load_prompt as _load_prompt
 from codepilot.runtime import (
     HEARTBEAT_INTERVAL_SECONDS,
@@ -121,13 +121,19 @@ def _find_dispatch_script(project_path: str | None = None) -> Optional[Path]:
     if cfg and cfg.dispatch.dispatch_path:
         candidates.append(Path(cfg.dispatch.dispatch_path))
 
+    if project_path:
+        project_name = None
+        if cfg and getattr(getattr(cfg, "project", None), "name", ""):
+            project_name = cfg.project.name
+        project_scripts = project_storage_root(project_name=project_name, project_path=project_path) / "scripts"
+        candidates.append(project_scripts / "task-dispatch.ps1")
+        candidates.append(project_scripts / "task-dispatch.sh")
+
     package_scripts = [
         Path(__file__).resolve().parent.parent / "scripts" / "task-dispatch.ps1",
         Path(__file__).resolve().parent.parent / "scripts" / "task-dispatch.sh",
     ]
     candidates.extend(package_scripts)
-    candidates.append(Path.home() / ".codepilot" / "scripts" / "task-dispatch.ps1")
-    candidates.append(Path.home() / ".codepilot" / "scripts" / "task-dispatch.sh")
 
     for candidate in candidates:
         if candidate.exists():
@@ -167,11 +173,17 @@ def _build_task_md(task: dict) -> str:
     )
 
 
-def _pick_task_file(project_path: Path, task_id: int, tracked: bool = True) -> Path:
+def _pick_task_file(
+    project_path: Path,
+    task_id: int,
+    tracked: bool = True,
+    *,
+    project: dict | None = None,
+) -> Path:
     backlog = (
         project_path / "tasks" / "backlog"
         if tracked
-        else Path.home() / ".codepilot" / "task-files" / project_path.name
+        else project_storage_root(project, project_path=project_path) / "task-files"
     )
     backlog.mkdir(parents=True, exist_ok=True)
     return backlog / f"{task_id:03d}-task.md"
@@ -181,11 +193,7 @@ def _pick_task_file(project_path: Path, task_id: int, tracked: bool = True) -> P
 def _builtin_runtime_dir(project: dict) -> Path:
     """Store builtin executor artifacts outside the repo to avoid polluting commits."""
     project_path = Path(project["path"]).resolve()
-    project_name = project.get("name") or project_path.name or "project"
-    safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in project_name).strip("-")
-    safe_name = safe_name or "project"
-    fingerprint = hashlib.sha1(str(project_path).encode("utf-8")).hexdigest()[:10]
-    output_dir = Path.home() / ".codepilot" / "runs" / f"{safe_name}-{fingerprint}"
+    output_dir = project_storage_root(project, project_path=project_path) / "runs"
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
@@ -657,6 +665,7 @@ def _run_builtin_phase(
     timeout: int,
     config_ref: str | Path | None = None,
     display_phase: Optional[str] = None,
+    silence_timeout_seconds: int = 0,
 ) -> tuple[str, int, str]:
     """Execute one builtin phase with the requested agent.
 
@@ -721,6 +730,7 @@ def _run_builtin_phase(
                 log_path=console_log,
                 cwd=project_path,
                 timeout=timeout,
+                silence_timeout_seconds=silence_timeout_seconds,
             )
         else:
             exit_code, console = _run_command(cmd, cwd=project_path, timeout=timeout)
@@ -756,6 +766,7 @@ def _run_builtin_phase(
             cwd=project_path,
             timeout=timeout,
             input_text=prompt,
+            silence_timeout_seconds=silence_timeout_seconds,
         )
     else:
         exit_code, console = _run_command(cmd, cwd=project_path, timeout=timeout, input_text=prompt)
@@ -819,6 +830,7 @@ class _ExecutorContext:
     task_file: Path
     max_rounds: int
     task_id_for_events: Optional[int]
+    silence_timeout: int = 0  # seconds; 0 disables the silence detector
 
 
 def _make_phase_output_path(output_dir: Path, task_id: int, round_num: int, kind: str) -> Path:
@@ -879,6 +891,7 @@ def _run_builder_round(
         timeout=3600,
         config_ref=ctx.config_ref,
         display_phase=display_phase,
+        silence_timeout_seconds=ctx.silence_timeout,
     )
     phase_name = "builder" if round_num == 1 else f"builder-r{round_num}"
     _write_task_log(ctx.task["id"], agent, phase_name, output, exit_code, started)
@@ -930,6 +943,7 @@ def _run_reviewer_round(
         timeout=1800,
         config_ref=ctx.config_ref,
         display_phase=display_phase,
+        silence_timeout_seconds=ctx.silence_timeout,
     )
     phase_name = "reviewer" if round_num == 1 else f"reviewer-r{round_num}"
     _write_task_log(ctx.task["id"], agent, phase_name, output, exit_code, started)
@@ -998,6 +1012,15 @@ def _run_builtin_executor(
 
     from codepilot import progress_bus
 
+    # Load silence-timeout from the project's automation config so the
+    # main loop can kill wedged agents before the 1h wall-time timeout.
+    silence_timeout = 0
+    try:
+        _cfg = load_project_config(project_path, config_file=project.get("config_file"))
+        silence_timeout = int(getattr(getattr(_cfg, "automation", None), "agent_silence_timeout_seconds", 0) or 0)
+    except Exception:
+        silence_timeout = 0
+
     ctx = _ExecutorContext(
         task=task,
         project=project,
@@ -1007,6 +1030,7 @@ def _run_builtin_executor(
         task_file=task_file,
         max_rounds=max(1, int(max_review_rounds or 1)),
         task_id_for_events=(int(task.get("id") or 0) or None),
+        silence_timeout=silence_timeout,
     )
 
     previous_findings = ""
@@ -1256,6 +1280,8 @@ def _triage_deterministic_failure(task: dict, error_message: str) -> dict | None
     model = getattr(classifier, "model", "") if classifier else ""
     timeout = int(getattr(classifier, "timeout", 30) or 30)
     api_key = config.get_provider_api_key(provider_key) if config and provider_key else None
+    provider_cfg = config.providers.get(provider_key) if config and provider_key else None
+    base_url = provider_cfg.base_url if provider_cfg else None
     planner = resolve_planner(config, "automation")
     prompt = _build_deterministic_failure_triage_prompt(
         task,
@@ -1271,6 +1297,7 @@ def _triage_deterministic_failure(task: dict, error_message: str) -> dict | None
                 classifier_provider=provider_key,
                 classifier_model=model,
                 api_key=api_key,
+                base_url=base_url,
                 project_path=project_path,
                 config_ref=config_ref,
                 planner=planner,
@@ -1486,26 +1513,46 @@ def run_backlog(
             preflight_error = _builtin_preflight_error(project_path, auto_commit, effective_agent_mode)
         task_branch = _git_current_branch(project_path)
         execution_path = project_path
-        # builtin 默认在独立 worktree 中执行；关闭该开关时回退到主工作区直接执行。
+        # builtin 默认在独立 worktree 中执行；也支持 direct/branch 两种
+        # 主工作区执行方式。
         per_task_branch_enabled = (
             resolved_executor == "builtin"
             and bool(getattr(getattr(config, "automation", None), "per_task_branch", True))
         )
+        task_workspace = str(getattr(getattr(config, "automation", None), "task_workspace", "branch") or "branch").strip().lower()
+        if task_workspace not in {"direct", "branch", "worktree"}:
+            task_workspace = "branch"
         if per_task_branch_enabled and not preflight_error and not dry_run:
             try:
-                lock_error = _builtin_base_branch_lock_error(project_path, base_branch)
-                if lock_error:
-                    raise RuntimeError(lock_error)
-                prepared_branch, prepared_worktree = _git_prepare_task_worktree(
-                    project_path,
-                    task_id=task_id,
-                    title=task["title"],
-                    base_branch=base_branch,
-                    worktree_path=_task_worktree_path(proj, task_id=task_id, title=task["title"], config=config),
-                )
-                if prepared_branch:
-                    task_branch = prepared_branch
-                execution_path = prepared_worktree
+                if task_workspace == "worktree":
+                    lock_error = _builtin_base_branch_lock_error(project_path, base_branch)
+                    if lock_error:
+                        raise RuntimeError(lock_error)
+                    prepared_branch, prepared_worktree = _git_prepare_task_worktree(
+                        project_path,
+                        task_id=task_id,
+                        title=task["title"],
+                        base_branch=base_branch,
+                        worktree_path=_task_worktree_path(proj, task_id=task_id, title=task["title"], config=config),
+                    )
+                    if prepared_branch:
+                        task_branch = prepared_branch
+                    execution_path = prepared_worktree
+                elif task_workspace == "branch":
+                    prepared_branch = _git_prepare_task_branch(
+                        project_path,
+                        task_id=task_id,
+                        title=task["title"],
+                        base_branch=base_branch,
+                    )
+                    if prepared_branch:
+                        task_branch = prepared_branch
+                    execution_path = project_path
+                else:
+                    if _git_is_repo(project_path) and _git_local_branch_exists(project_path, base_branch):
+                        _git_checkout(project_path, base_branch)
+                    task_branch = _git_current_branch(project_path)
+                    execution_path = project_path
             except Exception as exc:
                 preflight_error = str(exc)
         if preflight_error:
@@ -1525,7 +1572,12 @@ def run_backlog(
                 render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
             break
 
-        task_file = _pick_task_file(project_path, task_id, tracked=(resolved_executor == "dispatch"))
+        task_file = _pick_task_file(
+            project_path,
+            task_id,
+            tracked=(resolved_executor == "dispatch"),
+            project=proj,
+        )
         task_file.write_text(_build_task_md(task), encoding="utf-8")
 
         db.update_task(
@@ -1541,6 +1593,9 @@ def run_backlog(
             active_pid=None,
             current_log_path=None,
             last_output="",
+            # Clear any previous preflight-skip warning / stale failure
+            # banner so the UI stops showing it the moment this run starts.
+            error_message="",
         )
 
         echo(f"[cyan]-> 执行任务 #{task_id}[/cyan]  {task['title']}")
@@ -1635,16 +1690,25 @@ def run_backlog(
                 break
             continue
 
-        if result.exit_code == 0 and per_task_branch_enabled:
+        if result.exit_code == 0 and per_task_branch_enabled and task_workspace in {"branch", "worktree"}:
             try:
-                merge_summary = _git_merge_task_worktree(
-                    project_path,
-                    task_id=task_id,
-                    title=task["title"],
-                    task_branch=task_branch,
-                    base_branch=base_branch,
-                    worktree_path=execution_path,
-                )
+                if task_workspace == "worktree":
+                    merge_summary = _git_merge_task_worktree(
+                        project_path,
+                        task_id=task_id,
+                        title=task["title"],
+                        task_branch=task_branch,
+                        base_branch=base_branch,
+                        worktree_path=execution_path,
+                    )
+                else:
+                    merge_summary = _git_merge_task_branch(
+                        project_path,
+                        task_id=task_id,
+                        title=task["title"],
+                        task_branch=task_branch,
+                        base_branch=base_branch,
+                    )
                 if merge_summary:
                     result.summary = " | ".join(part for part in [result.summary, merge_summary] if part)
             except Exception as exc:

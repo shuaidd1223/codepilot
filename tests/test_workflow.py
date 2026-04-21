@@ -664,6 +664,64 @@ def test_resolve_project_for_prompt_uses_current_directory(tmp_path, monkeypatch
     assert project["path"] == str(project_path)
 
 
+def test_init_dot_defaults_project_name_to_current_directory(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "current-project"
+    project_path.mkdir()
+    monkeypatch.chdir(project_path)
+
+    result = CliRunner().invoke(main, ["init", "."])
+
+    assert result.exit_code == 0, result.output
+    project = db.get_project("current-project")
+    assert project is not None
+    assert project["name"] == "current-project"
+    assert project["path"] == str(project_path.resolve())
+    assert 'name = "current-project"' in (project_path / "AGENTS.toml").read_text(encoding="utf-8")
+
+
+def test_project_delete_command_removes_project_and_children(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "remove me")
+    db.create_task_log(task["id"], "codex", "build", "ok")
+    session = db.create_session("demo", title="chat")
+    db.create_session_message(session["id"], "user", "hello")
+
+    result = CliRunner().invoke(main, ["project", "delete", "demo", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert db.get_project("demo") is None
+    assert db.list_tasks(project="demo") == []
+    assert db.get_session(session["id"]) is None
+    assert project_path.exists()
+
+
+def test_webui_project_actions_create_and_delete_project(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "web-project"
+    project_path.mkdir()
+
+    created = webui_mod.create_project_action(str(project_path))
+
+    assert created["ok"] is True
+    assert created["created"] is True
+    assert created["project"]["name"] == "web-project"
+    assert db.get_project("web-project")["path"] == str(project_path.resolve())
+    assert 'name = "web-project"' in (project_path / "AGENTS.toml").read_text(encoding="utf-8")
+
+    task = db.create_task("web-project", "remove me")
+    deleted = webui_mod.delete_project_action("web-project")
+
+    assert deleted["ok"] is True
+    assert deleted["deleted_tasks"] == 1
+    assert db.get_project("web-project") is None
+    assert db.get_task(task["id"]) is None
+    assert project_path.exists()
+
+
 def test_resolve_project_for_prompt_syncs_defaults_from_config(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
@@ -1572,6 +1630,22 @@ def test_resolve_task_agent_preserves_dual(monkeypatch):
     assert resolved == "dual"
 
 
+def test_resolve_task_agent_prefers_automation_task_agent(monkeypatch):
+    from codepilot.config import AgentsConfig
+
+    cfg = AgentsConfig.from_dict({
+        "project": {"default_mode": "dual"},
+        "automation": {"task_agent": "claude"},
+    })
+
+    monkeypatch.setattr(auto_cmd, "check_provider_availability", lambda agent, project_path=None: (True, f"ok:{agent}"))
+    monkeypatch.setattr(auto_cmd, "_project_config", lambda project_info: cfg)
+
+    resolved = auto_cmd._resolve_task_agent({"default_mode": "dual", "path": "D:/demo"}, None, "builtin")
+
+    assert resolved == "claude"
+
+
 def test_resolve_builtin_phase_agent_uses_dual_split():
     assert run_cmd._resolve_builtin_phase_agent("dual", "builder") == ("codex", None)
     assert run_cmd._resolve_builtin_phase_agent("dual", "reviewer") == ("claude", None)
@@ -1665,6 +1739,24 @@ def test_task_worktree_path_uses_configured_relative_base(tmp_path):
     assert worktree_path == resolved_base / "task-7-add-api-endpoint"
 
 
+def test_task_worktree_path_uses_project_first_default_base(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": "",
+    }
+
+    resolved_base = run_cmd._resolve_project_worktree_base(project_info)
+    worktree_path = run_cmd._task_worktree_path(project_info, task_id=7, title="Add API endpoint")
+
+    assert resolved_base == tmp_path / "home" / ".codepilot" / "data" / "demo" / "worktrees"
+    assert worktree_path == resolved_base / "task-7-add-api-endpoint"
+
+
 def test_git_prepare_and_cleanup_task_worktree(tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()
@@ -1676,7 +1768,11 @@ def test_git_prepare_and_cleanup_task_worktree(tmp_path):
     subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
     (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    (project_path / ".gitignore").write_text(".env*\nnode_modules/\n", encoding="utf-8")
+    (project_path / ".env").write_text("DATABASE_URL=postgres://local\n", encoding="utf-8")
+    (project_path / "node_modules" / "demo").mkdir(parents=True)
+    (project_path / "node_modules" / "demo" / "index.js").write_text("module.exports = 1;\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md", ".gitignore"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
 
     base_branch = run_cmd._git_current_branch(project_path)
@@ -1699,6 +1795,8 @@ def test_git_prepare_and_cleanup_task_worktree(tmp_path):
     assert worktree_path == expected_path.resolve()
     assert worktree_path.exists()
     assert run_cmd._git_worktree_exists(project_path, worktree_path) is True
+    assert (worktree_path / ".env").read_text(encoding="utf-8") == "DATABASE_URL=postgres://local\n"
+    assert (worktree_path / "node_modules" / "demo" / "index.js").read_text(encoding="utf-8") == "module.exports = 1;\n"
 
     code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=worktree_path, timeout=30)
     assert code == 0
@@ -1708,10 +1806,59 @@ def test_git_prepare_and_cleanup_task_worktree(tmp_path):
 
     assert worktree_path.exists() is False
     assert run_cmd._git_worktree_exists(project_path, worktree_path) is False
+    assert (project_path / "node_modules" / "demo" / "index.js").exists()
 
     code, output = run_cmd._run_command(["git", "branch", "--list", branch_name], cwd=project_path, timeout=30)
     assert code == 0
     assert branch_name not in output
+
+
+def test_git_prepare_task_worktree_links_common_dependency_dirs(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    (project_path / ".gitignore").write_text("vendor/\n.venv/\ncmake-build-debug/\n", encoding="utf-8")
+    (project_path / "vendor" / "pkg").mkdir(parents=True)
+    (project_path / "vendor" / "pkg" / "autoload.php").write_text("<?php\n", encoding="utf-8")
+    (project_path / ".venv" / "pyvenv.cfg").parent.mkdir(parents=True)
+    (project_path / ".venv" / "pyvenv.cfg").write_text("home = python\n", encoding="utf-8")
+    (project_path / "cmake-build-debug" / "CMakeCache.txt").parent.mkdir(parents=True)
+    (project_path / "cmake-build-debug" / "CMakeCache.txt").write_text("# cache\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md", ".gitignore"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    worktree_target = run_cmd._task_worktree_path(project_info, task_id=17, title="Common deps")
+
+    branch_name, worktree_path = run_cmd._git_prepare_task_worktree(
+        project_path,
+        task_id=17,
+        title="Common deps",
+        base_branch=base_branch,
+        worktree_path=worktree_target,
+    )
+
+    assert (worktree_path / "vendor" / "pkg" / "autoload.php").read_text(encoding="utf-8") == "<?php\n"
+    assert (worktree_path / ".venv" / "pyvenv.cfg").read_text(encoding="utf-8") == "home = python\n"
+    assert (worktree_path / "cmake-build-debug" / "CMakeCache.txt").read_text(encoding="utf-8") == "# cache\n"
+
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=worktree_path, task_branch=branch_name)
+
+    assert (project_path / "vendor" / "pkg" / "autoload.php").exists()
+    assert (project_path / ".venv" / "pyvenv.cfg").exists()
+    assert (project_path / "cmake-build-debug" / "CMakeCache.txt").exists()
 
 
 def test_git_prepare_task_worktree_allows_existing_empty_dir(tmp_path):
@@ -1725,7 +1872,9 @@ def test_git_prepare_task_worktree_allows_existing_empty_dir(tmp_path):
     subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
     (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    (project_path / ".gitignore").write_text(".env*\n", encoding="utf-8")
+    (project_path / ".env").write_text("DATABASE_URL=postgres://original\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md", ".gitignore"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
 
     base_branch = run_cmd._git_current_branch(project_path)
@@ -1765,7 +1914,9 @@ def test_git_prepare_task_worktree_reuses_existing_task_worktree_without_reset(t
     subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
     (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    (project_path / ".gitignore").write_text(".env*\n", encoding="utf-8")
+    (project_path / ".env").write_text("DATABASE_URL=postgres://original\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md", ".gitignore"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
 
     base_branch = run_cmd._git_current_branch(project_path)
@@ -1785,6 +1936,11 @@ def test_git_prepare_task_worktree_reuses_existing_task_worktree_without_reset(t
     )
     dirty_file = worktree_path / "dirty.txt"
     dirty_file.write_text("preserve me", encoding="utf-8")
+    worktree_env = worktree_path / ".env"
+    assert worktree_env.read_text(encoding="utf-8") == "DATABASE_URL=postgres://original\n"
+    worktree_env.write_text("DATABASE_URL=postgres://worktree\n", encoding="utf-8")
+    (project_path / ".env").write_text("DATABASE_URL=postgres://changed\n", encoding="utf-8")
+    (project_path / ".env.local").write_text("LOCAL_ONLY=1\n", encoding="utf-8")
 
     branch_name2, worktree_path2 = run_cmd._git_prepare_task_worktree(
         project_path,
@@ -1798,6 +1954,8 @@ def test_git_prepare_task_worktree_reuses_existing_task_worktree_without_reset(t
     assert worktree_path2 == worktree_path
     assert dirty_file.exists()
     assert dirty_file.read_text(encoding="utf-8") == "preserve me"
+    assert worktree_env.read_text(encoding="utf-8") == "DATABASE_URL=postgres://worktree\n"
+    assert (worktree_path / ".env.local").read_text(encoding="utf-8") == "LOCAL_ONLY=1\n"
 
     run_cmd._git_cleanup_task_worktree(project_path, worktree_path=worktree_path, task_branch=branch_name)
 
@@ -2054,7 +2212,7 @@ def test_run_backlog_creates_task_branch_and_checks_out_base_after_merge(tmp_pat
     assert stats["done"] == 1
     assert current["status"] == "done"
     assert current["branch_name"] == expected_branch
-    assert current["worktree_path"] != str(project_path)
+    assert current["worktree_path"] == str(project_path.resolve())
 
     code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
     assert code == 0
@@ -2098,10 +2256,139 @@ def test_run_backlog_requeues_when_merge_back_fails_with_uncommitted_changes(tmp
     assert current["status"] == "backlog"
     assert current["retry_count"] == 1
     assert "回合并失败" in (current["error_message"] or "")
-    assert current["worktree_path"] != str(project_path)
-    assert Path(current["worktree_path"]).exists()
-    assert (Path(current["worktree_path"]) / "dirty.txt").exists()
-    assert (project_path / "dirty.txt").exists() is False
+    assert current["worktree_path"] == str(project_path.resolve())
+    assert (project_path / "dirty.txt").exists() is True
+
+    code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
+    assert code == 0
+    assert output.strip() == expected_branch
+
+
+def test_run_backlog_uses_branch_workspace_when_configured(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    (project_path / "AGENTS.toml").write_text(
+        """
+[automation]
+task_workspace = "branch"
+""".strip(),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "README.md", "AGENTS.toml"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    db.register_project("demo", str(project_path), base_branch=base_branch)
+    task = db.create_task("demo", "project workspace", agent="dual", max_retries=2)
+    captured = {}
+
+    def _fake_executor(*args, **kwargs):
+        captured["execution_path"] = Path(kwargs["execution_path"]).resolve()
+        return run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin")
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", _fake_executor)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=True)
+    current = db.get_task(task["id"])
+
+    assert stats["done"] == 1
+    assert current["status"] == "done"
+    assert current["worktree_path"] == str(project_path.resolve())
+    assert captured["execution_path"] == project_path.resolve()
+    assert run_cmd._git_list_worktrees(project_path) == [project_path.resolve()]
+
+
+def test_run_backlog_defaults_to_branch_workspace_for_invalid_config(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    (project_path / "AGENTS.toml").write_text(
+        """
+[automation]
+task_workspace = "bad-value"
+""".strip(),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "README.md", "AGENTS.toml"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    db.register_project("demo", str(project_path), base_branch=base_branch)
+    task = db.create_task("demo", "bad workspace config", agent="dual", max_retries=2)
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin"),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=True)
+    current = db.get_task(task["id"])
+    expected_branch = run_cmd._task_branch_name(task["id"], task["title"])
+
+    assert stats["done"] == 1
+    assert current["status"] == "done"
+    assert current["branch_name"] == expected_branch
+    assert current["worktree_path"] == str(project_path.resolve())
+    assert run_cmd._git_list_worktrees(project_path) == [project_path.resolve()]
+
+
+def test_run_backlog_uses_direct_workspace_when_configured(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    (project_path / "AGENTS.toml").write_text(
+        """
+[automation]
+task_workspace = "direct"
+""".strip(),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "README.md", "AGENTS.toml"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    db.register_project("demo", str(project_path), base_branch=base_branch)
+    task = db.create_task("demo", "direct workspace", agent="dual", max_retries=2)
+    captured = {}
+
+    def _fake_executor(*args, **kwargs):
+        captured["execution_path"] = Path(kwargs["execution_path"]).resolve()
+        return run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin")
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", _fake_executor)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=True)
+    current = db.get_task(task["id"])
+
+    assert stats["done"] == 1
+    assert current["status"] == "done"
+    assert current["branch_name"] == base_branch
+    assert current["worktree_path"] == str(project_path.resolve())
+    assert captured["execution_path"] == project_path.resolve()
+    assert run_cmd._git_list_worktrees(project_path) == [project_path.resolve()]
 
     code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
     assert code == 0
@@ -2119,7 +2406,14 @@ def test_run_backlog_keeps_builtin_worktree_changes_isolated_before_merge(tmp_pa
     subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
     (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "AGENTS.toml").write_text(
+        """
+[automation]
+task_workspace = "worktree"
+""".strip(),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "README.md", "AGENTS.toml"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
 
     base_branch = run_cmd._git_current_branch(project_path)
@@ -2299,7 +2593,14 @@ def test_run_backlog_requires_main_worktree_on_base_branch_for_builtin_worktree_
     subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
     (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "AGENTS.toml").write_text(
+        """
+[automation]
+task_workspace = "worktree"
+""".strip(),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "README.md", "AGENTS.toml"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
     subprocess.run(["git", "checkout", "-b", "topic"], cwd=project_path, capture_output=True, check=True)
 
@@ -2311,7 +2612,7 @@ def test_run_backlog_requires_main_worktree_on_base_branch_for_builtin_worktree_
 
     assert stats["requeued"] == 1
     assert current["status"] == "backlog"
-    assert "主工作区当前位于" in (current["error_message"] or "")
+    assert "base_branch" in (current["error_message"] or "")
     code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
     assert code == 0
     assert output.strip() == "topic"
@@ -2481,7 +2782,9 @@ def test_run_builtin_executor_fails_when_review_verdict_is_unknown(monkeypatch, 
     assert "review 结果不明确" in (result.summary or "")
 
 
-def test_builtin_runtime_dir_is_outside_project(tmp_path):
+def test_builtin_runtime_dir_is_project_first_and_outside_project(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     project_path = tmp_path / "project"
     project_path.mkdir()
 
@@ -2489,7 +2792,43 @@ def test_builtin_runtime_dir_is_outside_project(tmp_path):
 
     assert runtime_dir.exists()
     assert not runtime_dir.is_relative_to(project_path)
-    assert ".codepilot" in str(runtime_dir)
+    assert runtime_dir == tmp_path / "home" / ".codepilot" / "data" / "demo" / "runs"
+
+
+def test_find_dispatch_script_checks_project_storage(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.delenv("CODEPILOT_DISPATCH_PATH", raising=False)
+    project_path = tmp_path / "repo-dir"
+    project_path.mkdir()
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+""".strip(),
+        encoding="utf-8",
+    )
+    project_script = tmp_path / "home" / ".codepilot" / "data" / "demo" / "scripts" / "task-dispatch.sh"
+    project_script.parent.mkdir(parents=True)
+    project_script.write_text("#!/usr/bin/env sh\n", encoding="utf-8")
+
+    assert run_cmd._find_dispatch_script(str(project_path)) == project_script
+
+
+def test_pick_untracked_task_file_uses_project_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    project_path = tmp_path / "repo-dir"
+    project_path.mkdir()
+
+    task_file = run_cmd._pick_task_file(
+        project_path,
+        7,
+        tracked=False,
+        project={"name": "demo", "path": str(project_path)},
+    )
+
+    assert task_file == tmp_path / "home" / ".codepilot" / "data" / "demo" / "task-files" / "007-task.md"
 
 
 def test_run_backlog_builtin_dirty_workspace_requeues_without_retry(tmp_path, monkeypatch):

@@ -41,16 +41,16 @@ def _resolve_project_strict(ctx, param, value):
 def _resolve_agent_info(ctx, value) -> tuple[str, str | None, str | None]:
     """Resolve agent with fallback.  Returns (agent, fallback_reason, project_path)."""
     if not value:
-        value = "codex"
+        value = "dual"
 
     project_path = None
-    default_mode = "codex"
+    default_mode = "dual"
     if ctx is not None and getattr(ctx, "params", None):
         project_name = ctx.params.get("project")
         project_info = db.get_project(project_name) if project_name else None
         if project_info:
             project_path = project_info.get("path")
-            default_mode = project_info.get("default_mode") or "codex"
+            default_mode = project_info.get("default_mode") or "dual"
 
     agent, fallback_reason = resolve_agent_with_fallback(
         value, project_path=project_path, default_mode=default_mode,
@@ -218,7 +218,7 @@ def add(
         raise click.BadParameter("--title 或 --file 必须指定一个")
 
     # Re-resolve with fallback info (the Click callback doesn't propagate it).
-    default_mode = proj_info.get("default_mode", "codex") if proj_info else "codex"
+    default_mode = proj_info.get("default_mode", "dual") if proj_info else "dual"
     effective_agent, fallback_reason, _ = _resolve_agent_info(ctx, agent)
 
     _single_add(
