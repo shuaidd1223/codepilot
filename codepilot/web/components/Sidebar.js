@@ -15,8 +15,7 @@ CP.Components.Sidebar = Vue.defineComponent({
     },
     toggleCategory(project, cat, ev) {
       ev.stopPropagation();
-      const key = project + '/' + cat;
-      this.cp.toggleExpanded(key);
+      this.cp.toggleCategory(project, cat);
     },
     isActive(match) {
       const n = this.s.nav;

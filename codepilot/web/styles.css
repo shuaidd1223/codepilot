@@ -301,6 +301,46 @@ p { margin: 0; }
 
 .main-scroll { flex: 1; overflow-y: auto; position: relative; }
 
+/* In-app confirm dialog (replaces browser native confirm). */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: hsl(var(--background) / .55);
+  backdrop-filter: blur(2px);
+}
+.confirm-dialog {
+  width: min(460px, 100%);
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  box-shadow: var(--shadow-lg);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.confirm-title {
+  font-size: 16px;
+  line-height: 1.35;
+}
+.confirm-message {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  white-space: pre-wrap;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 /* Content pane + views */
 .content-pane { min-height: 100%; display: flex; flex-direction: column; }
 .view { padding: 24px; display: flex; flex-direction: column; gap: 16px; flex: 1; }
@@ -341,6 +381,24 @@ p { margin: 0; }
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
 }
+.service-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px 16px;
+}
+.service-row {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--muted) / .25);
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.service-main { min-width: 0; }
+.service-title { font-size: 13px; font-weight: 600; }
 .item-card {
   display: flex; flex-direction: column; gap: 6px;
   padding: 14px;
@@ -652,11 +710,21 @@ pre.code.live-log { padding: 6px 10px; }
   overflow: auto;
   color: var(--agent-fg);
   background: transparent;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: block;
 }
 .agent-log.tall .agent-log-body { max-height: 560px; }
+.al-spacer {
+  width: 100%;
+  pointer-events: none;
+}
+.al-virtual-item {
+  margin-bottom: 6px;
+}
+.al-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 2px 0;
+}
 
 .agent-log-jump {
   position: absolute;

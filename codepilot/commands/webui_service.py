@@ -18,18 +18,22 @@ from pathlib import Path
 
 import click
 
+from codepilot import db
+from codepilot.commands.daemon import start_daemon_service
 from codepilot.output import echo, safe
 from codepilot.paths import global_storage_root
 from codepilot.runtime import is_process_alive, stop_process_tree
 
 
 STATE_DIR = global_storage_root() / "webui"
-PID_FILE = STATE_DIR / "webui.pid"
-META_FILE = STATE_DIR / "webui.json"
 LOG_FILE = STATE_DIR / "webui.log"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
+
+
+def _service_scope() -> str:
+    return "_global"
 
 
 def _now_iso() -> str:
@@ -37,29 +41,33 @@ def _now_iso() -> str:
 
 
 def _read_meta() -> dict:
-    try:
-        return json.loads(META_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    state = db.get_service_state("webui", _service_scope())
+    if state and isinstance(state.get("meta"), dict) and state.get("meta"):
+        return dict(state["meta"])
+    return {}
 
 
 def _write_meta(pid: int, host: str, port: int) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    META_FILE.write_text(
-        json.dumps(
-            {"pid": pid, "host": host, "port": port, "started_at": _now_iso()},
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    payload = {"pid": pid, "host": host, "port": port, "started_at": _now_iso()}
+    db.upsert_service_state(
+        "webui",
+        _service_scope(),
+        pid=int(pid),
+        status="running",
+        log_path=str(LOG_FILE),
+        heartbeat_at=_now_iso(),
+        meta=payload,
     )
 
 
 def _read_pid() -> int | None:
-    try:
-        return int(PID_FILE.read_text(encoding="utf-8").strip())
-    except Exception:
-        return None
+    state = db.get_service_state("webui", _service_scope())
+    if state and state.get("pid"):
+        try:
+            return int(state["pid"])
+        except Exception:
+            pass
+    return None
 
 
 def _alive_pid() -> int | None:
@@ -74,11 +82,7 @@ def _alive_pid() -> int | None:
 
 
 def _cleanup_files() -> None:
-    for p in (PID_FILE, META_FILE):
-        try:
-            p.unlink(missing_ok=True)
-        except Exception:
-            pass
+    db.clear_service_state("webui", _service_scope())
 
 
 def _service_host_port() -> tuple[str, int]:
@@ -92,8 +96,6 @@ def _service_host_port() -> tuple[str, int]:
 
 
 def _sync_state_pid(pid: int) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(str(int(pid)), encoding="utf-8")
     meta = _read_meta()
     meta["pid"] = int(pid)
     if "host" not in meta:
@@ -102,7 +104,15 @@ def _sync_state_pid(pid: int) -> None:
         meta["port"] = DEFAULT_PORT
     if "started_at" not in meta:
         meta["started_at"] = _now_iso()
-    META_FILE.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    db.upsert_service_state(
+        "webui",
+        _service_scope(),
+        pid=int(pid),
+        status="running",
+        log_path=str(LOG_FILE),
+        heartbeat_at=_now_iso(),
+        meta=meta,
+    )
 
 
 def _listening_service_pids() -> list[int]:
@@ -234,7 +244,9 @@ def webui():
 @click.option("--host", default=DEFAULT_HOST, show_default=True, help="监听地址")
 @click.option("--port", type=int, default=DEFAULT_PORT, show_default=True, help="监听端口")
 @click.option("--open/--no-open", "open_browser", default=True, show_default=True, help="启动后在浏览器打开")
-def start_cmd(host: str, port: int, open_browser: bool) -> None:
+@click.option("--daemon/--no-daemon", "start_daemon", default=True, show_default=True, help="同时确保 daemon 后台运行")
+@click.option("--project", "-p", default="", help="同时启动指定项目的任务执行服务")
+def start_cmd(host: str, port: int, open_browser: bool, start_daemon: bool, project: str) -> None:
     """启动 Web UI 后台服务（即使关掉终端也保持运行）。"""
     existing = _alive_pid()
     if existing:
@@ -242,6 +254,8 @@ def start_cmd(host: str, port: int, open_browser: bool) -> None:
         url = f"http://{meta.get('host', host)}:{meta.get('port', port)}/"
         echo(f"[yellow]Web UI 已在运行（PID={existing}） {url}[/yellow]")
         echo("[dim]如果需要重启：codepilot webui restart[/dim]")
+        if start_daemon:
+            _ensure_daemon_started(project)
         return
 
     # Clean up stale state
@@ -267,7 +281,6 @@ def start_cmd(host: str, port: int, open_browser: bool) -> None:
         raise click.Abort()
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(str(proc.pid), encoding="utf-8")
     _write_meta(proc.pid, host, port)
 
     url = f"http://{host}:{port}/"
@@ -275,11 +288,29 @@ def start_cmd(host: str, port: int, open_browser: bool) -> None:
     echo(f"[dim]日志: {LOG_FILE}[/dim]")
     echo("[dim]停止: codepilot webui stop[/dim]")
 
+    if start_daemon:
+        _ensure_daemon_started(project)
+
     if open_browser:
         try:
             webbrowser.open(url)
         except Exception:
             pass
+
+
+def _ensure_daemon_started(project: str = "") -> None:
+    if not project:
+        echo("[dim]未指定 --project，跳过任务执行服务自动启动；可在 Web UI 项目页单独启动。[/dim]")
+        return
+    try:
+        result = start_daemon_service(project=project)
+    except Exception as exc:
+        echo(f"[yellow]Daemon 后台启动失败：{safe(exc)}[/yellow]")
+        return
+    if result.get("started"):
+        echo(f"[green]项目 {project} 任务执行服务已后台启动[/green]  PID={result.get('pid')}")
+    else:
+        echo(f"[dim]项目 {project} 任务执行服务已在运行[/dim]  PID={result.get('pid')}")
 
 
 @webui.command("stop")
@@ -295,6 +326,20 @@ def stop_cmd() -> None:
         echo(f"[dim]Web UI 已不存在（PID={raw_pid} 已退出），清理状态文件[/dim]")
         _cleanup_files()
         return
+
+    try:
+        state_meta = _read_meta()
+        db.upsert_service_state(
+            "webui",
+            _service_scope(),
+            pid=int(targets[0]),
+            status="stopping",
+            log_path=str(LOG_FILE),
+            heartbeat_at=_now_iso(),
+            meta=state_meta,
+        )
+    except Exception:
+        pass
 
     failures: list[int] = []
     for pid in targets:
@@ -317,8 +362,10 @@ def stop_cmd() -> None:
 @click.option("--host", default=None, help="监听地址（默认沿用上次）")
 @click.option("--port", type=int, default=None, help="监听端口（默认沿用上次）")
 @click.option("--open/--no-open", "open_browser", default=False, show_default=True, help="重启后在浏览器打开")
+@click.option("--daemon/--no-daemon", "start_daemon", default=True, show_default=True, help="同时确保 daemon 后台运行")
+@click.option("--project", "-p", default="", help="同时启动指定项目的任务执行服务")
 @click.pass_context
-def restart_cmd(ctx: click.Context, host: str | None, port: int | None, open_browser: bool) -> None:
+def restart_cmd(ctx: click.Context, host: str | None, port: int | None, open_browser: bool, start_daemon: bool, project: str) -> None:
     """重启 Web UI 服务（沿用上次的 host/port，也可通过选项覆盖）。"""
     meta = _read_meta()
     resolved_host = host or meta.get("host") or DEFAULT_HOST
@@ -337,7 +384,7 @@ def restart_cmd(ctx: click.Context, host: str | None, port: int | None, open_bro
         echo(f"[yellow]以下 PID 停止时返回失败，但进程已退出：{','.join(str(pid) for pid in failures)}[/yellow]")
     _cleanup_files()
     time.sleep(0.3)
-    ctx.invoke(start_cmd, host=resolved_host, port=resolved_port, open_browser=open_browser)
+    ctx.invoke(start_cmd, host=resolved_host, port=resolved_port, open_browser=open_browser, start_daemon=start_daemon, project=project)
 
 
 @webui.command("status")

@@ -119,6 +119,51 @@ def delete_project_action(name: str) -> dict:
     }
 
 
+def project_service_action(project: str, service: str, action: str) -> dict:
+    db.init_db()
+    project_name = (project or "").strip()
+    if not project_name:
+        raise RuntimeError("项目名称不能为空。")
+    if not db.get_project(project_name):
+        raise RuntimeError(f"项目 '{project_name}' 不存在。")
+    service = (service or "").strip().lower()
+    action = (action or "").strip().lower()
+    if service not in {"tasks", "inspect"}:
+        raise RuntimeError("服务只支持 tasks / inspect。")
+    if action not in {"start", "stop", "status"}:
+        raise RuntimeError("操作只支持 start / stop / status。")
+
+    if service == "tasks":
+        from codepilot.commands.daemon import daemon_service_status, start_daemon_service, stop_daemon_service
+        if action == "start":
+            result = start_daemon_service(project=project_name)
+            msg = "任务执行服务已启动" if result.get("started") else "任务执行服务已在运行"
+        elif action == "stop":
+            result = stop_daemon_service(project_name)
+            if result.get("stop_requested"):
+                msg = "任务轮询已请求停止，当前任务完成后不会继续领取下一个任务"
+            else:
+                msg = "任务执行服务已停止" if result.get("stopped") else "任务执行服务未运行"
+        else:
+            result = daemon_service_status(project_name)
+            msg = "任务执行服务状态已刷新"
+    else:
+        from codepilot.commands.inspect import inspect_service_status, start_inspect_service, stop_inspect_service
+        if action == "start":
+            result = start_inspect_service(project_name)
+            msg = "巡检服务已启动" if result.get("started") else "巡检服务已在运行"
+        elif action == "stop":
+            result = stop_inspect_service(project_name)
+            msg = "巡检服务已停止" if result.get("stopped") else "巡检服务未运行"
+        else:
+            result = inspect_service_status(project_name)
+            msg = "巡检服务状态已刷新"
+
+    level = "warning" if action == "stop" else "info"
+    _append_event(f"{project_name}: {msg}", level=level, project=project_name)
+    return {"ok": True, "message": msg, "project": project_name, "service": service, "action": action, "status": result}
+
+
 def retry_task_action(task_id: int) -> dict:
     """Retry a task: reset it to backlog AND kick off one execution pass in
     a background thread so the UI feels like "click retry → task starts".

@@ -50,11 +50,40 @@ def _read_text(path: str | None) -> str:
 def _parse_depends(raw: str | None) -> list[int]:
     if not raw:
         return []
-    try:
-        items = json.loads(raw)
-    except json.JSONDecodeError:
+    parsed: object = raw
+    # Historical DB rows may accidentally hold a double-encoded dependency
+    # payload (e.g. "\"[]\""). Decode string payloads iteratively so those
+    # rows still render in the detail API instead of raising ValueError.
+    for _ in range(3):
+        if not isinstance(parsed, str):
+            break
+        text = parsed.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            # Backward-compatible fallback for legacy comma-separated inputs.
+            parsed = [part.strip() for part in text.split(",") if part.strip()]
+            break
+
+    if parsed is None:
         return []
-    return [int(item) for item in items if str(item).strip()]
+    if not isinstance(parsed, (list, tuple, set)):
+        parsed = [parsed]
+
+    out: list[int] = []
+    seen: set[int] = set()
+    for item in parsed:
+        try:
+            dep = int(str(item).strip())
+        except (TypeError, ValueError):
+            continue
+        if dep <= 0 or dep in seen:
+            continue
+        seen.add(dep)
+        out.append(dep)
+    return out
 
 
 # Cap per-request log delta at 2 MiB so a one-shot `/log?offset=0` on a huge
@@ -124,8 +153,8 @@ def task_log_delta(task_id: int, *, offset: int = 0) -> dict:
     return out
 
 
-def daemon_health_payload(*, stale_after_seconds: int = 120) -> dict:
-    """Introspect the local daemon's heartbeat file.
+def daemon_health_payload(project: str | None = None, *, stale_after_seconds: int = 120) -> dict:
+    """Introspect daemon liveness from ``service_states``.
 
     Used by the Web UI to surface a banner when the daemon appears dead —
     tasks would otherwise silently sit in ``backlog`` forever with no visible
@@ -137,13 +166,6 @@ def daemon_health_payload(*, stale_after_seconds: int = 120) -> dict:
     "stopped" from "frozen".
     """
     from codepilot.runtime import is_process_alive
-    from datetime import datetime
-
-    from codepilot.paths import global_storage_root
-
-    daemon_dir = global_storage_root() / "daemon"
-    lock_file = daemon_dir / "daemon.lock"
-    heartbeat_file = daemon_dir / "daemon.heartbeat"
 
     out = {
         "alive": False,
@@ -155,43 +177,30 @@ def daemon_health_payload(*, stale_after_seconds: int = 120) -> dict:
         "reason": "daemon 未运行",
     }
 
-    if not lock_file.exists():
-        return out
-    try:
-        pid = int(lock_file.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        out["reason"] = "daemon.lock 读取失败"
-        return out
-    out["pid"] = pid
-    if not is_process_alive(pid):
-        out["reason"] = f"daemon 进程 {pid} 已不存在（可能已崩溃）"
-        return out
-    out["running"] = True
-
-    if not heartbeat_file.exists():
-        # Old daemon build without heartbeat writing, or daemon just
-        # started — treat as alive but flag missing heartbeat.
-        out["alive"] = True
-        out["reason"] = "心跳文件不存在（可能是旧版本 daemon）"
-        return out
-
-    try:
-        last = heartbeat_file.read_text(encoding="utf-8").strip()
-    except OSError:
-        out["reason"] = "daemon.heartbeat 读取失败"
-        return out
-    out["last_heartbeat"] = last
-    try:
-        delta = (datetime.now() - datetime.fromisoformat(last)).total_seconds()
-    except ValueError:
-        out["reason"] = "心跳时间戳解析失败"
-        return out
-    out["stale_seconds"] = int(max(0, delta))
-    if delta > stale_after_seconds:
-        out["reason"] = f"daemon 心跳 {int(delta)}s 未更新（>{stale_after_seconds}s 阈值），可能已假死"
-    else:
-        out["alive"] = True
-        out["reason"] = ""
+    scope = (project or "").strip()
+    state = db.get_service_state("daemon", scope)
+    if state:
+        try:
+            db_pid = int(state.get("pid") or 0)
+        except Exception:
+            db_pid = 0
+        if db_pid:
+            out["pid"] = db_pid
+            out["running"] = bool(is_process_alive(db_pid))
+        out["last_heartbeat"] = str(state.get("heartbeat_at") or "")
+        if out["running"] and out["last_heartbeat"]:
+            try:
+                delta = (datetime.now() - datetime.fromisoformat(out["last_heartbeat"])).total_seconds()
+            except ValueError:
+                delta = -1
+            if delta >= 0:
+                out["stale_seconds"] = int(max(0, delta))
+                if delta <= stale_after_seconds:
+                    out["alive"] = True
+                    out["reason"] = ""
+                    return out
+                out["reason"] = f"daemon 心跳 {int(delta)}s 未更新（>{stale_after_seconds}s 阈值），可能已假死"
+                return out
     return out
 
 
@@ -278,6 +287,16 @@ def project_summary(project: dict, *, job_count: int | None = None) -> dict:
     tasks = _sorted_tasks(db.list_tasks(project=project["name"]))
     live = next((task for task in tasks if task["status"] == "in_progress"), None)
     session_count = len(db.list_sessions(project=project["name"]))
+    try:
+        from codepilot.commands.daemon import daemon_service_status
+        daemon_status = daemon_service_status(project["name"])
+    except Exception:
+        daemon_status = {"running": False, "pid": 0, "project": project["name"], "log": ""}
+    try:
+        from codepilot.commands.inspect import inspect_service_status
+        inspect_status = inspect_service_status(project["name"])
+    except Exception:
+        inspect_status = {"running": False, "pid": 0, "project": project["name"], "log": ""}
     return {
         "name": project["name"],
         "path": project["path"],
@@ -285,6 +304,10 @@ def project_summary(project: dict, *, job_count: int | None = None) -> dict:
         "session_count": session_count,
         "job_count": int(job_count or 0),
         "active_summary": runtime_summary(live) if live else "",
+        "services": {
+            "tasks": daemon_status,
+            "inspect": inspect_status,
+        },
     }
 
 

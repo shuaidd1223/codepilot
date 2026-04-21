@@ -26,7 +26,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from codepilot import db
 # Re-exported so tests that monkeypatch ``webui_mod.run_requirement_workflow``
@@ -50,6 +50,7 @@ from codepilot.webui_actions import (  # noqa: F401 (re-export)
     list_ui_events,
     list_ui_jobs,
     promote_task_action,
+    project_service_action,
     retry_task_action,
     send_session_message_action,
     split_task_action,
@@ -205,8 +206,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        health_project = (query.get("project") or [""])[0].strip() or None
+
         def _health_event() -> dict:
-            payload = daemon_health_payload()
+            payload = daemon_health_payload(health_project)
             return {
                 "timestamp": _now_iso(),
                 "task_id": None,
@@ -289,7 +294,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             progress_bus.unsubscribe(token)
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/":
             self._send_html_file()
             return
@@ -306,7 +312,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
         if path == "/api/daemon/health":
-            self._send_json(daemon_health_payload())
+            query = parse_qs(parsed.query)
+            project = (query.get("project") or [""])[0].strip() or None
+            self._send_json(daemon_health_payload(project))
             return
         if path == "/api/events/stream":
             # Server-sent events: push live progress to the dashboard so the
@@ -331,8 +339,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # (or refetches on SSE event) to append only the new bytes.
         match = re.fullmatch(r"/api/tasks/(\d+)/log", path)
         if match:
-            from urllib.parse import parse_qs
-            qs = parse_qs(urlparse(self.path).query)
+            qs = parse_qs(parsed.query)
             try:
                 offset = int((qs.get("offset", ["0"]) or ["0"])[0] or "0")
             except ValueError:
@@ -345,8 +352,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Session endpoints
         match = re.fullmatch(r"/api/sessions", path)
         if match:
-            from urllib.parse import parse_qs
-            qs = parse_qs(urlparse(self.path).query)
+            qs = parse_qs(parsed.query)
             proj = qs.get("project", [""])[0]
             try:
                 self._send_json(list_sessions_action(proj))
@@ -435,6 +441,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     payload = promote_task_action(task_id)
                 self._send_json(payload)
                 return
+            match = re.fullmatch(r"/api/projects/([^/]+)/(tasks|inspect)/(start|stop|status)", path)
+            if match:
+                self._send_json(
+                    project_service_action(
+                        unquote(match.group(1)),
+                        match.group(2),
+                        match.group(3),
+                    )
+                )
+                return
             # Session POST endpoints
             if path == "/api/sessions":
                 body = self._read_json_body()
@@ -462,7 +478,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "未找到接口。"}, status=404)
 
     def do_DELETE(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         try:
             match = re.fullmatch(r"/api/projects/([^/]+)", path)
             if match:

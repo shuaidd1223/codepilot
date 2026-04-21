@@ -23,6 +23,8 @@ const RootApp = {
 
       /* detail caches keyed by navigation */
       taskDetail: null,
+      taskDetailLoading: false,
+      taskDetailError: '',
       sessionDetail: null,
       sessionMessages: [],
 
@@ -35,6 +37,7 @@ const RootApp = {
       autoRefresh: true, timer: null,
       loading: false, sending: false, newSessionLoading: false,
       projectSubmitting: false, deletingProject: '',
+      servicePending: '',
       /* Map of taskId → pending action name (retry / stop / promote / split).
        * Used by per-row buttons to show their own spinner without freezing
        * the rest of the page. */
@@ -42,6 +45,14 @@ const RootApp = {
       dark: false,
       toasts: [], toastSeq: 0,
       answer: null,
+      confirmDialog: {
+        open: false,
+        title: '',
+        message: '',
+        confirmText: '确认',
+        cancelText: '取消',
+        tone: 'danger',
+      },
 
       /* live progress events from SSE — ring buffer, most-recent last */
       liveEvents: [],
@@ -92,6 +103,27 @@ const RootApp = {
       const timer = _toastTimers.get(id);
       if (timer) { clearTimeout(timer); _toastTimers.delete(id); }
       state.toasts = state.toasts.filter(t => t.id !== id);
+    }
+
+    let _confirmResolver = null;
+    function _resolveConfirm(result) {
+      const resolver = _confirmResolver;
+      _confirmResolver = null;
+      state.confirmDialog.open = false;
+      if (resolver) resolver(!!result);
+    }
+    function confirmDialog(options = {}) {
+      const opts = options || {};
+      return new Promise((resolve) => {
+        if (_confirmResolver) _resolveConfirm(false);
+        state.confirmDialog.title = opts.title || '请确认';
+        state.confirmDialog.message = opts.message || '';
+        state.confirmDialog.confirmText = opts.confirmText || '确认';
+        state.confirmDialog.cancelText = opts.cancelText || '取消';
+        state.confirmDialog.tone = opts.tone || 'danger';
+        state.confirmDialog.open = true;
+        _confirmResolver = resolve;
+      });
     }
 
     /* ── Computed ────────────────────────────────────── */
@@ -182,14 +214,36 @@ const RootApp = {
       } catch (e) { /* ignore */ }
       return null;
     }
+    const CATEGORY_VIEWS = ['sessions', 'tasks', 'jobs'];
+    const _categoryKey = (project, view) => `${project}/${view}`;
+    function _openProjectCategory(project, view) {
+      for (const v of CATEGORY_VIEWS) {
+        state.expanded[_categoryKey(project, v)] = (v === view);
+      }
+    }
+    function _normalizeProjectCategoryExpanded(project) {
+      if (!project) return;
+      const opened = CATEGORY_VIEWS.filter(v => !!state.expanded[_categoryKey(project, v)]);
+      if (opened.length <= 1) return;
+      _openProjectCategory(project, opened[0]);
+    }
+    function _viewToCategory(view) {
+      if (!view) return null;
+      if (CATEGORY_VIEWS.includes(view)) return view;
+      if (view === 'session') return 'sessions';
+      if (view === 'task') return 'tasks';
+      if (view === 'job') return 'jobs';
+      return null;
+    }
     function _applyRestoredNav(restored) {
       if (!restored || !restored.project) return;
       state.nav.project = restored.project;
       state.nav.view = restored.view || 'overview';
       state.nav.id = restored.id ?? null;
       state.expanded[restored.project] = true;
-      if (restored.view && restored.view !== 'overview') {
-        state.expanded[`${restored.project}/${restored.view.replace(/^(task|session|job)$/, (v) => v + 's')}`] = true;
+      const restoredCategory = _viewToCategory(restored.view);
+      if (restoredCategory) {
+        _openProjectCategory(restored.project, restoredCategory);
       }
       /* Kick the appropriate loaders so panes repopulate. */
       if (state.nav.view === 'task' && state.nav.id) {
@@ -234,28 +288,35 @@ const RootApp = {
       /* click on chevron — just toggle expand */
       state.expanded[name] = !state.expanded[name];
     }
+    function toggleCategory(project, view) {
+      state.expanded[project] = true;
+      const key = _categoryKey(project, view);
+      const willOpen = !isExpanded(key, false);
+      if (willOpen) _openProjectCategory(project, view);
+      else state.expanded[key] = false;
+    }
     function selectCategory(project, view) {
       /* view ∈ 'sessions' | 'tasks' | 'jobs' */
       state.expanded[project] = true;
-      state.expanded[`${project}/${view}`] = true;
+      _openProjectCategory(project, view);
       setNav({ project, view, id: null });
     }
     function selectSession(project, id) {
       state.expanded[project] = true;
-      state.expanded[`${project}/sessions`] = true;
+      _openProjectCategory(project, 'sessions');
       setNav({ project, view: 'session', id });
       loadSessionChat();
     }
     function selectTask(project, id) {
       state.expanded[project] = true;
-      state.expanded[`${project}/tasks`] = true;
+      _openProjectCategory(project, 'tasks');
       setNav({ project, view: 'task', id });
       loadTaskDetail();
       loadTaskLog(id, { reset: true });
     }
     function selectJob(project, id) {
       state.expanded[project] = true;
-      state.expanded[`${project}/jobs`] = true;
+      _openProjectCategory(project, 'jobs');
       setNav({ project, view: 'job', id });
     }
 
@@ -299,7 +360,7 @@ const RootApp = {
           if (!state.tasks.find(t => t.id === state.nav.id)) {
             setNav({ view: 'overview', id: null });
           } else {
-            await loadTaskDetail();
+            await loadTaskDetail({ silent: true });
           }
         }
       } catch (err) {
@@ -309,19 +370,70 @@ const RootApp = {
       }
     }
 
-    async function loadTaskDetail() {
+    async function loadTaskDetail({ silent = false } = {}) {
       if (state.nav.view !== 'task' || !state.nav.id) return;
       const targetId = state.nav.id;
+      const hadCurrent = !!(state.taskDetail && state.taskDetail.id === targetId);
+      if (!silent && !hadCurrent) state.taskDetailLoading = true;
+      state.taskDetailError = '';
+      const reqId = ++loadTaskDetail._reqSeq;
       try {
         const data = await CP.api.get(`/api/tasks/${targetId}`);
+        if (reqId !== loadTaskDetail._reqSeq) return;
         if (state.nav.view === 'task' && state.nav.id === targetId) {
-          state.taskDetail = data;
+          const task = (data && typeof data === 'object' && data.id) ? data : null;
+          state.taskDetail = task;
+          state.taskDetailError = task ? '' : '暂无任务详情';
+          if (task && (!state.taskLog.done || state.taskLog.taskId !== targetId)) {
+            loadTaskLog(targetId);
+          }
         }
       } catch (err) {
+        if (reqId !== loadTaskDetail._reqSeq) return;
         if (state.nav.view === 'task' && state.nav.id === targetId) {
-          state.taskDetail = null;
+          if (!hadCurrent) state.taskDetail = null;
+          state.taskDetailError = (err && err.message) ? err.message : '任务详情加载失败';
+        }
+      } finally {
+        if (reqId === loadTaskDetail._reqSeq) {
+          state.taskDetailLoading = false;
         }
       }
+    }
+    loadTaskDetail._reqSeq = 0;
+
+    let _taskLogFlushRaf = 0;
+    let _taskLogPendingText = '';
+    let _taskLogPendingTaskId = null;
+    function _cancelTaskLogFlush() {
+      if (_taskLogFlushRaf) {
+        cancelAnimationFrame(_taskLogFlushRaf);
+        _taskLogFlushRaf = 0;
+      }
+      _taskLogPendingText = '';
+      _taskLogPendingTaskId = null;
+    }
+    function _flushTaskLogPending() {
+      if (!_taskLogPendingText || !_taskLogPendingTaskId) return;
+      if (state.taskLog.taskId === _taskLogPendingTaskId) {
+        state.taskLog.text += _taskLogPendingText;
+      }
+      _taskLogPendingText = '';
+      _taskLogPendingTaskId = null;
+    }
+    function _queueTaskLogText(taskId, chunk) {
+      if (!chunk) return;
+      if (state.taskLog.taskId !== taskId) return;
+      if (_taskLogPendingTaskId !== taskId) {
+        _taskLogPendingText = '';
+        _taskLogPendingTaskId = taskId;
+      }
+      _taskLogPendingText += chunk;
+      if (_taskLogFlushRaf) return;
+      _taskLogFlushRaf = requestAnimationFrame(() => {
+        _taskLogFlushRaf = 0;
+        _flushTaskLogPending();
+      });
     }
 
     /* Incremental log loader. If `reset` is true (task changed / first open)
@@ -335,39 +447,45 @@ const RootApp = {
     async function loadTaskLog(taskId, { reset = false } = {}) {
       if (!taskId) return;
       if (reset || state.taskLog.taskId !== taskId) {
+        _cancelTaskLogFlush();
         state.taskLog = { taskId, text: '', nextOffset: 0, size: 0, done: false, loading: false };
       }
       if (state.taskLog.loading) return;
       state.taskLog.loading = true;
       try {
-        /* Drain in a loop so a huge initial file or a big burst of writes
-         * gets paged in fully before we stop. The per-request chunk is
-         * capped at 2 MiB server-side, so 2048 iterations = up to ~4 GiB
-         * of log — effectively unbounded for real agent output. */
-        let guard = 2048;
+        /* Drain backlogs quickly but stop once the server reports no forward
+         * progress; otherwise we'd spin on the same offset and lock the UI. */
+        let guard = 64;
         while (guard-- > 0) {
           if (state.taskLog.taskId !== taskId) return;  /* user switched tasks */
           const off = state.taskLog.nextOffset || 0;
           const data = await CP.api.get(`/api/tasks/${taskId}/log?offset=${off}`);
           if (state.taskLog.taskId !== taskId) return;
-          if (data && typeof data.text === 'string' && data.text) {
-            state.taskLog.text += data.text;
-          }
-          state.taskLog.nextOffset = Number.isFinite(data && data.next_offset) ? data.next_offset : off;
+          const chunk = (data && typeof data.text === 'string') ? data.text : '';
+          const nextOffset = Number.isFinite(data && data.next_offset) ? data.next_offset : off;
+          if (chunk) _queueTaskLogText(taskId, chunk);
+          state.taskLog.nextOffset = nextOffset;
           state.taskLog.size = Number.isFinite(data && data.size) ? data.size : state.taskLog.size;
           state.taskLog.done = !!(data && data.done);
           if (state.taskLog.done) break;
+          if (!chunk && nextOffset <= off) break;
         }
       } catch (_err) {
         /* Silent — transient fetch failure; next trigger will retry. */
       } finally {
+        if (_taskLogFlushRaf) {
+          cancelAnimationFrame(_taskLogFlushRaf);
+          _taskLogFlushRaf = 0;
+        }
+        _flushTaskLogPending();
         state.taskLog.loading = false;
       }
     }
 
     async function loadDaemonHealth() {
       try {
-        const data = await CP.api.get('/api/daemon/health');
+        const qs = state.nav.project ? `?project=${encodeURIComponent(state.nav.project)}` : '';
+        const data = await CP.api.get(`/api/daemon/health${qs}`);
         state.daemonHealth = data || state.daemonHealth;
       } catch (_e) { /* silent — network errors already toasted elsewhere */ }
     }
@@ -532,7 +650,14 @@ const RootApp = {
 
     async function deleteProject(name) {
       if (!name) return;
-      if (!confirm(`确定要删除项目 "${name}" 吗？\n工作目录不会被删除。`)) return;
+      const ok = await confirmDialog({
+        title: '删除项目',
+        message: `确定要删除项目 "${name}" 吗？\n工作目录不会被删除。`,
+        confirmText: '删除',
+        cancelText: '取消',
+        tone: 'danger',
+      });
+      if (!ok) return;
       state.deletingProject = name;
       try {
         const out = await CP.api.del(`/api/projects/${encodeURIComponent(name)}`);
@@ -548,6 +673,24 @@ const RootApp = {
         pushToast(err.message, 'error');
       } finally {
         state.deletingProject = '';
+      }
+    }
+
+    async function projectService(service, action) {
+      if (!state.nav.project) { pushToast('先选择一个项目', 'error'); return; }
+      const key = `${service}:${action}`;
+      state.servicePending = key;
+      try {
+        const out = await CP.api.post(
+          `/api/projects/${encodeURIComponent(state.nav.project)}/${service}/${action}`,
+          {},
+        );
+        pushToast(out.message || '操作完成', 'success');
+        await loadDashboard();
+      } catch (err) {
+        pushToast(err.message, 'error');
+      } finally {
+        state.servicePending = '';
       }
     }
 
@@ -570,7 +713,14 @@ const RootApp = {
 
     async function deleteSession() {
       if (state.nav.view !== 'session' || !state.nav.id) return;
-      if (!confirm('确定要删除这个会话吗？')) return;
+      const ok = await confirmDialog({
+        title: '删除会话',
+        message: '确定要删除这个会话吗？',
+        confirmText: '删除',
+        cancelText: '取消',
+        tone: 'danger',
+      });
+      if (!ok) return;
       const sid = state.nav.id;
       state.sending = true;
       try {
@@ -631,7 +781,8 @@ const RootApp = {
     let sseHandle = null;
     function openEventStream() {
       if (sseHandle) return;
-      sseHandle = CP.sse.open('/api/events/stream', (event) => {
+      const qs = state.nav.project ? `?project=${encodeURIComponent(state.nav.project)}` : '';
+      sseHandle = CP.sse.open(`/api/events/stream${qs}`, (event) => {
         /* Daemon-health events are piggy-backed on the progress stream
          * by the backend (see webui.py::_stream_progress_events). They
          * carry the full health payload in event.extra and only get
@@ -735,8 +886,13 @@ const RootApp = {
         state.nav.view = restored.view || 'overview';
         state.nav.id = restored.id ?? null;
         state.expanded[restored.project] = true;
+        const restoredCategory = _viewToCategory(state.nav.view);
+        if (restoredCategory) _openProjectCategory(restored.project, restoredCategory);
       }
       loadDashboard().then(() => {
+        for (const project of state.projects || []) {
+          _normalizeProjectCategoryExpanded(project && project.name);
+        }
         /* After the dashboard populates state.tasks/sessions/jobs, kick the
          * detail loaders so task-log / chat panes repopulate. */
         if (state.nav.view === 'task' && state.nav.id) {
@@ -808,7 +964,7 @@ const RootApp = {
       get projectJobs() { return projectJobs.value; },
       /* nav */
       setNav, toggleExpanded, isExpanded,
-      selectProject, toggleProject, selectCategory,
+      selectProject, toggleProject, toggleCategory, selectCategory,
       selectSession, selectTask, selectJob,
       toggleAuto, toggleDark,
       /* data */
@@ -816,12 +972,15 @@ const RootApp = {
       /* actions */
       taskAction, submitGoal, submitComposer,
       toggleProjectForm, submitProject, deleteProject,
+      projectService,
       newSession, sendChat, deleteSession,
       submitClarifyAnswer,
       /* Per-task pending helpers for per-row spinners. */
       isTaskPending: (taskId) => !!state.pendingTasks[taskId],
       taskPendingAction: (taskId) => state.pendingTasks[taskId] || '',
       pushToast, dismissToast,
+      confirm: confirmDialog,
+      resolveConfirm: _resolveConfirm,
       registerChatScroll,
       /* live events */
       liveEventsForJob, liveEventsForTask,
@@ -856,6 +1015,7 @@ const RootApp = {
           <cp-content-pane></cp-content-pane>
         </div>
       </main>
+      <cp-confirm-dialog></cp-confirm-dialog>
     </div>
   `,
 };

@@ -15,8 +15,17 @@ CP.Components.TaskDetail = Vue.defineComponent({
     },
   },
   methods: {
-    action(id, act) {
-      if (act === 'split' && !confirm('将此任务关闭并拆成更小的新任务？')) return;
+    async action(id, act) {
+      if (act === 'split') {
+        const ok = await this.cp.confirm({
+          title: '拆分任务',
+          message: '将此任务关闭并拆成更小的新任务？',
+          confirmText: '拆分',
+          cancelText: '取消',
+          tone: 'warning',
+        });
+        if (!ok) return;
+      }
       this.cp.taskAction(id, act);
     },
     formatEta(seconds) {
@@ -30,7 +39,8 @@ CP.Components.TaskDetail = Vue.defineComponent({
   },
   template: `
     <div class="view">
-      <div v-if="!task" class="big-empty">任务加载中…</div>
+      <div v-if="s.taskDetailLoading && !task" class="big-empty">任务加载中…</div>
+      <div v-else-if="!task" class="big-empty">{{ s.taskDetailError || '暂无任务详情' }}</div>
       <section v-else class="card">
         <div class="card-head">
           <div class="row between gap-sm">
@@ -98,7 +108,7 @@ CP.Components.TaskDetail = Vue.defineComponent({
           <div class="block">
             <div class="block-label">实时日志</div>
             <cp-agent-log
-              :text="s.taskLog.text || '还没有可显示的日志'"
+              :text="s.taskLog.text || ''"
               :title="(task.agent || 'agent') + ' · ' + (task.current_log_path ? task.current_log_path.split(/[\\\\/]/).pop() : 'log')"
               :done="s.taskLog.done"
               tall follow></cp-agent-log>

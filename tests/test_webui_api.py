@@ -9,6 +9,10 @@ import urllib.request
 import pytest
 
 from codepilot import db
+from codepilot.commands import daemon as daemon_cmd
+from codepilot import webui as webui_mod
+from codepilot import runtime as runtime_mod
+from codepilot.webui_payloads import daemon_health_payload
 from codepilot.webui import start_ui_server
 
 
@@ -67,6 +71,44 @@ def test_health_endpoint(ui_server):
     status, body = _get(f"{ui_server}/api/health")
     assert status == 200
     assert body["ok"] is True
+
+
+def test_daemon_health_endpoint_passes_project_query(ui_server, monkeypatch):
+    calls = []
+
+    def fake_health(project=None):
+        calls.append(project)
+        return {"alive": True, "running": True, "pid": 1234, "reason": ""}
+
+    monkeypatch.setattr(webui_mod, "daemon_health_payload", fake_health)
+
+    status, body = _get(f"{ui_server}/api/daemon/health?project=demo")
+
+    assert status == 200
+    assert calls == ["demo"]
+    assert body["alive"] is True
+
+
+def test_daemon_health_reads_project_service_state_from_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: int(pid) in {1111, 2222})
+
+    db.upsert_service_state(
+        "daemon",
+        "demo",
+        pid=2222,
+        status="running",
+        log_path="D:/tmp/daemon.log",
+        meta={"project": "demo", "started_at": "2026-01-01T00:00:00"},
+    )
+    db.touch_service_state("daemon", "demo", pid=2222, status="running")
+
+    payload = daemon_health_payload("demo", stale_after_seconds=120)
+
+    assert payload["pid"] == 2222
+    assert payload["alive"] is True
+    assert payload["reason"] == ""
 
 
 def test_projects_endpoint_lists_registered_project(ui_server):
@@ -140,6 +182,24 @@ def test_create_and_delete_project_via_api(ui_server, tmp_path):
     assert body.get("ok") is True
     assert db.get_project("api-project") is None
     assert project_path.exists()
+
+
+def test_project_task_service_stop_requests_graceful_polling_stop(ui_server, monkeypatch):
+    calls = []
+
+    def fake_stop(project: str):
+        calls.append(project)
+        return {"stopped": False, "stop_requested": True, "pids": [7654]}
+
+    monkeypatch.setattr(daemon_cmd, "stop_daemon_service", fake_stop)
+
+    status, body = _post(f"{ui_server}/api/projects/demo/tasks/stop", {})
+
+    assert status == 200
+    assert calls == ["demo"]
+    assert body["ok"] is True
+    assert body["status"]["stop_requested"] is True
+    assert "当前任务完成后" in body["message"]
 
 
 # ─── POST /api/tasks/:id/retry ──────────────────────────────────────────────

@@ -104,6 +104,33 @@ class ProjectStats(TypedDict):
     total: int
 
 
+class ProjectServiceStatus(TypedDict):
+    """Per-project background service state shown in the project view."""
+
+    running: bool
+    pid: int
+    project: str
+    started_at: str
+    log: str
+
+
+class ProjectDaemonServiceStatus(ProjectServiceStatus, total=False):
+    """Task polling daemon state.
+
+    ``stopping`` is emitted by newer daemon builds while a graceful stop has
+    been requested and the current task is allowed to finish.
+    """
+
+    stopping: bool
+
+
+class ProjectServices(TypedDict):
+    """Background services controlled per project."""
+
+    tasks: ProjectDaemonServiceStatus
+    inspect: ProjectServiceStatus
+
+
 class ProjectSummary(TypedDict):
     """One row in the dashboard's project selector."""
 
@@ -113,6 +140,7 @@ class ProjectSummary(TypedDict):
     session_count: int
     job_count: int
     active_summary: str
+    services: ProjectServices
 
 
 class DashboardPayload(TypedDict):
