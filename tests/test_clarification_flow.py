@@ -111,6 +111,73 @@ def test_chat_slash_clear_aborts_pending_clarification(tmp_path, monkeypatch):
     assert not ran, "planner should not run after /clear during clarification"
 
 
+def test_chat_pending_clarification_exception_does_not_crash(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
+        "intent": "requirement", "source": "forced",
+    })
+
+    def fake_clarify(title, *, qa_history=None, **kw):
+        if qa_history:
+            raise RuntimeError("clarifier backend exploded")
+        return {
+            "status": "needs_clarification",
+            "questions": ["先优化哪一块?"],
+            "qa_history": [],
+        }
+
+    monkeypatch.setattr(auto_mod, "clarify_requirement", fake_clarify)
+
+    ran = []
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw["title"]))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["chat", "--no-ui"],
+        input="优化一下\n先优化 Web UI\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "clarifier backend exploded" in result.output
+    assert not ran, "planner should not run when clarification evaluation fails"
+
+
+def test_chat_pending_clarification_interrupt_exits_cleanly(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
+        "intent": "requirement", "source": "forced",
+    })
+
+    def fake_clarify(title, *, qa_history=None, **kw):
+        if qa_history:
+            raise KeyboardInterrupt()
+        return {
+            "status": "needs_clarification",
+            "questions": ["先优化哪一块?"],
+            "qa_history": [],
+        }
+
+    monkeypatch.setattr(auto_mod, "clarify_requirement", fake_clarify)
+
+    ran = []
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw["title"]))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["chat", "--no-ui"],
+        input="优化一下\n先优化 Web UI\n",
+    )
+
+    assert result.exit_code == 0
+    assert "会话已结束" in result.output
+    assert "Aborted!" not in result.output
+    assert not ran, "planner should not run after clarification is interrupted"
+
+
 def test_webui_submit_goal_returns_clarify(tmp_path, monkeypatch):
     _register_project(tmp_path, monkeypatch)
 

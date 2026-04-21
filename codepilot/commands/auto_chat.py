@@ -405,6 +405,29 @@ def run_chat_session(
                     qa_history=qa_history,
                     planner=effective["planner"],
                 )
+            except KeyboardInterrupt:
+                echo()
+                _shutdown_ui()
+                echo("[dim]会话已结束[/dim]")
+                return
+            except click.ClickException as exc:
+                echo(f"[red]{safe(exc.format_message())}[/red]")
+                chat_history.append({
+                    "user": answer_text,
+                    "assistant": f"错误: {exc.format_message()}",
+                    "intent": "clarify",
+                })
+                click.echo()
+                continue
+            except Exception as exc:
+                echo(f"[red]{safe(exc)}[/red]")
+                chat_history.append({
+                    "user": answer_text,
+                    "assistant": f"错误: {exc}",
+                    "intent": "clarify",
+                })
+                click.echo()
+                continue
             finally:
                 spinner.__exit__(None, None, None)
 
@@ -452,6 +475,11 @@ def run_chat_session(
                     "assistant": "需求已规划并执行",
                     "intent": pending_intent,
                 })
+            except KeyboardInterrupt:
+                echo()
+                _shutdown_ui()
+                echo("[dim]会话已结束[/dim]")
+                return
             except click.ClickException as exc:
                 echo(f"[red]{safe(exc.format_message())}[/red]")
                 chat_history.append({
@@ -597,6 +625,12 @@ def run_chat_session(
                     assistant_response = (
                         "任务已创建并执行" if intent == "task" else "需求已规划"
                     )
+        except KeyboardInterrupt:
+            spinner.__exit__(None, None, None)
+            echo()
+            _shutdown_ui()
+            echo("[dim]会话已结束[/dim]")
+            return
         except click.ClickException as exc:
             spinner.__exit__(None, None, None)
             echo(f"[red]{safe(exc.format_message())}[/red]")
