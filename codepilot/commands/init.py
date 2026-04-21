@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 
 import click
@@ -11,6 +9,59 @@ import click
 from codepilot import config, db as db_module
 from codepilot.db import register_project
 from codepilot.output import echo
+
+
+def initialize_project(path: Path, project_name: str | None = None, *, no_config: bool = False) -> dict:
+    """Register *path* as a project and optionally create AGENTS.toml."""
+    db_module.init_db()
+
+    try:
+        resolved_path = path.resolve()
+    except OSError as exc:
+        raise RuntimeError(f"项目路径无效：{path}") from exc
+    if not resolved_path.exists() or not resolved_path.is_dir():
+        raise RuntimeError(f"项目路径不存在或不是目录：{resolved_path}")
+
+    requested_name = project_name or resolved_path.name
+    if not requested_name:
+        raise RuntimeError("项目名称不能为空。")
+
+    project_path = str(resolved_path)
+
+    # 先按路径查——同一目录可能早以其他名字注册过
+    existing = db_module.find_project_by_path(project_path)
+    if existing and Path(existing["path"]).resolve() != resolved_path:
+        existing = None  # 仅允许精确匹配（同路径），不让父级项目误命中
+    if not existing:
+        existing = db_module.get_project(requested_name)
+
+    config_file = resolved_path / "AGENTS.toml"
+    if existing:
+        if not no_config:
+            _update_config(config_file, existing["name"])
+        return {
+            "created": False,
+            "project": existing,
+            "requested_name": requested_name,
+            "config_file": str(config_file.resolve()) if not no_config else "",
+        }
+
+    config_path = None if no_config else str(config_file.resolve())
+    project = register_project(
+        name=requested_name,
+        path=project_path,
+        base_branch="dev",
+        default_mode="dual",
+        config_file=config_path,
+    )
+    if not no_config:
+        _update_config(config_file, requested_name)
+    return {
+        "created": True,
+        "project": project,
+        "requested_name": requested_name,
+        "config_file": str(config_file.resolve()) if not no_config else "",
+    }
 
 
 @click.command("init")
@@ -27,54 +78,36 @@ def init_(
 
     PATH: 项目根目录路径.
     """
-    db_module.init_db()
+    try:
+        result = initialize_project(path, project_name, no_config=no_config)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
 
-    project_path = str(path.resolve())
-    project_name = project_name or path.name
-
-    # 先按路径查——同一目录可能早以其他名字注册过
-    existing = db_module.find_project_by_path(project_path)
-    if existing and Path(existing["path"]).resolve() != path.resolve():
-        existing = None  # 仅允许精确匹配（同路径），不让父级项目误命中
-    if not existing:
-        existing = db_module.get_project(project_name)
-
-    if existing:
+    project = result["project"]
+    project_name = result["requested_name"]
+    if not result["created"]:
         echo(f"[yellow]项目已注册[/yellow]")
-        click.echo(f"  名称:   {existing['name']}")
-        click.echo(f"  路径:   {existing['path']}")
-        click.echo(f"  分支:   {existing.get('base_branch') or '-'}")
-        click.echo(f"  模式:   {existing.get('default_mode') or '-'}")
-        click.echo(f"  配置:   {existing.get('config_file') or '-'}")
-        stats = db_module.get_task_stats(existing["name"])
+        click.echo(f"  名称:   {project['name']}")
+        click.echo(f"  路径:   {project['path']}")
+        click.echo(f"  分支:   {project.get('base_branch') or '-'}")
+        click.echo(f"  模式:   {project.get('default_mode') or '-'}")
+        click.echo(f"  配置:   {project.get('config_file') or '-'}")
+        stats = db_module.get_task_stats(project["name"])
         click.echo(
             f"  任务:   {stats['total']} 总 / "
             f"{stats['backlog']} backlog / "
             f"{stats['in_progress']} 进行 / "
             f"{stats['done']} 完成"
         )
-        if existing["name"] != project_name:
-            echo(f"[dim]  (传入名称 '{project_name}' 被忽略，保留原名 '{existing['name']}' 以维护任务关联)[/dim]")
-        if not no_config:
-            _update_config(path / "AGENTS.toml", existing["name"])
+        if project["name"] != project_name:
+            echo(f"[dim]  (传入名称 '{project_name}' 被忽略，保留原名 '{project['name']}' 以维护任务关联)[/dim]")
         return
 
-    # 注册到数据库
-    config_path = None if no_config else str((path / "AGENTS.toml").resolve())
-    register_project(
-        name=project_name,
-        path=project_path,
-        base_branch="dev",
-        default_mode="codex",
-        config_file=config_path,
-    )
-
     echo(f"[green]+ 项目 '{project_name}' 注册成功[/green]")
-    click.echo(f"  路径: {project_path}")
+    click.echo(f"  路径: {project['path']}")
 
     if not no_config:
-        _update_config(path / "AGENTS.toml", project_name)
-        click.echo(f"  配置: {(path / 'AGENTS.toml').resolve()}")
+        click.echo(f"  配置: {result['config_file']}")
 
 
 def _update_config(config_file: Path, project_name: str) -> None:

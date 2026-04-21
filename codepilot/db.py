@@ -11,12 +11,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-DB_PATH = Path.home() / ".codepilot" / "tasks.db"
+from codepilot.paths import global_storage_root
+
+DB_PATH = global_storage_root() / "tasks.db"
+
+
+def _default_db_path() -> Path:
+    return global_storage_root() / "tasks.db"
 
 
 def _get_db_path() -> Path:
     """Return the effective database path and ensure its parent directory exists."""
-    raw_path = Path(os.environ.get("CODEPILOT_DB_PATH", str(DB_PATH)))
+    raw_path = Path(os.environ.get("CODEPILOT_DB_PATH", str(_default_db_path())))
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     return raw_path
 
@@ -319,12 +325,17 @@ def find_project_by_path(path: str | Path) -> Optional[dict]:
 def delete_project(name: str) -> bool:
     """Delete a project and its related tasks."""
     with get_conn() as conn:
-        cur = conn.execute("DELETE FROM projects WHERE name = ?", (name,))
         conn.execute(
             "DELETE FROM task_logs WHERE task_id IN (SELECT id FROM tasks WHERE project = ?)",
             (name,),
         )
+        conn.execute(
+            "DELETE FROM session_messages WHERE session_id IN (SELECT id FROM sessions WHERE project = ?)",
+            (name,),
+        )
+        conn.execute("DELETE FROM sessions WHERE project = ?", (name,))
         conn.execute("DELETE FROM tasks WHERE project = ?", (name,))
+        cur = conn.execute("DELETE FROM projects WHERE name = ?", (name,))
         conn.commit()
         return cur.rowcount > 0
 

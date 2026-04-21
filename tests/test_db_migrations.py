@@ -26,6 +26,14 @@ def test_fresh_db_reaches_target_version(fresh_db):
     )
 
 
+def test_default_db_path_lives_at_codepilot_root(monkeypatch, tmp_path):
+    monkeypatch.delenv("CODEPILOT_DB_PATH", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+
+    assert db._get_db_path() == tmp_path / "home" / ".codepilot" / "tasks.db"
+
+
 def test_init_db_is_idempotent(fresh_db):
     db.init_db()
     first = db.schema_status()

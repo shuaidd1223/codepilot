@@ -16,9 +16,11 @@ import codepilot.commands.add as add_cmd
 import codepilot.commands.ai as ai_cmd
 import codepilot.commands.auto as auto_cmd
 import codepilot.commands.binary as binary_cmd
+import codepilot.commands.config_cmd as config_cmd
 import codepilot.commands.daemon as daemon_cmd
 import codepilot.commands.init as init_cmd
 import codepilot.commands.providers as providers_cmd
+import codepilot.commands.project as project_cmd
 import codepilot.commands.release as release_cmd
 import codepilot.commands.run as run_cmd
 import codepilot.commands.status as status_cmd
@@ -116,6 +118,7 @@ def main(
 main.add_command(init_cmd.init_)
 main.add_command(ai_cmd.ai)
 main.add_command(binary_cmd.binary)
+main.add_command(config_cmd.config_group)
 main.add_command(release_cmd.release)
 main.add_command(status_cmd.status)
 main.add_command(add_cmd.add)
@@ -130,6 +133,7 @@ from codepilot.commands import inspect as inspect_cmd  # noqa: E402
 main.add_command(inspect_cmd.inspect)
 main.add_command(webhook_cmd.webhook)
 main.add_command(providers_cmd.providers)
+main.add_command(project_cmd.project_group)
 main.add_command(cleanup_cmd.cleanup)
 main.add_command(doctor_cmd.doctor)
 main.add_command(tasks_cmd.done)

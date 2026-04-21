@@ -45,14 +45,14 @@ class ProjectConfig:
     """[project] 项目配置."""
     name: str = ""
     base_branch: str = "dev"
-    default_mode: str = "codex"
+    default_mode: str = "dual"
     worktree_base: Optional[str] = None
 
 
 @dataclass
 class ShellConfig:
     """Shell 配置（跨平台）."""
-    preferred: str = ""  # 自动检测
+    preferred: str = "auto"  # 自动检测
     powershell_path: Optional[str] = None  # 自定义 PowerShell 路径
     bash_path: Optional[str] = None
 
@@ -69,6 +69,7 @@ class DispatchConfig:
 class AutomationConfig:
     """[automation] 自动规划和执行配置."""
     planner: str = "codex"
+    task_agent: str = "dual"
     executor: str = "builtin"
     auto_execute: bool = True
     confirm_before_execute: bool = False
@@ -76,6 +77,10 @@ class AutomationConfig:
     max_tasks: int = 5
     max_retries: int = 3
     per_task_branch: bool = True
+    # direct: 直接在项目工作目录/base_branch 开发；
+    # branch: 在项目工作目录创建任务分支，完成后合并并删除；
+    # worktree: 为每个任务创建独立 git worktree，并链接常见依赖目录。
+    task_workspace: str = "branch"
     # 两阶段规划：先让 planner 读代码（侦察），再拆任务。关闭后变回一次性规划。
     two_stage_planning: bool = True
     # 需求不具体时主动反问澄清。关闭后遇到模糊需求直接硬拆。
@@ -85,6 +90,9 @@ class AutomationConfig:
     # Builder-Reviewer 闭环最大轮数。reviewer 判 FAIL 时, builder 拿 reviewer
     # 反馈再做一次, 循环最多这么多轮。设为 1 等于关闭闭环（老行为）。
     max_review_rounds: int = 2
+    # 子进程 (codex / claude CLI) 连续多少秒没有新输出就认为卡死并 kill，
+    # 0 表示关闭该保护。默认关闭以避免误杀慢任务；运维 daemon 可以按需开启。
+    agent_silence_timeout_seconds: int = 0
 
 
 @dataclass
@@ -137,7 +145,7 @@ class AgentsConfig:
     # 兼容旧格式的别名
     project_name: str = ""
     base_branch: str = "dev"
-    default_mode: str = "codex"
+    default_mode: str = "dual"
     worktree_base: Optional[str] = None
     planner: Optional[str] = None
     builder: Optional[str] = None
@@ -182,11 +190,11 @@ class AgentsConfig:
             project=ProjectConfig(
                 name=proj.get("name", ""),
                 base_branch=proj.get("base_branch", "dev"),
-                default_mode=proj.get("default_mode", "codex"),
+                default_mode=proj.get("default_mode", "dual"),
                 worktree_base=proj.get("worktree_base"),
             ),
             shell=ShellConfig(
-                preferred=shell.get("preferred", ""),
+                preferred=shell.get("preferred", "auto"),
                 powershell_path=shell.get("powershell_path"),
                 bash_path=shell.get("bash_path"),
             ),
@@ -197,6 +205,7 @@ class AgentsConfig:
             ),
             automation=AutomationConfig(
                 planner=automation.get("planner", "codex"),
+                task_agent=automation.get("task_agent", "dual"),
                 executor=automation.get("executor", "builtin"),
                 auto_execute=automation.get("auto_execute", True),
                 confirm_before_execute=automation.get("confirm_before_execute", False),
@@ -204,10 +213,12 @@ class AgentsConfig:
                 max_tasks=automation.get("max_tasks", 5),
                 max_retries=automation.get("max_retries", 3),
                 per_task_branch=automation.get("per_task_branch", True),
+                task_workspace=automation.get("task_workspace", "branch"),
                 two_stage_planning=automation.get("two_stage_planning", True),
                 clarify_vague_requirements=automation.get("clarify_vague_requirements", True),
                 clarify_max_turns=automation.get("clarify_max_turns", 3),
                 max_review_rounds=automation.get("max_review_rounds", 2),
+                agent_silence_timeout_seconds=automation.get("agent_silence_timeout_seconds", 0),
             ),
             classifier=ClassifierConfig(
                 provider=classifier.get("provider", ""),
@@ -229,7 +240,7 @@ class AgentsConfig:
             # 兼容字段
             project_name=proj.get("name", ""),
             base_branch=proj.get("base_branch", "dev"),
-            default_mode=proj.get("default_mode", "codex"),
+            default_mode=proj.get("default_mode", "dual"),
             worktree_base=proj.get("worktree_base"),
             planner=_normalize_optional_agent_name(agents.get("planner")),
             builder=_normalize_optional_agent_name(agents.get("builder")),
@@ -303,8 +314,6 @@ def _locate_secrets_file(config_path: Optional[Path]) -> Optional[Path]:
     1. ``$CODEPILOT_SECRETS_PATH`` — explicit override.
     2. ``<AGENTS.toml dir>/.codepilot.secrets.toml`` — sibling of the
        resolved config file (most common case).
-    3. ``~/.codepilot/.codepilot.secrets.toml`` — user-global fallback
-       for users who don't want per-project secret files.
     """
     override = os.environ.get(SECRETS_PATH_ENV, "").strip()
     if override:
@@ -316,8 +325,7 @@ def _locate_secrets_file(config_path: Optional[Path]) -> Optional[Path]:
         if sibling.is_file():
             return sibling
 
-    global_file = Path.home() / ".codepilot" / SECRETS_FILENAME
-    return global_file if global_file.is_file() else None
+    return None
 
 
 def _overlay_secrets(config: AgentsConfig, secrets_path: Path) -> None:
@@ -521,9 +529,9 @@ DEFAULT_TEMPLATE = """\
 name = "{name}"
 # Git 主分支
 base_branch = "dev"
-# 默认任务智能体
-default_mode = "codex"
-# Worktree 隔离目录，空值则自动推导到 ~/.codepilot/worktrees/<project>/
+# 兼容字段：默认任务智能体；自动规划执行优先使用 [automation].task_agent
+default_mode = "dual"
+# Worktree 隔离目录，空值则自动推导到 ~/.codepilot/data/<project>/worktrees/
 worktree_base = ""
 
 [shell]
@@ -538,9 +546,15 @@ preferred = "auto"
 # CLI Agent 命令配置
 codex_cmd = "codex"
 claude_cmd = "claude"
+# 通用规划器；留空时使用场景默认值
+planner = ""
+# dual 模式 builder；留空时默认 codex
+builder = ""
+# dual 模式 reviewer；留空时默认 claude
+reviewer = ""
 
 [dispatch]
-# task-dispatch 脚本路径（默认从 codepilot 包内查找）
+# task-dispatch 脚本路径（留空时先查 ~/.codepilot/data/<project>/scripts/，再查包内置脚本）
 dispatch_path = ""
 # 调度间隔（秒）
 interval_seconds = 600
@@ -548,8 +562,10 @@ interval_seconds = 600
 stale_minutes = 30
 
 [automation]
-# 纯文本需求模式默认使用 Codex 规划和执行
+# 纯文本需求模式默认使用 Codex 规划，规划出的任务默认交给 task_agent 执行
 planner = "codex"
+# 自动规划出来的任务默认交给哪个执行智能体
+task_agent = "dual"
 executor = "builtin"
 # 输入需求后是否直接开始执行
 auto_execute = true
@@ -561,42 +577,100 @@ auto_commit = true
 max_tasks = 5
 # 每个子任务失败后的最大重试次数
 max_retries = 3
+# 是否为任务创建独立执行分支；false 时直接在当前工作区执行
+per_task_branch = true
+# 任务执行工作区：
+# direct = 直接在项目工作目录/base_branch 开发
+# branch = 在项目工作目录创建任务分支，完成后合并并删除
+# worktree = 使用独立临时 worktree
+# 缺失或配置错误时默认使用 branch
+task_workspace = "branch"
+# 规划前先做代码侦察，再拆任务
+two_stage_planning = true
+# 需求模糊时先反问澄清
+clarify_vague_requirements = true
+# 最多澄清轮数
+clarify_max_turns = 3
+# Builder/Reviewer 闭环最大轮数
+max_review_rounds = 2
+# 子进程连续多少秒没有新输出就认为卡死并终止；0 表示关闭
+agent_silence_timeout_seconds = 0
+
+[classifier]
+# 意图分类器配置；provider 留空则走本地 CLI 兜底
+provider = ""
+model = ""
+enabled = true
+timeout = 30
+
+[inspect]
+# 定时巡检配置
+enabled = false
+interval_seconds = 1800
+max_new_tasks_per_round = 3
+signals = ["git_log", "failed_tasks", "todos"]
+auto_execute = false
+priority = "P3"
+# 巡检专用 planner；留空时回退到 [agents].planner / codex
+planner = ""
 
 [providers]
 # AI Provider API 配置（可选，不配置则使用环境变量）
+# base_url 可选；用于 OpenAI/Anthropic 兼容代理或自定义接口地址
 
 # OpenAI
-# [providers.openai]
+# [providers.openai-gpt4o]
 # enabled = true
-# model = "gpt-4-turbo-preview"
+# model = "gpt-4o"
+# base_url = ""  # 例如 "https://your-proxy.example/v1"
 # api_key = ""  # 或设置环境变量 OPENAI_API_KEY
+# max_tokens = 4096
+# temperature = 0.7
 
 # Claude (Anthropic)
-# [providers.claude]
+# [providers.claude-sonnet]
 # enabled = true
 # model = "claude-3-5-sonnet-20241022"
+# base_url = ""  # 例如 "https://your-anthropic-proxy.example"
 # api_key = ""  # 或设置环境变量 ANTHROPIC_API_KEY
+# max_tokens = 4096
+# temperature = 0.7
 
 # 腾讯云混元
 # [providers.hunyuan]
 # enabled = false
+# model = "hunyuan"
+# base_url = "https://hunyuan.cloud.tencent.com"
 # api_key = ""  # 设置环境变量 HUNYUAN_API_KEY
+# max_tokens = 4096
+# temperature = 0.7
 
 # 阿里通义千问
 # [providers.qwen]
 # enabled = false
+# model = "qwen-plus"
+# base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 # api_key = ""  # 设置环境变量 DASHSCOPE_API_KEY
+# max_tokens = 4096
+# temperature = 0.7
 
 # DeepSeek
 # [providers.deepseek]
 # enabled = false
+# model = "deepseek-chat"
+# base_url = "https://api.deepseek.com"
 # api_key = ""  # 设置环境变量 DEEPSEEK_API_KEY
+# max_tokens = 4096
+# temperature = 0.7
 
 # Ollama (本地)
 # [providers.ollama]
 # enabled = false
-# base_url = "http://localhost:11434/v1"
 # model = "llama3"
+# base_url = "http://localhost:11434/v1"
+# api_key = ""
+# max_tokens = 4096
+# temperature = 0.7
 
 [notifications]
 # 飞书/企微 Webhook URL
@@ -616,7 +690,7 @@ LEGACY_TEMPLATE = """\
 [project]
 name = "{name}"
 base_branch = "dev"
-default_mode = "codex"
+default_mode = "dual"
 worktree_base = ""
 
 [agents]

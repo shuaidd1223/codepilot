@@ -10,9 +10,10 @@ a default. Key properties:
 
 * A single ``logging.Logger`` (named ``codepilot``) so everything in
   the codebase writes through one rotating file handler.
-* Log file defaults to ``~/.codepilot/logs/codepilot.log`` with a
-  10-file / 1 MB rotation — safe for long-running daemons without
-  manual log hygiene.
+* Log file defaults to ``~/.codepilot/data/<project>/logs/codepilot.log`` when a
+  project config can be found from the current working directory, otherwise
+  uses ``~/.codepilot/logs/codepilot.log``. Rotation keeps it safe for
+  long-running daemons without manual log hygiene.
 * Console output is stderr-only so it doesn't interleave with the
   command-line JSON payloads produced by ``codepilot --json``.
 * Level defaults to ``INFO``; override via ``CODEPILOT_LOG_LEVEL``
@@ -31,8 +32,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-_LOG_DIR = Path.home() / ".codepilot" / "logs"
-_LOG_FILE = _LOG_DIR / "codepilot.log"
+_LOG_DIR: Optional[Path] = None
+_LOG_FILE: Optional[Path] = None
 _LOGGER_NAME = "codepilot"
 _CONFIGURED = False
 _PYTEST_CAPTURE_HANDLER = ("_pytest.logging", "LogCaptureHandler")
@@ -41,6 +42,61 @@ _PYTEST_CAPTURE_HANDLER = ("_pytest.logging", "LogCaptureHandler")
 def _resolve_log_level() -> int:
     raw = os.environ.get("CODEPILOT_LOG_LEVEL", "INFO").strip().upper()
     return logging.getLevelName(raw) if raw else logging.INFO
+
+
+def _infer_project_log_file() -> Path | None:
+    """Best-effort project-first default for operational logs."""
+    try:
+        from codepilot import config as config_mod
+        from codepilot.paths import project_storage_root
+
+        config_path = config_mod.find_config(Path.cwd())
+        if config_path is None:
+            return None
+
+        project_name = ""
+        try:
+            with open(config_path, "rb") as handle:
+                data = config_mod.tomllib.load(handle)
+            project = data.get("project", {}) if isinstance(data, dict) else {}
+            if isinstance(project, dict):
+                project_name = str(project.get("name") or "").strip()
+        except Exception:
+            project_name = ""
+
+        return (
+            project_storage_root(
+                project_name=project_name or config_path.parent.name,
+                project_path=config_path.parent,
+            )
+            / "logs"
+            / "codepilot.log"
+        )
+    except Exception:
+        return None
+
+
+def _resolve_log_file() -> Path:
+    if _LOG_FILE is not None:
+        return Path(_LOG_FILE)
+    if _LOG_DIR is not None:
+        return Path(_LOG_DIR) / "codepilot.log"
+
+    explicit_file = os.environ.get("CODEPILOT_LOG_PATH", "").strip()
+    if explicit_file:
+        return Path(explicit_file).expanduser()
+
+    explicit_dir = os.environ.get("CODEPILOT_LOG_DIR", "").strip()
+    if explicit_dir:
+        return Path(explicit_dir).expanduser() / "codepilot.log"
+
+    inferred = _infer_project_log_file()
+    if inferred is not None:
+        return inferred
+
+    from codepilot.paths import global_storage_root
+
+    return global_storage_root() / "logs" / "codepilot.log"
 
 
 def _ensure_configured() -> logging.Logger:
@@ -67,9 +123,10 @@ def _ensure_configured() -> logging.Logger:
     # directory (read-only FS, sandboxed test env), we silently skip it
     # and rely on the stderr handler alone.
     try:
-        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = _resolve_log_file()
+        log_file.parent.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
-            _LOG_FILE,
+            log_file,
             maxBytes=1_000_000,
             backupCount=10,
             encoding="utf-8",
