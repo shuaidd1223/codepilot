@@ -726,6 +726,7 @@ enabled = false
 interval_seconds = 1800
 max_new_tasks_per_round = 3
 signals = ["git_log", "failed_tasks", "todos"]
+# 可选信号：deps、ruff、pytest。默认保持轻量，项目可按需启用。
 auto_execute = false
 priority = "P3"
 # 巡检专用 planner；留空时回退到 [agents].planner / codex

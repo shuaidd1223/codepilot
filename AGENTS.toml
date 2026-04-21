@@ -13,3 +13,6 @@ claude_cmd = "claude"
 [automation]
 task_workspace = "direct"
 per_task_branch = false
+
+[inspect]
+signals = ["git_log", "failed_tasks", "todos", "deps", "ruff", "pytest"]
