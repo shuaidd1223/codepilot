@@ -47,6 +47,7 @@ from codepilot.webhook import notify_task_status
 
 # Re-export shell + command helpers
 from codepilot.commands.run_shell import (  # noqa: F401
+    PreflightSkipError,
     ShellInfo,
     TaskCancelled,
     build_script_command,
@@ -291,26 +292,60 @@ def _read_output_file(path: Path) -> str:
 
 
 _SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+# 也支持 `【xxx】` 开头的段落（整行单独一个【xxx】、或行首的【xxx】后紧跟正文）
+_BRACKET_SECTION_RE = re.compile(r"^【([^】\n]+)】\s*", re.MULTILINE)
+
+# 把常见中文 section 标题映射到执行器内部用的 key，保证新老任务格式都能识别
+_SECTION_ALIASES: dict[str, str] = {
+    "唯一目标": "任务目标",
+    "任务目标": "任务目标",
+    "目标": "任务目标",
+    "验收标准": "验收标准",
+    "验收": "验收标准",
+    "验证": "验收标准",
+    "验证命令": "验收标准",
+    "Builder 职责": "Builder 职责",
+    "实施提示": "Builder 职责",
+    "Reviewer 职责": "Reviewer 职责",
+    "涉及文件": "涉及文件",
+    "要动的文件": "涉及文件",
+    "文件": "涉及文件",
+    "禁区": "禁区",
+    "不要做": "禁区",
+    "依赖": "依赖",
+    "不涉及": "不涉及",
+}
 
 
 def _extract_task_sections(content: str) -> dict[str, str]:
-    """Parse ``task.content`` markdown into a {section_title: body} dict.
+    """Parse ``task.content`` into a {canonical_section_key: body} dict.
 
-    The planner writes the task content as a sequence of ``## 验收标准`` /
-    ``## Builder 职责`` / ``## 涉及文件`` / ``## 备注`` sections. We pick
-    them out individually so the executor prompts can inject the right
-    pieces without dumping the entire file at the AI every call.
+    Supports both legacy ``## SectionName`` markdown headings and the
+    ``【SectionName】`` Chinese-bracket style that hand-written tasks tend to
+    use. Aliases are normalized via ``_SECTION_ALIASES`` so the downstream
+    prompt builders can rely on a small canonical set of keys.
     """
     if not content:
         return {}
+
+    # Collect every (start, end_of_marker, title) anchor, from both styles.
+    anchors: list[tuple[int, int, str]] = []
+    for match in _SECTION_RE.finditer(content):
+        anchors.append((match.start(), match.end(), match.group(1).strip()))
+    for match in _BRACKET_SECTION_RE.finditer(content):
+        anchors.append((match.start(), match.end(), match.group(1).strip()))
+    if not anchors:
+        return {}
+
+    anchors.sort(key=lambda a: a[0])
+
     sections: dict[str, str] = {}
-    matches = list(_SECTION_RE.finditer(content))
-    for idx, match in enumerate(matches):
-        title = match.group(1).strip()
-        start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(content)
-        body = content[start:end].strip()
-        sections[title] = body
+    for idx, (_start, body_start, title) in enumerate(anchors):
+        body_end = anchors[idx + 1][0] if idx + 1 < len(anchors) else len(content)
+        body = content[body_start:body_end].strip()
+        canonical = _SECTION_ALIASES.get(title, title)
+        # 同一个 canonical key 多段出现时保留第一段即可（后续段一般是补充说明）。
+        sections.setdefault(canonical, body)
     return sections
 
 
@@ -372,6 +407,9 @@ def _build_builtin_prompt(
     acceptance = _bullet_lines(sections.get("验收标准") or "")
     builder_notes = _bullet_lines(sections.get("Builder 职责") or "")
     files = _bullet_lines(sections.get("涉及文件") or "")
+    forbidden = (sections.get("禁区") or "").strip()
+    dependencies = (sections.get("依赖") or "").strip()
+    not_in_scope = (sections.get("不涉及") or "").strip()
 
     lines: list[str] = []
     if review_round <= 1:
@@ -383,6 +421,15 @@ def _build_builtin_prompt(
         )
     lines.append("")
 
+    # 严格模式前缀：抑制 builder "过度工程化" 的倾向。
+    lines.append("【严格模式（必须遵守）】")
+    lines.append("1. 只修改任务正文中明确列出的新建/追加/修改文件，不碰其它文件。")
+    lines.append("2. 任务正文提供了代码骨架时，按骨架落地；不要新增字段/列/函数/导入/依赖。")
+    lines.append("3. 不要做 reviewer 没要求的 '工程最佳实践' 扩展（如复合外键、跨币种、多账户审计等）。")
+    lines.append("4. 任务没有要求跑迁移 / 拉依赖 / 启服务时，不要执行。")
+    lines.append("5. 最小 diff：删代码仅限任务明确声明；保留现有 import、格式、缩进。")
+    lines.append("")
+
     if goal:
         lines.append("【任务目标】")
         lines.append(goal)
@@ -392,6 +439,21 @@ def _build_builtin_prompt(
         lines.append("【验收标准（必须全部达成，reviewer 会逐条核对）】")
         for i, item in enumerate(acceptance, 1):
             lines.append(f"  {i}. {item}")
+        lines.append("")
+
+    if forbidden:
+        lines.append("【禁区（绝对不要碰的文件/模块）】")
+        lines.append(forbidden)
+        lines.append("")
+
+    if dependencies:
+        lines.append("【前置任务（已完成，直接使用其产出，不要重复实现）】")
+        lines.append(dependencies)
+        lines.append("")
+
+    if not_in_scope:
+        lines.append("【本任务不涉及（留给其它任务，不要提前做）】")
+        lines.append(not_in_scope)
         lines.append("")
 
     if builder_notes:
@@ -433,6 +495,8 @@ def _build_review_prompt(
     sections = _extract_task_sections(task.get("content") or "")
     acceptance = _bullet_lines(sections.get("验收标准") or "")
     reviewer_notes = _bullet_lines(sections.get("Reviewer 职责") or "")
+    goal = (sections.get("任务目标") or "").strip()
+    forbidden = (sections.get("禁区") or "").strip()
 
     lines = [
         f"请审查当前仓库中为任务 #{task['id']} `{task['title']}` 产生的未提交改动。",
@@ -444,6 +508,16 @@ def _build_review_prompt(
             "任何新发现的问题都放到「非阻塞观察」里，不计入 FAIL 理由。）"
         )
 
+    if goal:
+        lines.append("")
+        lines.append("【任务目标（审查对齐这一点，不要扩展范围）】")
+        lines.append(goal)
+
+    if forbidden:
+        lines.append("")
+        lines.append("【任务声明的禁区（若 builder 触碰则记为 FAIL）】")
+        lines.append(forbidden)
+
     if acceptance:
         lines.append("")
         lines.append("【必须逐条核对的验收标准】")
@@ -451,6 +525,14 @@ def _build_review_prompt(
             lines.append(f"  {i}. {item}")
         lines.append(
             "对每一条，明确指出: 通过 / 未通过 / 无法判断，并说明理由（看了哪些文件或命令输出）。"
+        )
+    else:
+        # 没有显式验收标准时，只用"任务目标是否达成"作为唯一判据。
+        lines.append("")
+        lines.append(
+            "【没有显式验收标准】请仅按【任务目标】判断 builder 交付是否完成；"
+            "不要补 reviewer 自己的额外要求、架构完整性、测试覆盖率等；"
+            "任务文本之外的任何顾虑一律进「非阻塞观察」。"
         )
 
     if reviewer_notes:
@@ -466,24 +548,52 @@ def _build_review_prompt(
 
     lines.append("")
     lines.append(_load_prompt("reviewer_rules").rstrip())
+
+    # 硬性收尾指令：强制 reviewer 产出 VERDICT 行，避免回退逻辑误判。
+    lines.append("")
+    lines.append("【输出硬性要求】")
+    lines.append(
+        "你的回复最后一行必须是 `VERDICT: PASS` 或 `VERDICT: FAIL`，单独一行，"
+        "不要写任何其它字符，否则调度器会把本轮当成无效审查。"
+    )
     return "\n".join(lines)
 
 
 def _extract_review_verdict(review_output: str, reviewer_agent: str = "") -> str:
+    """Parse reviewer output into pass/fail/unknown.
+
+    Precedence:
+    1. Explicit ``VERDICT: PASS|FAIL`` line (required by reviewer_rules.md).
+    2. Strong FAIL anchors: a ``需要修复的点``/``需要修复``/``需要处理`` section,
+       or any bullet under it. These match the structured output template.
+    3. If none of the above match, default to PASS on non-empty output.
+
+    The previous fallback treated any ``- [PX]`` bullet as FAIL, which mis-
+    fired on non-blocking observations (allowed by reviewer_rules) and led
+    to spurious retries. We no longer do that.
+    """
     verdict_pattern = re.compile(r"VERDICT\s*:\s*(PASS|FAIL)\b", re.IGNORECASE)
     for line in reversed(review_output.splitlines()):
         match = verdict_pattern.search(line)
         if match:
             return match.group(1).lower()
 
-    normalized = reviewer_agent.lower().strip()
-    if normalized.startswith("codex"):
-        if re.search(r"(?mi)^\s*review comments?\s*:\s*$", review_output):
-            return "fail"
-        if re.search(r"(?mi)^\s*-\s*\[[A-Z0-9]+\]", review_output):
-            return "fail"
-        return "pass" if review_output.strip() else "unknown"
-    return "unknown"
+    if not review_output.strip():
+        return "unknown"
+
+    # Strong FAIL anchor: the reviewer explicitly opens a "needs fix" section.
+    if re.search(r"(?mi)^\s*(需要修复的点|需要修复|需要处理|修复建议)\s*[:：]?\s*$", review_output):
+        return "fail"
+
+    # Strong PASS anchor: every AC line is marked PASS / N/A, no explicit
+    # blocker section was opened. Matches the shape from reviewer_rules.md.
+    ac_lines = re.findall(r"(?m)^\s*AC\s*#\d+\s*[:：]\s*(PASS|FAIL|N/A)", review_output, re.IGNORECASE)
+    if ac_lines and all(v.lower() in {"pass", "n/a"} for v in ac_lines):
+        return "pass"
+
+    # Default: non-empty output without an explicit FAIL marker is treated as
+    # PASS, aligning with reviewer_rules' "测试通过是强 PASS 信号" spirit.
+    return "pass"
 
 
 def _resolve_builtin_single_agent(agent_mode: str) -> tuple[str, Optional[str]]:
@@ -858,7 +968,10 @@ def _run_builtin_executor(
     )
     preflight_error = _builtin_preflight_error(working_path, auto_commit, effective_agent_mode)
     if preflight_error:
-        raise RuntimeError(preflight_error)
+        # 用 PreflightSkipError 而不是 RuntimeError，run 循环会把任务直接送回
+        # backlog，不 bump retry_count。之前用 RuntimeError 会被 generic
+        # exception 分支当成真失败处理，导致几次偶发脏工作区就把任务打 failed。
+        raise PreflightSkipError(preflight_error)
 
     from codepilot import progress_bus
 
@@ -1420,6 +1533,24 @@ def run_backlog(
             echo(f"[yellow]任务 #{task_id} 已停止[/yellow]")
             notify_task_status(str(project_path), task_id, task["title"], "cancelled", str(exc))
             stats["cancelled"] += 1
+            stats["processed"] += 1
+            if once:
+                break
+            continue
+        except PreflightSkipError as exc:
+            # Preflight 级别的"跳过但不扣重试次数"：推回 backlog，清理运行态，
+            # 留下错误信息让人类/下一轮 daemon 能看到。不走 _handle_failure。
+            skip_message = str(exc)
+            clear_task_runtime(
+                task_id,
+                status="backlog",
+                started_at=None,
+                error_message=skip_message[:4000],
+                stop_requested=0,
+                stop_reason=None,
+            )
+            echo(f"[yellow]任务 #{task_id} 预检跳过（不扣重试次数）：{skip_message.splitlines()[0]}[/yellow]")
+            stats["requeued"] += 1
             stats["processed"] += 1
             if once:
                 break

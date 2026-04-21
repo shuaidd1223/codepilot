@@ -43,6 +43,17 @@ class TaskCancelled(RuntimeError):
     """Raised when a running task is explicitly stopped."""
 
 
+class PreflightSkipError(RuntimeError):
+    """Raised when preflight says skip-without-consuming-retry.
+
+    Generic RuntimeError gets treated as real execution failure and bumps
+    ``retry_count`` in ``_handle_failure``. Preflight-level skips (dirty
+    working tree, no git repo, etc.) are environmental and explicitly
+    advertise ``不消耗重试次数``; catching this distinct exception in the
+    run loop lets us requeue the task to backlog without retry consumption.
+    """
+
+
 def detect_best_shell(preferred: Optional[str] = None) -> ShellInfo:
     """Pick the best available shell on the current platform."""
     import platform
