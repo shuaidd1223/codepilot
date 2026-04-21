@@ -5,10 +5,124 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
+from typing import Any
+from urllib.parse import urlparse
 
+from codepilot import db
 from codepilot.config import load_config
+
+
+_MAX_WEBHOOK_BODY_BYTES = 1024 * 1024
+
+
+def _normalize_priority(value: object) -> str:
+    priority = str(value or "P2").strip().upper()
+    if priority not in {"P0", "P1", "P2", "P3"}:
+        raise RuntimeError("priority 只支持 P0 / P1 / P2 / P3。")
+    return priority
+
+
+def _normalize_max_retries(value: object) -> int:
+    try:
+        max_retries = int(value if value is not None else 3)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("max_retries 必须是整数。") from exc
+    return max(0, max_retries)
+
+
+def create_webhook_task(payload: dict[str, Any]) -> dict:
+    """Create one backlog task from a webhook POST payload."""
+    db.init_db()
+
+    project = str(payload.get("project") or "").strip()
+    if not project:
+        raise RuntimeError("project 不能为空。")
+    project_info = db.get_project(project)
+    if not project_info:
+        raise RuntimeError(f"项目 '{project}' 不存在。")
+
+    title = " ".join(str(payload.get("title") or "").split())
+    if not title:
+        raise RuntimeError("title 不能为空。")
+
+    content = payload.get("content")
+    if content is None:
+        content = payload.get("body")
+    if content is None:
+        content = payload.get("description")
+
+    task = db.create_task(
+        project=project,
+        title=title,
+        content=str(content or ""),
+        agent=str(payload.get("agent") or project_info.get("default_mode") or "dual").strip() or "dual",
+        priority=_normalize_priority(payload.get("priority")),
+        depends_on=payload.get("depends_on") or payload.get("depends"),
+        project_path=project_info["path"],
+        max_retries=_normalize_max_retries(payload.get("max_retries")),
+        source="webhook",
+    )
+    return {"ok": True, "task": task, "message": f"任务 #{task['id']} 已创建。"}
+
+
+class WebhookHandler(BaseHTTPRequestHandler):
+    server_version = "CodePilotWebhook/0.1"
+
+    def _send_json(self, payload: dict, status: int = HTTPStatus.OK) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self) -> dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError as exc:
+            raise RuntimeError("Content-Length 不合法。") from exc
+        if length > _MAX_WEBHOOK_BODY_BYTES:
+            raise RuntimeError("请求体过大。")
+        raw = self.rfile.read(length) if length > 0 else b"{}"
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("请求体不是合法 JSON。") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("请求体必须是 JSON 对象。")
+        return payload
+
+    def do_GET(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if path == "/health":
+            self._send_json({"ok": True, "status": "ok", "service": "webhook"})
+            return
+        self._send_json({"error": "未找到接口。"}, status=HTTPStatus.NOT_FOUND)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if path != "/tasks":
+            self._send_json({"error": "未找到接口。"}, status=HTTPStatus.NOT_FOUND)
+            return
+        try:
+            payload = self._read_json_body()
+            self._send_json(create_webhook_task(payload), status=HTTPStatus.CREATED)
+        except RuntimeError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003
+        return
+
+
+def start_webhook_server(*, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
+    """Start the local webhook HTTP server."""
+    db.init_db()
+    return ThreadingHTTPServer((host, port), WebhookHandler)
 
 
 def _get_webhook_config(project_path: str) -> dict:
