@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from codepilot import db
@@ -11,6 +12,7 @@ from codepilot.config import (
     GLOBAL_CONFIG_PATH_ENV,
     AgentsConfig,
     load_project_config,
+    resolve_planner,
     resolve_project_config_reference,
 )
 
@@ -18,17 +20,6 @@ from codepilot.config import (
 def _write(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
-
-
-def _register_project(tmp_path, monkeypatch, name: str, agents_toml: str) -> Path:
-    monkeypatch.setenv(GLOBAL_CONFIG_PATH_ENV, str(tmp_path / "missing-global-AGENTS.toml"))
-    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
-    db.init_db()
-
-    project_path = tmp_path / name
-    _write(project_path / "AGENTS.toml", agents_toml)
-    db.register_project(name, str(project_path))
-    return project_path
 
 
 def _stub_inspection(monkeypatch, captured: dict) -> None:
@@ -268,98 +259,36 @@ max_new_tasks_per_round = 2
     assert captured["demo"] == "claude"
 
 
-def test_inspect_prefers_explicit_planner(tmp_path, monkeypatch):
-    _register_project(
-        tmp_path,
-        monkeypatch,
-        "demo",
-        """
-[project]
-name = "demo"
-
-[agents]
-planner = "codex"
-
-[inspect]
-planner = "claude"
-""".strip(),
-    )
-    captured = {}
-    _stub_inspection(monkeypatch, captured)
-
-    result = CliRunner().invoke(
-        main,
-        ["inspect", "-p", "demo", "--planner", "codex", "--once", "--dry-run", "--json"],
-    )
-
-    assert result.exit_code == 0
-    assert captured["demo"] == "codex"
-
-
-def test_inspect_uses_inspect_then_agents_planner(tmp_path, monkeypatch):
-    _register_project(
-        tmp_path,
-        monkeypatch,
-        "inspect-first",
-        """
-[project]
-name = "inspect-first"
-
-[agents]
-planner = "codex"
-
-[inspect]
-planner = "claude"
-""".strip(),
-    )
-    _register_project(
-        tmp_path,
-        monkeypatch,
-        "agents-fallback",
-        """
-[project]
-name = "agents-fallback"
-
-[agents]
-planner = "claude"
-""".strip(),
-    )
-    captured = {}
-    _stub_inspection(monkeypatch, captured)
-    runner = CliRunner()
-
-    first = runner.invoke(
-        main,
-        ["inspect", "-p", "inspect-first", "--once", "--dry-run", "--json"],
-    )
-    second = runner.invoke(
-        main,
-        ["inspect", "-p", "agents-fallback", "--once", "--dry-run", "--json"],
-    )
-
-    assert first.exit_code == 0
-    assert second.exit_code == 0
-    assert captured["inspect-first"] == "claude"
-    assert captured["agents-fallback"] == "claude"
-
-
-def test_inspect_falls_back_to_codex_without_planner_config(tmp_path, monkeypatch):
-    _register_project(
-        tmp_path,
-        monkeypatch,
-        "demo",
-        """
-[project]
-name = "demo"
-""".strip(),
-    )
-    captured = {}
-    _stub_inspection(monkeypatch, captured)
-
-    result = CliRunner().invoke(
-        main,
-        ["inspect", "-p", "demo", "--once", "--dry-run", "--json"],
-    )
-
-    assert result.exit_code == 0
-    assert captured["demo"] == "codex"
+@pytest.mark.parametrize(
+    ("cfg_data", "explicit", "expected"),
+    [
+        (
+            {"inspect": {"planner": "claude"}, "agents": {"planner": "codex"}},
+            None,
+            "claude",
+        ),
+        (
+            {"agents": {"planner": "claude"}},
+            None,
+            "claude",
+        ),
+        (
+            {},
+            None,
+            "codex",
+        ),
+        (
+            {"inspect": {"planner": "claude"}, "agents": {"planner": "claude"}},
+            "codex",
+            "codex",
+        ),
+        (
+            None,
+            None,
+            "codex",
+        ),
+    ],
+)
+def test_resolve_planner_for_inspect_scope(cfg_data, explicit, expected):
+    cfg = AgentsConfig.from_dict(cfg_data or {}) if cfg_data is not None else None
+    assert resolve_planner(cfg, "inspect", explicit=explicit) == expected
