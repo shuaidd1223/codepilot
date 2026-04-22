@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from codepilot.ai_gateway_execute import (
     execute_api_prompt,
     execute_structured_cli_call,
@@ -12,13 +10,7 @@ from codepilot.ai_gateway_resolution import (
     ResolvedTextCLICandidate,
 )
 from codepilot.ai_gateway_types import GatewayRequest
-
-
-@dataclass
-class _Completed:
-    returncode: int = 0
-    stdout: str = ""
-    stderr: str = ""
+from tests.ai_gateway_testkit import CompletedProcessStub
 
 
 def test_execute_api_prompt_delegates_to_provider_runner(monkeypatch):
@@ -77,7 +69,7 @@ def test_execute_structured_cli_call_dispatches_claude_variant(monkeypatch):
 def test_execute_text_cli_candidate_reports_success(monkeypatch):
     monkeypatch.setattr(
         "codepilot.ai_gateway_execute.subprocess.run",
-        lambda *args, **kwargs: _Completed(returncode=0, stdout="  answer  ", stderr=""),
+        lambda *args, **kwargs: CompletedProcessStub(returncode=0, stdout="  answer  ", stderr=""),
     )
 
     ok, text, error = execute_text_cli_candidate(
@@ -97,7 +89,7 @@ def test_execute_text_cli_candidate_reports_success(monkeypatch):
 def test_execute_text_cli_candidate_reports_failure(monkeypatch):
     monkeypatch.setattr(
         "codepilot.ai_gateway_execute.subprocess.run",
-        lambda *args, **kwargs: _Completed(returncode=1, stdout="", stderr="boom"),
+        lambda *args, **kwargs: CompletedProcessStub(returncode=1, stdout="", stderr="boom"),
     )
 
     ok, text, error = execute_text_cli_candidate(
@@ -112,4 +104,3 @@ def test_execute_text_cli_candidate_reports_failure(monkeypatch):
     assert ok is False
     assert text == ""
     assert error == "claude exit=1 stderr=boom"
-

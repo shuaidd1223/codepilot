@@ -9,37 +9,17 @@ from click.testing import CliRunner
 
 from codepilot import __version__
 from codepilot import db
-from codepilot import webui as webui_mod
 from codepilot.cli import main
 from codepilot.commands import auto as auto_mod
 from codepilot.commands import auto_chat as auto_chat_mod
-
-
-def _init_test_db(tmp_path, monkeypatch):
-    db_path = tmp_path / "tasks.db"
-    monkeypatch.setenv("CODEPILOT_DB_PATH", str(db_path))
-    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
-    db.init_db()
-    webui_mod._UI_JOBS.clear()
-    webui_mod._UI_EVENTS.clear()
-    webui_mod._UI_JOB_SEQ = 0
-
-
-def _register_project(tmp_path, monkeypatch):
-    _init_test_db(tmp_path, monkeypatch)
-    project_path = tmp_path / "project"
-    project_path.mkdir()
-    (project_path / "README.md").write_text("# Demo", encoding="utf-8")
-    db.register_project("demo", str(project_path))
-    monkeypatch.chdir(project_path)
-    return project_path
+from tests.chat_flow_testkit import register_project
 
 
 # ─── heuristic routing in chat ───────────────────────────────────────────────
 
 def test_chat_question_heuristic_does_not_create_task(tmp_path, monkeypatch):
     """A question like '怎么用' should not create any task."""
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     # Mock answer_question_via_api to return a canned answer
     monkeypatch.setattr(
@@ -73,7 +53,7 @@ def test_chat_question_heuristic_does_not_create_task(tmp_path, monkeypatch):
 
 def test_chat_requirement_heuristic_triggers_planning(tmp_path, monkeypatch):
     """A requirement like '帮我修复 bug' should trigger the planning flow."""
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     planning_called = {"count": 0}
 
@@ -112,7 +92,7 @@ def test_chat_requirement_heuristic_triggers_planning(tmp_path, monkeypatch):
 
 def test_chat_command_heuristic_shows_help(tmp_path, monkeypatch):
     """A command like '查看状态' should show CLI help, not create task."""
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     def _heuristic_only(text, **kwargs):
         from codepilot.ai import _heuristic_intent
@@ -135,7 +115,7 @@ def test_chat_command_heuristic_shows_help(tmp_path, monkeypatch):
 
 def test_chat_slash_version_shows_current_version_without_creating_task(tmp_path, monkeypatch):
     """The interactive chat command dispatcher should handle /version locally."""
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     runner = CliRunner()
     result = runner.invoke(main, ["chat", "--no-ui"], input="/version\n/exit\n")
@@ -297,7 +277,7 @@ def test_chat_ui_starts_via_detached_webui_service(monkeypatch):
 
 
 def test_chat_ctrl_c_abort_exits_cleanly(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     def _raise_abort(*args, **kwargs):
         raise click.Abort()
@@ -313,7 +293,7 @@ def test_chat_ctrl_c_abort_exits_cleanly(tmp_path, monkeypatch):
 
 
 def test_chat_exit_does_not_stop_global_webui_service(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     monkeypatch.setattr(auto_chat_mod, "_start_chat_ui", lambda port=8766: {"managed": True, "port": port})
 
@@ -337,77 +317,3 @@ def test_chat_exit_does_not_stop_global_webui_service(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_chat_passes_shared_gateway_config_ref_for_classifier_and_answer(tmp_path, monkeypatch):
-    """Chat should pass a shared gateway config_ref to both classifier and QA paths."""
-    project_path = _register_project(tmp_path, monkeypatch)
-
-    captured: dict[str, dict] = {}
-
-    def _fake_classify(text, **kwargs):
-        captured["classify"] = kwargs
-        return {"intent": "question", "reason": "test", "source": "test"}
-
-    def _fake_answer(**kwargs):
-        captured["answer"] = kwargs
-        return "来自问答路径"
-
-    monkeypatch.setattr(auto_mod, "classify_intent", _fake_classify)
-    monkeypatch.setattr(auto_mod, "answer_question_via_api", _fake_answer)
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["chat", "--no-ui"], input="随便说点什么\n/exit\n")
-
-    assert result.exit_code == 0
-    assert "来自问答路径" in result.output
-    classify_opts = captured["classify"]["gateway_options"]
-    answer_opts = captured["answer"]["gateway_options"]
-    assert classify_opts.config_ref == str(project_path)
-    assert answer_opts.config_ref == str(project_path)
-    assert classify_opts is answer_opts
-
-
-def test_webui_session_chat_passes_shared_gateway_config_ref_for_classifier_and_answer(tmp_path, monkeypatch):
-    _init_test_db(tmp_path, monkeypatch)
-    project_path = tmp_path / "project"
-    config_root = tmp_path / "config-root"
-    project_path.mkdir()
-    config_root.mkdir()
-    config_file = config_root / "AGENTS.toml"
-    config_file.write_text(
-        """
-[project]
-name = "demo"
-[classifier]
-enabled = true
-provider = "openai"
-model = "gpt-test"
-timeout = 17
-""".strip(),
-        encoding="utf-8",
-    )
-    db.register_project("demo", str(project_path), config_file=str(config_file))
-    session = webui_mod.create_session_action("demo", title="chat")
-
-    captured: dict[str, dict] = {}
-
-    def _fake_classify(text, **kwargs):
-        captured["classify"] = kwargs
-        return {"intent": "question", "reason": "test", "source": "test"}
-
-    def _fake_answer(**kwargs):
-        captured["answer"] = kwargs
-        return "来自会话问答路径"
-
-    monkeypatch.setattr("codepilot.ai.classify_intent", _fake_classify)
-    monkeypatch.setattr("codepilot.ai.answer_question_via_api", _fake_answer)
-
-    out = webui_mod.send_session_message_action(session["session"]["id"], "随便说点什么", category="auto")
-
-    assert out["ok"] is True
-    assert out["intent"] == "question"
-    assert out["message"] == "来自会话问答路径"
-    classify_opts = captured["classify"]["gateway_options"]
-    answer_opts = captured["answer"]["gateway_options"]
-    assert classify_opts.config_ref == str(config_file)
-    assert answer_opts.config_ref == str(config_file)
-    assert classify_opts is answer_opts

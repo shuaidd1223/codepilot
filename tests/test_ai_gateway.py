@@ -9,103 +9,67 @@ Guarantees the gateway:
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
-
 import pytest
 
 from codepilot import ai_gateway
 from codepilot.ai_gateway import GatewayCallOptions, GatewayRequest, GatewayResponse
+from tests.ai_gateway_testkit import STRUCTURED_SCHEMA, FakeAPIProvider, gateway_state
 
 
-@dataclass
-class _FakeAPIProvider:
-    """Stand-in for ai_providers.APIProvider; must be a dataclass so the
-    gateway's ``replace()`` call works."""
-
-    name: str = "fake-provider"
-    model: str = "fake-model"
-    api_key: str = ""
-    base_url: str = ""
-    needs_key: bool = True
-    raises: bool = False
-
-    def requires_api_key(self) -> bool:
-        return self.needs_key
-
-    def resolve_api_key(self) -> str:
-        return self.api_key
-
-
-@pytest.fixture
-def gateway_state(monkeypatch):
-    """Replace the API registry and runners with fakes we can script."""
-    api_calls: list[str] = []
-    api_providers: list[_FakeAPIProvider] = []
-    cli_calls: list[dict] = []
-
-    def _fake_run_api_provider(provider, prompt):
-        api_calls.append(prompt)
-        api_providers.append(provider)
-        if getattr(provider, "raises", False):
-            raise RuntimeError("boom")
-        return json.dumps({"intent": "task", "reason": "from api"})
-
-    def _fake_run_claude_schema_prompt(prompt, schema, **kw):
-        cli_calls.append({"cli": "claude", "prompt": prompt, "schema": schema, "kwargs": kw})
-        return {"intent": "requirement", "reason": "from claude CLI"}
-
-    def _fake_run_codex_schema_prompt(prompt, schema, **kw):
-        cli_calls.append({"cli": "codex", "prompt": prompt, "schema": schema, "kwargs": kw})
-        return {"intent": "requirement", "reason": "from codex CLI"}
-
-    monkeypatch.setattr("codepilot.ai_providers._run_api_provider", _fake_run_api_provider)
-    monkeypatch.setattr("codepilot.ai._run_claude_schema_prompt", _fake_run_claude_schema_prompt)
-    monkeypatch.setattr("codepilot.ai._run_codex_schema_prompt", _fake_run_codex_schema_prompt)
-
-    fake_registry = {}
-    monkeypatch.setattr("codepilot.ai_providers.API_PROVIDERS", fake_registry)
-
-    return {
-        "api_calls": api_calls,
-        "api_providers": api_providers,
-        "cli_calls": cli_calls,
-        "registry": fake_registry,
-    }
-
-
-SCHEMA = {"type": "object", "properties": {"intent": {"type": "string"}}}
-
-
-def test_call_structured_prefers_api_when_key_available(gateway_state):
-    provider = _FakeAPIProvider(needs_key=True, api_key="sk-test")
-    gateway_state["registry"]["openai"] = provider
+@pytest.mark.parametrize(
+    ("provider_key", "provider_kwargs", "request_kwargs", "expected"),
+    [
+        (
+            "openai",
+            {"needs_key": True, "api_key": "sk-test"},
+            {"classifier_provider": "openai", "api_key": "sk-test", "planner": "claude"},
+            {"source": "api:openai", "api_calls": 1, "cli_calls": 0, "cli_name": ""},
+        ),
+        (
+            "openai",
+            {"needs_key": True, "api_key": ""},
+            {"classifier_provider": "openai", "planner": "claude"},
+            {"source": "cli:claude", "api_calls": 0, "cli_calls": 1, "cli_name": "claude"},
+        ),
+        (
+            "localcustom",
+            {"needs_key": False, "raises": True},
+            {"classifier_provider": "localcustom", "planner": "codex"},
+            {"source": "cli:codex", "api_calls": 1, "cli_calls": 1, "cli_name": "codex"},
+        ),
+    ],
+    ids=["api-success", "missing-key-cli-fallback", "api-error-cli-fallback"],
+)
+def test_call_structured_route_matrix(gateway_state, provider_key, provider_kwargs, request_kwargs, expected):
+    provider = FakeAPIProvider(**provider_kwargs)
+    gateway_state["registry"][provider_key] = provider
 
     resp = ai_gateway.call_structured(
         GatewayRequest(
             prompt="hi",
-            schema=SCHEMA,
-            classifier_provider="openai",
-            api_key="sk-test",
-            planner="claude",
+            schema=STRUCTURED_SCHEMA,
+            **request_kwargs,
         )
     )
 
     assert resp.ok is True
-    assert resp.source == "api:openai"
-    assert resp.payload == {"intent": "task", "reason": "from api"}
-    # CLI path must not have been touched.
-    assert gateway_state["cli_calls"] == []
+    assert resp.source == expected["source"]
+    assert len(gateway_state["api_calls"]) == expected["api_calls"]
+    assert len(gateway_state["cli_calls"]) == expected["cli_calls"]
+    if expected["cli_name"]:
+        assert gateway_state["cli_calls"][0]["cli"] == expected["cli_name"]
+    if expected["source"].startswith("api:"):
+        assert resp.payload == {"intent": "task", "reason": "from api"}
 
 
 def test_call_structured_applies_api_overrides(gateway_state):
-    provider = _FakeAPIProvider(needs_key=True, api_key="registry-key")
+    provider = FakeAPIProvider(needs_key=True, api_key="registry-key")
     gateway_state["registry"]["openai"] = provider
 
     resp = ai_gateway.call_structured(
         GatewayRequest(
             prompt="hi",
-            schema=SCHEMA,
+            schema=STRUCTURED_SCHEMA,
             classifier_provider="openai",
             classifier_model="custom-model",
             api_key="sk-custom",
@@ -122,7 +86,7 @@ def test_call_structured_applies_api_overrides(gateway_state):
 
 
 def test_call_structured_uses_provider_model_from_project_config(gateway_state, tmp_path):
-    provider = _FakeAPIProvider(needs_key=True, api_key="")
+    provider = FakeAPIProvider(needs_key=True, api_key="")
     gateway_state["registry"]["openai"] = provider
     (tmp_path / "AGENTS.toml").write_text(
         "\n".join(
@@ -139,7 +103,7 @@ def test_call_structured_uses_provider_model_from_project_config(gateway_state, 
     resp = ai_gateway.call_structured(
         GatewayRequest(
             prompt="hi",
-            schema=SCHEMA,
+            schema=STRUCTURED_SCHEMA,
             classifier_provider="openai",
             project_path=str(tmp_path),
             planner="claude",
@@ -153,49 +117,11 @@ def test_call_structured_uses_provider_model_from_project_config(gateway_state, 
     assert used.base_url == "https://models.example.invalid/v1"
 
 
-def test_call_structured_skips_api_when_key_missing(gateway_state):
-    provider = _FakeAPIProvider(needs_key=True, api_key="")
-    gateway_state["registry"]["openai"] = provider
-
-    resp = ai_gateway.call_structured(
-        GatewayRequest(
-            prompt="hi",
-            schema=SCHEMA,
-            classifier_provider="openai",
-            planner="claude",
-        )
-    )
-
-    # API silently skipped → CLI path used.
-    assert resp.ok is True
-    assert resp.source == "cli:claude"
-    assert gateway_state["api_calls"] == []
-    assert len(gateway_state["cli_calls"]) == 1
-
-
-def test_call_structured_falls_through_api_error_to_cli(gateway_state):
-    provider = _FakeAPIProvider(needs_key=False, raises=True)
-    gateway_state["registry"]["localcustom"] = provider
-
-    resp = ai_gateway.call_structured(
-        GatewayRequest(
-            prompt="hi",
-            schema=SCHEMA,
-            classifier_provider="localcustom",
-            planner="codex",
-        )
-    )
-
-    assert resp.ok is True
-    assert resp.source == "cli:codex"
-    assert gateway_state["cli_calls"][0]["cli"] == "codex"
-
-
 def test_call_structured_passes_config_ref_to_cli(gateway_state):
     resp = ai_gateway.call_structured(
         GatewayRequest(
             prompt="hi",
-            schema=SCHEMA,
+            schema=STRUCTURED_SCHEMA,
             planner="claude",
             project_path="C:/project",
             config_ref="C:/config-root/AGENTS.toml",
@@ -209,7 +135,7 @@ def test_call_structured_passes_config_ref_to_cli(gateway_state):
 
 
 def test_call_structured_reports_combined_error_when_both_fail(gateway_state, monkeypatch):
-    provider = _FakeAPIProvider(needs_key=False, raises=True)
+    provider = FakeAPIProvider(needs_key=False, raises=True)
     gateway_state["registry"]["localcustom"] = provider
 
     def _cli_raises(*_a, **_kw):
@@ -220,7 +146,7 @@ def test_call_structured_reports_combined_error_when_both_fail(gateway_state, mo
     resp = ai_gateway.call_structured(
         GatewayRequest(
             prompt="hi",
-            schema=SCHEMA,
+            schema=STRUCTURED_SCHEMA,
             classifier_provider="localcustom",
             planner="codex",
         )
@@ -251,7 +177,7 @@ def test_call_text_reports_combined_error_when_both_fail(monkeypatch):
 
 
 def test_call_text_prefers_api_when_key_available(gateway_state):
-    provider = _FakeAPIProvider(needs_key=True, api_key="sk-test")
+    provider = FakeAPIProvider(needs_key=True, api_key="sk-test")
     gateway_state["registry"]["openai"] = provider
 
     resp = ai_gateway.call_text(
@@ -280,7 +206,7 @@ def test_call_structured_prompt_builds_request_with_shared_options(monkeypatch):
 
     resp = ai_gateway.call_structured_prompt(
         prompt="classify me",
-        schema=SCHEMA,
+        schema=STRUCTURED_SCHEMA,
         options=GatewayCallOptions(
             classifier_provider="openai",
             classifier_model="gpt-x",
@@ -296,7 +222,7 @@ def test_call_structured_prompt_builds_request_with_shared_options(monkeypatch):
     assert resp.ok is True
     req = captured["request"]
     assert req.prompt == "classify me"
-    assert req.schema == SCHEMA
+    assert req.schema == STRUCTURED_SCHEMA
     assert req.classifier_provider == "openai"
     assert req.classifier_model == "gpt-x"
     assert req.api_key == "sk-1"
@@ -354,3 +280,5 @@ def test_call_text_requires_no_schema():
 def test_call_structured_requires_schema():
     with pytest.raises(ValueError):
         ai_gateway.call_structured(GatewayRequest(prompt="hi"))
+
+

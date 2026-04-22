@@ -25,14 +25,17 @@ def _text_mode() -> GatewayMode:
     )
 
 
-def test_validate_request_mode_for_structured_requires_schema():
-    with pytest.raises(ValueError, match="schema required"):
-        validate_request_mode(GatewayRequest(prompt="x"), _structured_mode())
-
-
-def test_validate_request_mode_for_text_rejects_schema():
-    with pytest.raises(ValueError, match="schema forbidden"):
-        validate_request_mode(GatewayRequest(prompt="x", schema={"type": "object"}), _text_mode())
+@pytest.mark.parametrize(
+    ("gateway_request", "mode_factory", "error"),
+    [
+        (GatewayRequest(prompt="x"), _structured_mode, "schema required"),
+        (GatewayRequest(prompt="x", schema={"type": "object"}), _text_mode, "schema forbidden"),
+    ],
+    ids=["structured-requires-schema", "text-rejects-schema"],
+)
+def test_validate_request_mode_matrix(gateway_request, mode_factory, error):
+    with pytest.raises(ValueError, match=error):
+        validate_request_mode(gateway_request, mode_factory())
 
 
 def test_run_gateway_entry_prefers_api_success():
@@ -80,4 +83,3 @@ def test_build_combined_failure_without_api_error_uses_cli_error():
     assert resp.ok is False
     assert resp.source == "cli:none"
     assert resp.error == "no local CLI available"
-

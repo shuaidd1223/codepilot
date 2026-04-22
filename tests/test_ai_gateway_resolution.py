@@ -1,39 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from codepilot.ai_gateway_resolution import (
     resolve_api_call,
     resolve_structured_cli_call,
     resolve_text_cli_candidates,
 )
 from codepilot.ai_gateway_types import GatewayRequest
-
-
-@dataclass
-class _FakeAPIProvider:
-    model: str = ""
-    api_key: str = ""
-    base_url: str = ""
-    needs_key: bool = True
-
-    def requires_api_key(self) -> bool:
-        return self.needs_key
-
-    def resolve_api_key(self) -> str:
-        return self.api_key
-
-
-@dataclass
-class _FakeCLIProvider:
-    exe: str = ""
-
-    def find_executable(self) -> str:
-        return self.exe
+from tests.ai_gateway_testkit import FakeAPIProvider, FakeCLIProvider
 
 
 def test_resolve_api_call_applies_overrides_and_prefers_config_ref(monkeypatch):
-    provider = _FakeAPIProvider(model="from-registry", api_key="registry-key")
+    provider = FakeAPIProvider(model="from-registry", api_key="registry-key")
     captured = {}
 
     monkeypatch.setattr("codepilot.ai_providers.API_PROVIDERS", {"openai": object()})
@@ -67,7 +44,7 @@ def test_resolve_api_call_applies_overrides_and_prefers_config_ref(monkeypatch):
 
 
 def test_resolve_api_call_returns_none_when_required_key_missing(monkeypatch):
-    provider = _FakeAPIProvider(needs_key=True, api_key="")
+    provider = FakeAPIProvider(needs_key=True, api_key="")
     monkeypatch.setattr("codepilot.ai_providers.API_PROVIDERS", {"openai": object()})
     monkeypatch.setattr("codepilot.ai_providers.resolve_api_provider", lambda *_: provider)
 
@@ -94,8 +71,8 @@ def test_resolve_structured_cli_call_preserves_claude_variant():
 def test_resolve_text_cli_candidates_builds_codex_command_with_project_path(monkeypatch):
     def _fake_resolve_cli_provider(cli_name, _provider_ref):
         if cli_name == "claude":
-            return _FakeCLIProvider(exe="")
-        return _FakeCLIProvider(exe="C:/bin/codex.exe")
+            return FakeCLIProvider(exe="")
+        return FakeCLIProvider(exe="C:/bin/codex.exe")
 
     monkeypatch.setattr("codepilot.ai_providers.resolve_cli_provider", _fake_resolve_cli_provider)
 
@@ -113,4 +90,3 @@ def test_resolve_text_cli_candidates_builds_codex_command_with_project_path(monk
     assert candidate.source == "cli:codex"
     assert candidate.cmd[:3] == ["C:/bin/codex.exe", "-C", "D:/demo/project"]
     assert "claude CLI not installed" in last_error
-

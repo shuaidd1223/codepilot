@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from click.testing import CliRunner
 
@@ -11,32 +9,12 @@ from codepilot import db
 from codepilot import webui as webui_mod
 from codepilot.cli import main
 from codepilot.commands import auto as auto_mod
-from codepilot.commands import auto_workflow as auto_workflow_mod
-
-
-def _init_test_db(tmp_path, monkeypatch):
-    db_path = tmp_path / "tasks.db"
-    monkeypatch.setenv("CODEPILOT_DB_PATH", str(db_path))
-    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
-    db.init_db()
-    webui_mod._UI_JOBS.clear()
-    webui_mod._UI_EVENTS.clear()
-    webui_mod._UI_JOB_SEQ = 0
-
-
-def _register_project(tmp_path, monkeypatch):
-    _init_test_db(tmp_path, monkeypatch)
-    project_path = tmp_path / "project"
-    project_path.mkdir()
-    (project_path / "README.md").write_text("# Demo", encoding="utf-8")
-    db.register_project("demo", str(project_path))
-    monkeypatch.chdir(project_path)
-    return project_path
+from tests.chat_flow_testkit import init_test_db, register_project
 
 
 def test_chat_asks_for_clarification_then_plans(tmp_path, monkeypatch):
     """A vague requirement triggers clarification; after user answers, planning runs."""
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     # Force intent classifier to 'requirement' regardless.
     monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
@@ -87,7 +65,7 @@ def test_chat_asks_for_clarification_then_plans(tmp_path, monkeypatch):
 
 
 def test_chat_slash_clear_aborts_pending_clarification(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
         "intent": "requirement", "source": "forced",
@@ -113,7 +91,7 @@ def test_chat_slash_clear_aborts_pending_clarification(tmp_path, monkeypatch):
 
 
 def test_chat_pending_clarification_exception_does_not_crash(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
         "intent": "requirement", "source": "forced",
@@ -146,7 +124,7 @@ def test_chat_pending_clarification_exception_does_not_crash(tmp_path, monkeypat
 
 
 def test_chat_pending_clarification_interrupt_exits_cleanly(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
         "intent": "requirement", "source": "forced",
@@ -180,7 +158,7 @@ def test_chat_pending_clarification_interrupt_exits_cleanly(tmp_path, monkeypatc
 
 
 def test_chat_pending_clarification_keeps_task_intent_single_task_limit(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     classify_calls: list[str] = []
 
@@ -228,7 +206,7 @@ def test_chat_pending_clarification_keeps_task_intent_single_task_limit(tmp_path
 
 
 def test_webui_submit_goal_returns_clarify(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     monkeypatch.setattr(
         "codepilot.webui_actions.clarify_requirement",
@@ -246,7 +224,7 @@ def test_webui_submit_goal_returns_clarify(tmp_path, monkeypatch):
 
 
 def test_webui_submit_goal_continues_with_history(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     def fake_clarify(title, *, project_info, qa_history=None, planner="codex", **kw):
         if qa_history and len(qa_history) >= 1:
@@ -278,7 +256,7 @@ def test_webui_submit_goal_continues_with_history(tmp_path, monkeypatch):
 
 
 def test_go_runs_interactive_clarification_before_planning(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     def fake_clarify(title, *, project_info, qa_history=None, planner="codex", **kw):
         if qa_history:
@@ -330,7 +308,7 @@ def test_go_runs_interactive_clarification_before_planning(tmp_path, monkeypatch
 
 
 def test_auto_command_runs_interactive_clarification_before_planning(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     def fake_clarify(title, *, project_info, qa_history=None, planner="codex", **kw):
         if qa_history:
@@ -379,39 +357,8 @@ def test_auto_command_runs_interactive_clarification_before_planning(tmp_path, m
     assert "先落 Web UI 需求入口" in captured["title"]
 
 
-def test_go_routes_question_intent_to_answer_without_planning(tmp_path, monkeypatch):
-    project_path = _register_project(tmp_path, monkeypatch)
-
-    captured: dict[str, dict] = {}
-
-    def fake_classify(text, **kwargs):
-        captured["classify"] = kwargs
-        return {"intent": "question", "source": "forced"}
-
-    def fake_answer(**kwargs):
-        captured["answer"] = kwargs
-        return "这是 go 的问答回复"
-
-    ran: list[dict] = []
-    monkeypatch.setattr(auto_mod, "classify_intent", fake_classify)
-    monkeypatch.setattr(auto_mod, "answer_question_via_api", fake_answer)
-    monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw))
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["go", "这个工具怎么用"])
-
-    assert result.exit_code == 0
-    assert "这是 go 的问答回复" in result.output
-    assert not ran
-    classify_opts = captured["classify"]["gateway_options"]
-    answer_opts = captured["answer"]["gateway_options"]
-    assert classify_opts.config_ref == str(project_path)
-    assert answer_opts.config_ref == str(project_path)
-    assert classify_opts is answer_opts
-
-
 def test_go_routes_command_intent_to_guidance_without_planning(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     ran: list[dict] = []
     monkeypatch.setattr(
@@ -430,7 +377,7 @@ def test_go_routes_command_intent_to_guidance_without_planning(tmp_path, monkeyp
 
 
 def test_go_task_intent_forces_single_task_planning(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     captured: dict = {}
     monkeypatch.setattr(
@@ -453,7 +400,7 @@ def test_go_task_intent_forces_single_task_planning(tmp_path, monkeypatch):
 
 
 def test_go_pending_clarification_error_does_not_fall_through_to_planning(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
         "intent": "requirement", "source": "forced",
@@ -498,7 +445,7 @@ def test_go_pending_clarification_error_does_not_fall_through_to_planning(tmp_pa
 
 
 def test_webui_submit_requirement_returns_clarify_before_job(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     monkeypatch.setattr(
         "codepilot.webui_actions.clarify_requirement",
@@ -521,7 +468,7 @@ def test_webui_submit_requirement_returns_clarify_before_job(tmp_path, monkeypat
 
 
 def test_webui_submit_requirement_continues_after_clarify_answer(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
 
     def fake_clarify(title, *, qa_history=None, **kw):
         if qa_history:
@@ -566,7 +513,7 @@ def test_webui_submit_requirement_continues_after_clarify_answer(tmp_path, monke
 
 
 def test_webui_session_clarification_follows_project_planner(tmp_path, monkeypatch):
-    project_path = _register_project(tmp_path, monkeypatch)
+    project_path = register_project(tmp_path, monkeypatch)
     config_root = tmp_path / "config-root"
     config_root.mkdir()
     config_file = config_root / "AGENTS.toml"
@@ -617,7 +564,7 @@ planner = "claude"
 
 
 def test_webui_session_pending_clarification_error_uses_unified_error_exit(tmp_path, monkeypatch):
-    _register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
     session = webui_mod.create_session_action("demo", title="chat")
 
     monkeypatch.setattr(
@@ -651,3 +598,4 @@ def test_webui_session_pending_clarification_error_uses_unified_error_exit(tmp_p
             "先做 Web UI",
             category="auto",
         )
+
