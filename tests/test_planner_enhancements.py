@@ -745,6 +745,59 @@ def test_parse_automation_planner_result_accepts_json_string():
     assert result["should_split"] is False
 
 
+def test_parse_automation_planner_result_rejects_non_json_text():
+    with pytest.raises(RuntimeError, match="不是有效 JSON"):
+        ai_mod.parse_automation_planner_result(
+            "not-json",
+            title="do x",
+            max_tasks=3,
+        )
+
+
+def test_parse_automation_planner_result_reports_placeholder_only_output():
+    with pytest.raises(RuntimeError, match="占位任务"):
+        ai_mod.parse_automation_planner_result(
+            {
+                "summary": "need more input",
+                "tasks": [
+                    {"title": "awaiting-user-input", "goal": "please provide details"},
+                    {"title": "等待用户补充", "goal": "请提供上下文"},
+                ],
+            },
+            title="优化一下",
+            max_tasks=3,
+        )
+
+
+def test_parse_automation_planner_result_surfaces_dedup_to_progress_callback(monkeypatch):
+    progress_messages: list[str] = []
+    monkeypatch.setattr(ai_mod, "_planner_progress_callback", lambda line: progress_messages.append(line))
+
+    result = ai_mod.parse_automation_planner_result(
+        {
+            "summary": "x",
+            "tasks": [
+                {
+                    "title": "已有任务",
+                    "priority": "P2",
+                    "goal": "g",
+                    "acceptance_criteria": ["a"],
+                    "builder_notes": [],
+                    "reviewer_notes": [],
+                    "files": [],
+                    "notes": [],
+                }
+            ],
+        },
+        title="已有任务",
+        existing_tasks=[{"id": 42, "title": "已有任务", "status": "backlog"}],
+    )
+
+    assert result["tasks"] == []
+    assert result.get("dedup_skipped")
+    assert any("跳过重复任务" in line for line in progress_messages)
+
+
 def test_generate_task_breakdown_can_return_raw_payload(tmp_path, monkeypatch):
     raw_payload = {
         "summary": "x",
