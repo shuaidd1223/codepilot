@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -20,7 +19,7 @@ from codepilot.ai import (
     normalize_agent_name,
 )
 from codepilot.commands.add import _resolve_project_strict
-from codepilot.commands import inspect_service, inspect_signals
+from codepilot.commands import inspect_lifecycle, inspect_service, inspect_signals
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.config import load_project_config, resolve_planner
 from codepilot.output import echo
@@ -576,64 +575,36 @@ def inspect(
             ctx.exit(1)
             return
         raise click.ClickException("需要用 -p 指定项目，或先 codepilot init")
-    if show_status:
-        status = inspect_service_status(project)
-        if json_mode:
-            emit_json_payload("inspect", ok=True, data={"action": "status", "service": status})
-        else:
-            if status["running"]:
-                echo(f"[green]巡检运行中[/green]  PID={status['pid']}  项目={project}")
-                echo(f"[dim]日志: {status['log']}[/dim]")
-            else:
-                echo(f"[dim]项目 {project} 巡检未运行[/dim]")
+
+    lifecycle_options = inspect_lifecycle.InspectServiceLifecycleOptions(
+        project=project,
+        max_new=max_new,
+        dry_run=dry_run,
+        agent=agent,
+        planner=planner,
+        interval=interval,
+        once=once,
+        foreground=foreground,
+        json_mode=json_mode,
+        show_status=show_status,
+        stop_service=stop_service,
+    )
+    try:
+        handled, exit_code = inspect_lifecycle.handle_service_lifecycle(
+            lifecycle_options,
+            inspect_service_status_fn=inspect_service_status,
+            start_inspect_service_fn=start_inspect_service,
+            stop_inspect_service_fn=stop_inspect_service,
+            emit_json_payload_fn=emit_json_payload,
+            echo_fn=echo,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if handled:
+        if exit_code is not None:
+            ctx.exit(exit_code)
         return
-    if stop_service:
-        try:
-            result = stop_inspect_service(project)
-        except RuntimeError as exc:
-            if json_mode:
-                emit_json_payload(
-                    "inspect",
-                    ok=False,
-                    data={"action": "stop", "service": inspect_service_status(project)},
-                    error=str(exc),
-                    error_code="stop_failed",
-                )
-                ctx.exit(1)
-                return
-            raise click.ClickException(str(exc)) from exc
-        if json_mode:
-            emit_json_payload(
-                "inspect",
-                ok=bool(result.get("stopped")),
-                data={"action": "stop", "result": result},
-                error=None if result.get("stopped") else f"项目 {project} 巡检未运行",
-                error_code=None if result.get("stopped") else "service_not_running",
-            )
-        else:
-            if result["stopped"]:
-                echo(f"[green]项目 {project} 巡检已停止[/green]  PID={','.join(str(pid) for pid in result['pids'])}")
-            else:
-                echo(f"[dim]项目 {project} 巡检未运行[/dim]")
-        return
-    if not once and not foreground and not json_mode:
-        try:
-            result = start_inspect_service(
-                project,
-                max_new=max_new,
-                dry_run=dry_run,
-                agent=agent,
-                planner=planner,
-                interval=interval,
-            )
-        except RuntimeError as exc:
-            raise click.ClickException(str(exc)) from exc
-        if result["started"]:
-            echo(f"[green]项目 {project} 巡检已后台启动[/green]  PID={result['pid']}")
-        else:
-            echo(f"[yellow]项目 {project} 巡检已在运行[/yellow]  PID={result['pid']}")
-        echo(f"[dim]日志: {result['log']}[/dim]")
-        return
+
     project_info = {"name": proj["name"], "path": proj["path"], "config_file": proj.get("config_file")}
 
     cfg = load_project_config(proj)
@@ -642,52 +613,28 @@ def inspect(
     sleep_seconds = interval if interval is not None else ins.interval_seconds
     effective_planner = resolve_planner(cfg, "inspect", explicit=planner)
 
-    round_num = 0
-    try:
-        while True:
-            db.touch_service_state(
-                "inspect",
-                project,
-                pid=os.getpid(),
-                log_path=str(_service_log_path(project)),
-                status="running",
-            )
-            round_num += 1
-            if not json_mode:
-                _print_round_header(
-                    project_name=project_info["name"],
-                    planner=effective_planner,
-                    agent=agent,
-                    max_new_tasks=limit,
-                    signals=ins.signals,
-                    once=once,
-                    round_num=round_num,
-                )
-
-            result = run_inspection(
-                project_info,
-                max_new_tasks=limit,
-                signals=ins.signals,
-                auto_execute=ins.auto_execute,
-                priority=ins.priority,
-                agent=agent,
-                planner=effective_planner,
-                dry_run=dry_run,
-            )
-
-            _emit_inspection_result(result, dry_run=dry_run, json_mode=json_mode)
-
-            if once:
-                break
-
-            if not json_mode:
-                echo(f"[dim]下次巡检将在 {sleep_seconds} 秒后...[/dim]")
-            try:
-                time.sleep(sleep_seconds)
-            except KeyboardInterrupt:
-                if not json_mode:
-                    echo("[yellow]巡检已停止[/yellow]")
-                break
-    finally:
-        db.clear_service_state("inspect", project)
+    loop_options = inspect_lifecycle.ForegroundInspectLoopOptions(
+        project=project,
+        project_info=project_info,
+        signals=ins.signals,
+        max_new_tasks=limit,
+        interval_seconds=sleep_seconds,
+        planner=effective_planner,
+        priority=ins.priority,
+        auto_execute=ins.auto_execute,
+        agent=agent,
+        dry_run=dry_run,
+        once=once,
+        json_mode=json_mode,
+    )
+    inspect_lifecycle.run_foreground_inspection_loop(
+        loop_options,
+        touch_service_state_fn=db.touch_service_state,
+        clear_service_state_fn=db.clear_service_state,
+        service_log_path_fn=lambda name: str(_service_log_path(name)),
+        print_round_header_fn=_print_round_header,
+        run_inspection_fn=run_inspection,
+        emit_inspection_result_fn=_emit_inspection_result,
+        echo_fn=echo,
+    )
 
