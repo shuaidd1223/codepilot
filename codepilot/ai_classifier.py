@@ -133,12 +133,12 @@ def classify_intent(
 
     valid_intents = {"question", "task", "requirement", "command"}
 
-    from codepilot.ai_gateway import GatewayRequest, call_structured
+    from codepilot.ai_gateway import GatewayCallOptions, call_structured_prompt
 
-    response = call_structured(
-        GatewayRequest(
-            prompt=INTENT_PROMPT.format(text=text),
-            schema=INTENT_SCHEMA,
+    response = call_structured_prompt(
+        prompt=INTENT_PROMPT.format(text=text),
+        schema=INTENT_SCHEMA,
+        options=GatewayCallOptions(
             classifier_provider=classifier_provider,
             classifier_model=classifier_model,
             api_key=api_key,
@@ -147,7 +147,7 @@ def classify_intent(
             config_ref=config_ref,
             planner="claude",  # classification is latency-sensitive; prefer claude
             timeout=timeout,
-        )
+        ),
     )
 
     if response.ok and response.payload:
@@ -203,11 +203,11 @@ def answer_question_via_api(
         f"## 项目上下文\n{context}\n{history_block}\n## 用户问题\n{question}"
     )
 
-    from codepilot.ai_gateway import GatewayRequest, call_text
+    from codepilot.ai_gateway import GatewayCallOptions, call_text_prompt
 
-    response = call_text(
-        GatewayRequest(
-            prompt=prompt,
+    response = call_text_prompt(
+        prompt=prompt,
+        options=GatewayCallOptions(
             classifier_provider=provider_key,
             classifier_model=model_override,
             api_key=api_key,
@@ -216,6 +216,6 @@ def answer_question_via_api(
             config_ref=config_ref,
             planner="claude",
             timeout=120,
-        )
+        ),
     )
     return response.text if response.ok else ""

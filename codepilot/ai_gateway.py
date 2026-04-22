@@ -56,6 +56,24 @@ class GatewayRequest:
     timeout: int = 60
 
 
+@dataclass(frozen=True)
+class GatewayCallOptions:
+    """Reusable fallback options shared by chat / clarify callsites.
+
+    ``prompt`` and optional ``schema`` vary per call; everything else is the
+    cross-cutting routing context that should stay consistent.
+    """
+
+    classifier_provider: str = ""
+    classifier_model: str = ""
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    project_path: str = ""
+    config_ref: str = ""
+    planner: str = "codex"
+    timeout: int = 60
+
+
 @dataclass
 class GatewayResponse:
     ok: bool
@@ -299,8 +317,53 @@ _TEXT_MODE = _GatewayMode(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#   Request builders (shared by classifier / clarify)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _build_request(
+    prompt: str,
+    *,
+    schema: Optional[dict],
+    options: Optional[GatewayCallOptions],
+) -> GatewayRequest:
+    opts = options or GatewayCallOptions()
+    return GatewayRequest(
+        prompt=prompt,
+        schema=schema,
+        classifier_provider=opts.classifier_provider,
+        classifier_model=opts.classifier_model,
+        api_key=opts.api_key,
+        base_url=opts.base_url,
+        project_path=opts.project_path,
+        config_ref=opts.config_ref,
+        planner=opts.planner,
+        timeout=opts.timeout,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #   Public entry points
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def call_structured_prompt(
+    *,
+    prompt: str,
+    schema: dict,
+    options: Optional[GatewayCallOptions] = None,
+) -> GatewayResponse:
+    """Build a structured request from shared options then run gateway."""
+    return call_structured(_build_request(prompt, schema=schema, options=options))
+
+
+def call_text_prompt(
+    *,
+    prompt: str,
+    options: Optional[GatewayCallOptions] = None,
+) -> GatewayResponse:
+    """Build a text request from shared options then run gateway."""
+    return call_text(_build_request(prompt, schema=None, options=options))
 
 
 def call_structured(request: GatewayRequest) -> GatewayResponse:

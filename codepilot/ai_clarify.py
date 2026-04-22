@@ -22,10 +22,8 @@ Public API:
 
 from __future__ import annotations
 
-import json
 import re
 import sys
-from pathlib import Path
 from typing import Optional
 
 from codepilot.ai_planner_context import collect_planner_context
@@ -139,20 +137,6 @@ def _looks_explicitly_concrete(title: str) -> bool:
     return any(hint in t or hint in low for hint in _EXPLICIT_OBJECT_HINTS)
 
 
-def _strip_json_envelope(raw: str) -> str:
-    raw = (raw or "").strip()
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        if "\n" in raw:
-            raw = raw.split("\n", 1)[1]
-        if raw.endswith("```"):
-            raw = raw[:-3]
-    start, end = raw.find("{"), raw.rfind("}")
-    if start != -1 and end > start:
-        raw = raw[start : end + 1]
-    return raw.strip()
-
-
 def _invoke_clarifier_ai(
     prompt: str,
     *,
@@ -166,12 +150,12 @@ def _invoke_clarifier_ai(
     timeout: int,
 ) -> dict:
     """Route through the unified AI gateway (API → local CLI fallback)."""
-    from codepilot.ai_gateway import GatewayRequest, call_structured
+    from codepilot.ai_gateway import GatewayCallOptions, call_structured_prompt
 
-    response = call_structured(
-        GatewayRequest(
-            prompt=prompt,
-            schema=CLARIFY_SCHEMA,
+    response = call_structured_prompt(
+        prompt=prompt,
+        schema=CLARIFY_SCHEMA,
+        options=GatewayCallOptions(
             classifier_provider=classifier_provider,
             classifier_model=classifier_model,
             api_key=api_key,
@@ -180,7 +164,7 @@ def _invoke_clarifier_ai(
             config_ref=config_ref,
             planner=planner or "codex",
             timeout=timeout,
-        )
+        ),
     )
     if not response.ok:
         raise RuntimeError(response.error or "clarifier AI call failed")
