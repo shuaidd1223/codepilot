@@ -419,6 +419,82 @@ def test_review_loop_stops_on_first_pass(fake_project, monkeypatch, tmp_path):
     assert "commit: abc123" in (result.summary or "")
 
 
+def test_run_builtin_executor_delegates_loop_and_result_mapping(fake_project, monkeypatch, tmp_path):
+    """Executor entrypoint should orchestrate via loop + mapper helpers."""
+    task = _sample_task()
+    task_file = tmp_path / "42-task.md"
+    task_file.write_text("stub", encoding="utf-8")
+
+    monkeypatch.setattr(run_mod, "_builtin_preflight_error", lambda *a, **kw: "")
+    monkeypatch.setattr(run_mod, "_builtin_runtime_dir", lambda project: tmp_path / "runtime")
+
+    captured: dict[str, object] = {}
+    fake_outcome = run_mod._BuiltinLoopOutcome(
+        status="builder_error",
+        round_num=1,
+        builder=run_mod._PhaseOutcome(agent="codex", exit_code=1, output="boom"),
+    )
+    fake_result = run_mod.ExecutionResult(exit_code=1, output="mapped", executor="builtin")
+
+    def fake_loop(ctx):
+        captured["loop_ctx"] = ctx
+        return fake_outcome
+
+    def fake_mapper(ctx, outcome, *, auto_commit):
+        captured["map_ctx"] = ctx
+        captured["map_outcome"] = outcome
+        captured["map_auto_commit"] = auto_commit
+        return fake_result
+
+    monkeypatch.setattr(run_mod, "_run_builtin_round_loop", fake_loop)
+    monkeypatch.setattr(run_mod, "_map_builtin_loop_outcome", fake_mapper)
+
+    result = run_mod._run_builtin_executor(
+        task,
+        fake_project,
+        task_file,
+        auto_commit=False,
+        max_review_rounds=3,
+    )
+
+    assert result is fake_result
+    assert captured["loop_ctx"] is captured["map_ctx"]
+    assert captured["map_outcome"] is fake_outcome
+    assert captured["map_auto_commit"] is False
+
+
+def test_map_builtin_loop_outcome_exhausted_is_deterministic(fake_project, tmp_path):
+    """Exhausted review rounds should map to deterministic failure result."""
+    task = _sample_task()
+    task_file = tmp_path / "42-task.md"
+    task_file.write_text("stub", encoding="utf-8")
+    ctx = run_mod._ExecutorContext(
+        task=task,
+        project=fake_project,
+        project_path=Path(fake_project["path"]),
+        config_ref=None,
+        output_dir=tmp_path,
+        task_file=task_file,
+        max_rounds=2,
+        task_id_for_events=task["id"],
+    )
+    outcome = run_mod._BuiltinLoopOutcome(
+        status="exhausted",
+        round_num=2,
+        verdict="unknown",
+        builder=run_mod._PhaseOutcome(agent="codex", exit_code=0, output="builder out"),
+        reviewer=run_mod._PhaseOutcome(agent="codex-review", exit_code=0, output="review out"),
+    )
+
+    result = run_mod._map_builtin_loop_outcome(ctx, outcome, auto_commit=False)
+
+    assert result.exit_code == 2
+    assert result.deterministic_failure is True
+    assert "review 结果不明确" in (result.summary or "")
+    assert result.output == "builder out"
+    assert result.review_output == "review out"
+
+
 def test_config_threads_max_review_rounds():
     """AutomationConfig should expose max_review_rounds with a sane default."""
     from codepilot.config import AutomationConfig

@@ -685,6 +685,17 @@ class _PhaseOutcome:
 
 
 @dataclass
+class _BuiltinLoopOutcome:
+    """Terminal state produced by the builder/reviewer orchestration loop."""
+
+    status: str  # pass | builder_error | reviewer_error | exhausted
+    round_num: int
+    builder: _PhaseOutcome
+    reviewer: Optional[_PhaseOutcome] = None
+    verdict: str = ""
+
+
+@dataclass
 class _ExecutorContext:
     """Everything a single executor run needs once, so helpers don't each
     recompute project paths / config refs / event hooks."""
@@ -846,6 +857,146 @@ def _finalize_executor_success(
     )
 
 
+def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
+    """Run builder/reviewer rounds until success or a terminal failure state."""
+    from codepilot import progress_bus
+
+    previous_findings = ""
+    builder = _PhaseOutcome(agent="", exit_code=0, output="")
+    reviewer = _PhaseOutcome(agent="", exit_code=0, output="")
+
+    for round_num in range(1, ctx.max_rounds + 1):
+        builder = _run_builder_round(ctx, round_num=round_num, previous_findings=previous_findings)
+        if builder.exit_code != 0:
+            return _BuiltinLoopOutcome(
+                status="builder_error",
+                round_num=round_num,
+                builder=builder,
+            )
+
+        reviewer = _run_reviewer_round(
+            ctx,
+            round_num=round_num,
+            previous_findings=previous_findings,
+        )
+        if reviewer.exit_code != 0:
+            return _BuiltinLoopOutcome(
+                status="reviewer_error",
+                round_num=round_num,
+                builder=builder,
+                reviewer=reviewer,
+            )
+
+        verdict = _runner_module()._extract_review_verdict(reviewer.output, reviewer.agent)
+        if verdict == "pass":
+            progress_bus.emit(
+                task_id=ctx.task_id_for_events,
+                stage="reviewer",
+                message="reviewer 判定 PASS",
+                extra={"round": round_num, "verdict": "pass"},
+            )
+            return _BuiltinLoopOutcome(
+                status="pass",
+                round_num=round_num,
+                builder=builder,
+                reviewer=reviewer,
+                verdict=verdict,
+            )
+
+        previous_findings = _runner_module()._extract_reviewer_findings(reviewer.output)
+        if round_num >= ctx.max_rounds:
+            summary = (
+                "review 未通过（已用完重做轮次）"
+                if verdict == "fail"
+                else "review 结果不明确（已用完重做轮次）"
+            )
+            progress_bus.emit(
+                task_id=ctx.task_id_for_events,
+                stage="reviewer",
+                level="error",
+                message=summary,
+                extra={"round": round_num, "verdict": verdict},
+            )
+            return _BuiltinLoopOutcome(
+                status="exhausted",
+                round_num=round_num,
+                builder=builder,
+                reviewer=reviewer,
+                verdict=verdict,
+            )
+
+        progress_bus.emit(
+            task_id=ctx.task_id_for_events,
+            stage="reviewer",
+            level="warning",
+            message=f"reviewer 判定 {verdict.upper()}，准备第 {round_num + 1} 轮重做",
+            extra={"round": round_num, "verdict": verdict},
+        )
+        echo(
+            f"[yellow]  reviewer 判定 {verdict.upper()}，准备第 {round_num + 1} 轮重做，"
+            f"让 builder 针对反馈再改一次[/yellow]"
+        )
+
+    raise RuntimeError("_run_builtin_round_loop: unreachable fallthrough")
+
+
+def _map_builtin_loop_outcome(
+    ctx: _ExecutorContext,
+    outcome: _BuiltinLoopOutcome,
+    *,
+    auto_commit: bool,
+) -> ExecutionResult:
+    """Convert orchestration outcome into the public ExecutionResult shape."""
+    if outcome.status == "builder_error":
+        return ExecutionResult(
+            exit_code=outcome.builder.exit_code,
+            output=outcome.builder.output,
+            executor="builtin",
+        )
+
+    if outcome.status == "reviewer_error":
+        reviewer_output = outcome.reviewer.output if outcome.reviewer else ""
+        reviewer_exit = outcome.reviewer.exit_code if outcome.reviewer else 1
+        return ExecutionResult(
+            exit_code=reviewer_exit,
+            output=outcome.builder.output,
+            review_output=reviewer_output,
+            summary="review 命令执行失败",
+            executor="builtin",
+        )
+
+    if outcome.status == "pass":
+        reviewer = outcome.reviewer
+        if reviewer is None:
+            raise RuntimeError("_map_builtin_loop_outcome: pass outcome missing reviewer payload")
+        return _runner_module()._finalize_executor_success(
+            ctx,
+            auto_commit=auto_commit,
+            round_num=outcome.round_num,
+            builder=outcome.builder,
+            reviewer=reviewer,
+        )
+
+    if outcome.status == "exhausted":
+        reviewer = outcome.reviewer
+        review_output = reviewer.output if reviewer else ""
+        summary = (
+            "review 未通过（已用完重做轮次）"
+            if outcome.verdict == "fail"
+            else "review 结果不明确（已用完重做轮次）"
+        )
+        return ExecutionResult(
+            exit_code=2,
+            output=outcome.builder.output,
+            review_output=review_output,
+            summary=summary,
+            executor="builtin",
+            deterministic_failure=True,
+        )
+
+    raise RuntimeError(f"_map_builtin_loop_outcome: unsupported status={outcome.status!r}")
+
+
 def _run_builtin_executor(
     task: dict,
     project: dict,
@@ -877,8 +1028,6 @@ def _run_builtin_executor(
         # exception 分支当成真失败处理，导致几次偶发脏工作区就把任务打 failed。
         raise PreflightSkipError(preflight_error)
 
-    from codepilot import progress_bus
-
     # Load silence-timeout from the project's automation config so the
     # main loop can kill wedged agents before the 1h wall-time timeout.
     silence_timeout = 0
@@ -899,86 +1048,6 @@ def _run_builtin_executor(
         task_id_for_events=(int(task.get("id") or 0) or None),
         silence_timeout=silence_timeout,
     )
-
-    previous_findings = ""
-    builder = _PhaseOutcome(agent="", exit_code=0, output="")
-    reviewer = _PhaseOutcome(agent="", exit_code=0, output="")
-
-    for round_num in range(1, ctx.max_rounds + 1):
-        builder = _run_builder_round(ctx, round_num=round_num, previous_findings=previous_findings)
-        if builder.exit_code != 0:
-            return ExecutionResult(
-                exit_code=builder.exit_code,
-                output=builder.output,
-                executor="builtin",
-            )
-
-        reviewer = _run_reviewer_round(
-            ctx,
-            round_num=round_num,
-            previous_findings=previous_findings,
-        )
-        if reviewer.exit_code != 0:
-            return ExecutionResult(
-                exit_code=reviewer.exit_code,
-                output=builder.output,
-                review_output=reviewer.output,
-                summary="review 命令执行失败",
-                executor="builtin",
-            )
-
-        verdict = _extract_review_verdict(reviewer.output, reviewer.agent)
-        if verdict == "pass":
-            progress_bus.emit(
-                task_id=ctx.task_id_for_events,
-                stage="reviewer",
-                message="reviewer 判定 PASS",
-                extra={"round": round_num, "verdict": "pass"},
-            )
-            return _finalize_executor_success(
-                ctx,
-                auto_commit=auto_commit,
-                round_num=round_num,
-                builder=builder,
-                reviewer=reviewer,
-            )
-
-        previous_findings = _extract_reviewer_findings(reviewer.output)
-        if round_num >= ctx.max_rounds:
-            summary = (
-                "review 未通过（已用完重做轮次）"
-                if verdict == "fail"
-                else "review 结果不明确（已用完重做轮次）"
-            )
-            progress_bus.emit(
-                task_id=ctx.task_id_for_events,
-                stage="reviewer",
-                level="error",
-                message=summary,
-                extra={"round": round_num, "verdict": verdict},
-            )
-            return ExecutionResult(
-                exit_code=2,
-                output=builder.output,
-                review_output=reviewer.output,
-                summary=summary,
-                executor="builtin",
-                deterministic_failure=True,
-            )
-
-        progress_bus.emit(
-            task_id=ctx.task_id_for_events,
-            stage="reviewer",
-            level="warning",
-            message=f"reviewer 判定 {verdict.upper()}，准备第 {round_num + 1} 轮重做",
-            extra={"round": round_num, "verdict": verdict},
-        )
-        echo(
-            f"[yellow]  reviewer 判定 {verdict.upper()}，准备第 {round_num + 1} 轮重做，"
-            f"让 builder 针对反馈再改一次[/yellow]"
-        )
-
-    # Unreachable: the loop either returns success, returns a failure summary
-    # when rounds are exhausted, or bails out on a non-zero phase exit code.
-    raise RuntimeError("_run_builtin_executor: unreachable fallthrough")
+    loop_outcome = _runner_module()._run_builtin_round_loop(ctx)
+    return _runner_module()._map_builtin_loop_outcome(ctx, loop_outcome, auto_commit=auto_commit)
 

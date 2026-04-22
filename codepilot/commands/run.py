@@ -89,6 +89,7 @@ from codepilot.commands.run_git import (  # noqa: F401
 from codepilot.commands.run_builtin import (  # noqa: F401
     ExecutionResult,
     _PhaseOutcome,
+    _BuiltinLoopOutcome,
     _ExecutorContext,
     _builtin_runtime_dir,
     _builtin_preflight_error,
@@ -112,6 +113,8 @@ from codepilot.commands.run_builtin import (  # noqa: F401
     _run_builder_round,
     _run_reviewer_round,
     _finalize_executor_success,
+    _run_builtin_round_loop,
+    _map_builtin_loop_outcome,
     _run_builtin_executor,
 )
 from codepilot.commands.run_orchestrator import run_backlog as _run_backlog_orchestrated
