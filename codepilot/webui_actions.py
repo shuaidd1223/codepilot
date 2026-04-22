@@ -18,13 +18,12 @@ from typing import Optional
 
 from codepilot import db
 from codepilot.commands.auto import (  # noqa: F401 — patched in tests
-    append_clarification_answer_to_state,
     assess_requirement_for_planning,
     build_clarification_state,
     classify_entry_intent,
-    clarification_state_from_assessment,
     clarify_requirement,
     command_intent_guidance,
+    continue_pending_clarification,
     normalize_requirement_text,
     resolve_shared_gateway_options,
 )
@@ -163,6 +162,66 @@ def _assess_requirement(
         original_title=original_title,
         clarify_fn=clarify_requirement,
     )
+
+
+def _raise_clarification_error(outcome: dict) -> None:
+    if outcome.get("error_kind") == "interrupt":
+        raise RuntimeError("澄清流程已中断，请重新发起需求。")
+    raise RuntimeError(outcome.get("message") or "澄清评估失败。")
+
+
+def _assess_or_continue_requirement(
+    text: str,
+    *,
+    project_info: dict,
+    planner: str,
+    qa_history: Optional[list[dict]] = None,
+    original_title: str = "",
+    intent: str = "requirement",
+) -> dict:
+    normalized_original = normalize_requirement_text(original_title)
+    if not normalized_original:
+        return _assess_requirement(
+            text,
+            project_info=project_info,
+            planner=planner,
+            qa_history=qa_history,
+            original_title="",
+        )
+
+    pending_state = build_clarification_state(
+        original_title=normalized_original,
+        qa_history=qa_history,
+        intent=intent,
+    )
+    outcome = continue_pending_clarification(
+        pending_state,
+        answer=text,
+        project_info=project_info,
+        planner=planner,
+        intent=intent,
+        clarify_fn=clarify_requirement,
+    )
+    status = outcome.get("status")
+    if status == "error":
+        _raise_clarification_error(outcome)
+    if status == "needs_clarification":
+        next_state = outcome.get("pending_state") or pending_state
+        return {
+            "status": "needs_clarification",
+            "questions": outcome.get("questions") or next_state.get("last_questions") or [],
+            "seed_title": next_state.get("original_title") or normalized_original,
+            "qa_history": next_state.get("qa_history") or [],
+        }
+
+    refined = normalize_requirement_text(outcome.get("refined_title") or normalized_original) or normalized_original
+    assessment = outcome.get("assessment") or {}
+    return {
+        "status": "ready",
+        "refined_title": refined,
+        "seed_title": assessment.get("seed_title") or normalized_original,
+        "qa_history": assessment.get("qa_history") or pending_state.get("qa_history") or [],
+    }
 
 
 def _goal_clarify_payload(*, seed_title: str, questions: list[str], qa_history: Optional[list[dict]] = None) -> dict:
@@ -563,12 +622,13 @@ def submit_requirement_action(
     effective_planner = _effective_planner(project_info, planner)
 
     if clarify:
-        assessment = _assess_requirement(
+        assessment = _assess_or_continue_requirement(
             normalized_title,
             project_info=project_info,
             planner=effective_planner,
             qa_history=qa_history,
             original_title=original_title,
+            intent="requirement",
         )
         seed_title = assessment.get("seed_title") or normalized_title
         if assessment.get("status") == "needs_clarification":
@@ -719,12 +779,13 @@ def _dispatch_goal_question(ctx: _GoalDispatchContext) -> dict:
 
 
 def _dispatch_goal_requirement(ctx: _GoalDispatchContext, *, intent: str) -> dict:
-    assessment = _assess_requirement(
+    assessment = _assess_or_continue_requirement(
         ctx.text,
         project_info=ctx.project_info,
         planner=ctx.planner,
         qa_history=ctx.qa_history,
         original_title=ctx.original_title,
+        intent=intent,
     )
     seed_title = assessment.get("seed_title") or ctx.text
     if assessment.get("status") == "needs_clarification":
@@ -919,29 +980,24 @@ def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
 
 def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pending: dict) -> dict:
     db.create_session_message(ctx.session_id, "user", ctx.text)
-    pending = append_clarification_answer_to_state(
+    outcome = continue_pending_clarification(
         pending,
         answer=ctx.text,
-    )
-    assessment = _assess_requirement(
-        pending["original_title"],
         project_info=ctx.project_info,
         planner=ctx.planner,
-        qa_history=pending["qa_history"],
-    )
-    next_state = clarification_state_from_assessment(
-        assessment=assessment,
-        seed_title=pending["original_title"],
-        previous_state=pending,
         intent=pending.get("intent") or "requirement",
+        clarify_fn=clarify_requirement,
     )
-    if next_state:
-        questions = next_state.get("last_questions") or []
+    if outcome.get("status") == "error":
+        _raise_clarification_error(outcome)
+    if outcome.get("status") == "needs_clarification":
+        next_state = outcome.get("pending_state") or pending
+        questions = outcome.get("questions") or next_state.get("last_questions") or []
         reply = _format_numbered_questions(questions)
         db.create_session_message(ctx.session_id, "assistant", reply, intent="clarify")
         return _session_payload("clarify", reply, questions=questions)
 
-    refined = assessment.get("refined_title") or (assessment.get("seed_title") or pending["original_title"])
+    refined = normalize_requirement_text(outcome.get("refined_title") or pending.get("original_title") or "")
     _, reply, task_ids = _submit_requirement_from_message(
         ctx.project,
         refined,

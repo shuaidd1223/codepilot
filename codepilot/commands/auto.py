@@ -156,22 +156,29 @@ def _clarify_requirement_for_go(
         qa_history=[],
         intent="requirement",
     )
-    assessment = assess_requirement_for_planning(
-        clarify_state["original_title"],
-        project_info=project_info,
-        planner=planner,
-        qa_history=clarify_state["qa_history"],
-        max_turns=max_turns,
-    )
-    clarify_state = clarification_state_from_assessment(
+    try:
+        assessment = assess_requirement_for_planning(
+            clarify_state["original_title"],
+            project_info=project_info,
+            planner=planner,
+            qa_history=clarify_state["qa_history"],
+            max_turns=max_turns,
+        )
+    except KeyboardInterrupt as exc:
+        raise click.ClickException("澄清流程被中断，已取消本次需求。") from exc
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(f"澄清评估失败：{exc}") from exc
+
+    pending_state = clarification_state_from_assessment(
         assessment=assessment,
         seed_title=clarify_state["original_title"],
         previous_state=clarify_state,
         intent="requirement",
-    ) or clarify_state
-
-    while assessment.get("status") == "needs_clarification":
-        questions = clarify_state.get("last_questions") or []
+    )
+    while pending_state:
+        questions = pending_state.get("last_questions") or []
         if not questions:
             break
         echo("[cyan]先补充几个关键信息，再开始规划：[/cyan]")
@@ -182,27 +189,27 @@ def _clarify_requirement_for_go(
             echo("[yellow]未收到补充信息，将按当前内容继续规划。[/yellow]")
             break
 
-        clarify_state = append_clarification_answer_to_state(
-            clarify_state,
+        outcome = continue_pending_clarification(
+            pending_state,
             answer=answer,
-            questions=questions,
-        )
-        assessment = assess_requirement_for_planning(
-            clarify_state["original_title"],
             project_info=project_info,
-            qa_history=clarify_state["qa_history"],
             planner=planner,
             max_turns=max_turns,
-        )
-        clarify_state = clarification_state_from_assessment(
-            assessment=assessment,
-            seed_title=clarify_state["original_title"],
-            previous_state=clarify_state,
             intent="requirement",
-        ) or clarify_state
+        )
+        status = outcome.get("status")
+        if status == "needs_clarification":
+            pending_state = outcome.get("pending_state") or pending_state
+            continue
+        if status == "ready":
+            refined = (outcome.get("refined_title") or "").strip()
+            return refined or pending_state.get("original_title") or seed_title
+        if outcome.get("error_kind") == "interrupt":
+            raise click.ClickException("澄清流程被中断，已取消本次需求。")
+        raise click.ClickException(outcome.get("message") or "澄清评估失败。")
 
     refined = (assessment.get("refined_title") or "").strip()
-    return refined or clarify_state["original_title"]
+    return refined or (pending_state or clarify_state).get("original_title") or seed_title
 
 
 @click.command("auto")

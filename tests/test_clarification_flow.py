@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from codepilot import db
@@ -403,6 +404,51 @@ def test_go_task_intent_forces_single_task_planning(tmp_path, monkeypatch):
     assert captured["max_tasks"] == 1
 
 
+def test_go_pending_clarification_error_does_not_fall_through_to_planning(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
+        "intent": "requirement", "source": "forced",
+    })
+    monkeypatch.setattr(auto_mod, "clarify_requirement", lambda *a, **kw: {
+        "status": "needs_clarification",
+        "questions": ["先聚焦哪块?"],
+        "qa_history": [],
+    })
+    monkeypatch.setattr(auto_mod, "continue_pending_clarification", lambda *a, **kw: {
+        "status": "error",
+        "error_kind": "runtime",
+        "message": "clarifier backend exploded",
+    })
+
+    ran = []
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw["title"]))
+    original_get_stream = auto_mod.click.get_text_stream
+
+    class _TtyIn:
+        @staticmethod
+        def isatty():
+            return True
+
+    monkeypatch.setattr(
+        auto_mod.click,
+        "get_text_stream",
+        lambda name: _TtyIn() if name == "stdin" else original_get_stream(name),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["go", "优化一下"],
+        input="先做 Web UI\n",
+    )
+
+    assert result.exit_code != 0
+    assert "clarifier backend exploded" in result.output
+    assert "Aborted!" not in result.output
+    assert not ran
+
+
 def test_webui_submit_requirement_returns_clarify_before_job(tmp_path, monkeypatch):
     _register_project(tmp_path, monkeypatch)
 
@@ -520,3 +566,40 @@ planner = "claude"
     assert second["intent"] == "requirement"
     assert clarify_planners == ["claude", "claude"]
     assert submit_planners == ["claude"]
+
+
+def test_webui_session_pending_clarification_error_uses_unified_error_exit(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+    session = webui_mod.create_session_action("demo", title="chat")
+
+    monkeypatch.setattr(
+        "codepilot.webui_actions.clarify_requirement",
+        lambda *a, **kw: {
+            "status": "needs_clarification",
+            "questions": ["先做哪块?"],
+            "qa_history": [],
+        },
+    )
+
+    first = webui_mod.send_session_message_action(
+        session["session"]["id"],
+        "优化一下",
+        category="requirement",
+    )
+    assert first["intent"] == "clarify"
+
+    monkeypatch.setattr(
+        "codepilot.webui_actions.continue_pending_clarification",
+        lambda *a, **kw: {
+            "status": "error",
+            "error_kind": "runtime",
+            "message": "clarifier backend exploded",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="clarifier backend exploded"):
+        webui_mod.send_session_message_action(
+            session["session"]["id"],
+            "先做 Web UI",
+            category="auto",
+        )
