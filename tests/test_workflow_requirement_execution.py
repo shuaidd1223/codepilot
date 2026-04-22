@@ -416,6 +416,50 @@ def test_run_claude_schema_prompt_surfaces_stderr_hint_with_gbk_fallback(monkeyp
     assert "系统繁忙" in str(exc.value)
 
 
+def test_run_codex_schema_prompt_surfaces_stderr_hint_with_gbk_fallback(monkeypatch):
+    class _FakeProvider:
+        name = "Codex"
+
+        def find_executable(self):
+            return Path("codex")
+
+    class _FakeStdin:
+        def write(self, _data):
+            return None
+
+        def close(self):
+            return None
+
+    class _FakeBytesStream:
+        def __init__(self, *, lines=None):
+            self._lines = list(lines or [])
+
+        def __iter__(self):
+            return iter(self._lines)
+
+    class _FakeProcess:
+        def __init__(self):
+            self.pid = 2468
+            self.stdin = _FakeStdin()
+            self.stdout = _FakeBytesStream(lines=[])
+            self.stderr = _FakeBytesStream(lines=["系统繁忙，请稍后重试".encode("gb18030") + b"\n"])
+            self.returncode = 1
+
+        def poll(self):
+            return self.returncode
+
+    fake_process = _FakeProcess()
+
+    monkeypatch.setattr(ai_mod, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(ai_mod, "resolve_cli_provider", lambda *args, **kwargs: _FakeProvider())
+    monkeypatch.setattr(ai_mod.subprocess, "Popen", lambda *args, **kwargs: fake_process)
+
+    with pytest.raises(RuntimeError) as exc:
+        ai_mod._run_codex_schema_prompt("prompt", {"type": "object"})
+
+    assert "系统繁忙" in str(exc.value)
+
+
 def test_run_requirement_workflow_falls_back_to_single_codex_task(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

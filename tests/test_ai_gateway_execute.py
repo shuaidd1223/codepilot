@@ -104,3 +104,27 @@ def test_execute_text_cli_candidate_reports_failure(monkeypatch):
     assert ok is False
     assert text == ""
     assert error == "claude exit=1 stderr=boom"
+
+
+def test_execute_text_cli_candidate_decodes_non_utf8_stderr(monkeypatch):
+    monkeypatch.setattr(
+        "codepilot.ai_gateway_execute.subprocess.run",
+        lambda *args, **kwargs: CompletedProcessStub(
+            returncode=1,
+            stdout=b"",
+            stderr="系统繁忙，请稍后重试".encode("gb18030"),
+        ),
+    )
+
+    ok, text, error = execute_text_cli_candidate(
+        GatewayRequest(prompt="hi", timeout=10),
+        ResolvedTextCLICandidate(
+            cli_name="claude",
+            source="cli:claude",
+            cmd=["claude", "-p"],
+        ),
+    )
+
+    assert ok is False
+    assert text == ""
+    assert "系统繁忙" in error

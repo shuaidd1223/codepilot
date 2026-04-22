@@ -20,6 +20,7 @@ from codepilot.config import load_project_config, resolve_planner
 from codepilot.output import echo, safe
 from codepilot.paths import _slugify_project_name, global_storage_root
 from codepilot.runtime import is_process_alive, reap_stalled_tasks
+from codepilot.text_decode import decode_subprocess_text
 
 
 def _resolve_project(ctx, param, value):
@@ -303,9 +304,7 @@ def _ensure_ui_service_process(port: int = 8766) -> bool:
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=30,
         )
     except Exception as exc:
@@ -313,7 +312,7 @@ def _ensure_ui_service_process(port: int = 8766) -> bool:
         return False
 
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
+        detail = (decode_subprocess_text(result.stderr) or decode_subprocess_text(result.stdout)).strip()
         if detail:
             echo(f"[yellow]Web UI 独立进程启动失败：{detail[-800:]}[/yellow]")
         else:

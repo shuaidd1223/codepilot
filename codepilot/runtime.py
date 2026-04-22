@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from codepilot import db
+from codepilot.text_decode import decode_subprocess_text
 
 HEARTBEAT_INTERVAL_SECONDS = 3
 STALE_AFTER_SECONDS = 600
@@ -127,12 +128,10 @@ def is_process_alive(pid: Optional[int]) -> bool:
                     f"(Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue).Id",
                 ],
                 capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+                text=False,
                 timeout=5,
             )
-            return bool(result.stdout.strip())
+            return bool(decode_subprocess_text(result.stdout).strip())
         except Exception:
             return False
 
@@ -155,15 +154,13 @@ def _windows_process_snapshot() -> dict[int, dict[str, str | int]]:
         result = subprocess.run(
             ["powershell.exe", "-Command", script],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=15,
         )
     except Exception:
         return {}
 
-    raw = (result.stdout or "").strip()
+    raw = decode_subprocess_text(result.stdout).strip()
     if result.returncode != 0 or not raw:
         return {}
 
@@ -219,9 +216,7 @@ def _windows_kill_pid(pid: int, *, include_tree: bool = False) -> None:
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=15,
         )
     except Exception:
@@ -240,9 +235,7 @@ def _windows_kill_pid(pid: int, *, include_tree: bool = False) -> None:
                 f"Stop-Process -Id {int(pid)} -Force -ErrorAction Stop",
             ],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=15,
         )
     except Exception:
@@ -292,13 +285,13 @@ def find_worktree_processes(worktree_path: str | Path) -> list[int]:
         try:
             result = subprocess.run(
                 ["powershell.exe", "-Command", script],
-                capture_output=True, text=True,
-                encoding="utf-8", errors="replace",
+                capture_output=True,
+                text=False,
                 timeout=20,
             )
         except Exception:
             return []
-        raw = (result.stdout or "").strip()
+        raw = decode_subprocess_text(result.stdout).strip()
         if result.returncode != 0 or not raw:
             return []
         try:

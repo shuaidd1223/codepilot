@@ -51,6 +51,7 @@ from codepilot.ai_result_parse import (
     extract_error_hint as _extract_error_hint_core,
     parse_structured_json_output as _parse_structured_json_output,
 )
+from codepilot.text_decode import decode_subprocess_text
 
 # ── Module-level state (kept here so monkeypatch in tests keeps working) ─────
 # Set by external code (e.g. WebUI) to receive planner stderr lines in real time.
@@ -374,16 +375,7 @@ def _extract_error_hint(raw: str) -> str:
 
 def _decode_planner_chunk(chunk: str | bytes | None) -> str:
     """Decode planner stdout/stderr chunks with pragmatic Windows fallbacks."""
-    if not chunk:
-        return ""
-    if isinstance(chunk, str):
-        return chunk
-    for encoding in ("utf-8", "utf-8-sig", "gb18030", "cp936"):
-        try:
-            return chunk.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return chunk.decode("utf-8", errors="replace")
+    return decode_subprocess_text(chunk)
 
 
 
@@ -657,27 +649,31 @@ def _run_codex_schema_prompt(
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
                 **_planner_process_group_kwargs(),
             )
             if process.stdin:
-                process.stdin.write(prompt)
+                process.stdin.write(prompt.encode("utf-8"))
                 process.stdin.close()
 
             # Use separate threads for BOTH stdout and stderr (avoid communicate() deadlock)
             stdout_chunks: list[str] = []
+            stderr_chunks: list[str] = []
             last_activity = [_time.monotonic()]  # mutable for closure
 
             def _read_codex_stdout():
                 assert process.stdout is not None
-                stdout_chunks.append(process.stdout.read())
+                for line in process.stdout:
+                    decoded_line = _decode_planner_chunk(line)
+                    stdout_chunks.append(decoded_line)
+                    if decoded_line:
+                        last_activity[0] = _time.monotonic()
 
             def _stream_codex_stderr():
                 assert process.stderr is not None
                 for line in process.stderr:
-                    stripped = line.rstrip()
+                    decoded_line = _decode_planner_chunk(line)
+                    stderr_chunks.append(decoded_line)
+                    stripped = decoded_line.rstrip()
                     if stripped:
                         last_activity[0] = _time.monotonic()
                         sys.stderr.write(f"  [planner] {stripped}\n")
@@ -736,7 +732,7 @@ def _run_codex_schema_prompt(
             stderr_thread.join(timeout=2)
             codex_returncode = process.returncode
             codex_stdout = "".join(stdout_chunks)
-            codex_stderr = ""
+            codex_stderr = "".join(stderr_chunks)
         except subprocess.TimeoutExpired as exc:
             _terminate_planner_process(process)
             raise RuntimeError(
@@ -751,7 +747,7 @@ def _run_codex_schema_prompt(
             raise
 
         if codex_returncode != 0:
-            hint = _extract_error_hint(codex_stderr or codex_stdout)
+            hint = _extract_error_hint("\n".join(part for part in (codex_stderr, codex_stdout) if part))
             suffix = f"原因：{hint}" if hint else "请检查 Codex CLI 当前是否可用。"
             raise RuntimeError(f"Codex 没有成功完成任务拆分。{suffix}")
 

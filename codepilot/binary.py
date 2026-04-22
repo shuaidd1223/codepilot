@@ -24,6 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from codepilot.text_decode import decode_subprocess_text
 from codepilot.binary_paths import (
     _binary_candidates,
     _broadcast_windows_env_change,
@@ -127,13 +128,11 @@ def build_binary(
         cmd,
         cwd=str(root),
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        text=False,
         timeout=1800,
     )
     if result.returncode != 0:
-        output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+        output = (decode_subprocess_text(result.stdout) + "\n" + decode_subprocess_text(result.stderr)).strip()
         hint = (
             "当前无法构建二进制。"
             "请先确认已经安装 PyInstaller：`pip install .[build]` 或 `pip install pyinstaller`。"

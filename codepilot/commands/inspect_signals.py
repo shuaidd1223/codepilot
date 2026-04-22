@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from codepilot import db
+from codepilot.text_decode import decode_subprocess_text
 
 
 InspectSignalCollectorScope = Literal["project_name", "project_path"]
@@ -108,12 +109,10 @@ def _run_git(args: list[str], cwd: Path, timeout: int = 20) -> str:
             ["git", *args],
             cwd=str(cwd),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=timeout,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        return decode_subprocess_text(result.stdout).strip() if result.returncode == 0 else ""
     except Exception:
         return ""
 
@@ -362,12 +361,10 @@ def collect_ruff(project_path: Path, limit: int = 30) -> str:
             ["ruff", "check", ".", "--output-format", "concise", "--quiet"],
             cwd=str(project_path),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=60,
         )
-        lines = [ln for ln in (result.stdout or "").splitlines() if ln.strip()]
+        lines = [ln for ln in decode_subprocess_text(result.stdout).splitlines() if ln.strip()]
         if not lines:
             return "（ruff 无发现）"
         return "\n".join(lines[:limit])
@@ -386,12 +383,10 @@ def collect_pytest_collect(project_path: Path, limit: int = 30) -> str:
             ["pytest", "--collect-only", "-q"],
             cwd=str(project_path),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=60,
         )
-        output = (result.stdout or "") + (result.stderr or "")
+        output = decode_subprocess_text(result.stdout) + decode_subprocess_text(result.stderr)
         lines = [ln for ln in output.splitlines() if ln.strip()]
         if not lines:
             return "（pytest collect 无输出）"

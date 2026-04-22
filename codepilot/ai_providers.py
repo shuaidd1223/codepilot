@@ -18,6 +18,7 @@ from typing import Optional
 
 from codepilot.ai_planner_context import collect_planner_context
 from codepilot.config import load_project_config
+from codepilot.text_decode import decode_subprocess_text
 
 # API support libs (optional and lazily imported).
 # Keep availability flags cheap so CLI startup does not import heavy SDK trees.
@@ -646,20 +647,20 @@ def _run_cli_provider(
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=provider.timeout,
             env=env,
         )
+        stdout_text = decode_subprocess_text(result.stdout).strip()
+        stderr_text = decode_subprocess_text(result.stderr).strip()
 
         if result.returncode != 0:
-            err = (result.stderr or "").strip() or "(无 stderr)"
+            err = stderr_text or "(无 stderr)"
             raise RuntimeError(
                 f"{provider.name} CLI 失败 (退出码 {result.returncode}):\n{err}"
             )
 
-        output = result.stdout.strip()
+        output = stdout_text
         if not output:
             raise RuntimeError(f"{provider.name} 返回了空内容")
 

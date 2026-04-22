@@ -23,6 +23,7 @@ from codepilot.commands.daemon import start_daemon_service
 from codepilot.output import echo, safe
 from codepilot.paths import global_storage_root
 from codepilot.runtime import is_process_alive, stop_process_tree
+from codepilot.text_decode import decode_subprocess_text
 
 
 STATE_DIR = global_storage_root() / "webui"
@@ -129,15 +130,13 @@ def _listening_service_pids() -> list[int]:
         result = subprocess.run(
             ["powershell.exe", "-Command", script],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=15,
         )
     except Exception:
         return []
 
-    raw = (result.stdout or "").strip()
+    raw = decode_subprocess_text(result.stdout).strip()
     if result.returncode != 0 or not raw:
         return []
 

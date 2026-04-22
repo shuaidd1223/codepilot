@@ -22,6 +22,8 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
+from codepilot.text_decode import decode_subprocess_text
+
 
 _SKIP_DIR_NAMES = {
     "__pycache__",
@@ -71,12 +73,10 @@ def _run_git(args: list[str], cwd: Path, timeout: int = 10) -> str:
             ["git", *args],
             cwd=str(cwd),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=timeout,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        return decode_subprocess_text(result.stdout).strip() if result.returncode == 0 else ""
     except Exception:
         return ""
 

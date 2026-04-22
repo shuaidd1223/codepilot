@@ -27,6 +27,7 @@ from codepilot.runtime import (
     tail_text,
     update_task_runtime,
 )
+from codepilot.text_decode import decode_subprocess_text
 
 
 @dataclass
@@ -135,14 +136,14 @@ def _run_command(
         cmd,
         cwd=str(cwd) if cwd else None,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        text=False,
         timeout=timeout,
-        input=input_text,
+        input=(input_text.encode("utf-8") if input_text is not None else None),
         env=env,
     )
-    output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    stdout_text = decode_subprocess_text(result.stdout)
+    stderr_text = decode_subprocess_text(result.stderr)
+    output = (stdout_text + "\n" + stderr_text).strip()
     return result.returncode, output
 
 
@@ -448,10 +449,7 @@ def _run_command_live(
             "cwd": str(cwd) if cwd else None,
             "stderr": subprocess.STDOUT,
             "stdin": subprocess.PIPE if input_text is not None else None,
-            "text": True,
-            "encoding": "utf-8",
-            "errors": "replace",
-            "bufsize": 1,
+            "bufsize": 0,
         }
         pty_master_fd: Optional[int] = None
         if use_pty:
@@ -492,7 +490,7 @@ def _run_command_live(
             except Exception:
                 pass
         if input_text is not None and process.stdin:
-            process.stdin.write(input_text)
+            process.stdin.write(input_text.encode("utf-8"))
             process.stdin.close()
 
         update_task_runtime(task_id, phase=phase, pid=process.pid, log_path=log_path, last_output="")
@@ -592,9 +590,9 @@ def _run_command_live(
                     buf += chunk
                     while b"\n" in buf:
                         line, buf = buf.split(b"\n", 1)
-                        _emit(line.decode("utf-8", errors="replace") + "\n")
+                        _emit(decode_subprocess_text(line) + "\n")
                 if buf:
-                    _emit(buf.decode("utf-8", errors="replace"))
+                    _emit(decode_subprocess_text(buf))
                 try:
                     os.close(pty_master_fd)
                 except Exception:
@@ -602,7 +600,7 @@ def _run_command_live(
                 return
             assert process.stdout is not None
             for raw in process.stdout:
-                _emit(raw)
+                _emit(decode_subprocess_text(raw))
 
         reader = threading.Thread(target=_pump_stdout, daemon=True)
         reader.start()

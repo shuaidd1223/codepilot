@@ -14,6 +14,7 @@ from codepilot.ai_gateway_resolution import (
     ResolvedTextCLICandidate,
 )
 from codepilot.ai_gateway_types import GatewayRequest
+from codepilot.text_decode import decode_subprocess_text
 
 
 def execute_api_prompt(provider: Any, prompt: str) -> str:
@@ -60,22 +61,20 @@ def execute_text_cli_candidate(
     try:
         result = subprocess.run(
             candidate.cmd,
-            input=request.prompt,
+            input=(request.prompt or "").encode("utf-8"),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=request.timeout,
         )
     except Exception as exc:  # noqa: BLE001
         return False, "", f"{candidate.cli_name} invoke: {exc}"
 
-    text = (result.stdout or "").strip()
+    text = decode_subprocess_text(result.stdout).strip()
+    stderr = decode_subprocess_text(result.stderr).strip()
     if result.returncode == 0 and text:
         return True, text, ""
     return (
         False,
         "",
-        f"{candidate.cli_name} exit={result.returncode} stderr={(result.stderr or '').strip()[:200]}",
+        f"{candidate.cli_name} exit={result.returncode} stderr={stderr[:200]}",
     )
-
