@@ -97,6 +97,9 @@ from codepilot.commands.auto_chat import (  # noqa: F401 (re-export)
     run_chat_session,
 )
 from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
+    classify_entry_intent,
+    command_intent_guidance,
+    resolve_question_answer_options,
     _project_config,
     _provider_context,
     _has_explicit_automation_task_agent,
@@ -305,23 +308,50 @@ def go(
         max_tasks=max_tasks,
         max_retries=max_retries,
     )
+
+    intent = classify_entry_intent(
+        text,
+        project_info=project_info,
+        category="auto",
+    )
+    if intent == "command":
+        click.echo(command_intent_guidance(include_release=True))
+        return
+    if intent == "question":
+        answer_options = resolve_question_answer_options(project_info)
+        try:
+            answer = answer_question_via_api(
+                provider_key=answer_options["provider_key"],
+                question=text,
+                project_path=answer_options["project_path"],
+                config_ref=answer_options["config_ref"],
+                model_override=answer_options["model_override"],
+                api_key=answer_options["api_key"],
+                base_url=answer_options["base_url"],
+            )
+        except Exception as exc:
+            answer = f"回答失败：{exc}"
+        click.echo(answer or "未获得回答")
+        return
+
     text = _clarify_requirement_for_go(
         text,
         project_info=project_info,
         planner=effective["planner"],
     )
+    max_tasks_override = 1 if intent == "task" else effective["max_tasks"]
     try:
         run_requirement_workflow(
             project_info=project_info,
             title=text,
-            planner=planner,
+            planner=effective["planner"],
             task_agent=task_agent,
             priority=priority,
-            max_tasks=max_tasks,
+            max_tasks=max_tasks_override,
             execute=execute,
-            executor=executor,
-            auto_commit=auto_commit,
-            max_retries=max_retries,
+            executor=effective["executor"],
+            auto_commit=effective["auto_commit"],
+            max_retries=effective["max_retries"],
             json_mode=json_mode,
         )
     except click.ClickException:

@@ -16,7 +16,12 @@ from pathlib import Path
 from typing import Optional
 
 from codepilot import db
-from codepilot.commands.auto import _provider_context, clarify_requirement  # noqa: F401 — patched in tests
+from codepilot.commands.auto import (  # noqa: F401 — patched in tests
+    classify_entry_intent,
+    clarify_requirement,
+    command_intent_guidance,
+    resolve_question_answer_options,
+)
 from codepilot.commands.init import initialize_project
 from codepilot.config import load_project_config
 from codepilot.webui_payloads import _now_iso, _task_payload
@@ -581,13 +586,12 @@ def submit_goal_action(
     ``qa_history``; the action threads them through :func:`clarify_requirement`
     and either returns a new ``clarify`` response or starts planning.
     """
-    from codepilot.ai import answer_question_via_api, classify_intent
+    from codepilot.ai import answer_question_via_api
 
     db.init_db()
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
-    provider_context = _provider_context(project_info)
     effective_planner = _effective_planner(project_info)
     text = (text or "").strip()
     if not text:
@@ -596,38 +600,15 @@ def submit_goal_action(
         raise RuntimeError(f"输入超过 {_GOAL_MAX_BYTES // 1024}KB 限制。")
 
     category = (category or "auto").lower()
-    valid_categories = {"auto", "question", "requirement", "command"}
+    valid_categories = {"auto", "question", "task", "requirement", "command"}
     if category not in valid_categories:
         category = "auto"
 
-    if category == "auto":
-        cfg = load_project_config(project_info)
-        classifier_cfg = getattr(cfg, "classifier", None)
-        api_key = None
-        base_url = None
-        if classifier_cfg and classifier_cfg.enabled:
-            if classifier_cfg.provider:
-                api_key = cfg.get_provider_api_key(classifier_cfg.provider)
-                provider_cfg = cfg.providers.get(classifier_cfg.provider)
-                base_url = provider_cfg.base_url if provider_cfg else None
-            try:
-                result = classify_intent(
-                    text,
-                    project_path=project_info["path"],
-                    config_ref=provider_context,
-                    classifier_provider=classifier_cfg.provider,
-                    classifier_model=classifier_cfg.model,
-                    timeout=classifier_cfg.timeout,
-                    api_key=api_key,
-                    base_url=base_url,
-                )
-                intent = result["intent"]
-            except Exception:
-                intent = "requirement"
-        else:
-            intent = "requirement"
-    else:
-        intent = category
+    intent = classify_entry_intent(
+        text,
+        project_info=project_info,
+        category=category,
+    )
 
     # Mid-clarification: treat the new text as the user's answer to the prior
     # round and skip re-classification.
@@ -639,32 +620,20 @@ def submit_goal_action(
         return {
             "ok": True,
             "intent": "command",
-            "message": (
-                "这看起来是在调用 codepilot 自身命令，请在终端直接执行：\n"
-                "  状态总览:  codepilot status -p <项目> -v\n"
-                "  任务日志:  codepilot logs <task_id>\n"
-                "  重试任务:  codepilot retry <task_id>\n"
-                "  停止任务:  codepilot stop <task_id>\n"
-                "  触发巡检:  codepilot inspect -p <项目>"
-            ),
+            "message": command_intent_guidance(),
         }
 
     if intent == "question":
-        cfg = load_project_config(project_info)
-        classifier_cfg = getattr(cfg, "classifier", None)
-        provider_key = classifier_cfg.provider if classifier_cfg else ""
-        api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
-        provider_cfg = cfg.providers.get(provider_key) if provider_key else None
-        base_url = provider_cfg.base_url if provider_cfg else None
+        answer_options = resolve_question_answer_options(project_info)
         try:
             answer = answer_question_via_api(
-                provider_key=provider_key,
+                provider_key=answer_options["provider_key"],
                 question=text,
-                project_path=project_info["path"],
-                config_ref=provider_context,
-                model_override=classifier_cfg.model if classifier_cfg else "",
-                api_key=api_key,
-                base_url=base_url,
+                project_path=answer_options["project_path"],
+                config_ref=answer_options["config_ref"],
+                model_override=answer_options["model_override"],
+                api_key=answer_options["api_key"],
+                base_url=answer_options["base_url"],
             )
         except Exception as exc:
             answer = f"回答失败：{exc}"
@@ -833,7 +802,7 @@ def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
 
 def send_session_message_action(session_id: int, text: str, *, category: str = "auto") -> dict:
     """Send a message in a session — classify intent, route, and record both user and assistant messages."""
-    from codepilot.ai import answer_question_via_api, classify_intent
+    from codepilot.ai import answer_question_via_api
 
     db.init_db()
     session = db.get_session(session_id)
@@ -843,7 +812,6 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
-    provider_context = _provider_context(project_info)
     effective_planner = _effective_planner(project_info)
     text = (text or "").strip()
     if not text:
@@ -907,62 +875,28 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
     db.create_session_message(session_id, "user", text)
 
     category = (category or "auto").lower()
-    if category == "auto":
-        cfg = load_project_config(project_info)
-        classifier_cfg = getattr(cfg, "classifier", None)
-        api_key = None
-        base_url = None
-        if classifier_cfg and classifier_cfg.enabled:
-            if classifier_cfg.provider:
-                api_key = cfg.get_provider_api_key(classifier_cfg.provider)
-                provider_cfg = cfg.providers.get(classifier_cfg.provider)
-                base_url = provider_cfg.base_url if provider_cfg else None
-            try:
-                result = classify_intent(
-                    text,
-                    project_path=project_info["path"],
-                    config_ref=provider_context,
-                    classifier_provider=classifier_cfg.provider,
-                    classifier_model=classifier_cfg.model,
-                    timeout=classifier_cfg.timeout,
-                    api_key=api_key,
-                    base_url=base_url,
-                )
-                intent = result["intent"]
-            except Exception:
-                intent = "requirement"
-        else:
-            intent = "requirement"
-    else:
-        intent = category
+    intent = classify_entry_intent(
+        text,
+        project_info=project_info,
+        category=category,
+    )
 
     if intent == "command":
-        reply = (
-            "这看起来是在调用 codepilot 自身命令，请在终端直接执行：\n"
-            "  状态总览:  codepilot status -p <项目> -v\n"
-            "  任务日志:  codepilot logs <task_id>\n"
-            "  重试任务:  codepilot retry <task_id>\n"
-            "  停止任务:  codepilot stop <task_id>"
-        )
+        reply = command_intent_guidance()
         db.create_session_message(session_id, "assistant", reply, intent="command")
         return {"ok": True, "intent": "command", "message": reply, "task_ids": []}
 
     if intent == "question":
-        cfg = load_project_config(project_info)
-        classifier_cfg = getattr(cfg, "classifier", None)
-        provider_key = classifier_cfg.provider if classifier_cfg else ""
-        api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
-        provider_cfg = cfg.providers.get(provider_key) if provider_key else None
-        base_url = provider_cfg.base_url if provider_cfg else None
+        answer_options = resolve_question_answer_options(project_info)
         try:
             answer = answer_question_via_api(
-                provider_key=provider_key,
+                provider_key=answer_options["provider_key"],
                 question=text,
-                project_path=project_info["path"],
-                config_ref=provider_context,
-                model_override=classifier_cfg.model if classifier_cfg else "",
-                api_key=api_key,
-                base_url=base_url,
+                project_path=answer_options["project_path"],
+                config_ref=answer_options["config_ref"],
+                model_override=answer_options["model_override"],
+                api_key=answer_options["api_key"],
+                base_url=answer_options["base_url"],
             )
         except Exception as exc:
             answer = f"回答失败：{exc}"

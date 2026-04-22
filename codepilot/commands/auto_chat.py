@@ -503,26 +503,12 @@ def run_chat_session(
 
         intent = forced_intent
         if intent is None:
-            cfg = shell._project_config(project_info)
-            classifier_cfg = getattr(cfg, "classifier", None)
-            classifier_provider = ""
-            classifier_model = ""
-            classifier_timeout = 30
-            provider_context = shell._provider_context(project_info)
-            if classifier_cfg and classifier_cfg.enabled:
-                classifier_provider = classifier_cfg.provider or ""
-                classifier_model = classifier_cfg.model or ""
-                classifier_timeout = classifier_cfg.timeout or 30
             try:
-                result = shell.classify_intent(
+                intent = shell.classify_entry_intent(
                     payload_text,
-                    project_path=project_info["path"],
-                    config_ref=provider_context,
-                    classifier_provider=classifier_provider,
-                    classifier_model=classifier_model,
-                    timeout=classifier_timeout,
+                    project_info=project_info,
+                    category="auto",
                 )
-                intent = result["intent"]
             except Exception:
                 intent = "requirement"
 
@@ -542,27 +528,19 @@ def run_chat_session(
                 echo(
                     "[yellow]这看起来是在调用 codepilot 自身命令，请直接用下面的入口：[/yellow]"
                 )
-                click.echo(
-                    "  状态总览:  codepilot status -p <项目> -v\n"
-                    "  任务日志:  codepilot logs <task_id>\n"
-                    "  重试任务:  codepilot retry <task_id>\n"
-                    "  停止任务:  codepilot stop <task_id>\n"
-                    "  触发巡检:  codepilot inspect -p <项目>\n"
-                    "  发布打包:  codepilot release prepare --version <版本>"
-                )
+                click.echo(shell.command_intent_guidance(include_release=True))
                 click.echo()
             elif intent == "question":
                 echo("[dim]阶段 2/2：正在检索上下文并回答...[/dim]")
-                cfg = shell._project_config(project_info)
-                classifier_cfg = getattr(cfg, "classifier", None)
-                provider_key = classifier_cfg.provider if classifier_cfg else ""
-                provider_context = shell._provider_context(project_info)
+                answer_options = shell.resolve_question_answer_options(project_info)
                 answer = shell.answer_question_via_api(
-                    provider_key=provider_key,
+                    provider_key=answer_options["provider_key"],
                     question=payload_text,
-                    project_path=project_info["path"],
-                    config_ref=provider_context,
-                    model_override=classifier_cfg.model if classifier_cfg else "",
+                    project_path=answer_options["project_path"],
+                    config_ref=answer_options["config_ref"],
+                    model_override=answer_options["model_override"],
+                    api_key=answer_options["api_key"],
+                    base_url=answer_options["base_url"],
                     history=chat_history,
                 )
                 spinner.__exit__(None, None, None)

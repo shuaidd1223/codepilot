@@ -330,6 +330,76 @@ def test_auto_command_runs_interactive_clarification_before_planning(tmp_path, m
     assert "先落 Web UI 需求入口" in captured["title"]
 
 
+def test_go_routes_question_intent_to_answer_without_planning(tmp_path, monkeypatch):
+    project_path = _register_project(tmp_path, monkeypatch)
+
+    captured: dict[str, dict] = {}
+
+    def fake_classify(text, **kwargs):
+        captured["classify"] = kwargs
+        return {"intent": "question", "source": "forced"}
+
+    def fake_answer(**kwargs):
+        captured["answer"] = kwargs
+        return "这是 go 的问答回复"
+
+    ran: list[dict] = []
+    monkeypatch.setattr(auto_mod, "classify_intent", fake_classify)
+    monkeypatch.setattr(auto_mod, "answer_question_via_api", fake_answer)
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw))
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["go", "这个工具怎么用"])
+
+    assert result.exit_code == 0
+    assert "这是 go 的问答回复" in result.output
+    assert not ran
+    assert captured["classify"]["config_ref"] == str(project_path)
+    assert captured["answer"]["config_ref"] == str(project_path)
+
+
+def test_go_routes_command_intent_to_guidance_without_planning(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    ran: list[dict] = []
+    monkeypatch.setattr(
+        auto_mod,
+        "classify_intent",
+        lambda text, **kw: {"intent": "command", "source": "forced"},
+    )
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw))
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["go", "查看状态"])
+
+    assert result.exit_code == 0
+    assert "codepilot status" in result.output
+    assert not ran
+
+
+def test_go_task_intent_forces_single_task_planning(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        auto_mod,
+        "classify_intent",
+        lambda text, **kw: {"intent": "task", "source": "forced"},
+    )
+
+    def fake_run_requirement_workflow(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "tasks": []}
+
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", fake_run_requirement_workflow)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["go", "修复登录 bug", "--max-tasks", "9"])
+
+    assert result.exit_code == 0
+    assert captured["max_tasks"] == 1
+
+
 def test_webui_submit_requirement_returns_clarify_before_job(tmp_path, monkeypatch):
     _register_project(tmp_path, monkeypatch)
 
