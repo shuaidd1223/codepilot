@@ -606,6 +606,223 @@ def _resolve_task_agent(project_info: dict, agent: Optional[str], executor: str)
     return normalized
 
 
+def _fallback_single_task_breakdown(*, title: str, priority: str, exc: Exception) -> dict:
+    return {
+        "summary": "Codex 规划未完成，已降级为单任务执行",
+        "complexity": "simple",
+        "should_split": False,
+        "tasks": [
+            {
+                "title": title,
+                "priority": priority,
+                "goal": title,
+                "acceptance_criteria": [
+                    "完成当前需求的核心实现，主流程可以实际运行。",
+                    "运行必要验证并在结果中说明是否通过。",
+                ],
+                "builder_notes": [
+                    "先阅读相关代码，优先处理最影响可用性的阻塞点。",
+                    "如果问题过大，先用最小可行改动把主链路跑通。",
+                ],
+                "reviewer_notes": [
+                    "检查是否真的跑通主流程，而不只是修改文案或配置。",
+                    "确认验证步骤和潜在回归风险已经说明。",
+                ],
+                "files": [],
+                "notes": [
+                    f"本次为 Codex 规划失败后的降级执行。原始原因：{exc}",
+                ],
+            }
+        ],
+    }
+
+
+def _resolve_planning_mode(project_info: dict) -> bool:
+    cfg = _project_config(project_info)
+    return bool(not cfg or getattr(cfg.automation, "two_stage_planning", True))
+
+
+def _list_existing_open_tasks(project_name: str) -> list[dict]:
+    return [
+        task for task in db.list_tasks(project=project_name)
+        if task.get("status") in {"backlog", "in_progress"}
+    ]
+
+
+def _plan_requirement_breakdown(
+    *,
+    shell,
+    title: str,
+    planner: str,
+    priority: str,
+    max_tasks: int,
+    project_name: str,
+    project_path: str,
+    project_info: dict,
+    two_stage_enabled: bool,
+):
+    from codepilot.output import echo
+
+    planning_text = "正在用 {planner} 侦察项目 → 拆分任务，请稍候..." if two_stage_enabled else "正在用 {planner} 规划任务，请稍候..."
+    echo(f"[dim]  {planning_text.format(planner=planner)}[/dim]")
+    existing_tasks = _list_existing_open_tasks(project_name)
+
+    try:
+        breakdown = _generate_task_breakdown_via_shell(
+            shell,
+            title=title,
+            project_path=project_path,
+            planner=planner,
+            max_tasks=max_tasks,
+            config_ref=_provider_context(project_info),
+            two_stage=two_stage_enabled,
+            existing_tasks=existing_tasks,
+        )
+    except Exception as exc:
+        if _normalize_agent_name(planner) == "codex" and _should_fallback_codex_planning(exc):
+            echo("[yellow]Codex 规划没有及时完成，已降级为单任务直接执行。[/yellow]")
+            breakdown = _fallback_single_task_breakdown(title=title, priority=priority, exc=exc)
+        else:
+            raise click.ClickException(str(exc)) from exc
+
+    try:
+        parsed = shell.parse_automation_planner_result(
+            breakdown,
+            title=title,
+            max_tasks=max_tasks,
+            existing_tasks=existing_tasks,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    return parsed
+
+
+def _echo_dedup_skips(dedup_skipped: list[dict]) -> None:
+    from codepilot.output import echo
+
+    for dup in dedup_skipped:
+        echo(
+            f"[yellow]跳过重复任务：[/yellow]「{dup.get('proposed_title') or ''}」"
+            f" 已存在 #{dup.get('matched_existing_id')}"
+            f"「{dup.get('matched_existing_title') or ''}」"
+        )
+
+
+def _derive_breakdown_meta(breakdown: dict) -> tuple[str, bool]:
+    complexity = breakdown.get("complexity") or ("simple" if len(breakdown["tasks"]) <= 1 else "complex")
+    should_split = breakdown.get("should_split")
+    if should_split is None:
+        should_split = len(breakdown["tasks"]) > 1
+    return complexity, bool(should_split)
+
+
+def _create_tasks_from_breakdown(
+    *,
+    breakdown: dict,
+    project_name: str,
+    project_path: str,
+    task_agent: str,
+    priority: str,
+    max_retries: int,
+) -> list[dict]:
+    created_tasks: list[dict] = []
+    previous_task_id: int | None = None
+    created_ids_by_index: list[int] = []
+    for item in breakdown["tasks"]:
+        dep_indices = item.get("depends_on_indices") or []
+        dep_ids = [
+            created_ids_by_index[i]
+            for i in dep_indices
+            if isinstance(i, int) and 0 <= i < len(created_ids_by_index)
+        ]
+        if not dep_ids and previous_task_id and not item.get("depends_on_indices"):
+            dep_ids = [previous_task_id]
+        task = db.create_task(
+            project=project_name,
+            title=item["title"],
+            content=_build_task_markdown_from_plan(item),
+            agent=task_agent,
+            priority=item.get("priority") or priority,
+            depends_on=dep_ids or None,
+            project_path=project_path,
+            max_retries=max_retries,
+        )
+        created_tasks.append(task)
+        created_ids_by_index.append(task["id"])
+        previous_task_id = task["id"]
+    return created_tasks
+
+
+def _build_requirement_payload(
+    *,
+    project_name: str,
+    breakdown: dict,
+    complexity: str,
+    should_split: bool,
+    task_agent: str,
+    created_tasks: list[dict],
+    will_execute: bool,
+) -> dict:
+    return {
+        "project": project_name,
+        "summary": breakdown.get("summary", ""),
+        "complexity": complexity,
+        "should_split": should_split,
+        "task_agent": task_agent,
+        "tasks": created_tasks,
+        "will_execute": will_execute,
+    }
+
+
+def _emit_non_json_plan_output(
+    *,
+    shell,
+    project_name: str,
+    breakdown: dict,
+    created_tasks: list[dict],
+    complexity: str,
+    should_split: bool,
+    task_agent: str,
+    quiet: bool,
+) -> None:
+    from codepilot.output import echo
+
+    label = "复杂任务" if should_split else "简单任务"
+    echo(f"[green][OK] 已识别为{label}[/green]  complexity={complexity}")
+    if breakdown.get("summary"):
+        click.echo(f"  摘要: {breakdown['summary']}")
+    for task in created_tasks:
+        dep = f" depends_on=#{json.loads(task['depends_on'])[0]}" if task.get("depends_on") else ""
+        click.echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]  agent={task_agent}{dep}")
+    if not quiet:
+        shell.render_project_dashboard(
+            project_name,
+            include_done=False,
+            max_rows=max(8, len(created_tasks)),
+            title="任务面板",
+        )
+
+
+def _run_requirement_backlog(
+    *,
+    shell,
+    project_name: str,
+    task_count: int,
+    executor: str,
+    auto_commit: bool,
+    quiet: bool,
+) -> dict:
+    return shell.run_backlog(
+        project_name,
+        once=False,
+        limit=task_count,
+        executor=executor,
+        auto_commit=auto_commit,
+        retry_on_failure=False,
+        quiet=quiet,
+    )
+
+
 def run_requirement_workflow(
     *,
     project_info: dict,
@@ -651,130 +868,41 @@ def run_requirement_workflow(
     max_tasks = effective["max_tasks"]
     max_retries = effective["max_retries"]
     task_agent = shell._resolve_task_agent(project_info, task_agent, executor)
-
-    cfg = _project_config(project_info)
-    two_stage_enabled = True
-    if cfg and not getattr(cfg.automation, "two_stage_planning", True):
-        two_stage_enabled = False
-
-    # Pull open tasks so the planner can dedup against the live backlog.
-    existing_tasks = [
-        t for t in db.list_tasks(project=project_name)
-        if t.get("status") in {"backlog", "in_progress"}
-    ]
+    two_stage_enabled = _resolve_planning_mode(project_info)
 
     echo(f"[cyan]收到需求：{title}[/cyan]")
-    if two_stage_enabled:
-        echo(f"[dim]  正在用 {planner} 侦察项目 → 拆分任务，请稍候...[/dim]")
-    else:
-        echo(f"[dim]  正在用 {planner} 规划任务，请稍候...[/dim]")
-    try:
-        breakdown = _generate_task_breakdown_via_shell(
-            shell,
-            title=title,
-            project_path=project_path,
-            planner=planner,
-            max_tasks=max_tasks,
-            config_ref=_provider_context(project_info),
-            two_stage=two_stage_enabled,
-            existing_tasks=existing_tasks,
-        )
-    except Exception as exc:
-        if _normalize_agent_name(planner) == "codex" and _should_fallback_codex_planning(exc):
-            echo("[yellow]Codex 规划没有及时完成，已降级为单任务直接执行。[/yellow]")
-            breakdown = {
-                "summary": "Codex 规划未完成，已降级为单任务执行",
-                "complexity": "simple",
-                "should_split": False,
-                "tasks": [
-                    {
-                        "title": title,
-                        "priority": priority,
-                        "goal": title,
-                        "acceptance_criteria": [
-                            "完成当前需求的核心实现，主流程可以实际运行。",
-                            "运行必要验证并在结果中说明是否通过。",
-                        ],
-                        "builder_notes": [
-                            "先阅读相关代码，优先处理最影响可用性的阻塞点。",
-                            "如果问题过大，先用最小可行改动把主链路跑通。",
-                        ],
-                        "reviewer_notes": [
-                            "检查是否真的跑通主流程，而不只是修改文案或配置。",
-                            "确认验证步骤和潜在回归风险已经说明。",
-                        ],
-                        "files": [],
-                        "notes": [
-                            f"本次为 Codex 规划失败后的降级执行。原始原因：{exc}",
-                        ],
-                    }
-                ],
-            }
-        else:
-            raise click.ClickException(str(exc)) from exc
-
-    try:
-        breakdown = shell.parse_automation_planner_result(
-            breakdown,
-            title=title,
-            max_tasks=max_tasks,
-            existing_tasks=existing_tasks,
-        )
-    except Exception as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    complexity = breakdown.get("complexity") or ("simple" if len(breakdown["tasks"]) <= 1 else "complex")
-    should_split = breakdown.get("should_split")
-    if should_split is None:
-        should_split = len(breakdown["tasks"]) > 1
-
-    # Surface dedup decisions up-front so the user knows why nothing / less
-    # than expected got created.
-    dedup_skipped = breakdown.get("dedup_skipped") or []
-    for dup in dedup_skipped:
-        echo(
-            f"[yellow]跳过重复任务：[/yellow]「{dup.get('proposed_title') or ''}」"
-            f" 已存在 #{dup.get('matched_existing_id')}"
-            f"「{dup.get('matched_existing_title') or ''}」"
-        )
-
-    created_tasks = []
-    previous_task_id: int | None = None
-    created_ids_by_index: list[int] = []
-    for idx, item in enumerate(breakdown["tasks"]):
-        dep_indices = item.get("depends_on_indices") or []
-        dep_ids = [
-            created_ids_by_index[i]
-            for i in dep_indices
-            if isinstance(i, int) and 0 <= i < len(created_ids_by_index)
-        ]
-        if not dep_ids and previous_task_id and not item.get("depends_on_indices"):
-            dep_ids = [previous_task_id]
-        task = db.create_task(
-            project=project_name,
-            title=item["title"],
-            content=_build_task_markdown_from_plan(item),
-            agent=task_agent,
-            priority=item.get("priority") or priority,
-            depends_on=dep_ids or None,
-            project_path=project_path,
-            max_retries=max_retries,
-        )
-        created_tasks.append(task)
-        created_ids_by_index.append(task["id"])
-        previous_task_id = task["id"]
+    breakdown = _plan_requirement_breakdown(
+        shell=shell,
+        title=title,
+        planner=planner,
+        priority=priority,
+        max_tasks=max_tasks,
+        project_name=project_name,
+        project_path=project_path,
+        project_info=project_info,
+        two_stage_enabled=two_stage_enabled,
+    )
+    complexity, should_split = _derive_breakdown_meta(breakdown)
+    _echo_dedup_skips(breakdown.get("dedup_skipped") or [])
+    created_tasks = _create_tasks_from_breakdown(
+        breakdown=breakdown,
+        project_name=project_name,
+        project_path=project_path,
+        task_agent=task_agent,
+        priority=priority,
+        max_retries=max_retries,
+    )
 
     will_execute = _should_execute(project_info, execute)
-
-    payload = {
-        "project": project_name,
-        "summary": breakdown.get("summary", ""),
-        "complexity": complexity,
-        "should_split": should_split,
-        "task_agent": task_agent,
-        "tasks": created_tasks,
-        "will_execute": will_execute,
-    }
+    payload = _build_requirement_payload(
+        project_name=project_name,
+        breakdown=breakdown,
+        complexity=complexity,
+        should_split=should_split,
+        task_agent=task_agent,
+        created_tasks=created_tasks,
+        will_execute=will_execute,
+    )
 
     if json_mode:
         if will_execute:
@@ -788,15 +916,16 @@ def run_requirement_workflow(
         click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return payload
 
-    label = "复杂任务" if should_split else "简单任务"
-    echo(f"[green][OK] 已识别为{label}[/green]  complexity={complexity}")
-    if breakdown.get("summary"):
-        click.echo(f"  摘要: {breakdown['summary']}")
-    for task in created_tasks:
-        dep = f" depends_on=#{json.loads(task['depends_on'])[0]}" if task.get("depends_on") else ""
-        click.echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]  agent={task_agent}{dep}")
-    if not quiet:
-        shell.render_project_dashboard(project_name, include_done=False, max_rows=max(8, len(created_tasks)), title="任务面板")
+    _emit_non_json_plan_output(
+        shell=shell,
+        project_name=project_name,
+        breakdown=breakdown,
+        created_tasks=created_tasks,
+        complexity=complexity,
+        should_split=should_split,
+        task_agent=task_agent,
+        quiet=quiet,
+    )
 
     if not will_execute:
         echo()
@@ -805,13 +934,12 @@ def run_requirement_workflow(
 
     echo()
     echo("[cyan]开始自动执行...[/cyan]")
-    stats = shell.run_backlog(
-        project_name,
-        once=False,
-        limit=len(created_tasks),
+    stats = _run_requirement_backlog(
+        shell=shell,
+        project_name=project_name,
+        task_count=len(created_tasks),
         executor=executor,
         auto_commit=auto_commit,
-        retry_on_failure=False,
         quiet=quiet,
     )
     payload["run"] = stats
