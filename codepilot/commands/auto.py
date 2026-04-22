@@ -98,8 +98,11 @@ from codepilot.commands.auto_chat import (  # noqa: F401 (re-export)
 )
 from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
     append_clarification_answer,
+    append_clarification_answer_to_state,
     assess_requirement_for_planning,
+    build_clarification_state,
     classify_entry_intent,
+    clarification_state_from_assessment,
     command_intent_guidance,
     resolve_question_answer_options,
     normalize_requirement_text,
@@ -146,17 +149,27 @@ def _clarify_requirement_for_go(
         else 3
     )
     seed_title = normalize_requirement_text(text)
-    qa_history: list[dict] = []
+    clarify_state = build_clarification_state(
+        original_title=seed_title,
+        qa_history=[],
+        intent="requirement",
+    )
     assessment = assess_requirement_for_planning(
-        seed_title,
+        clarify_state["original_title"],
         project_info=project_info,
         planner=planner,
-        qa_history=qa_history,
+        qa_history=clarify_state["qa_history"],
         max_turns=max_turns,
     )
+    clarify_state = clarification_state_from_assessment(
+        assessment=assessment,
+        seed_title=clarify_state["original_title"],
+        previous_state=clarify_state,
+        intent="requirement",
+    ) or clarify_state
 
     while assessment.get("status") == "needs_clarification":
-        questions = assessment.get("questions") or []
+        questions = clarify_state.get("last_questions") or []
         if not questions:
             break
         echo("[cyan]先补充几个关键信息，再开始规划：[/cyan]")
@@ -167,21 +180,27 @@ def _clarify_requirement_for_go(
             echo("[yellow]未收到补充信息，将按当前内容继续规划。[/yellow]")
             break
 
-        qa_history = append_clarification_answer(
-            qa_history,
+        clarify_state = append_clarification_answer_to_state(
+            clarify_state,
             answer=answer,
             questions=questions,
         )
         assessment = assess_requirement_for_planning(
-            seed_title,
+            clarify_state["original_title"],
             project_info=project_info,
-            qa_history=qa_history,
+            qa_history=clarify_state["qa_history"],
             planner=planner,
             max_turns=max_turns,
         )
+        clarify_state = clarification_state_from_assessment(
+            assessment=assessment,
+            seed_title=clarify_state["original_title"],
+            previous_state=clarify_state,
+            intent="requirement",
+        ) or clarify_state
 
     refined = (assessment.get("refined_title") or "").strip()
-    return refined or seed_title
+    return refined or clarify_state["original_title"]
 
 
 @click.command("auto")

@@ -17,8 +17,11 @@ from typing import Optional
 
 from codepilot import db
 from codepilot.commands.auto import (  # noqa: F401 — patched in tests
+    append_clarification_answer_to_state,
     assess_requirement_for_planning,
+    build_clarification_state,
     classify_entry_intent,
+    clarification_state_from_assessment,
     clarify_requirement,
     command_intent_guidance,
     normalize_requirement_text,
@@ -734,7 +737,8 @@ def get_session_action(session_id: int) -> dict:
 
 def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
     """Walk session messages and, if the last assistant turn is a clarify
-    request, rebuild ``{original_title, qa_history, last_questions}``.
+    request, rebuild normalized clarification state
+    ``{original_title, qa_history, last_questions, intent}``.
 
     Returns ``None`` when the session is not mid-clarification.
     """
@@ -790,11 +794,12 @@ def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
     last_questions_raw = (last_assistant.get("content") or "").splitlines()
     last_questions = [line.lstrip("0123456789.、 -") for line in last_questions_raw if line.strip()]
 
-    return {
-        "original_title": original_title,
-        "qa_history": qa_history,
-        "last_questions": last_questions,
-    }
+    return build_clarification_state(
+        original_title=original_title,
+        qa_history=qa_history,
+        last_questions=last_questions,
+        intent="requirement",
+    )
 
 
 def send_session_message_action(session_id: int, text: str, *, category: str = "auto") -> dict:
@@ -823,17 +828,25 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
     pending = _reconstruct_clarification_state(existing_messages)
     if pending and category in {"auto", "", None}:
         db.create_session_message(session_id, "user", text)
+        pending = append_clarification_answer_to_state(
+            pending,
+            answer=text,
+        )
         assessment = assess_requirement_for_planning(
-            text,
+            pending["original_title"],
             project_info=project_info,
             planner=effective_planner,
             qa_history=pending["qa_history"],
-            original_title=pending["original_title"],
-            last_questions=pending.get("last_questions") or [],
             clarify_fn=clarify_requirement,
         )
-        if assessment.get("status") == "needs_clarification":
-            questions = assessment.get("questions") or []
+        next_state = clarification_state_from_assessment(
+            assessment=assessment,
+            seed_title=pending["original_title"],
+            previous_state=pending,
+            intent=pending.get("intent") or "requirement",
+        )
+        if next_state:
+            questions = next_state.get("last_questions") or []
             reply = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
             db.create_session_message(session_id, "assistant", reply, intent="clarify")
             return {

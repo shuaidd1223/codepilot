@@ -765,6 +765,64 @@ def test_append_clarification_answer_normalizes_history_rows():
     assert qa_history == [{"question": "Q1", "answer": "A1"}]
 
 
+def test_build_clarification_state_normalizes_payload():
+    state = auto_cmd.build_clarification_state(
+        original_title="  优化 一下  ",
+        qa_history=[
+            {"question": "  Q1  ", "answer": "  A1  "},
+            {"question": " ", "answer": " "},
+            "invalid",
+        ],
+        last_questions=[" 先做哪块? ", ""],
+        intent=" TASK ",
+    )
+
+    assert state == {
+        "original_title": "优化 一下",
+        "qa_history": [{"question": "Q1", "answer": "A1"}],
+        "last_questions": ["先做哪块?"],
+        "intent": "task",
+    }
+
+
+def test_clarification_state_helpers_keep_intent_across_rounds():
+    pending = auto_cmd.build_clarification_state(
+        original_title="优化一下",
+        qa_history=[],
+        last_questions=["先做哪块?"],
+        intent="task",
+    )
+
+    with_answer = auto_cmd.append_clarification_answer_to_state(
+        pending,
+        answer=" 先做 Web UI ",
+    )
+    assert with_answer["qa_history"] == [
+        {"question": "先做哪块?", "answer": "先做 Web UI"}
+    ]
+
+    next_state = auto_cmd.clarification_state_from_assessment(
+        assessment={
+            "status": "needs_clarification",
+            "questions": [" 目标是啥? "],
+            "qa_history": with_answer["qa_history"],
+        },
+        seed_title="ignored",
+        previous_state=with_answer,
+    )
+    assert next_state == {
+        "original_title": "优化一下",
+        "qa_history": [{"question": "先做哪块?", "answer": "先做 Web UI"}],
+        "last_questions": ["目标是啥?"],
+        "intent": "task",
+    }
+    assert auto_cmd.clarification_state_from_assessment(
+        assessment={"status": "ready"},
+        seed_title="优化一下",
+        previous_state=with_answer,
+    ) is None
+
+
 def test_resolve_project_for_prompt_uses_current_directory(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

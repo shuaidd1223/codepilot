@@ -194,6 +194,101 @@ def append_clarification_answer(
     return merged_history
 
 
+_DEFAULT_CLARIFICATION_INTENT = "requirement"
+
+
+def _normalize_clarification_questions(questions: Optional[list[str]]) -> list[str]:
+    return [
+        normalize_requirement_text(q)
+        for q in (questions or [])
+        if isinstance(q, str) and normalize_requirement_text(q)
+    ]
+
+
+def _normalize_clarification_history(qa_history: Optional[list[dict]]) -> list[dict]:
+    rows: list[dict] = []
+    for item in (qa_history or []):
+        if not isinstance(item, dict):
+            continue
+        question = normalize_requirement_text(str(item.get("question") or ""))
+        answer = normalize_requirement_text(str(item.get("answer") or ""))
+        if not question and not answer:
+            continue
+        rows.append({
+            "question": question,
+            "answer": answer,
+        })
+    return rows
+
+
+def build_clarification_state(
+    *,
+    original_title: str,
+    qa_history: Optional[list[dict]] = None,
+    last_questions: Optional[list[str]] = None,
+    intent: str = _DEFAULT_CLARIFICATION_INTENT,
+) -> dict:
+    """Build normalized clarification session state shared by chat/webui/go."""
+    normalized_intent = normalize_requirement_text(intent).lower() or _DEFAULT_CLARIFICATION_INTENT
+    return {
+        "original_title": normalize_requirement_text(original_title),
+        "qa_history": _normalize_clarification_history(qa_history),
+        "last_questions": _normalize_clarification_questions(last_questions),
+        "intent": normalized_intent,
+    }
+
+
+def append_clarification_answer_to_state(
+    state: Optional[dict],
+    *,
+    answer: str,
+    questions: Optional[list[str]] = None,
+) -> dict:
+    """Append one user answer to clarification state and return a new state."""
+    base = build_clarification_state(
+        original_title=(state or {}).get("original_title") or "",
+        qa_history=(state or {}).get("qa_history"),
+        last_questions=(state or {}).get("last_questions"),
+        intent=(state or {}).get("intent") or _DEFAULT_CLARIFICATION_INTENT,
+    )
+    active_questions = (
+        base["last_questions"]
+        if questions is None
+        else _normalize_clarification_questions(questions)
+    )
+    merged_history = append_clarification_answer(
+        base["qa_history"],
+        answer=answer,
+        questions=active_questions,
+    )
+    return build_clarification_state(
+        original_title=base["original_title"],
+        qa_history=merged_history,
+        last_questions=active_questions,
+        intent=base["intent"],
+    )
+
+
+def clarification_state_from_assessment(
+    *,
+    assessment: dict,
+    seed_title: str,
+    previous_state: Optional[dict] = None,
+    intent: str = _DEFAULT_CLARIFICATION_INTENT,
+) -> Optional[dict]:
+    """Return normalized clarification state when assessment asks another round."""
+    if (assessment or {}).get("status") != "needs_clarification":
+        return None
+    prev = previous_state or {}
+    questions = (assessment or {}).get("questions")
+    return build_clarification_state(
+        original_title=prev.get("original_title") or seed_title,
+        qa_history=(assessment or {}).get("qa_history") or prev.get("qa_history"),
+        last_questions=questions if isinstance(questions, list) else prev.get("last_questions"),
+        intent=prev.get("intent") or intent,
+    )
+
+
 def assess_requirement_for_planning(
     text: str,
     *,

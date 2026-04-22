@@ -387,20 +387,18 @@ def run_chat_session(
         # ── Multi-turn clarification: user is answering outstanding questions ──
         if pending_clarification and not forced_intent and not text.startswith("?"):
             answer_text = payload_text
-            last_questions = pending_clarification.get("last_questions") or []
-            qa_history = shell.append_clarification_answer(
-                pending_clarification.get("qa_history"),
+            answered_state = shell.append_clarification_answer_to_state(
+                pending_clarification,
                 answer=answer_text,
-                questions=last_questions,
             )
 
             spinner = _Spinner("正在评估补充信息")
             spinner.__enter__()
             try:
                 assessment = shell.assess_requirement_for_planning(
-                    pending_clarification["original_title"],
+                    answered_state["original_title"],
                     project_info=project_info,
-                    qa_history=qa_history,
+                    qa_history=answered_state["qa_history"],
                     planner=effective["planner"],
                 )
             except KeyboardInterrupt:
@@ -429,14 +427,14 @@ def run_chat_session(
             finally:
                 spinner.__exit__(None, None, None)
 
-            if assessment.get("status") == "needs_clarification":
-                questions = assessment.get("questions") or []
-                pending_clarification = {
-                    "original_title": pending_clarification["original_title"],
-                    "qa_history": assessment.get("qa_history") or qa_history,
-                    "last_questions": questions,
-                    "intent": pending_clarification.get("intent", "requirement"),
-                }
+            next_state = shell.clarification_state_from_assessment(
+                assessment=assessment,
+                seed_title=answered_state["original_title"],
+                previous_state=answered_state,
+            )
+            if next_state:
+                pending_clarification = next_state
+                questions = pending_clarification.get("last_questions") or []
                 echo("[cyan]还需要再澄清一下：[/cyan]")
                 for i, q in enumerate(questions, 1):
                     click.echo(f"  {i}. {q}")
@@ -558,14 +556,13 @@ def run_chat_session(
                 )
                 spinner.__exit__(None, None, None)
 
-                if assessment.get("status") == "needs_clarification":
-                    questions = assessment.get("questions") or []
-                    pending_clarification = {
-                        "original_title": payload_text,
-                        "qa_history": assessment.get("qa_history") or [],
-                        "last_questions": questions,
-                        "intent": intent,
-                    }
+                pending_clarification = shell.clarification_state_from_assessment(
+                    assessment=assessment,
+                    seed_title=payload_text,
+                    intent=intent,
+                )
+                if pending_clarification:
+                    questions = pending_clarification.get("last_questions") or []
                     echo("[cyan]为了更好地规划，我想先确认几个点：[/cyan]")
                     for i, q in enumerate(questions, 1):
                         click.echo(f"  {i}. {q}")
