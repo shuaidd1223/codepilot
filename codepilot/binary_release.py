@@ -426,6 +426,169 @@ def resolve_release_dir(project_root: str | Path, release_dir: str | Path | None
     raise RuntimeError("当前没有找到可校验的发布目录。请先运行 `codepilot binary release`。")
 
 
+def _load_release_manifest(manifest_path: Path, issues: list[str]) -> dict | None:
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        issues.append(f"release.json 无法解析: {exc}")
+        return None
+
+
+def _read_release_checksums(checksum_path: Path, issues: list[str]) -> dict[str, str]:
+    checksums: dict[str, str] = {}
+    for line in checksum_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        if "  " not in raw:
+            issues.append(f"SHA256SUMS.txt 存在无法识别的行: {raw}")
+            continue
+        digest, relative = raw.split("  ", 1)
+        checksums[relative.replace("\\", "/")] = digest.strip()
+    return checksums
+
+
+def _verify_release_docs(root: Path, issues: list[str]) -> None:
+    guide_path = root / "README.zh-CN.md"
+    if not guide_path.exists():
+        issues.append("缺少 README.zh-CN.md")
+
+    ai_guide_path = root / "AI_USAGE.zh-CN.md"
+    if not ai_guide_path.exists():
+        issues.append("缺少 AI_USAGE.zh-CN.md")
+
+    ai_manifest_path = root / "AI_MANIFEST.json"
+    if not ai_manifest_path.exists():
+        issues.append("缺少 AI_MANIFEST.json")
+    else:
+        try:
+            json.loads(ai_manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            issues.append(f"AI_MANIFEST.json 无法解析: {exc}")
+
+    summary_path = root / "SUMMARY.zh-CN.md"
+    if not summary_path.exists():
+        issues.append("缺少 SUMMARY.zh-CN.md")
+
+
+def _verify_staged_file(
+    root: Path,
+    staged: Path,
+    *,
+    expected_digest: str,
+    checksums: dict[str, str],
+    issues: list[str],
+) -> int:
+    if not staged.exists():
+        return 0
+
+    actual = _sha256_file(staged)
+    if actual != expected_digest:
+        issues.append(f"二进制校验不匹配: {staged.name}")
+    rel = str(staged.relative_to(root)).replace("\\", "/")
+    if checksums.get(rel) != actual:
+        issues.append(f"SHA256SUMS.txt 中的二进制校验不匹配: {rel}")
+    return 1
+
+
+def _verify_archive_members(
+    archive: Path,
+    *,
+    archive_format: str,
+    staged: Path,
+    install_script: Path,
+    issues: list[str],
+) -> None:
+    if archive_format == "zip" and archive.suffix.lower() != ".zip":
+        issues.append(f"压缩格式声明与文件后缀不一致: {archive.name}")
+    if archive_format == "tar.gz" and not archive.name.lower().endswith(".tar.gz"):
+        issues.append(f"压缩格式声明与文件后缀不一致: {archive.name}")
+
+    try:
+        members = _read_archive_members(archive, archive_format)
+    except Exception as exc:
+        issues.append(f"压缩包无法读取: {archive.name} ({exc})")
+        return
+
+    folder_name = _archive_root_folder(archive, archive_format)
+    expected_members = {
+        f"{folder_name}/{staged.name}",
+        f"{folder_name}/{install_script.name}",
+        f"{folder_name}/README.zh-CN.md",
+        f"{folder_name}/AI_USAGE.zh-CN.md",
+        f"{folder_name}/AI_MANIFEST.json",
+    }
+    missing = sorted(member for member in expected_members if member not in members)
+    if missing:
+        issues.append(f"压缩包缺少预期文件: {archive.name} -> {', '.join(missing)}")
+
+
+def _verify_archive_file(
+    root: Path,
+    archive: Path,
+    *,
+    expected_digest: str,
+    checksums: dict[str, str],
+    archive_format: str,
+    staged: Path,
+    install_script: Path,
+    issues: list[str],
+) -> int:
+    if not archive.exists():
+        return 0
+
+    actual = _sha256_file(archive)
+    if actual != expected_digest:
+        issues.append(f"压缩包校验不匹配: {archive.name}")
+    rel = str(archive.relative_to(root)).replace("\\", "/")
+    if checksums.get(rel) != actual:
+        issues.append(f"SHA256SUMS.txt 中的压缩包校验不匹配: {rel}")
+
+    _verify_archive_members(
+        archive,
+        archive_format=archive_format,
+        staged=staged,
+        install_script=install_script,
+        issues=issues,
+    )
+    return 1
+
+
+def _verify_manifest_artifact(
+    root: Path,
+    artifact: dict,
+    *,
+    checksums: dict[str, str],
+    issues: list[str],
+) -> int:
+    staged = Path(artifact.get("staged_path", ""))
+    archive = Path(artifact.get("archive_path", ""))
+    install_script = Path(artifact.get("install_script", ""))
+    for label, path in (("二进制", staged), ("压缩包", archive), ("安装脚本", install_script)):
+        if not path.exists():
+            issues.append(f"{label}不存在: {path}")
+
+    checked_files = 0
+    checked_files += _verify_staged_file(
+        root,
+        staged,
+        expected_digest=artifact.get("binary_sha256", ""),
+        checksums=checksums,
+        issues=issues,
+    )
+    checked_files += _verify_archive_file(
+        root,
+        archive,
+        expected_digest=artifact.get("archive_sha256", ""),
+        checksums=checksums,
+        archive_format=artifact.get("archive_format", ""),
+        staged=staged,
+        install_script=install_script,
+        issues=issues,
+    )
+    return checked_files
+
+
 def verify_release_bundle(release_dir: str | Path) -> VerificationResult:
     """Verify release metadata, checksums, and staged files."""
     root = Path(release_dir).expanduser().resolve()
@@ -444,88 +607,19 @@ def verify_release_bundle(release_dir: str | Path) -> VerificationResult:
         issues.append("缺少 SHA256SUMS.txt")
         return VerificationResult(root, manifest_path, checksum_path, checked_files, issues)
 
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        issues.append(f"release.json 无法解析: {exc}")
+    manifest = _load_release_manifest(manifest_path, issues)
+    if manifest is None:
         return VerificationResult(root, manifest_path, checksum_path, checked_files, issues)
 
-    checksums: dict[str, str] = {}
-    for line in checksum_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        raw = line.strip()
-        if not raw:
-            continue
-        if "  " not in raw:
-            issues.append(f"SHA256SUMS.txt 存在无法识别的行: {raw}")
-            continue
-        digest, relative = raw.split("  ", 1)
-        checksums[relative.replace("\\", "/")] = digest.strip()
-
-    guide_path = root / "README.zh-CN.md"
-    if not guide_path.exists():
-        issues.append("缺少 README.zh-CN.md")
-    ai_guide_path = root / "AI_USAGE.zh-CN.md"
-    if not ai_guide_path.exists():
-        issues.append("缺少 AI_USAGE.zh-CN.md")
-    ai_manifest_path = root / "AI_MANIFEST.json"
-    if not ai_manifest_path.exists():
-        issues.append("缺少 AI_MANIFEST.json")
-    else:
-        try:
-            json.loads(ai_manifest_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            issues.append(f"AI_MANIFEST.json 无法解析: {exc}")
-    summary_path = root / "SUMMARY.zh-CN.md"
-    if not summary_path.exists():
-        issues.append("缺少 SUMMARY.zh-CN.md")
+    checksums = _read_release_checksums(checksum_path, issues)
+    _verify_release_docs(root, issues)
 
     for artifact in manifest.get("artifacts", []):
-        staged = Path(artifact.get("staged_path", ""))
-        archive = Path(artifact.get("archive_path", ""))
-        install_script = Path(artifact.get("install_script", ""))
-        for label, path in (("二进制", staged), ("压缩包", archive), ("安装脚本", install_script)):
-            if not path.exists():
-                issues.append(f"{label}不存在: {path}")
-
-        if staged.exists():
-            checked_files += 1
-            actual = _sha256_file(staged)
-            expected = artifact.get("binary_sha256", "")
-            if actual != expected:
-                issues.append(f"二进制校验不匹配: {staged.name}")
-            rel = str(staged.relative_to(root)).replace("\\", "/")
-            if checksums.get(rel) != actual:
-                issues.append(f"SHA256SUMS.txt 中的二进制校验不匹配: {rel}")
-
-        if archive.exists():
-            checked_files += 1
-            actual = _sha256_file(archive)
-            expected = artifact.get("archive_sha256", "")
-            if actual != expected:
-                issues.append(f"压缩包校验不匹配: {archive.name}")
-            rel = str(archive.relative_to(root)).replace("\\", "/")
-            if checksums.get(rel) != actual:
-                issues.append(f"SHA256SUMS.txt 中的压缩包校验不匹配: {rel}")
-            archive_format = artifact.get("archive_format", "")
-            if archive_format == "zip" and archive.suffix.lower() != ".zip":
-                issues.append(f"压缩格式声明与文件后缀不一致: {archive.name}")
-            if archive_format == "tar.gz" and not archive.name.lower().endswith(".tar.gz"):
-                issues.append(f"压缩格式声明与文件后缀不一致: {archive.name}")
-            try:
-                members = _read_archive_members(archive, archive_format)
-            except Exception as exc:
-                issues.append(f"压缩包无法读取: {archive.name} ({exc})")
-            else:
-                folder_name = _archive_root_folder(archive, archive_format)
-                expected_members = {
-                    f"{folder_name}/{staged.name}",
-                    f"{folder_name}/{install_script.name}",
-                    f"{folder_name}/README.zh-CN.md",
-                    f"{folder_name}/AI_USAGE.zh-CN.md",
-                    f"{folder_name}/AI_MANIFEST.json",
-                }
-                missing = sorted(member for member in expected_members if member not in members)
-                if missing:
-                    issues.append(f"压缩包缺少预期文件: {archive.name} -> {', '.join(missing)}")
+        checked_files += _verify_manifest_artifact(
+            root,
+            artifact,
+            checksums=checksums,
+            issues=issues,
+        )
 
     return VerificationResult(root, manifest_path, checksum_path, checked_files, issues)

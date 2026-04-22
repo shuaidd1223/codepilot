@@ -351,6 +351,33 @@ def test_verify_release_bundle_passes_for_valid_release(tmp_path):
     assert verification.checked_files == 2
 
 
+def test_verify_release_bundle_fails_when_manifest_missing(tmp_path):
+    release_dir = tmp_path / "release-missing-manifest"
+    release_dir.mkdir(parents=True)
+    (release_dir / "SHA256SUMS.txt").write_text("", encoding="utf-8")
+
+    verification = binary_mod.verify_release_bundle(release_dir)
+
+    assert verification.checked_files == 0
+    assert "缺少 release.json" in verification.issues
+
+
+def test_verify_release_bundle_reports_invalid_ai_manifest(tmp_path):
+    binary_path = tmp_path / "codepilot.exe"
+    binary_path.write_text("binary", encoding="utf-8")
+    release = binary_mod.create_release_bundle(
+        project_root=tmp_path,
+        artifacts=[("windows-x86_64", binary_path)],
+        output_dir=tmp_path / "release-invalid-ai-manifest",
+        version="1.0.0",
+    )
+    release.ai_manifest_path.write_text("{broken", encoding="utf-8")
+
+    verification = binary_mod.verify_release_bundle(release.release_dir)
+
+    assert any("AI_MANIFEST.json 无法解析" in issue for issue in verification.issues)
+
+
 def test_binary_verify_command_fails_on_broken_checksum(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     binary_path = tmp_path / "codepilot.exe"
