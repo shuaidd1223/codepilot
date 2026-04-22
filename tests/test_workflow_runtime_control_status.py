@@ -1,0 +1,538 @@
+from __future__ import annotations
+
+import json
+import sys
+import types
+from pathlib import Path
+from zipfile import ZipFile
+
+import click
+import pytest
+from click.testing import CliRunner
+
+from codepilot.agent_support import ai_guide_markdown, command_manifest
+from codepilot import binary as binary_mod
+from codepilot import binary_paths as binary_paths_mod
+from codepilot import db
+from codepilot import ai as ai_mod
+from codepilot import progress_bus
+from codepilot.ai_gateway import GatewayResponse
+from codepilot import runtime as runtime_mod
+from codepilot import webui as webui_mod
+from codepilot.cli import main
+from codepilot.commands import add as add_cmd
+from codepilot.commands import auto as auto_cmd
+from codepilot.commands import run as run_cmd
+from codepilot.config import load_project_config
+from tests.workflow_testkit import init_test_db as _init_test_db
+
+
+def test_reap_stalled_tasks_marks_dead_in_progress_task_failed(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "stuck task", agent="codex", max_retries=1)
+
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        started_at="2026-01-01T00:00:00",
+        heartbeat_at="2026-01-01T00:00:00",
+        active_pid=None,
+        run_phase="builder",
+    )
+
+    reaped = runtime_mod.reap_stalled_tasks("demo", stale_after_seconds=1)
+    current = db.get_task(task["id"])
+
+    assert len(reaped) == 1
+    assert current["status"] == "failed"
+    assert current["retry_count"] == 1
+    assert "心跳已超过" in (current["error_message"] or "")
+
+
+def test_reap_stalled_tasks_requeues_when_retries_remain(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "stale but retryable", agent="codex", max_retries=3)
+
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        started_at="2026-01-01T00:00:00",
+        heartbeat_at="2026-01-01T00:00:00",
+        active_pid=None,
+        run_phase="builder",
+    )
+
+    reaped = runtime_mod.reap_stalled_tasks("demo", stale_after_seconds=1)
+    current = db.get_task(task["id"])
+
+    assert len(reaped) == 1
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 1
+    assert "回退到 backlog" in (current["error_message"] or "")
+
+
+def test_reap_stalled_tasks_cleans_dead_process_tree_before_marking_failed(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "stale task", agent="codex", max_retries=1)
+
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        started_at="2026-01-01T00:00:00",
+        heartbeat_at="2026-01-01T00:00:00",
+        active_pid=123456,
+        run_phase="builder",
+    )
+
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: False)
+    killed: list[int] = []
+    monkeypatch.setattr(runtime_mod, "stop_process_tree", lambda pid, wait_seconds=5: killed.append(int(pid)) or True)
+
+    reaped = runtime_mod.reap_stalled_tasks("demo", stale_after_seconds=1)
+    current = db.get_task(task["id"])
+
+    assert len(reaped) == 1
+    assert killed == [123456]
+    assert current["status"] == "failed"
+
+
+def test_stop_process_tree_windows_kills_descendants_even_if_root_is_gone(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(runtime_mod.platform, "system", lambda: "Windows")
+
+    processes = {
+        200: {"parent": 100, "name": "codex.exe"},
+        201: {"parent": 200, "name": "node.exe"},
+    }
+
+    def _descendants(root_pid: int) -> set[int]:
+        found = set()
+        while True:
+            added = {pid for pid, meta in processes.items() if meta["parent"] in ({root_pid} | found)}
+            if added.issubset(found):
+                break
+            found |= added
+        return found
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[0].lower() == "powershell.exe":
+            payload = [
+                {"ProcessId": pid, "ParentProcessId": meta["parent"], "Name": meta["name"]}
+                for pid, meta in sorted(processes.items())
+            ]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[0].lower() == "taskkill":
+            target = int(cmd[cmd.index("/PID") + 1])
+            # Simulate "root is gone": taskkill returns failure and does not cascade
+            if target not in processes:
+                return subprocess.CompletedProcess(cmd, 128, "", "not found")
+            if "/T" in cmd:
+                targets = _descendants(target) | {target}
+            else:
+                targets = {target}
+            for pid in targets:
+                processes.pop(pid, None)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(runtime_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: int(pid) in processes if pid else False)
+
+    tick = {"t": 0.0}
+
+    def fake_monotonic():
+        tick["t"] += 0.4
+        return tick["t"]
+
+    monkeypatch.setattr(runtime_mod.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(runtime_mod.time, "sleep", lambda _: None)
+
+    assert runtime_mod.stop_process_tree(100, wait_seconds=1) is True
+    assert processes == {}
+    assert any(cmd[:4] == ["taskkill", "/PID", "200", "/T"] for cmd in calls)
+    assert any(cmd[:4] == ["taskkill", "/PID", "201", "/T"] for cmd in calls)
+
+
+def test_stop_process_tree_windows_falls_back_to_stop_process_when_taskkill_denied(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(runtime_mod.platform, "system", lambda: "Windows")
+
+    alive = {61432: True}
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[0].lower() == "taskkill":
+            return subprocess.CompletedProcess(cmd, 1, "", "Access is denied.")
+        if cmd[:2] == ["powershell.exe", "-Command"] and "Stop-Process -Id 61432 -Force" in cmd[2]:
+            alive[61432] = False
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(runtime_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: alive.get(int(pid), False) if pid else False)
+
+    runtime_mod._windows_kill_pid(61432)
+
+    assert alive[61432] is False
+    assert any(cmd[0].lower() == "taskkill" for cmd in calls)
+    assert any(cmd[:2] == ["powershell.exe", "-Command"] for cmd in calls)
+
+
+def test_run_command_live_cleans_process_tree_on_unexpected_exception(tmp_path, monkeypatch):
+    import sys
+
+    log_path = tmp_path / "live.log"
+    monkeypatch.setattr(run_cmd, "update_task_runtime", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "get_stop_request", lambda task_id: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    killed: list[int] = []
+
+    def _tracking_stop(pid):
+        killed.append(int(pid))
+        return runtime_mod.stop_process_tree(pid)
+
+    monkeypatch.setattr(run_cmd, "stop_process_tree", _tracking_stop)
+
+    try:
+        run_cmd._run_command_live(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            task_id=1,
+            phase="builder",
+            log_path=log_path,
+            timeout=30,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "boom"
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert killed
+    assert not runtime_mod.is_process_alive(killed[0])
+
+
+def test_run_command_live_emits_task_log_stream_with_offsets(tmp_path, monkeypatch):
+    log_path = tmp_path / "live.log"
+    monkeypatch.setattr(run_cmd, "update_task_runtime", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "get_stop_request", lambda task_id: (False, ""))
+
+    progress_bus.clear_subscribers_for_tests()
+    events: list[dict] = []
+    with progress_bus.subscription(events.append):
+        exit_code, output = run_cmd._run_command_live(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys,time;"
+                    "sys.stdout.write('abcdef');sys.stdout.flush();"
+                    "time.sleep(0.05);"
+                    "sys.stdout.write('ghi');sys.stdout.flush()"
+                ),
+            ],
+            task_id=7,
+            phase="builder",
+            log_path=log_path,
+            timeout=10,
+        )
+
+    assert exit_code == 0
+    assert "abcdefghi" in output
+
+    stream_events = [e for e in events if (e.get("extra") or {}).get("task_log_stream")]
+    assert stream_events
+    assert stream_events[0]["extra"]["task_log_start"] == 0
+    for item in stream_events:
+        extra = item["extra"]
+        assert isinstance(extra.get("task_log_chunk"), str)
+        assert int(extra.get("task_log_end") or 0) >= int(extra.get("task_log_start") or 0)
+
+    combined = "".join((e.get("extra") or {}).get("task_log_chunk") or "" for e in stream_events)
+    assert "abcdefghi" in combined
+
+
+def test_stop_command_cancels_in_progress_task_without_live_process(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "stop me", agent="codex")
+    db.update_task(task["id"], status="in_progress", active_pid=999999, run_phase="builder")
+
+    monkeypatch.setattr("codepilot.commands.tasks.is_process_alive", lambda pid: False)
+    monkeypatch.setattr("codepilot.commands.tasks.stop_process_tree", lambda pid: True)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["stop", str(task["id"])])
+    current = db.get_task(task["id"])
+
+    assert result.exit_code == 0
+    assert "已停止" in result.output
+    assert current["status"] == "cancelled"
+
+
+def test_logs_command_reads_live_runtime_log(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "show logs", agent="codex")
+    log_path = tmp_path / "task.log"
+    log_path.write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+    db.update_task(task["id"], status="in_progress", current_log_path=str(log_path))
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["logs", str(task["id"]), "--tail", "2"])
+
+    assert result.exit_code == 0
+    assert "line 2" in result.output
+    assert "line 3" in result.output
+
+
+def test_show_command_prints_full_task_detail(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    content = "第一行\n第二行 precise detail should not be truncated"
+    task = db.create_task("demo", "inspect exact task", content=content, agent="codex", depends_on=[1, 2])
+    db.update_task(
+        task["id"],
+        status="failed",
+        error_message="full error message",
+        delivery_record="delivery notes",
+        last_output="last output line",
+    )
+    db.create_task_log(task["id"], "codex", "builder", output="log body", exit_code=1, duration=12)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["show", str(task["id"])])
+
+    assert result.exit_code == 0
+    assert "任务详情" in result.output
+    assert "inspect exact task" in result.output
+    assert "depends_on: #1, #2" in result.output
+    assert content in result.output
+    assert "full error message" in result.output
+    assert "delivery notes" in result.output
+    assert "last output line" in result.output
+    assert "执行日志" in result.output
+    assert "完整日志: codepilot logs" in result.output
+    assert "log body" not in result.output
+
+
+def test_show_json_outputs_full_task_and_logs(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "json detail", content="json content", agent="codex", depends_on=[9])
+    db.create_task_log(task["id"], "codex", "builder", output="full log output", exit_code=0)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["show", str(task["id"]), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "show"
+    assert payload["data"]["task"]["id"] == task["id"]
+    assert payload["data"]["task"]["title"] == "json detail"
+    assert payload["data"]["task"]["content"] == "json content"
+    assert payload["data"]["task"]["depends_on_ids"] == [9]
+    assert payload["data"]["logs"][0]["output"] == "full log output"
+
+
+def test_show_global_json_outputs_full_task_payload(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "global json detail", content="global json content", agent="codex")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--json", "show", str(task["id"])])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "show"
+    assert payload["data"]["task"]["id"] == task["id"]
+    assert payload["data"]["task"]["title"] == "global json detail"
+    assert payload["data"]["task"]["content"] == "global json content"
+    assert payload["data"]["logs"] == []
+
+
+def test_show_logs_flag_prints_full_log_output(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "logs detail", agent="codex")
+    db.create_task_log(task["id"], "codex", "builder", output="full\nlog\nbody", exit_code=None, duration=None)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["show", str(task["id"]), "--logs"])
+
+    assert result.exit_code == 0
+    assert "执行日志" in result.output
+    assert "exit=-" in result.output
+    assert "duration=-" in result.output
+    assert "full\nlog\nbody" in result.output
+    assert "完整日志: codepilot logs" not in result.output
+
+
+def test_show_handles_malformed_depends_on_without_crashing(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "bad depends", agent="codex")
+    with db.get_conn() as conn:
+        conn.execute("UPDATE tasks SET depends_on = ? WHERE id = ?", ("not-json [", task["id"]))
+        conn.commit()
+    db._cache_invalidate("task_by_id")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["show", str(task["id"])])
+
+    assert result.exit_code == 0
+    assert "bad depends" in result.output
+    assert "depends_on: -" in result.output
+    assert "builder: -" in result.output
+    assert "active_pid: -" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_show_json_depends_on_ids_ignore_invalid_entries(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "mixed depends", agent="codex")
+    with db.get_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET depends_on = ? WHERE id = ?",
+            (json.dumps([1, "2", "bad", None, {}, []]), task["id"]),
+        )
+        conn.commit()
+    db._cache_invalidate("task_by_id")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["show", str(task["id"]), "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "show"
+    assert payload["data"]["task"]["depends_on"] == '[1, "2", "bad", null, {}, []]'
+    assert payload["data"]["task"]["depends_on_ids"] == [1, 2]
+
+
+def test_show_missing_task_exits_nonzero_in_text_and_json(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+
+    runner = CliRunner()
+    text_result = runner.invoke(main, ["show", "99999"])
+
+    assert text_result.exit_code != 0
+    assert "任务 #99999 不存在" in text_result.output
+
+    for args in (["show", "99999", "--json"], ["--json", "show", "99999"]):
+        json_result = runner.invoke(main, args)
+
+        assert json_result.exit_code != 0
+        payload = json.loads(json_result.output)
+        assert payload["ok"] is False
+        assert payload["command"] == "show"
+        assert payload["data"] == {"task": None, "logs": []}
+        assert payload["error"]["code"] == "task_not_found"
+
+
+def test_status_verbose_shows_runtime_summary_for_in_progress_task(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "visible task", agent="codex")
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        run_phase="builder",
+        heartbeat_at="2999-01-01T00:00:00",
+        active_pid=None,
+        last_output="running tests",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["status", "-p", "demo", "-v"])
+
+    assert result.exit_code == 0
+    assert "builder" in result.output
+    assert "running tests" in result.output
+
+
+def test_status_json_returns_contract_for_single_project(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    db.create_task("demo", "json status task", agent="codex")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["status", "-p", "demo", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "status"
+    assert payload["data"]["project"] == "demo"
+    assert payload["data"]["stats"]["total"] == 1
+    assert payload["data"]["tasks"][0]["title"] == "json status task"
+
+
+def test_status_global_json_wraps_projects_list_in_contract(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    project_a.mkdir()
+    project_b.mkdir()
+    db.register_project("demo-a", str(project_a))
+    db.register_project("demo-b", str(project_b))
+    db.create_task("demo-a", "task a", agent="codex")
+    db.create_task("demo-b", "task b", agent="codex")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--json", "status"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "status"
+    assert payload["data"]["count"] == 2
+    names = {item["project"] for item in payload["data"]["projects"]}
+    assert names == {"demo-a", "demo-b"}
+
+
+def test_extract_error_hint_humanizes_json_payload():
+    raw = """{"type":"result","subtype":"success","is_error":true,"result":"You've hit your limit · resets Apr 14, 1pm (Asia/Shanghai)"}"""
+
+    hint = ai_mod._extract_error_hint(raw)
+
+    assert "当前账号额度已用完" in hint
+    assert "重置时间 Apr 14, 1pm" in hint
+    assert "{" not in hint

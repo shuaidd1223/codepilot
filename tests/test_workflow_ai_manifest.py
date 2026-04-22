@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import json
+import sys
+import types
+from pathlib import Path
+from zipfile import ZipFile
+
+import click
+import pytest
+from click.testing import CliRunner
+
+from codepilot.agent_support import ai_guide_markdown, command_manifest
+from codepilot import binary as binary_mod
+from codepilot import binary_paths as binary_paths_mod
+from codepilot import db
+from codepilot import ai as ai_mod
+from codepilot import progress_bus
+from codepilot.ai_gateway import GatewayResponse
+from codepilot import runtime as runtime_mod
+from codepilot import webui as webui_mod
+from codepilot.cli import main
+from codepilot.commands import add as add_cmd
+from codepilot.commands import auto as auto_cmd
+from codepilot.commands import run as run_cmd
+from codepilot.config import load_project_config
+from tests.workflow_testkit import init_test_db as _init_test_db
+
+
+def test_ai_manifest_command_outputs_machine_readable_json():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "manifest"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["name"] == "CodePilot"
+    assert any(command["name"] == "status" for command in payload["commands"])
+    assert any(item["command"] == f"{payload['command_name']} ai manifest" for item in payload["structured_outputs"])
+
+
+def test_ai_manifest_command_allows_version_and_command_override():
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["ai", "manifest", "--version", "9.9.9", "--command-name", "mypilot", "--binary-name", "mypilot"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    release_bundle = next(item for item in payload["commands"] if item["name"] == "release_bundle")
+    assert payload["version"] == "9.9.9"
+    assert payload["command_name"] == "mypilot"
+    assert payload["structured_outputs"][0]["command"] == "mypilot ai manifest"
+    assert payload["commands"][0]["syntax"] == "mypilot init <path>"
+    assert "dist/binary/linux-x86_64/mypilot" in release_bundle["examples"][1]
+
+
+def test_repo_ai_manifest_file_stays_in_sync():
+    manifest_path = Path(__file__).resolve().parents[1] / "AI_MANIFEST.json"
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert payload == command_manifest()
+
+
+def test_repo_ai_usage_file_stays_in_sync():
+    guide_path = Path(__file__).resolve().parents[1] / "AI_USAGE.zh-CN.md"
+
+    assert guide_path.read_text(encoding="utf-8") == ai_guide_markdown()
+
+
+def test_ai_guide_command_outputs_markdown_usage():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "guide"])
+
+    assert result.exit_code == 0
+    assert "# CodePilot AI 调用手册" in result.output
+    assert "codepilot status -p <项目名> --json" in result.output
+    assert "codepilot ai manifest" in result.output
+
+
+def test_ai_prompt_command_outputs_short_agent_prompt():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "prompt"])
+
+    assert result.exit_code == 0
+    assert "codepilot \"需求文本\"" in result.output
+    assert "codepilot release prepare --version <版本号>" in result.output
