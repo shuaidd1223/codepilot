@@ -213,34 +213,10 @@ const RootApp = {
     let _navSyncing = false;  /* suppress recursion when hashchange triggers setNav */
 
     function _navToHash(n) {
-      if (!n || !n.project) return '';
-      const p = encodeURIComponent(n.project);
-      if (n.view === 'task'    && n.id) return `#/p/${p}/task/${n.id}`;
-      if (n.view === 'session' && n.id) return `#/p/${p}/session/${n.id}`;
-      if (n.view === 'job'     && n.id) return `#/p/${p}/job/${n.id}`;
-      if (n.view === 'tasks'    ) return `#/p/${p}/tasks`;
-      if (n.view === 'sessions' ) return `#/p/${p}/sessions`;
-      if (n.view === 'jobs'     ) return `#/p/${p}/jobs`;
-      return `#/p/${p}`;
+      return CP.StateBoundary.navToHash(n);
     }
     function _navFromHash(hash) {
-      if (!hash || hash.length < 2) return null;
-      const raw = hash.replace(/^#\/?/, '');
-      const parts = raw.split('/').filter(Boolean);
-      if (parts.length < 2 || parts[0] !== 'p') return null;
-      const project = decodeURIComponent(parts[1]);
-      if (!project) return null;
-      if (parts.length === 2) return { project, view: 'overview', id: null };
-      const view = parts[2];
-      if (['task', 'session', 'job'].includes(view)) {
-        const idNum = Number(parts[3]);
-        if (!Number.isFinite(idNum)) return { project, view: 'overview', id: null };
-        return { project, view, id: idNum };
-      }
-      if (['tasks', 'sessions', 'jobs', 'overview'].includes(view)) {
-        return { project, view, id: null };
-      }
-      return { project, view: 'overview', id: null };
+      return CP.StateBoundary.navFromHash(hash);
     }
     function _persistNav() {
       try { localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify(state.nav)); } catch (e) { /* ignore */ }
@@ -264,25 +240,15 @@ const RootApp = {
       return null;
     }
     const CATEGORY_VIEWS = ['sessions', 'tasks', 'jobs'];
-    const _categoryKey = (project, view) => `${project}/${view}`;
+    const _categoryKey = (project, view) => CP.StateBoundary.categoryKey(project, view);
     function _openProjectCategory(project, view) {
-      for (const v of CATEGORY_VIEWS) {
-        state.expanded[_categoryKey(project, v)] = (v === view);
-      }
+      CP.StateBoundary.openProjectCategory(state, project, view, CATEGORY_VIEWS);
     }
     function _normalizeProjectCategoryExpanded(project) {
-      if (!project) return;
-      const opened = CATEGORY_VIEWS.filter(v => !!state.expanded[_categoryKey(project, v)]);
-      if (opened.length <= 1) return;
-      _openProjectCategory(project, opened[0]);
+      CP.StateBoundary.normalizeProjectCategoryExpanded(state, project, CATEGORY_VIEWS);
     }
     function _viewToCategory(view) {
-      if (!view) return null;
-      if (CATEGORY_VIEWS.includes(view)) return view;
-      if (view === 'session') return 'sessions';
-      if (view === 'task') return 'tasks';
-      if (view === 'job') return 'jobs';
-      return null;
+      return CP.StateBoundary.viewToCategory(view, CATEGORY_VIEWS);
     }
     function _applyRestoredNav(restored) {
       if (!restored || !restored.project) return;
@@ -311,9 +277,7 @@ const RootApp = {
        * show the OLD project's tasks labelled under the new project
        * (classic async race we call "串"). */
       if (partial.project !== undefined && partial.project !== prevProject) {
-        const np = partial.project;
-        state.tasks = (np && state.tasksByProject[np]) || [];
-        state.jobs  = (np && state.jobsByProject[np])  || [];
+        CP.StateBoundary.pivotProjectAliases(state, partial.project);
       }
       _persistNav();
     }
@@ -398,8 +362,7 @@ const RootApp = {
         state.jobsByProject = data.jobs_by_project || {};
         /* Pivot the aliases to whichever project is currently selected. */
         const active = state.nav.project || data.selected_project || null;
-        state.tasks = (active && state.tasksByProject[active]) || [];
-        state.jobs = (active && state.jobsByProject[active]) || [];
+        CP.StateBoundary.pivotProjectAliases(state, active);
         /* auto-pick first project on first load */
         if (!state.nav.project && data.selected_project) {
           state.nav.project = data.selected_project;
@@ -425,149 +388,24 @@ const RootApp = {
       }
     }
 
-    async function loadTaskDetail({ silent = false } = {}) {
-      if (state.nav.view !== 'task' || !state.nav.id) return;
-      const targetId = state.nav.id;
-      const hadCurrent = !!(state.taskDetail && state.taskDetail.id === targetId);
-      if (!silent && !hadCurrent) state.taskDetailLoading = true;
-      state.taskDetailError = '';
-      const reqId = ++loadTaskDetail._reqSeq;
-      try {
-        const data = await CP.api.get(`/api/tasks/${targetId}`);
-        if (reqId !== loadTaskDetail._reqSeq) return;
-        if (state.nav.view === 'task' && state.nav.id === targetId) {
-          const task = (data && typeof data === 'object' && data.id) ? data : null;
-          state.taskDetail = task;
-          state.taskDetailError = task ? '' : '暂无任务详情';
-          if (task && (!state.taskLog.done || state.taskLog.taskId !== targetId)) {
-            loadTaskLog(targetId);
-          }
-        }
-      } catch (err) {
-        if (reqId !== loadTaskDetail._reqSeq) return;
-        if (state.nav.view === 'task' && state.nav.id === targetId) {
-          if (!hadCurrent) state.taskDetail = null;
-          state.taskDetailError = (err && err.message) ? err.message : '任务详情加载失败';
-        }
-      } finally {
-        if (reqId === loadTaskDetail._reqSeq) {
-          state.taskDetailLoading = false;
-        }
-      }
-    }
-    loadTaskDetail._reqSeq = 0;
-
-    let _taskLogFlushRaf = 0;
-    let _taskLogPendingText = '';
-    let _taskLogPendingTaskId = null;
-    function _cancelTaskLogFlush() {
-      if (_taskLogFlushRaf) {
-        cancelAnimationFrame(_taskLogFlushRaf);
-        _taskLogFlushRaf = 0;
-      }
-      _taskLogPendingText = '';
-      _taskLogPendingTaskId = null;
-    }
-    function _flushTaskLogPending() {
-      if (!_taskLogPendingText || !_taskLogPendingTaskId) return;
-      if (state.taskLog.taskId === _taskLogPendingTaskId) {
-        state.taskLog.text += _taskLogPendingText;
-      }
-      _taskLogPendingText = '';
-      _taskLogPendingTaskId = null;
-    }
-    function _queueTaskLogText(taskId, chunk) {
-      if (!chunk) return;
-      if (state.taskLog.taskId !== taskId) return;
-      if (_taskLogPendingTaskId !== taskId) {
-        _taskLogPendingText = '';
-        _taskLogPendingTaskId = taskId;
-      }
-      _taskLogPendingText += chunk;
-      if (_taskLogFlushRaf) return;
-      _taskLogFlushRaf = requestAnimationFrame(() => {
-        _taskLogFlushRaf = 0;
-        _flushTaskLogPending();
+    let _taskDetailBoundary = null;
+    function _ensureTaskDetailBoundary() {
+      if (_taskDetailBoundary) return _taskDetailBoundary;
+      _taskDetailBoundary = CP.createTaskDetailBoundary({
+        state,
+        pushToast,
+        loadDashboard,
       });
+      return _taskDetailBoundary;
     }
-    function _asFiniteNumber(value) {
-      const n = Number(value);
-      return Number.isFinite(n) ? n : null;
+    async function loadTaskDetail(options = {}) {
+      return _ensureTaskDetailBoundary().loadTaskDetail(options);
     }
     function _handleTaskLogStreamEvent(event) {
-      const extra = (event && event.extra) || null;
-      if (!extra || !extra.task_log_stream) return false;
-      const tid = state.nav.view === 'task' ? state.nav.id : null;
-      if (!tid || event.task_id !== tid) return true;
-      if (state.taskLog.taskId !== tid) {
-        loadTaskLog(tid, { reset: true });
-        return true;
-      }
-      const chunk = (typeof extra.task_log_chunk === 'string') ? extra.task_log_chunk : '';
-      const start = _asFiniteNumber(extra.task_log_start);
-      const end = _asFiniteNumber(extra.task_log_end);
-      const expected = _asFiniteNumber(state.taskLog.nextOffset) || 0;
-      if (!chunk || start == null || end == null || end < start) {
-        loadTaskLog(tid);
-        return true;
-      }
-      if (start !== expected) {
-        /* Gap / reordering (e.g. SSE queue dropped an older stream frame):
-         * fall back to file-delta API to reconcile exact bytes. */
-        loadTaskLog(tid);
-        return true;
-      }
-      _queueTaskLogText(tid, chunk);
-      state.taskLog.nextOffset = end;
-      state.taskLog.size = Math.max(state.taskLog.size || 0, end);
-      state.taskLog.done = false;
-      return true;
+      return _ensureTaskDetailBoundary().handleTaskLogStreamEvent(event);
     }
-
-    /* Incremental log loader. If `reset` is true (task changed / first open)
-     * we drop the previous buffer and fetch from offset 0; otherwise we ask
-     * the backend only for bytes past `nextOffset` and append. Called by:
-     *   - selectTask → reset fetch.
-     *   - SSE event with task_id == current task → delta fetch.
-     *   - loadTaskDetail fallback while the task is still running.
-     * Keeps looping until `done` is true so a single change-event can drain
-     * multi-chunk backlogs without waiting for the next trigger. */
-    async function loadTaskLog(taskId, { reset = false } = {}) {
-      if (!taskId) return;
-      if (reset || state.taskLog.taskId !== taskId) {
-        _cancelTaskLogFlush();
-        state.taskLog = { taskId, text: '', nextOffset: 0, size: 0, done: false, loading: false };
-      }
-      if (state.taskLog.loading) return;
-      state.taskLog.loading = true;
-      try {
-        /* Drain backlogs quickly but stop once the server reports no forward
-         * progress; otherwise we'd spin on the same offset and lock the UI. */
-        let guard = 64;
-        while (guard-- > 0) {
-          if (state.taskLog.taskId !== taskId) return;  /* user switched tasks */
-          const off = state.taskLog.nextOffset || 0;
-          const data = await CP.api.get(`/api/tasks/${taskId}/log?offset=${off}`);
-          if (state.taskLog.taskId !== taskId) return;
-          const chunk = (data && typeof data.text === 'string') ? data.text : '';
-          const nextOffset = Number.isFinite(data && data.next_offset) ? data.next_offset : off;
-          if (chunk) _queueTaskLogText(taskId, chunk);
-          state.taskLog.nextOffset = nextOffset;
-          state.taskLog.size = Number.isFinite(data && data.size) ? data.size : state.taskLog.size;
-          state.taskLog.done = !!(data && data.done);
-          if (state.taskLog.done) break;
-          if (!chunk && nextOffset <= off) break;
-        }
-      } catch (_err) {
-        /* Silent — transient fetch failure; next trigger will retry. */
-      } finally {
-        if (_taskLogFlushRaf) {
-          cancelAnimationFrame(_taskLogFlushRaf);
-          _taskLogFlushRaf = 0;
-        }
-        _flushTaskLogPending();
-        state.taskLog.loading = false;
-      }
+    async function loadTaskLog(taskId, options = {}) {
+      return _ensureTaskDetailBoundary().loadTaskLog(taskId, options);
     }
 
     async function loadDaemonHealth() {
@@ -606,45 +444,7 @@ const RootApp = {
 
     /* ── Actions ─────────────────────────────────────── */
     async function taskAction(taskId, action) {
-      /* Per-task in-flight tracking — previously we set the global
-       * `state.sending` which disabled every button on the page for a
-       * remote click elsewhere. Now only this task's row shows the
-       * pending visual, other interactions stay live. */
-      state.pendingTasks[taskId] = action;
-      try {
-        const out = await CP.api.post(`/api/tasks/${taskId}/${action}`, {});
-        pushToast(out.message || '操作完成', 'success');
-        /* Optimistically update the task in state immediately so the UI
-         * reflects the new status without waiting for the full dashboard
-         * round-trip. The subsequent loadDashboard reconciles. */
-        if (out && out.task) {
-          _mergeTaskIntoState(out.task);
-          if (state.nav.view === 'task' && state.nav.id === taskId) {
-            state.taskDetail = { ...(state.taskDetail || {}), ...out.task };
-          }
-        }
-        await loadDashboard();
-        if (state.nav.view === 'task' && state.nav.id === taskId) await loadTaskDetail();
-      } catch (err) {
-        pushToast(err.message, 'error');
-      } finally {
-        delete state.pendingTasks[taskId];
-      }
-    }
-
-    /* Merge a single task's fresh payload into every cached location so the
-     * UI reflects the update before the next full refresh lands. */
-    function _mergeTaskIntoState(t) {
-      if (!t || !t.id) return;
-      const pname = t.project;
-      const patch = (arr) => {
-        if (!Array.isArray(arr)) return arr;
-        const i = arr.findIndex(x => x.id === t.id);
-        if (i >= 0) { arr.splice(i, 1, { ...arr[i], ...t }); return arr; }
-        return arr;
-      };
-      patch(state.tasks);
-      if (pname) patch(state.tasksByProject[pname]);
+      return _ensureTaskDetailBoundary().taskAction(taskId, action);
     }
 
     async function submitGoal() {
