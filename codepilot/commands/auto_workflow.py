@@ -12,6 +12,7 @@ take effect inside this workflow.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import inspect
 import json
 import sys
@@ -841,6 +842,186 @@ def _run_requirement_backlog(
     )
 
 
+@dataclass(frozen=True)
+class _RequirementWorkflowRuntime:
+    title: str
+    project_name: str
+    project_path: str
+    planner: str
+    executor: str
+    auto_commit: bool
+    max_tasks: int
+    max_retries: int
+    task_agent: str
+    two_stage_enabled: bool
+
+
+@dataclass
+class _RequirementDecisionResult:
+    breakdown: dict
+    complexity: str
+    should_split: bool
+    created_tasks: list[dict]
+    will_execute: bool
+    payload: dict
+
+
+def _resolve_requirement_runtime(
+    *,
+    shell,
+    project_info: dict,
+    title: str,
+    planner: Optional[str],
+    task_agent: Optional[str],
+    executor: Optional[str],
+    auto_commit: Optional[bool],
+    max_tasks: int,
+    max_retries: int,
+) -> _RequirementWorkflowRuntime:
+    normalized_title = normalize_requirement_text(title)
+    if not normalized_title:
+        raise click.ClickException("需求文本不能为空")
+
+    project_name = project_info["name"]
+    project_path = project_info["path"]
+    effective = _resolve_effective_options(
+        project_info,
+        planner=planner,
+        executor=executor,
+        auto_commit=auto_commit,
+        max_tasks=max_tasks,
+        max_retries=max_retries,
+    )
+    resolved_executor = effective["executor"]
+    resolved_task_agent = shell._resolve_task_agent(project_info, task_agent, resolved_executor)
+    return _RequirementWorkflowRuntime(
+        title=normalized_title,
+        project_name=project_name,
+        project_path=project_path,
+        planner=effective["planner"],
+        executor=resolved_executor,
+        auto_commit=effective["auto_commit"],
+        max_tasks=effective["max_tasks"],
+        max_retries=effective["max_retries"],
+        task_agent=resolved_task_agent,
+        two_stage_enabled=_resolve_planning_mode(project_info),
+    )
+
+
+def _run_requirement_decision_phase(
+    *,
+    shell,
+    project_info: dict,
+    runtime: _RequirementWorkflowRuntime,
+    priority: str,
+    execute: Optional[bool],
+) -> _RequirementDecisionResult:
+    from codepilot.output import echo
+
+    echo(f"[cyan]收到需求：{runtime.title}[/cyan]")
+    breakdown = _plan_requirement_breakdown(
+        shell=shell,
+        title=runtime.title,
+        planner=runtime.planner,
+        priority=priority,
+        max_tasks=runtime.max_tasks,
+        project_name=runtime.project_name,
+        project_path=runtime.project_path,
+        project_info=project_info,
+        two_stage_enabled=runtime.two_stage_enabled,
+    )
+    complexity, should_split = _derive_breakdown_meta(breakdown)
+    _echo_dedup_skips(breakdown.get("dedup_skipped") or [])
+    created_tasks = _create_tasks_from_breakdown(
+        breakdown=breakdown,
+        project_name=runtime.project_name,
+        project_path=runtime.project_path,
+        task_agent=runtime.task_agent,
+        priority=priority,
+        max_retries=runtime.max_retries,
+    )
+    will_execute = _should_execute(project_info, execute)
+    payload = _build_requirement_payload(
+        project_name=runtime.project_name,
+        breakdown=breakdown,
+        complexity=complexity,
+        should_split=should_split,
+        task_agent=runtime.task_agent,
+        created_tasks=created_tasks,
+        will_execute=will_execute,
+    )
+    return _RequirementDecisionResult(
+        breakdown=breakdown,
+        complexity=complexity,
+        should_split=should_split,
+        created_tasks=created_tasks,
+        will_execute=will_execute,
+        payload=payload,
+    )
+
+
+def _execute_requirement_json_phase(
+    *,
+    shell,
+    runtime: _RequirementWorkflowRuntime,
+    decision: _RequirementDecisionResult,
+) -> dict:
+    payload = decision.payload
+    if decision.will_execute:
+        payload["run"] = shell.run_backlog(
+            runtime.project_name,
+            once=False,
+            limit=len(decision.created_tasks),
+            executor=runtime.executor,
+            auto_commit=runtime.auto_commit,
+        )
+    return payload
+
+
+def _execute_requirement_plain_phase(
+    *,
+    shell,
+    runtime: _RequirementWorkflowRuntime,
+    decision: _RequirementDecisionResult,
+    quiet: bool,
+) -> dict:
+    from codepilot.output import echo
+
+    payload = decision.payload
+    _emit_non_json_plan_output(
+        shell=shell,
+        project_name=runtime.project_name,
+        breakdown=decision.breakdown,
+        created_tasks=decision.created_tasks,
+        complexity=decision.complexity,
+        should_split=decision.should_split,
+        task_agent=runtime.task_agent,
+        quiet=quiet,
+    )
+
+    if not decision.will_execute:
+        echo()
+        echo("[dim]已完成规划，未自动执行[/dim]")
+        return payload
+
+    echo()
+    echo("[cyan]开始自动执行...[/cyan]")
+    stats = _run_requirement_backlog(
+        shell=shell,
+        project_name=runtime.project_name,
+        task_count=len(decision.created_tasks),
+        executor=runtime.executor,
+        auto_commit=runtime.auto_commit,
+        quiet=quiet,
+    )
+    payload["run"] = stats
+    echo(
+        f"\n[dim]Workflow 完成: processed={stats['processed']} done={stats['done']} "
+        f"failed={stats['failed']} requeued={stats['requeued']}[/dim]"
+    )
+    return payload
+
+
 def run_requirement_workflow(
     *,
     project_info: dict,
@@ -856,113 +1037,43 @@ def run_requirement_workflow(
     json_mode: bool = False,
     quiet: bool = False,
 ) -> dict:
-    """Plan one natural-language requirement and optionally execute it."""
-    from codepilot.output import echo
-
+    """Plan one requirement (decision phase) and optionally execute it."""
     shell = _shell()
     if project_info.get("is_temporary"):
         raise click.ClickException(
             "当前为公共临时会话。需求/任务必须在已注册项目路径下执行，"
             "请先在目标目录运行 codepilot init，或使用 --project 指定已注册项目。"
         )
-
-    title = normalize_requirement_text(title)
-    if not title:
-        raise click.ClickException("需求文本不能为空")
-
-    project_name = project_info["name"]
-    project_path = project_info["path"]
-    effective = _resolve_effective_options(
-        project_info,
+    runtime = _resolve_requirement_runtime(
+        shell=shell,
+        project_info=project_info,
+        title=title,
         planner=planner,
+        task_agent=task_agent,
         executor=executor,
         auto_commit=auto_commit,
         max_tasks=max_tasks,
         max_retries=max_retries,
     )
-    planner = effective["planner"]
-    executor = effective["executor"]
-    auto_commit = effective["auto_commit"]
-    max_tasks = effective["max_tasks"]
-    max_retries = effective["max_retries"]
-    task_agent = shell._resolve_task_agent(project_info, task_agent, executor)
-    two_stage_enabled = _resolve_planning_mode(project_info)
-
-    echo(f"[cyan]收到需求：{title}[/cyan]")
-    breakdown = _plan_requirement_breakdown(
+    decision = _run_requirement_decision_phase(
         shell=shell,
-        title=title,
-        planner=planner,
-        priority=priority,
-        max_tasks=max_tasks,
-        project_name=project_name,
-        project_path=project_path,
         project_info=project_info,
-        two_stage_enabled=two_stage_enabled,
-    )
-    complexity, should_split = _derive_breakdown_meta(breakdown)
-    _echo_dedup_skips(breakdown.get("dedup_skipped") or [])
-    created_tasks = _create_tasks_from_breakdown(
-        breakdown=breakdown,
-        project_name=project_name,
-        project_path=project_path,
-        task_agent=task_agent,
+        runtime=runtime,
         priority=priority,
-        max_retries=max_retries,
+        execute=execute,
     )
-
-    will_execute = _should_execute(project_info, execute)
-    payload = _build_requirement_payload(
-        project_name=project_name,
-        breakdown=breakdown,
-        complexity=complexity,
-        should_split=should_split,
-        task_agent=task_agent,
-        created_tasks=created_tasks,
-        will_execute=will_execute,
-    )
-
     if json_mode:
-        if will_execute:
-            payload["run"] = shell.run_backlog(
-                project_name,
-                once=False,
-                limit=len(created_tasks),
-                executor=executor,
-                auto_commit=auto_commit,
-            )
+        payload = _execute_requirement_json_phase(
+            shell=shell,
+            runtime=runtime,
+            decision=decision,
+        )
         click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return payload
 
-    _emit_non_json_plan_output(
+    return _execute_requirement_plain_phase(
         shell=shell,
-        project_name=project_name,
-        breakdown=breakdown,
-        created_tasks=created_tasks,
-        complexity=complexity,
-        should_split=should_split,
-        task_agent=task_agent,
+        runtime=runtime,
+        decision=decision,
         quiet=quiet,
     )
-
-    if not will_execute:
-        echo()
-        echo("[dim]已完成规划，未自动执行[/dim]")
-        return payload
-
-    echo()
-    echo("[cyan]开始自动执行...[/cyan]")
-    stats = _run_requirement_backlog(
-        shell=shell,
-        project_name=project_name,
-        task_count=len(created_tasks),
-        executor=executor,
-        auto_commit=auto_commit,
-        quiet=quiet,
-    )
-    payload["run"] = stats
-    echo(
-        f"\n[dim]Workflow 完成: processed={stats['processed']} done={stats['done']} "
-        f"failed={stats['failed']} requeued={stats['requeued']}[/dim]"
-    )
-    return payload
