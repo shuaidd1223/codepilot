@@ -14,7 +14,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from codepilot import db
 from codepilot.commands.auto import (  # noqa: F401 — patched in tests
@@ -149,6 +149,24 @@ class _SessionDispatchContext:
     text: str
     category: str
     gateway_options: object
+
+
+@dataclass(frozen=True)
+class _SessionDispatchDecision:
+    intent: str
+    pending_clarification: Optional[dict] = None
+
+
+def _dispatch_with_intent_handlers(
+    intent: str,
+    *,
+    handlers: dict[str, Callable[[], dict]],
+    fallback: Callable[[], dict],
+) -> dict:
+    handler = handlers.get(intent)
+    if handler is None:
+        return fallback()
+    return handler()
 
 
 def _assess_requirement(
@@ -823,10 +841,10 @@ def _dispatch_goal_requirement(ctx: _GoalDispatchContext, *, intent: str) -> dic
     return result
 
 
-def _dispatch_goal_by_intent(ctx: _GoalDispatchContext) -> dict:
+def _resolve_goal_intent(ctx: _GoalDispatchContext) -> str:
     # Mid-clarification: treat the new text as the user's answer to the prior
     # round and skip re-classification.
-    intent = resolve_turn_intent(
+    return resolve_turn_intent(
         ctx.text,
         category=ctx.category,
         forced_intent="requirement" if ctx.original_title else None,
@@ -839,11 +857,17 @@ def _dispatch_goal_by_intent(ctx: _GoalDispatchContext) -> dict:
         fallback_intent="requirement",
     )
 
-    if intent == "command":
-        return _dispatch_goal_command(ctx)
-    if intent == "question":
-        return _dispatch_goal_question(ctx)
-    return _dispatch_goal_requirement(ctx, intent=intent)
+
+def _dispatch_goal_by_intent(ctx: _GoalDispatchContext) -> dict:
+    intent = _resolve_goal_intent(ctx)
+    return _dispatch_with_intent_handlers(
+        intent,
+        handlers={
+            "command": lambda: _dispatch_goal_command(ctx),
+            "question": lambda: _dispatch_goal_question(ctx),
+        },
+        fallback=lambda: _dispatch_goal_requirement(ctx, intent=intent),
+    )
 
 
 def submit_goal_action(
@@ -1040,18 +1064,20 @@ def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pendin
     return _session_payload("requirement", reply, refined_title=refined, task_ids=task_ids)
 
 
-def _dispatch_session_qa_or_command(ctx: _SessionDispatchContext, *, intent: str) -> dict:
-    response_handlers = {
-        "command": command_intent_guidance,
-        "question": lambda: _answer_project_question(
-            ctx.project_info,
-            ctx.text,
-            gateway_options=ctx.gateway_options,
-        ),
-    }
-    reply = response_handlers[intent]()
-    db.create_session_message(ctx.session_id, "assistant", reply, intent=intent)
-    return _session_payload(intent, reply)
+def _dispatch_session_command(ctx: _SessionDispatchContext) -> dict:
+    reply = command_intent_guidance()
+    db.create_session_message(ctx.session_id, "assistant", reply, intent="command")
+    return _session_payload("command", reply)
+
+
+def _dispatch_session_question(ctx: _SessionDispatchContext) -> dict:
+    reply = _answer_project_question(
+        ctx.project_info,
+        ctx.text,
+        gateway_options=ctx.gateway_options,
+    )
+    db.create_session_message(ctx.session_id, "assistant", reply, intent="question")
+    return _session_payload("question", reply)
 
 
 def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) -> dict:
@@ -1083,13 +1109,18 @@ def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) 
     return _session_payload(intent, reply, refined_title=refined, task_ids=task_ids)
 
 
-def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: list[dict]) -> dict:
+def _resolve_session_dispatch_decision(
+    ctx: _SessionDispatchContext,
+    existing_messages: list[dict],
+) -> _SessionDispatchDecision:
     # ── Multi-turn clarification: continue only for default auto routing. ──
     pending = _reconstruct_clarification_state(existing_messages)
     if pending and ctx.category == "auto":
-        return _dispatch_session_pending_clarification(ctx, pending)
+        return _SessionDispatchDecision(
+            intent=pending.get("intent") or "requirement",
+            pending_clarification=pending,
+        )
 
-    db.create_session_message(ctx.session_id, "user", ctx.text)
     intent = resolve_turn_intent(
         ctx.text,
         category=ctx.category,
@@ -1101,9 +1132,23 @@ def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: l
         },
         fallback_intent="requirement",
     )
-    if intent in {"command", "question"}:
-        return _dispatch_session_qa_or_command(ctx, intent=intent)
-    return _dispatch_session_requirement(ctx, intent=intent)
+    return _SessionDispatchDecision(intent=intent)
+
+
+def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: list[dict]) -> dict:
+    decision = _resolve_session_dispatch_decision(ctx, existing_messages)
+    if decision.pending_clarification:
+        return _dispatch_session_pending_clarification(ctx, decision.pending_clarification)
+
+    db.create_session_message(ctx.session_id, "user", ctx.text)
+    return _dispatch_with_intent_handlers(
+        decision.intent,
+        handlers={
+            "command": lambda: _dispatch_session_command(ctx),
+            "question": lambda: _dispatch_session_question(ctx),
+        },
+        fallback=lambda: _dispatch_session_requirement(ctx, intent=decision.intent),
+    )
 
 
 def send_session_message_action(session_id: int, text: str, *, category: str = "auto") -> dict:
