@@ -8,6 +8,9 @@ CP.Components.ChatView = Vue.defineComponent({
     s() { return this.cp.state; },
     session() { return this.s.sessionDetail; },
     messages() { return this.s.sessionMessages; },
+    chatPending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.SESSION_SEND); },
+    clarifyPending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.SESSION_CLARIFY_REPLY); },
+    deletePending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.SESSION_DELETE); },
     /* If the most recent assistant message is intent=clarify, surface its
      * questions as a prompt card with a dedicated reply box. */
     pendingClarify() {
@@ -53,7 +56,7 @@ CP.Components.ChatView = Vue.defineComponent({
             <div class="chat-title">#{{ session.id }} {{ session.title }}</div>
             <div class="muted tiny">项目: {{ session.project }} · 创建 {{ $cp.fmtTime(session.created_at) }}</div>
           </div>
-          <button class="btn btn-danger-outline" @click="del" :disabled="s.sending">
+          <button class="btn btn-danger-outline" @click="del" :disabled="deletePending">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
             删除
           </button>
@@ -80,8 +83,8 @@ CP.Components.ChatView = Vue.defineComponent({
               maxlength="4096"
               placeholder="例如：想优化 webui 的首屏加载；目标 &lt; 1 秒"
               style="flex:1">
-            <button class="btn btn-primary" @click="sendClarify" :disabled="s.sending || !clarifyReply.trim()">
-              <span v-if="s.sending" class="spinner"></span>
+            <button class="btn btn-primary" @click="sendClarify" :disabled="clarifyPending || !clarifyReply.trim()">
+              <span v-if="clarifyPending" class="spinner"></span>
               回答
             </button>
           </div>
@@ -93,8 +96,8 @@ CP.Components.ChatView = Vue.defineComponent({
             <option value="question">问题</option>
             <option value="requirement">需求</option>
           </select>
-          <button class="btn btn-primary" @click="send" :disabled="s.sending || !s.chatText.trim()">
-            <span v-if="s.sending" class="spinner"></span>
+          <button class="btn btn-primary" @click="send" :disabled="chatPending || !s.chatText.trim()">
+            <span v-if="chatPending" class="spinner"></span>
             <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
             发送
           </button>

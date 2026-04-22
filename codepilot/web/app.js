@@ -36,6 +36,10 @@ const RootApp = {
       /* global UI */
       autoRefresh: true, timer: null,
       loading: false, sending: false, newSessionLoading: false,
+      /* Action protocol: frontend keeps per-action pending flags keyed by
+       * stable action names so each view can subscribe only to the action it
+       * triggers (instead of one global `sending` lock). */
+      actionPending: {},
       projectSubmitting: false, deletingProject: '',
       servicePending: '',
       /* Map of taskId → pending action name (retry / stop / promote / split).
@@ -84,6 +88,50 @@ const RootApp = {
      * the merged toast stays visible long enough for the user to notice it
      * was updated. */
     const _toastTimers = new Map();
+    const ACTION_KEYS = Object.freeze({
+      GOAL_SUBMIT: 'goal.submit',
+      COMPOSER_SUBMIT: 'composer.submit',
+      SESSION_SEND: 'session.send',
+      SESSION_DELETE: 'session.delete',
+      SESSION_CLARIFY_REPLY: 'session.clarify.reply',
+    });
+    const _REFRESH_BLOCKING_ACTIONS = new Set([
+      ACTION_KEYS.GOAL_SUBMIT,
+      ACTION_KEYS.COMPOSER_SUBMIT,
+      ACTION_KEYS.SESSION_SEND,
+      ACTION_KEYS.SESSION_DELETE,
+      ACTION_KEYS.SESSION_CLARIFY_REPLY,
+    ]);
+    function _syncLegacySending() {
+      /* Backward-compatible aggregate flag retained for existing call sites. */
+      state.sending = Object.values(state.actionPending || {}).some(Boolean);
+    }
+    function _isActionPending(actionKey) {
+      if (!actionKey) return false;
+      return !!state.actionPending[actionKey];
+    }
+    function _setActionPending(actionKey, pending) {
+      if (!actionKey) return;
+      state.actionPending[actionKey] = !!pending;
+      _syncLegacySending();
+    }
+    function _isRefreshBlocked() {
+      for (const key of _REFRESH_BLOCKING_ACTIONS) {
+        if (_isActionPending(key)) return true;
+      }
+      return false;
+    }
+    async function _runScopedAction(actionKey, runner) {
+      if (_isActionPending(actionKey)) return false;
+      _setActionPending(actionKey, true);
+      try {
+        await runner();
+        return true;
+      } finally {
+        _setActionPending(actionKey, false);
+      }
+    }
+
     function pushToast(message, type = 'info') {
       const existing = state.toasts.find(t => t.message === message && t.type === type);
       if (existing) {
@@ -333,14 +381,17 @@ const RootApp = {
      * call time and bails out if the user has since switched context. This
      * prevents a slow response for project A from overwriting state after
      * the user jumped to project B (classic async race in dashboards). */
+    let _dashboardReqSeq = 0;
     async function loadDashboard() {
-      if (state.sending) return;
+      if (_isRefreshBlocked()) return;
+      const reqId = ++_dashboardReqSeq;
       state.loading = true;
       try {
         /* One bulk fetch hydrates EVERY project's tasks/jobs. Switching
          * projects after this is a pure nav update — no network, no
          * loading flicker, no cross-project data leaks. */
         const data = await CP.api.get('/api/projects');
+        if (reqId !== _dashboardReqSeq) return;
         state.projects = data.projects || [];
         state.events = data.events || [];
         state.tasksByProject = data.tasks_by_project || {};
@@ -356,6 +407,7 @@ const RootApp = {
           _persistNav();
         }
         await loadSessions();
+        if (reqId !== _dashboardReqSeq) return;
         /* if viewing a task/session that went away, fall back */
         if (state.nav.view === 'task' && state.nav.id) {
           if (!state.tasks.find(t => t.id === state.nav.id)) {
@@ -367,7 +419,9 @@ const RootApp = {
       } catch (err) {
         pushToast(err.message, 'error');
       } finally {
-        state.loading = false;
+        if (reqId === _dashboardReqSeq) {
+          state.loading = false;
+        }
       }
     }
 
@@ -597,85 +651,88 @@ const RootApp = {
       if (!state.nav.project) { pushToast('先选择一个项目', 'error'); return; }
       const text = state.goalText.trim();
       if (!text) { pushToast('输入不能为空', 'error'); return; }
-      state.sending = true; state.answer = null;
-      try {
-        const payload = {
-          project: state.nav.project, text, category: state.goalCategory,
-        };
-        if (state.goalClarify) {
-          payload.original_title = state.goalClarify.original_title;
-          payload.qa_history = state.goalClarify.qa_history || [];
-        }
-        const out = await CP.api.post('/api/goal', payload);
-        if (out.intent === 'question' || out.intent === 'command') {
-          state.answer = out.message || '完成';
-          state.goalClarify = null;
-        } else if (out.intent === 'clarify') {
-          const questions = out.questions || [];
-          state.goalClarify = {
-            original_title: out.original_title || text,
-            qa_history: out.qa_history || [],
-            questions,
+      await _runScopedAction(ACTION_KEYS.GOAL_SUBMIT, async () => {
+        state.answer = null;
+        try {
+          const payload = {
+            project: state.nav.project, text, category: state.goalCategory,
           };
-          state.answer = `${out.message || '需要补充信息'}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
+          if (state.goalClarify) {
+            payload.original_title = state.goalClarify.original_title;
+            payload.qa_history = state.goalClarify.qa_history || [];
+          }
+          const out = await CP.api.post('/api/goal', payload);
+          if (out.intent === 'question' || out.intent === 'command') {
+            state.answer = out.message || '完成';
+            state.goalClarify = null;
+          } else if (out.intent === 'clarify') {
+            const questions = out.questions || [];
+            state.goalClarify = {
+              original_title: out.original_title || text,
+              qa_history: out.qa_history || [],
+              questions,
+            };
+            state.answer = `${out.message || '需要补充信息'}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
+            state.goalText = '';
+            return;
+          } else {
+            state.goalClarify = null;
+            pushToast(out.message || '提交成功', 'success');
+            await loadDashboard();
+          }
           state.goalText = '';
-          return;
-        } else {
-          state.goalClarify = null;
-          pushToast(out.message || '提交成功', 'success');
-          await loadDashboard();
+        } catch (err) {
+          pushToast(err.message, 'error');
         }
-        state.goalText = '';
-      } catch (err) {
-        pushToast(err.message, 'error');
-      } finally { state.sending = false; }
+      });
     }
 
     async function submitComposer() {
       if (!state.nav.project) { pushToast('先选择一个项目', 'error'); return; }
       const title = state.composer.title.trim();
       if (!title) { pushToast('标题不能为空', 'error'); return; }
-      state.sending = true;
-      const payload = {
-        project: state.nav.project, title,
-        content: state.composer.content,
-        priority: state.composer.priority,
-        agent: state.composer.agent,
-        planner: state.composer.planner,
-        execute: state.composer.execute,
-      };
-      if (state.composerMode === 'requirement' && state.composerClarify) {
-        payload.original_title = state.composerClarify.original_title;
-        payload.qa_history = state.composerClarify.qa_history || [];
-      }
-      try {
-        let out;
-        if (state.composerMode === 'task') {
-          out = await CP.api.post('/api/tasks', payload);
-          if (out.task) selectTask(state.nav.project, out.task.id);
-          state.composer.content = '';
-        } else {
-          out = await CP.api.post('/api/requirements', payload);
-          if (out.intent === 'clarify') {
-            const questions = out.questions || [];
-            state.composerClarify = {
-              original_title: out.original_title || title,
-              qa_history: out.qa_history || [],
-              questions,
-            };
-            state.answer = `${out.message || '需要补充信息'}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
-            state.composer.title = '';
-            pushToast('需要补充信息', 'warning');
-            return;
-          }
-          state.composerClarify = null;
+      await _runScopedAction(ACTION_KEYS.COMPOSER_SUBMIT, async () => {
+        const payload = {
+          project: state.nav.project, title,
+          content: state.composer.content,
+          priority: state.composer.priority,
+          agent: state.composer.agent,
+          planner: state.composer.planner,
+          execute: state.composer.execute,
+        };
+        if (state.composerMode === 'requirement' && state.composerClarify) {
+          payload.original_title = state.composerClarify.original_title;
+          payload.qa_history = state.composerClarify.qa_history || [];
         }
-        state.composer.title = '';
-        pushToast(out.message || '提交成功', 'success');
-        await loadDashboard();
-      } catch (err) {
-        pushToast(err.message, 'error');
-      } finally { state.sending = false; }
+        try {
+          let out;
+          if (state.composerMode === 'task') {
+            out = await CP.api.post('/api/tasks', payload);
+            if (out.task) selectTask(state.nav.project, out.task.id);
+            state.composer.content = '';
+          } else {
+            out = await CP.api.post('/api/requirements', payload);
+            if (out.intent === 'clarify') {
+              const questions = out.questions || [];
+              state.composerClarify = {
+                original_title: out.original_title || title,
+                qa_history: out.qa_history || [],
+                questions,
+              };
+              state.answer = `${out.message || '需要补充信息'}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
+              state.composer.title = '';
+              pushToast('需要补充信息', 'warning');
+              return;
+            }
+            state.composerClarify = null;
+          }
+          state.composer.title = '';
+          pushToast(out.message || '提交成功', 'success');
+          await loadDashboard();
+        } catch (err) {
+          pushToast(err.message, 'error');
+        }
+      });
     }
 
     async function newSession() {
@@ -766,17 +823,18 @@ const RootApp = {
       if (state.nav.view !== 'session' || !state.nav.id) return;
       const text = state.chatText.trim();
       if (!text) return;
-      state.sending = true;
-      try {
-        await CP.api.post(`/api/sessions/${state.nav.id}/messages`, {
-          text, category: state.chatCategory,
-        });
-        state.chatText = '';
-        await loadSessionChat();
-        await loadSessions();
-      } catch (err) {
-        pushToast(err.message, 'error');
-      } finally { state.sending = false; }
+      await _runScopedAction(ACTION_KEYS.SESSION_SEND, async () => {
+        try {
+          await CP.api.post(`/api/sessions/${state.nav.id}/messages`, {
+            text, category: state.chatCategory,
+          });
+          state.chatText = '';
+          await loadSessionChat();
+          await loadSessions();
+        } catch (err) {
+          pushToast(err.message, 'error');
+        }
+      });
     }
 
     async function deleteSession() {
@@ -790,17 +848,18 @@ const RootApp = {
       });
       if (!ok) return;
       const sid = state.nav.id;
-      state.sending = true;
-      try {
-        await CP.api.del(`/api/sessions/${sid}`);
-        setNav({ view: 'sessions', id: null });
-        state.sessionDetail = null;
-        state.sessionMessages = [];
-        await loadSessions();
-        pushToast('会话已删除', 'success');
-      } catch (err) {
-        pushToast(err.message, 'error');
-      } finally { state.sending = false; }
+      await _runScopedAction(ACTION_KEYS.SESSION_DELETE, async () => {
+        try {
+          await CP.api.del(`/api/sessions/${sid}`);
+          setNav({ view: 'sessions', id: null });
+          state.sessionDetail = null;
+          state.sessionMessages = [];
+          await loadSessions();
+          pushToast('会话已删除', 'success');
+        } catch (err) {
+          pushToast(err.message, 'error');
+        }
+      });
     }
 
     /* ── Refresh scheduling ──────────────────────────── *
@@ -828,7 +887,7 @@ const RootApp = {
       }, REFRESH_DEBOUNCE_MS);
     }
     function _runRefresh() {
-      if (state.sending) return;
+      if (_isRefreshBlocked()) return;
       loadDashboard();
       if (state.nav.view === 'session' && state.nav.id) loadSessionChat();
       /* loadTaskLog is kicked directly from the SSE handler with the exact
@@ -1007,20 +1066,19 @@ const RootApp = {
     /* ── Clarification quick-reply ───────────────────── */
     async function submitClarifyAnswer(sessionId, answerText) {
       if (!answerText || !answerText.trim()) return;
-      state.sending = true;
-      try {
-        await CP.api.post(`/api/sessions/${sessionId}/messages`, {
-          text: answerText.trim(),
-          category: 'auto',
-        });
-        delete state.clarifyDrafts[sessionId];
-        await loadSessionChat();
-        await loadSessions();
-      } catch (err) {
-        pushToast(err.message, 'error');
-      } finally {
-        state.sending = false;
-      }
+      await _runScopedAction(ACTION_KEYS.SESSION_CLARIFY_REPLY, async () => {
+        try {
+          await CP.api.post(`/api/sessions/${sessionId}/messages`, {
+            text: answerText.trim(),
+            category: 'auto',
+          });
+          delete state.clarifyDrafts[sessionId];
+          await loadSessionChat();
+          await loadSessions();
+        } catch (err) {
+          pushToast(err.message, 'error');
+        }
+      });
     }
 
     const cp = {
@@ -1047,6 +1105,8 @@ const RootApp = {
       /* Per-task pending helpers for per-row spinners. */
       isTaskPending: (taskId) => !!state.pendingTasks[taskId],
       taskPendingAction: (taskId) => state.pendingTasks[taskId] || '',
+      isActionPending: (actionKey) => _isActionPending(actionKey),
+      ACTION_KEYS,
       pushToast, dismissToast,
       confirm: confirmDialog,
       resolveConfirm: _resolveConfirm,

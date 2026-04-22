@@ -5,6 +5,7 @@ CP.Components.GoalInput = Vue.defineComponent({
   inject: ['cp'],
   computed: {
     s() { return this.cp.state; },
+    goalPending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.GOAL_SUBMIT); },
   },
   methods: {
     submit() { this.cp.submitGoal(); },
@@ -35,8 +36,8 @@ CP.Components.GoalInput = Vue.defineComponent({
               <option value="command">命令</option>
             </select>
           </div>
-          <button class="btn btn-primary" @click="submit" :disabled="s.sending">
-            <span v-if="s.sending" class="spinner"></span>
+          <button class="btn btn-primary" @click="submit" :disabled="goalPending">
+            <span v-if="goalPending" class="spinner"></span>
             <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
             提交
           </button>

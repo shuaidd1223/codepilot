@@ -5,6 +5,7 @@ CP.Components.Composer = Vue.defineComponent({
   inject: ['cp'],
   computed: {
     s() { return this.cp.state; },
+    composerPending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.COMPOSER_SUBMIT); },
   },
   methods: {
     submit() { this.cp.submitComposer(); },
@@ -66,8 +67,8 @@ CP.Components.Composer = Vue.defineComponent({
             <input type="checkbox" v-model="s.composer.execute" :disabled="s.composerMode === 'task'">
             提交后立即执行
           </label>
-          <button type="submit" class="btn btn-primary" :disabled="s.sending">
-            <span v-if="s.sending" class="spinner"></span>
+          <button type="submit" class="btn btn-primary" :disabled="composerPending">
+            <span v-if="composerPending" class="spinner"></span>
             提交到当前项目
           </button>
         </div>

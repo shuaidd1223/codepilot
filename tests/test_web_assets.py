@@ -61,3 +61,31 @@ def test_web_ui_wires_plugin_diff_assets():
     assert "CP.Components.DiffViewer" in diff_viewer
     assert "window.Diff2Html.html" in diff_viewer
     assert "CP.ensureMonaco" not in utils
+
+
+def test_web_ui_action_protocol_exposes_scoped_pending_keys():
+    app = Path("codepilot/web/app.js").read_text(encoding="utf-8")
+
+    assert "const ACTION_KEYS = Object.freeze({" in app
+    assert "GOAL_SUBMIT: 'goal.submit'" in app
+    assert "COMPOSER_SUBMIT: 'composer.submit'" in app
+    assert "SESSION_SEND: 'session.send'" in app
+    assert "SESSION_DELETE: 'session.delete'" in app
+    assert "SESSION_CLARIFY_REPLY: 'session.clarify.reply'" in app
+    assert "isActionPending: (actionKey) => _isActionPending(actionKey)" in app
+    assert "ACTION_KEYS," in app
+
+
+def test_form_components_use_scoped_action_pending_instead_of_global_sending():
+    goal = Path("codepilot/web/components/GoalInput.js").read_text(encoding="utf-8")
+    composer = Path("codepilot/web/components/Composer.js").read_text(encoding="utf-8")
+    chat = Path("codepilot/web/components/ChatView.js").read_text(encoding="utf-8")
+
+    assert "goalPending()" in goal
+    assert "composerPending()" in composer
+    assert "chatPending()" in chat
+    assert "clarifyPending()" in chat
+    assert "deletePending()" in chat
+    assert "s.sending" not in goal
+    assert "s.sending" not in composer
+    assert "s.sending" not in chat
