@@ -3676,11 +3676,13 @@ def test_show_json_outputs_full_task_and_logs(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["task"]["id"] == task["id"]
-    assert payload["task"]["title"] == "json detail"
-    assert payload["task"]["content"] == "json content"
-    assert payload["task"]["depends_on_ids"] == [9]
-    assert payload["logs"][0]["output"] == "full log output"
+    assert payload["ok"] is True
+    assert payload["command"] == "show"
+    assert payload["data"]["task"]["id"] == task["id"]
+    assert payload["data"]["task"]["title"] == "json detail"
+    assert payload["data"]["task"]["content"] == "json content"
+    assert payload["data"]["task"]["depends_on_ids"] == [9]
+    assert payload["data"]["logs"][0]["output"] == "full log output"
 
 
 def test_show_global_json_outputs_full_task_payload(tmp_path, monkeypatch):
@@ -3695,10 +3697,12 @@ def test_show_global_json_outputs_full_task_payload(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["task"]["id"] == task["id"]
-    assert payload["task"]["title"] == "global json detail"
-    assert payload["task"]["content"] == "global json content"
-    assert payload["logs"] == []
+    assert payload["ok"] is True
+    assert payload["command"] == "show"
+    assert payload["data"]["task"]["id"] == task["id"]
+    assert payload["data"]["task"]["title"] == "global json detail"
+    assert payload["data"]["task"]["content"] == "global json content"
+    assert payload["data"]["logs"] == []
 
 
 def test_show_logs_flag_prints_full_log_output(tmp_path, monkeypatch):
@@ -3761,8 +3765,10 @@ def test_show_json_depends_on_ids_ignore_invalid_entries(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["task"]["depends_on"] == '[1, "2", "bad", null, {}, []]'
-    assert payload["task"]["depends_on_ids"] == [1, 2]
+    assert payload["ok"] is True
+    assert payload["command"] == "show"
+    assert payload["data"]["task"]["depends_on"] == '[1, "2", "bad", null, {}, []]'
+    assert payload["data"]["task"]["depends_on_ids"] == [1, 2]
 
 
 def test_show_missing_task_exits_nonzero_in_text_and_json(tmp_path, monkeypatch):
@@ -3779,7 +3785,10 @@ def test_show_missing_task_exits_nonzero_in_text_and_json(tmp_path, monkeypatch)
 
         assert json_result.exit_code != 0
         payload = json.loads(json_result.output)
-        assert payload == {"task": None, "logs": []}
+        assert payload["ok"] is False
+        assert payload["command"] == "show"
+        assert payload["data"] == {"task": None, "logs": []}
+        assert payload["error"]["code"] == "task_not_found"
 
 
 def test_status_verbose_shows_runtime_summary_for_in_progress_task(tmp_path, monkeypatch):
@@ -3803,6 +3812,48 @@ def test_status_verbose_shows_runtime_summary_for_in_progress_task(tmp_path, mon
     assert result.exit_code == 0
     assert "builder" in result.output
     assert "running tests" in result.output
+
+
+def test_status_json_returns_contract_for_single_project(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    db.create_task("demo", "json status task", agent="codex")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["status", "-p", "demo", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "status"
+    assert payload["data"]["project"] == "demo"
+    assert payload["data"]["stats"]["total"] == 1
+    assert payload["data"]["tasks"][0]["title"] == "json status task"
+
+
+def test_status_global_json_wraps_projects_list_in_contract(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    project_a.mkdir()
+    project_b.mkdir()
+    db.register_project("demo-a", str(project_a))
+    db.register_project("demo-b", str(project_b))
+    db.create_task("demo-a", "task a", agent="codex")
+    db.create_task("demo-b", "task b", agent="codex")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--json", "status"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "status"
+    assert payload["data"]["count"] == 2
+    names = {item["project"] for item in payload["data"]["projects"]}
+    assert names == {"demo-a", "demo-b"}
 
 
 def test_extract_error_hint_humanizes_json_payload():
@@ -3904,8 +3955,10 @@ def test_find_json_accepts_options_after_keyword(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["count"] == 1
-    assert payload["tasks"][0]["title"] == "needle task"
+    assert payload["ok"] is True
+    assert payload["command"] == "find"
+    assert payload["data"]["count"] == 1
+    assert payload["data"]["tasks"][0]["title"] == "needle task"
 
 
 def test_run_command_renders_plain_text_without_markup():

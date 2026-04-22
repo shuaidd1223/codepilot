@@ -79,5 +79,29 @@ def test_emit_inspection_result_routes_json_and_terminal(monkeypatch):
 
     json_result = {"project": "demo", "created": [{"id": 1}], "skipped": [], "candidates_total": 1}
     inspect_cmd._emit_inspection_result(json_result, dry_run=False, json_mode=True)
-    assert json.loads(rendered["json_payload"])["candidates_total"] == 1
+    payload = json.loads(rendered["json_payload"])
+    assert payload["ok"] is True
+    assert payload["command"] == "inspect"
+    assert payload["data"]["candidates_total"] == 1
 
+
+def test_emit_inspection_result_maps_error_into_contract(monkeypatch):
+    rendered: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        inspect_cmd.click,
+        "echo",
+        lambda payload: rendered.update({"json_payload": payload}),
+    )
+
+    inspect_cmd._emit_inspection_result(
+        {"project": "demo", "created": [], "skipped": [], "candidates_total": 0, "error": "llm timeout"},
+        dry_run=False,
+        json_mode=True,
+    )
+
+    payload = json.loads(rendered["json_payload"])
+    assert payload["ok"] is False
+    assert payload["command"] == "inspect"
+    assert payload["data"]["project"] == "demo"
+    assert payload["error"]["code"] == "inspect_failed"

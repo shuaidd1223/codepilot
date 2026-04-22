@@ -9,6 +9,7 @@ from typing import Any
 import click
 
 from codepilot import db
+from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.commands.status import _resolve_project
 from codepilot.output import echo
 from codepilot.runtime import (
@@ -100,13 +101,18 @@ def _show_block(title: str, text: Any) -> None:
 def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
     """精确查看单个任务详情。"""
     db.init_db()
-    if not json_mode and ctx.parent:
-        json_mode = ctx.parent.obj.get("json_mode", False)
+    json_mode = resolve_json_mode(ctx, json_mode)
 
     task = db.get_task(task_id)
     if not task:
         if json_mode:
-            click.echo(json.dumps({"task": None, "logs": []}, ensure_ascii=False, indent=2))
+            emit_json_payload(
+                "show",
+                ok=False,
+                data={"task": None, "logs": []},
+                error=f"任务 #{task_id} 不存在",
+                error_code="task_not_found",
+            )
         else:
             echo(f"[red]任务 #{task_id} 不存在[/red]")
         ctx.exit(1)
@@ -114,7 +120,7 @@ def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
     logs = db.list_task_logs(task_id)
     payload = _task_show_payload(task, logs)
     if json_mode:
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_payload("show", ok=True, data=payload)
         return
 
     echo(f"[cyan]任务详情[/cyan]  #{task['id']}  {task['title']}")
@@ -408,9 +414,7 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
          status: str | None, priority: str | None, limit: int, json_mode: bool):
     """搜索任务（标题或内容包含关键词）。"""
     db.init_db()
-    # 优先用本地 --json，否则用全局
-    if not json_mode and ctx.parent:
-        json_mode = ctx.parent.obj.get("json_mode", False)
+    json_mode = resolve_json_mode(ctx, json_mode)
 
     sql = "SELECT * FROM tasks WHERE 1=1"
     params: list = []
@@ -437,14 +441,13 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
 
     if not rows:
         if json_mode:
-            click.echo(json.dumps({"tasks": [], "count": 0}, ensure_ascii=False, indent=2))
+            emit_json_payload("find", ok=True, data={"tasks": [], "count": 0})
         else:
             echo("[yellow]没有找到匹配的任务[/yellow]")
         return
 
     if json_mode:
-        click.echo(json.dumps({"tasks": [dict(r) for r in rows], "count": len(rows)},
-                              ensure_ascii=False, indent=2))
+        emit_json_payload("find", ok=True, data={"tasks": [dict(r) for r in rows], "count": len(rows)})
         return
 
     echo(f"[cyan]找到 {len(rows)} 个任务：[/cyan]")

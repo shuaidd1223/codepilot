@@ -262,8 +262,9 @@ def test_doctor_json_ok_depends_only_on_error_severity(monkeypatch):
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["ok"] is True
-    assert payload["status_emoji"] == "✓"
-    assert payload["checks"][0]["severity"] == "warning"
+    assert payload["command"] == "doctor"
+    assert payload["data"]["status_emoji"] == "✓"
+    assert payload["data"]["checks"][0]["severity"] == "warning"
 
 
 def test_doctor_subcommand_json_outputs_json(monkeypatch):
@@ -279,8 +280,9 @@ def test_doctor_subcommand_json_outputs_json(monkeypatch):
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["ok"] is True
-    assert payload["status_emoji"] == "✓"
-    assert payload["checks"][0]["name"] == "python_version"
+    assert payload["command"] == "doctor"
+    assert payload["data"]["status_emoji"] == "✓"
+    assert payload["data"]["checks"][0]["name"] == "python_version"
 
 
 def test_doctor_help_shows_subcommand_json_option():
@@ -332,4 +334,5 @@ def test_doctor_json_status_emoji_depends_on_error_severity(
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["ok"] is (expected_emoji != "✘")
-    assert payload["status_emoji"] == expected_emoji
+    assert payload["command"] == "doctor"
+    assert payload["data"]["status_emoji"] == expected_emoji

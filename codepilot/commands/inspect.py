@@ -25,6 +25,7 @@ from codepilot.ai import (
     normalize_agent_name,
 )
 from codepilot.commands.add import _resolve_project_strict
+from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.config import load_project_config, resolve_planner
 from codepilot.output import echo
 from codepilot.paths import _slugify_project_name, global_storage_root
@@ -1062,7 +1063,15 @@ def _print_round_header(*, project_name: str, planner: str, agent: str, max_new_
 
 def _emit_inspection_result(result: dict, *, dry_run: bool, json_mode: bool) -> None:
     if json_mode:
-        click.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        payload = dict(result)
+        error = payload.pop("error", None)
+        emit_json_payload(
+            "inspect",
+            ok=not bool(error),
+            data=payload,
+            error=str(error) if error else None,
+            error_code="inspect_failed" if error else None,
+        )
         return
     _print_result(result, dry_run)
 
@@ -1083,7 +1092,9 @@ def _emit_inspection_result(result: dict, *, dry_run: bool, json_mode: bool) -> 
 @click.option("--foreground", is_flag=True, help="以前台持续巡检模式运行")
 @click.option("--status", "show_status", is_flag=True, help="查看项目巡检进程状态")
 @click.option("--stop", "stop_service", is_flag=True, help="停止项目巡检进程")
+@click.pass_context
 def inspect(
+    ctx: click.Context,
     project: str,
     max_new: Optional[int],
     dry_run: bool,
@@ -1102,26 +1113,59 @@ def inspect(
     传入 --once 则只巡检一轮后退出.
     """
     db.init_db()
+    json_mode = resolve_json_mode(ctx, json_mode)
     proj = db.get_project(project) if project else None
     if not proj:
+        if json_mode:
+            emit_json_payload(
+                "inspect",
+                ok=False,
+                data={"project": project or "", "created": [], "skipped": [], "candidates_total": 0},
+                error="需要用 -p 指定项目，或先 codepilot init",
+                error_code="project_required",
+            )
+            ctx.exit(1)
+            return
         raise click.ClickException("需要用 -p 指定项目，或先 codepilot init")
     if show_status:
         status = inspect_service_status(project)
-        if status["running"]:
-            echo(f"[green]巡检运行中[/green]  PID={status['pid']}  项目={project}")
-            echo(f"[dim]日志: {status['log']}[/dim]")
+        if json_mode:
+            emit_json_payload("inspect", ok=True, data={"action": "status", "service": status})
         else:
-            echo(f"[dim]项目 {project} 巡检未运行[/dim]")
+            if status["running"]:
+                echo(f"[green]巡检运行中[/green]  PID={status['pid']}  项目={project}")
+                echo(f"[dim]日志: {status['log']}[/dim]")
+            else:
+                echo(f"[dim]项目 {project} 巡检未运行[/dim]")
         return
     if stop_service:
         try:
             result = stop_inspect_service(project)
         except RuntimeError as exc:
+            if json_mode:
+                emit_json_payload(
+                    "inspect",
+                    ok=False,
+                    data={"action": "stop", "service": inspect_service_status(project)},
+                    error=str(exc),
+                    error_code="stop_failed",
+                )
+                ctx.exit(1)
+                return
             raise click.ClickException(str(exc)) from exc
-        if result["stopped"]:
-            echo(f"[green]项目 {project} 巡检已停止[/green]  PID={','.join(str(pid) for pid in result['pids'])}")
+        if json_mode:
+            emit_json_payload(
+                "inspect",
+                ok=bool(result.get("stopped")),
+                data={"action": "stop", "result": result},
+                error=None if result.get("stopped") else f"项目 {project} 巡检未运行",
+                error_code=None if result.get("stopped") else "service_not_running",
+            )
         else:
-            echo(f"[dim]项目 {project} 巡检未运行[/dim]")
+            if result["stopped"]:
+                echo(f"[green]项目 {project} 巡检已停止[/green]  PID={','.join(str(pid) for pid in result['pids'])}")
+            else:
+                echo(f"[dim]项目 {project} 巡检未运行[/dim]")
         return
     if not once and not foreground and not json_mode:
         try:

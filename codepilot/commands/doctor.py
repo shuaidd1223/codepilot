@@ -1,8 +1,6 @@
 """codepilot doctor — environment self-check command."""
 
 from __future__ import annotations
-
-import json
 import os
 import shutil
 import subprocess
@@ -12,6 +10,7 @@ from typing import Optional
 
 import click
 
+from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.output import echo, safe
 
 
@@ -375,17 +374,16 @@ def run_all_checks() -> list[CheckResult]:
 @click.pass_context
 def doctor(ctx: click.Context, json_mode: bool):
     """环境自检，检查 Python、Git、AGENTS.toml、CLI 工具、数据库和编码。"""
-    if not json_mode and ctx.parent:
-        json_mode = (ctx.parent.obj or {}).get("json_mode", False)
+    json_mode = resolve_json_mode(ctx, json_mode)
     results = run_all_checks()
 
     if json_mode:
+        overall_ok = not any(r.severity == "error" for r in results)
         payload = {
             "checks": [r.to_dict() for r in results],
-            "ok": not any(r.severity == "error" for r in results),
             "status_emoji": _summary_status_emoji(results),
         }
-        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        emit_json_payload("doctor", ok=overall_ok, data=payload)
         return
 
     # colour output

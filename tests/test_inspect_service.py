@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from click.testing import CliRunner
 
 from codepilot import db
@@ -68,3 +70,39 @@ def test_inspect_status_reads_existing_service(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "巡检运行中" in result.output
     assert "PID=8765" in result.output
+
+
+def test_inspect_status_json_uses_command_contract(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    project_path = tmp_path / "demo"
+    project_path.mkdir()
+    db.init_db()
+    db.register_project("demo", str(project_path))
+    monkeypatch.setattr(inspect_cmd, "is_process_alive", lambda _: False)
+
+    result = CliRunner().invoke(inspect_cmd.inspect, ["--project", "demo", "--status", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "inspect"
+    assert payload["data"]["action"] == "status"
+    assert payload["data"]["service"]["project"] == "demo"
+
+
+def test_inspect_stop_json_reports_not_running_with_error_contract(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    project_path = tmp_path / "demo"
+    project_path.mkdir()
+    db.init_db()
+    db.register_project("demo", str(project_path))
+
+    result = CliRunner().invoke(inspect_cmd.inspect, ["--project", "demo", "--stop", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["command"] == "inspect"
+    assert payload["error"]["code"] == "service_not_running"

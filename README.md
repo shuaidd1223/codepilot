@@ -126,6 +126,18 @@ codepilot ai prompt
 4. 用 `codepilot "需求文本"` 直接把高层需求交给 CodePilot
 5. 用 `codepilot logs <task_id>`、`codepilot stop <task_id>` 和 `codepilot retry <task_id>` 做运行期排障
 
+`--json` 命令级输出契约（统一 envelope）：
+
+```json
+{
+  "ok": true,
+  "command": "status",
+  "data": {}
+}
+```
+
+失败场景会额外包含 `error`，例如 `{"error":{"message":"...","code":"..."}}`。
+
 ## Web UI
 
 如果你觉得终端命令太重，可以直接起本地控制台：

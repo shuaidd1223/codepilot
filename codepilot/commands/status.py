@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import click
 from rich import box
 from rich.columns import Columns
@@ -15,6 +13,7 @@ from rich.text import Text
 from rich.console import Group
 
 from codepilot import db
+from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.output import echo
 from codepilot.runtime import runtime_summary
 
@@ -213,9 +212,7 @@ def status(ctx: click.Context, project: str | None, verbose: bool, json_mode: bo
     查看任务看板：backlog / in-progress / done / failed 四列状态.
     """
     db.init_db()
-    # 优先用本地 --json，否则用全局
-    if not json_mode and ctx.parent:
-        json_mode = ctx.parent.obj.get("json_mode", False)
+    json_mode = resolve_json_mode(ctx, json_mode)
 
     if project:
         return _show_project_status(project, verbose, json_mode)
@@ -227,18 +224,31 @@ def _show_project_status(project: str, verbose: bool, json_mode: bool):
     """显示单个项目的看板。"""
     proj = db.get_project(project)
     if not proj:
-        echo(f"[red]错误：项目 '{project}' 未注册[/red]")
-        click.echo("  运行 codepilot init 先注册项目")
+        if json_mode:
+            emit_json_payload(
+                "status",
+                ok=False,
+                data={"project": project, "stats": {}, "tasks": []},
+                error=f"项目 '{project}' 未注册",
+                error_code="project_not_registered",
+            )
+        else:
+            echo(f"[red]错误：项目 '{project}' 未注册[/red]")
+            click.echo("  运行 codepilot init 先注册项目")
         return
 
     if json_mode:
         tasks = db.list_tasks(project=project)
         stats = db.get_task_stats(project)
-        click.echo(json.dumps({
-            "project": project,
-            "stats": stats,
-            "tasks": tasks,
-        }, ensure_ascii=False, indent=2))
+        emit_json_payload(
+            "status",
+            ok=True,
+            data={
+                "project": project,
+                "stats": stats,
+                "tasks": tasks,
+            },
+        )
         return
 
     render_project_dashboard(project, verbose=verbose, include_done=True, title=f"CodePilot  {project}")
@@ -248,7 +258,10 @@ def _show_all_projects_status(verbose: bool, json_mode: bool):
     """显示所有项目的汇总看板。"""
     projects = db.list_projects()
     if not projects:
-        echo("[yellow]没有已注册的项目[/yellow]")
+        if json_mode:
+            emit_json_payload("status", ok=True, data={"projects": [], "count": 0})
+        else:
+            echo("[yellow]没有已注册的项目[/yellow]")
         return
 
     if json_mode:
@@ -262,7 +275,7 @@ def _show_all_projects_status(verbose: bool, json_mode: bool):
                 "stats": stats,
                 "tasks": tasks,
             })
-        click.echo(json.dumps(all_data, ensure_ascii=False, indent=2))
+        emit_json_payload("status", ok=True, data={"projects": all_data, "count": len(all_data)})
         return
 
     console = Console(width=160)
