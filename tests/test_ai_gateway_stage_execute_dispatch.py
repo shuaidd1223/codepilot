@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+from codepilot import ai_gateway
+from codepilot.ai_gateway import GatewayRequest
 from codepilot.ai_gateway_execute import (
     execute_api_prompt,
     execute_structured_cli_call,
@@ -9,8 +13,12 @@ from codepilot.ai_gateway_resolution import (
     ResolvedStructuredCLICall,
     ResolvedTextCLICandidate,
 )
-from codepilot.ai_gateway_types import GatewayRequest
-from tests.ai_gateway_testkit import CompletedProcessStub
+from tests.ai_gateway_testkit import (
+    CompletedProcessStub,
+    FakeAPIProvider,
+    STRUCTURED_SCHEMA,
+    gateway_state,
+)
 
 
 def test_execute_api_prompt_delegates_to_provider_runner(monkeypatch):
@@ -128,3 +136,85 @@ def test_execute_text_cli_candidate_decodes_non_utf8_stderr(monkeypatch):
     assert ok is False
     assert text == ""
     assert "系统繁忙" in error
+
+
+@pytest.mark.parametrize(
+    ("provider_key", "provider_kwargs", "request_kwargs", "expected"),
+    [
+        (
+            "openai",
+            {"needs_key": True, "api_key": "sk-test"},
+            {"classifier_provider": "openai", "api_key": "sk-test", "planner": "claude"},
+            {"source": "api:openai", "api_calls": 1, "cli_calls": 0, "cli_name": ""},
+        ),
+        (
+            "openai",
+            {"needs_key": True, "api_key": ""},
+            {"classifier_provider": "openai", "planner": "claude"},
+            {"source": "cli:claude", "api_calls": 0, "cli_calls": 1, "cli_name": "claude"},
+        ),
+        (
+            "localcustom",
+            {"needs_key": False, "raises": True},
+            {"classifier_provider": "localcustom", "planner": "codex"},
+            {"source": "cli:codex", "api_calls": 1, "cli_calls": 1, "cli_name": "codex"},
+        ),
+    ],
+    ids=["api-success", "missing-key-cli-fallback", "api-error-cli-fallback"],
+)
+def test_call_structured_route_matrix(gateway_state, provider_key, provider_kwargs, request_kwargs, expected):
+    provider = FakeAPIProvider(**provider_kwargs)
+    gateway_state["registry"][provider_key] = provider
+
+    resp = ai_gateway.call_structured(
+        GatewayRequest(
+            prompt="hi",
+            schema=STRUCTURED_SCHEMA,
+            **request_kwargs,
+        )
+    )
+
+    assert resp.ok is True
+    assert resp.source == expected["source"]
+    assert len(gateway_state["api_calls"]) == expected["api_calls"]
+    assert len(gateway_state["cli_calls"]) == expected["cli_calls"]
+    if expected["cli_name"]:
+        assert gateway_state["cli_calls"][0]["cli"] == expected["cli_name"]
+    if expected["source"].startswith("api:"):
+        assert resp.payload == {"intent": "task", "reason": "from api"}
+
+
+def test_call_structured_passes_config_ref_to_cli(gateway_state):
+    resp = ai_gateway.call_structured(
+        GatewayRequest(
+            prompt="hi",
+            schema=STRUCTURED_SCHEMA,
+            planner="claude",
+            project_path="C:/project",
+            config_ref="C:/config-root/AGENTS.toml",
+        )
+    )
+
+    assert resp.ok is True
+    assert resp.source == "cli:claude"
+    assert gateway_state["cli_calls"][0]["kwargs"]["project_path"] == "C:/project"
+    assert gateway_state["cli_calls"][0]["kwargs"]["config_ref"] == "C:/config-root/AGENTS.toml"
+
+
+def test_call_text_prefers_api_when_key_available(gateway_state):
+    provider = FakeAPIProvider(needs_key=True, api_key="sk-test")
+    gateway_state["registry"]["openai"] = provider
+
+    resp = ai_gateway.call_text(
+        GatewayRequest(
+            prompt="hi",
+            classifier_provider="openai",
+            api_key="sk-test",
+            planner="claude",
+        )
+    )
+
+    assert resp.ok is True
+    assert resp.source == "api:openai"
+    assert resp.text == '{"intent": "task", "reason": "from api"}'
+    assert gateway_state["cli_calls"] == []

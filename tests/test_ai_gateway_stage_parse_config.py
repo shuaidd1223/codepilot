@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from codepilot import ai_gateway
+from codepilot.ai_gateway import GatewayRequest
 from codepilot.ai_gateway_resolution import (
     resolve_api_call,
     resolve_structured_cli_call,
     resolve_text_cli_candidates,
 )
-from codepilot.ai_gateway_types import GatewayRequest
-from tests.ai_gateway_testkit import FakeAPIProvider, FakeCLIProvider
+from tests.ai_gateway_testkit import (
+    FakeAPIProvider,
+    FakeCLIProvider,
+    STRUCTURED_SCHEMA,
+    gateway_state,
+)
 
 
 def test_resolve_api_call_applies_overrides_and_prefers_config_ref(monkeypatch):
@@ -90,3 +96,58 @@ def test_resolve_text_cli_candidates_builds_codex_command_with_project_path(monk
     assert candidate.source == "cli:codex"
     assert candidate.cmd[:3] == ["C:/bin/codex.exe", "-C", "D:/demo/project"]
     assert "claude CLI not installed" in last_error
+
+
+def test_call_structured_applies_api_overrides(gateway_state):
+    provider = FakeAPIProvider(needs_key=True, api_key="registry-key")
+    gateway_state["registry"]["openai"] = provider
+
+    resp = ai_gateway.call_structured(
+        GatewayRequest(
+            prompt="hi",
+            schema=STRUCTURED_SCHEMA,
+            classifier_provider="openai",
+            classifier_model="custom-model",
+            api_key="sk-custom",
+            base_url="https://models.example.invalid/v1",
+            planner="claude",
+        )
+    )
+
+    assert resp.ok is True
+    used = gateway_state["api_providers"][0]
+    assert used.model == "custom-model"
+    assert used.api_key == "sk-custom"
+    assert used.base_url == "https://models.example.invalid/v1"
+
+
+def test_call_structured_uses_provider_model_from_project_config(gateway_state, tmp_path):
+    provider = FakeAPIProvider(needs_key=True, api_key="")
+    gateway_state["registry"]["openai"] = provider
+    (tmp_path / "AGENTS.toml").write_text(
+        "\n".join(
+            [
+                "[providers.openai]",
+                'api_key = "sk-from-config"',
+                'model = "custom-config-model"',
+                'base_url = "https://models.example.invalid/v1"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    resp = ai_gateway.call_structured(
+        GatewayRequest(
+            prompt="hi",
+            schema=STRUCTURED_SCHEMA,
+            classifier_provider="openai",
+            project_path=str(tmp_path),
+            planner="claude",
+        )
+    )
+
+    assert resp.ok is True
+    used = gateway_state["api_providers"][0]
+    assert used.model == "custom-config-model"
+    assert used.api_key == "sk-from-config"
+    assert used.base_url == "https://models.example.invalid/v1"
