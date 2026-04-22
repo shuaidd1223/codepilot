@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +28,7 @@ from codepilot.paths import global_storage_root
 from codepilot.runtime import is_process_alive, stop_process_tree
 
 INSPECT_STATE_DIR = global_storage_root() / "inspect"
+SKIPPED_SIGNAL = "（跳过）"
 
 
 def _now_iso() -> str:
@@ -192,26 +194,7 @@ INSPECT_PROMPT = """你是当前项目的资深巡检工程师。基于下列信
 ## 已存在任务（backlog / in-progress）
 {existing_titles}
 
-## 信号 1：最近 git 提交
-{git_log}
-
-## 信号 2：最近失败或取消的任务
-{failed_tasks}
-
-## 信号 3：代码里的 TODO/FIXME/XXX
-{todos}
-
-## 信号 4：ruff lint 报告
-{ruff}
-
-## 信号 5：pytest --collect-only 摘要
-{pytest}
-
-## 信号 6：依赖健康线索
-{deps}
-
-## 信号 7：代码规模与复杂度线索
-{code_metrics}
+{signal_sections}
 
 请以下列 JSON 返回：{{"candidates": [{{"title": "...", "goal": "...", "priority": "P3", "rationale": "...", "kind": "refactor"}}]}}
 如果没有值得提的改进项，返回 {{"candidates": []}}。
@@ -225,6 +208,122 @@ collect_ruff = inspect_signals.collect_ruff
 collect_pytest_collect = inspect_signals.collect_pytest_collect
 collect_dependency_health = inspect_signals.collect_dependency_health
 collect_code_metrics = inspect_signals.collect_code_metrics
+
+
+@dataclass(frozen=True)
+class InspectSignalSpec:
+    """One canonical inspect signal definition."""
+
+    key: str
+    title: str
+    order: int
+    aliases: tuple[str, ...]
+    collector_attr: str
+    uses_project_name: bool = False
+
+
+@dataclass(frozen=True)
+class InspectSignalResult:
+    """Unified signal result model used by prompt aggregation."""
+
+    key: str
+    title: str
+    order: int
+    enabled: bool
+    content: str
+
+
+INSPECT_SIGNAL_SPECS: tuple[InspectSignalSpec, ...] = (
+    InspectSignalSpec(
+        key="git_log",
+        title="最近 git 提交",
+        order=1,
+        aliases=("git_log",),
+        collector_attr="collect_git_log",
+    ),
+    InspectSignalSpec(
+        key="failed_tasks",
+        title="最近失败或取消的任务",
+        order=2,
+        aliases=("failed_tasks",),
+        collector_attr="collect_failed_tasks",
+        uses_project_name=True,
+    ),
+    InspectSignalSpec(
+        key="todos",
+        title="代码里的 TODO/FIXME/XXX",
+        order=3,
+        aliases=("todos",),
+        collector_attr="collect_todos",
+    ),
+    InspectSignalSpec(
+        key="ruff",
+        title="ruff lint 报告",
+        order=4,
+        aliases=("ruff",),
+        collector_attr="collect_ruff",
+    ),
+    InspectSignalSpec(
+        key="pytest",
+        title="pytest --collect-only 摘要",
+        order=5,
+        aliases=("pytest",),
+        collector_attr="collect_pytest_collect",
+    ),
+    InspectSignalSpec(
+        key="deps",
+        title="依赖健康线索",
+        order=6,
+        aliases=("deps",),
+        collector_attr="collect_dependency_health",
+    ),
+    InspectSignalSpec(
+        key="code_metrics",
+        title="代码规模与复杂度线索",
+        order=7,
+        aliases=("code_metrics", "code_size", "complexity"),
+        collector_attr="collect_code_metrics",
+    ),
+)
+
+
+def _normalize_signal_tokens(signals: tuple[str, ...]) -> set[str]:
+    return {signal.strip().lower() for signal in signals if isinstance(signal, str) and signal.strip()}
+
+
+def collect_inspection_signal_results(
+    project_name: str,
+    project_path: Path,
+    *,
+    signals: tuple[str, ...],
+) -> list[InspectSignalResult]:
+    """Aggregate inspect signals with one unified model, order, and combination path."""
+    requested = _normalize_signal_tokens(signals)
+    results: list[InspectSignalResult] = []
+    for spec in INSPECT_SIGNAL_SPECS:
+        enabled = bool(requested & set(spec.aliases))
+        if enabled:
+            collector = globals()[spec.collector_attr]
+            content = collector(project_name) if spec.uses_project_name else collector(project_path)
+        else:
+            content = SKIPPED_SIGNAL
+        results.append(
+            InspectSignalResult(
+                key=spec.key,
+                title=spec.title,
+                order=spec.order,
+                enabled=enabled,
+                content=content,
+            )
+        )
+    return results
+
+
+def _render_signal_sections(signal_results: list[InspectSignalResult]) -> str:
+    blocks: list[str] = []
+    for signal in sorted(signal_results, key=lambda item: item.order):
+        blocks.append(f"## 信号 {signal.order}：{signal.title}\n{signal.content}")
+    return "\n\n".join(blocks)
 
 
 def _existing_titles(project: str) -> str:
@@ -301,38 +400,28 @@ def collect_inspection_signals(
     *,
     signals: tuple[str, ...],
 ) -> dict[str, str]:
-    """Collect all inspect signals and return a normalized signal map."""
-    enabled = set(signals)
-    signal_map = {
-        "git_log": collect_git_log(project_path) if "git_log" in enabled else "（跳过）",
-        "failed_tasks": collect_failed_tasks(project_name) if "failed_tasks" in enabled else "（跳过）",
-        "todos": collect_todos(project_path) if "todos" in enabled else "（跳过）",
-        "ruff": collect_ruff(project_path) if "ruff" in enabled else "（跳过）",
-        "pytest": collect_pytest_collect(project_path) if "pytest" in enabled else "（跳过）",
-        "deps": collect_dependency_health(project_path) if "deps" in enabled else "（跳过）",
+    """Back-compat wrapper: return the legacy signal map from unified model."""
+    return {
+        result.key: result.content
+        for result in collect_inspection_signal_results(
+            project_name,
+            project_path,
+            signals=signals,
+        )
     }
-    code_metrics_enabled = bool({"code_metrics", "code_size", "complexity"} & enabled)
-    signal_map["code_metrics"] = collect_code_metrics(project_path) if code_metrics_enabled else "（跳过）"
-    return signal_map
 
 
 def _build_inspection_prompt(
     *,
     project_name: str,
     max_new_tasks: int,
-    signal_map: dict[str, str],
+    signal_results: list[InspectSignalResult],
 ) -> str:
     existing = _existing_titles(project_name)
     return INSPECT_PROMPT.format(
         max_tasks=max_new_tasks,
         existing_titles=existing,
-        git_log=signal_map["git_log"],
-        failed_tasks=signal_map["failed_tasks"],
-        todos=signal_map["todos"],
-        ruff=signal_map["ruff"],
-        pytest=signal_map["pytest"],
-        deps=signal_map["deps"],
-        code_metrics=signal_map["code_metrics"],
+        signal_sections=_render_signal_sections(signal_results),
     )
 
 
@@ -398,7 +487,7 @@ def run_inspection(
     project_name = project_info["name"]
     project_path = Path(project_info["path"])
 
-    signal_map = collect_inspection_signals(
+    signal_results = collect_inspection_signal_results(
         project_name,
         project_path,
         signals=signals,
@@ -406,7 +495,7 @@ def run_inspection(
     prompt = _build_inspection_prompt(
         project_name=project_name,
         max_new_tasks=max_new_tasks,
-        signal_map=signal_map,
+        signal_results=signal_results,
     )
 
     cfg = load_project_config(project_info)

@@ -31,6 +31,66 @@ def test_collect_inspection_signals_collects_selected_only(tmp_path, monkeypatch
     assert called == ["git_log", "deps", "code_metrics"]
 
 
+def test_collect_inspection_signal_results_has_unified_model_and_order(tmp_path, monkeypatch):
+    project = tmp_path / "demo"
+    project.mkdir()
+    called: list[str] = []
+
+    monkeypatch.setattr(inspect_cmd, "collect_failed_tasks", lambda *_: called.append("failed_tasks") or "failed")
+    monkeypatch.setattr(inspect_cmd, "collect_code_metrics", lambda *_: called.append("code_metrics") or "metrics")
+
+    results = inspect_cmd.collect_inspection_signal_results(
+        "demo",
+        project,
+        signals=("failed_tasks", "complexity"),
+    )
+
+    assert [item.key for item in results] == [
+        "git_log",
+        "failed_tasks",
+        "todos",
+        "ruff",
+        "pytest",
+        "deps",
+        "code_metrics",
+    ]
+    assert [item.order for item in results] == [1, 2, 3, 4, 5, 6, 7]
+    enabled = {item.key for item in results if item.enabled}
+    assert enabled == {"failed_tasks", "code_metrics"}
+    assert called == ["failed_tasks", "code_metrics"]
+    skipped = [item.content for item in results if not item.enabled]
+    assert skipped and all(content == "（跳过）" for content in skipped)
+
+
+def test_build_inspection_prompt_renders_signal_sections_from_unified_model(monkeypatch):
+    monkeypatch.setattr(inspect_cmd, "_existing_titles", lambda _project: "（无）")
+    signal_results = [
+        inspect_cmd.InspectSignalResult(
+            key="git_log",
+            title="最近 git 提交",
+            order=1,
+            enabled=True,
+            content="git-log-body",
+        ),
+        inspect_cmd.InspectSignalResult(
+            key="failed_tasks",
+            title="最近失败或取消的任务",
+            order=2,
+            enabled=False,
+            content="（跳过）",
+        ),
+    ]
+
+    prompt = inspect_cmd._build_inspection_prompt(
+        project_name="demo",
+        max_new_tasks=2,
+        signal_results=signal_results,
+    )
+
+    assert "## 信号 1：最近 git 提交\ngit-log-body" in prompt
+    assert "## 信号 2：最近失败或取消的任务\n（跳过）" in prompt
+
+
 def test_materialize_inspection_output_dry_run_skips_db_write(tmp_path, monkeypatch):
     project = tmp_path / "demo"
     project.mkdir()
