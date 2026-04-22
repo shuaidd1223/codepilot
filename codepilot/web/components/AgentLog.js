@@ -1,14 +1,17 @@
 /* <cp-agent-log :text="s.taskLog.text" :done="s.taskLog.done" tall follow>
  *
  * Markdown-first live log renderer.
- * Rendering pipeline and interaction-state mechanics are split into:
- * - CP.AgentLogRenderBoundary
- * - CP.AgentLogInteractionBoundary
+ * Rendering + interaction are bridged through CP.AgentLogBoundaryContract
+ * so component code only speaks one stable adapter contract.
  */
 /* global Vue, CP */
 
-const AgentLogRender = CP.AgentLogRenderBoundary || {};
-const AgentLogInteraction = CP.AgentLogInteractionBoundary || {};
+const AgentLogAdapter = CP.AgentLogBoundaryContract.createAdapter({
+  renderBoundary: CP.AgentLogRenderBoundary,
+  interactionBoundary: CP.AgentLogInteractionBoundary,
+});
+const AgentLogRender = AgentLogAdapter.render;
+const AgentLogInteraction = AgentLogAdapter.interaction;
 
 CP.Components.AgentLog = Vue.defineComponent({
   name: 'CpAgentLog',
@@ -39,24 +42,10 @@ CP.Components.AgentLog = Vue.defineComponent({
     },
     blocks() {
       const raw = this.text || '';
-      if (AgentLogRender.parseMarkdownBlocks) {
-        return AgentLogRender.parseMarkdownBlocks(raw, (chunk) => this._renderMarkdown(chunk));
-      }
-      if (!raw) return [];
-      return [{
-        type: 'markdown',
-        key: `md:0:0:${raw.length}`,
-        raw,
-        lineCount: this.lineCount,
-        html: this._renderMarkdown(raw),
-        section: 'other',
-      }];
+      return AgentLogRender.parseMarkdownBlocks(raw, (chunk) => this._renderMarkdown(chunk), this.lineCount);
     },
     searchMatches() {
-      if (AgentLogInteraction.findSearchMatches) {
-        return AgentLogInteraction.findSearchMatches(this.blocks, this.searchQuery);
-      }
-      return [];
+      return AgentLogInteraction.findSearchMatches(this.blocks, this.searchQuery);
     },
     searchMatchSet() {
       return new Set(this.searchMatches);
@@ -66,74 +55,34 @@ CP.Components.AgentLog = Vue.defineComponent({
       return this.searchMatches[this.searchPos];
     },
     searchSummary() {
-      if (AgentLogInteraction.searchSummary) {
-        return AgentLogInteraction.searchSummary(this.searchQuery, this.searchMatches, this.searchPos);
-      }
-      const hasQuery = !!String(this.searchQuery || '').trim();
-      if (!hasQuery) return '搜索';
-      const total = this.searchMatches.length;
-      if (!total) return '0/0';
-      const cur = this.searchPos >= 0 ? this.searchPos + 1 : 0;
-      return `${cur}/${total}`;
+      return AgentLogInteraction.searchSummary(this.searchQuery, this.searchMatches, this.searchPos);
     },
     linesLabel() {
-      if (AgentLogInteraction.linesLabel) return AgentLogInteraction.linesLabel(this.lineCount);
-      return `${this.lineCount} 行`;
+      return AgentLogInteraction.linesLabel(this.lineCount);
     },
     jumpLabel() {
-      if (AgentLogInteraction.jumpLabel) return AgentLogInteraction.jumpLabel(this.unreadLines);
-      return '↓ 回到最新';
+      return AgentLogInteraction.jumpLabel(this.unreadLines);
     },
   },
   watch: {
     textLength() {
-      if (AgentLogInteraction.handleTextLengthChanged) {
-        AgentLogInteraction.handleTextLengthChanged(this);
-        return;
-      }
-      this.$nextTick(() => {
-        if (!this.textLength) this.unreadLines = 0;
-        if (this.followEnabled && this.stickToBottom) this._scrollToBottom();
-        this._scheduleEnhance();
-      });
+      AgentLogInteraction.handleTextLengthChanged(this);
     },
     lineCount(next, prev) {
-      if (AgentLogInteraction.handleLineCountChanged) {
-        AgentLogInteraction.handleLineCountChanged(this, next, prev);
-      } else {
-        const oldVal = Number.isFinite(prev) ? prev : 0;
-        const delta = Math.max(0, (Number.isFinite(next) ? next : 0) - oldVal);
-        if (!delta) return;
-        if (!this.followEnabled || !this.stickToBottom) this.unreadLines += delta;
-      }
+      AgentLogInteraction.handleLineCountChanged(this, next, prev);
     },
     searchQuery() {
-      if (AgentLogInteraction.handleSearchQueryChanged) {
-        AgentLogInteraction.handleSearchQueryChanged(this);
-      } else {
-        this.searchPos = -1;
-      }
+      AgentLogInteraction.handleSearchQueryChanged(this);
     },
     searchMatches(next) {
-      if (AgentLogInteraction.handleSearchMatchesChanged) {
-        AgentLogInteraction.handleSearchMatchesChanged(this, next);
-      } else {
-        const len = Array.isArray(next) ? next.length : 0;
-        if (!len) {
-          this.searchPos = -1;
-          return;
-        }
-        if (this.searchPos >= len) this.searchPos = 0;
-      }
+      AgentLogInteraction.handleSearchMatchesChanged(this, next);
     },
     blocks() {
       this.$nextTick(() => this._scheduleEnhance());
     },
   },
   created() {
-    this._mdCache = AgentLogRender.createMarkdownCache
-      ? AgentLogRender.createMarkdownCache()
-      : new Map();
+    this._mdCache = AgentLogRender.createMarkdownCache();
     this._enhanceRaf = 0;
   },
   mounted() {
@@ -152,65 +101,23 @@ CP.Components.AgentLog = Vue.defineComponent({
   },
   methods: {
     _renderMarkdown(raw) {
-      if (AgentLogRender.renderMarkdown) {
-        return AgentLogRender.renderMarkdown(this._mdCache, raw);
-      }
-      const text = String(raw || '');
-      return (CP.renderOutput
-        ? CP.renderOutput(text)
-        : CP.escapeHtml(text).replace(/\n/g, '<br>'));
+      return AgentLogRender.renderMarkdown(this._mdCache, raw);
     },
 
     toggleFollow() {
-      if (AgentLogInteraction.toggleFollow) {
-        AgentLogInteraction.toggleFollow(this);
-      } else {
-        this.manualFollowPaused = !this.manualFollowPaused;
-        if (!this.manualFollowPaused) this.scrollToBottom();
-      }
+      AgentLogInteraction.toggleFollow(this);
     },
     onSearchKeydown(ev) {
-      if (AgentLogInteraction.onSearchKeydown) {
-        AgentLogInteraction.onSearchKeydown(this, ev);
-      } else if (ev && ev.key === 'Enter') {
-        if (ev.shiftKey) this.prevMatch();
-        else this.nextMatch();
-      }
+      AgentLogInteraction.onSearchKeydown(this, ev);
     },
     nextMatch() {
-      if (AgentLogInteraction.nextMatch) {
-        AgentLogInteraction.nextMatch(this);
-      } else {
-        const total = this.searchMatches.length;
-        if (!total) return;
-        const next = (this.searchPos + 1 + total) % total;
-        this.searchPos = next;
-        this.scrollToBlock(this.searchMatches[next]);
-      }
+      AgentLogInteraction.nextMatch(this);
     },
     prevMatch() {
-      if (AgentLogInteraction.prevMatch) {
-        AgentLogInteraction.prevMatch(this);
-      } else {
-        const total = this.searchMatches.length;
-        if (!total) return;
-        const prev = (this.searchPos - 1 + total) % total;
-        this.searchPos = prev;
-        this.scrollToBlock(this.searchMatches[prev]);
-      }
+      AgentLogInteraction.prevMatch(this);
     },
     scrollToBlock(idx) {
-      if (AgentLogInteraction.scrollToBlock) {
-        AgentLogInteraction.scrollToBlock(this, idx);
-      } else {
-        const body = this.$refs.body;
-        if (!body || !Number.isFinite(idx) || idx < 0) return;
-        const node = body.querySelector(`.al-md-wrap[data-idx="${idx}"]`);
-        if (!node) return;
-        this.manualFollowPaused = true;
-        this.stickToBottom = false;
-        node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      }
+      AgentLogInteraction.scrollToBlock(this, idx);
     },
     isSearchHit(idx) {
       return this.searchMatchSet.has(idx);
@@ -220,22 +127,12 @@ CP.Components.AgentLog = Vue.defineComponent({
     },
 
     _scheduleEnhance() {
-      if (AgentLogRender.scheduleEnhance) {
-        AgentLogRender.scheduleEnhance(this, () => this._enhanceCodeBlocks());
-        return;
-      }
-      if (this._enhanceRaf) return;
-      this._enhanceRaf = requestAnimationFrame(() => {
-        this._enhanceRaf = 0;
-        this._enhanceCodeBlocks();
-      });
+      AgentLogRender.scheduleEnhance(this, () => this._enhanceCodeBlocks());
     },
     _enhanceCodeBlocks() {
       const body = this.$refs.body;
       if (!body) return;
-      if (AgentLogRender.enhanceCodeBlocks) {
-        AgentLogRender.enhanceCodeBlocks(body);
-      }
+      AgentLogRender.enhanceCodeBlocks(body);
     },
 
     _scrollToBottom() {
@@ -244,25 +141,10 @@ CP.Components.AgentLog = Vue.defineComponent({
       body.scrollTop = body.scrollHeight;
     },
     _onScroll() {
-      if (AgentLogInteraction.onScroll) {
-        AgentLogInteraction.onScroll(this);
-      } else {
-        const body = this.$refs.body;
-        if (!body) return;
-        const distance = body.scrollHeight - body.scrollTop - body.clientHeight;
-        this.stickToBottom = distance < 24;
-        if (this.stickToBottom) this.unreadLines = 0;
-      }
+      AgentLogInteraction.onScroll(this);
     },
     scrollToBottom() {
-      if (AgentLogInteraction.scrollToBottom) {
-        AgentLogInteraction.scrollToBottom(this);
-      } else {
-        this.manualFollowPaused = false;
-        this.stickToBottom = true;
-        this.unreadLines = 0;
-        this.$nextTick(() => this._scrollToBottom());
-      }
+      AgentLogInteraction.scrollToBottom(this);
     },
   },
   template: `

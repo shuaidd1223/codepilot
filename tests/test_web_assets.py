@@ -96,10 +96,43 @@ def test_agent_log_splits_rendering_and_interaction_state_into_boundaries():
     agent_log = Path("codepilot/web/components/AgentLog.js").read_text(encoding="utf-8")
     render_boundary = Path("codepilot/web/boundaries/AgentLogRenderBoundary.js").read_text(encoding="utf-8")
     interaction_boundary = Path("codepilot/web/boundaries/AgentLogInteractionBoundary.js").read_text(encoding="utf-8")
+    contract_boundary = Path("codepilot/web/boundaries/AgentLogBoundaryContract.js").read_text(encoding="utf-8")
 
     assert "<script src=\"/static/boundaries/AgentLogRenderBoundary.js\"></script>" in index_html
     assert "<script src=\"/static/boundaries/AgentLogInteractionBoundary.js\"></script>" in index_html
-    assert "const AgentLogRender = CP.AgentLogRenderBoundary || {};" in agent_log
-    assert "const AgentLogInteraction = CP.AgentLogInteractionBoundary || {};" in agent_log
+    assert "<script src=\"/static/boundaries/AgentLogBoundaryContract.js\"></script>" in index_html
+    assert "const AgentLogAdapter = CP.AgentLogBoundaryContract.createAdapter({" in agent_log
+    assert "const AgentLogRender = AgentLogAdapter.render;" in agent_log
+    assert "const AgentLogInteraction = AgentLogAdapter.interaction;" in agent_log
     assert "CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {" in render_boundary
     assert "CP.AgentLogInteractionBoundary = CP.AgentLogInteractionBoundary || (() => {" in interaction_boundary
+    assert "CP.AgentLogBoundaryContract = CP.AgentLogBoundaryContract || (() => {" in contract_boundary
+    assert "function createAdapter(options = {}) {" in contract_boundary
+
+
+def test_agent_log_contract_exposes_stable_adapter_surface():
+    contract_boundary = Path("codepilot/web/boundaries/AgentLogBoundaryContract.js").read_text(encoding="utf-8")
+
+    for marker in (
+        "createMarkdownCache:",
+        "renderMarkdown:",
+        "parseMarkdownBlocks:",
+        "scheduleEnhance:",
+        "enhanceCodeBlocks:",
+        "findSearchMatches:",
+        "searchSummary:",
+        "linesLabel:",
+        "jumpLabel:",
+        "handleTextLengthChanged:",
+        "handleLineCountChanged:",
+        "handleSearchQueryChanged:",
+        "handleSearchMatchesChanged:",
+        "toggleFollow:",
+        "onSearchKeydown:",
+        "nextMatch:",
+        "prevMatch:",
+        "scrollToBlock:",
+        "onScroll:",
+        "scrollToBottom:",
+    ):
+        assert marker in contract_boundary
