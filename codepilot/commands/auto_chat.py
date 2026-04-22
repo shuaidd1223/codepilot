@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional
+from typing import Callable, Optional
 
 import click
 
@@ -226,6 +226,17 @@ class _ChatMessageDispatchContext:
     forced_intent: Optional[str]
     shared_gateway_options: object
     intent: str = "requirement"
+
+
+@dataclass
+class _ChatLoopDispatchContext:
+    """Runtime bundle used by the chat loop state dispatcher."""
+
+    frame: _ChatTurnFrame
+    runtime: _ChatRuntime
+    shutdown_ui: object
+    echo: object
+    safe: object
 
 
 _CHAT_INTENT_LABELS = {
@@ -726,6 +737,56 @@ def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shut
     _reset_to_read_input(frame)
 
 
+def _dispatch_chat_loop_read_input(ctx: _ChatLoopDispatchContext) -> None:
+    _read_turn_input(ctx.frame, shutdown_ui=ctx.shutdown_ui, echo=ctx.echo)
+
+
+def _dispatch_chat_loop_turn_router(ctx: _ChatLoopDispatchContext) -> None:
+    _dispatch_turn(ctx.frame, ctx.runtime)
+
+
+def _dispatch_chat_loop_command(ctx: _ChatLoopDispatchContext) -> None:
+    _handle_chat_command(ctx.frame, ctx.runtime, shutdown_ui=ctx.shutdown_ui, echo=ctx.echo)
+
+
+def _dispatch_chat_loop_pending_clarification(ctx: _ChatLoopDispatchContext) -> None:
+    _handle_pending_clarification_turn(
+        ctx.frame,
+        ctx.runtime,
+        shutdown_ui=ctx.shutdown_ui,
+        echo=ctx.echo,
+        safe=ctx.safe,
+    )
+
+
+def _dispatch_chat_loop_free_text(ctx: _ChatLoopDispatchContext) -> None:
+    _handle_free_text_turn(
+        ctx.frame,
+        ctx.runtime,
+        shutdown_ui=ctx.shutdown_ui,
+        echo=ctx.echo,
+        safe=ctx.safe,
+    )
+
+
+_CHAT_LOOP_DISPATCHERS: dict[_ChatLoopState, Callable[[_ChatLoopDispatchContext], None]] = {
+    _ChatLoopState.READ_INPUT: _dispatch_chat_loop_read_input,
+    _ChatLoopState.DISPATCH: _dispatch_chat_loop_turn_router,
+    _ChatLoopState.HANDLE_COMMAND: _dispatch_chat_loop_command,
+    _ChatLoopState.HANDLE_PENDING_CLARIFICATION: _dispatch_chat_loop_pending_clarification,
+    _ChatLoopState.HANDLE_FREE_TEXT: _dispatch_chat_loop_free_text,
+}
+
+
+def _step_chat_loop(ctx: _ChatLoopDispatchContext) -> None:
+    """Run one loop step for the current chat state."""
+    handler = _CHAT_LOOP_DISPATCHERS.get(ctx.frame.state)
+    if handler is None:
+        ctx.frame.state = _ChatLoopState.EXIT
+        return
+    handler(ctx)
+
+
 def run_chat_session(
     *,
     project: Optional[str] = None,
@@ -793,33 +854,12 @@ def run_chat_session(
         _stop_chat_ui(ui_handle)
 
     frame = _ChatTurnFrame()
+    dispatch_ctx = _ChatLoopDispatchContext(
+        frame=frame,
+        runtime=runtime,
+        shutdown_ui=_shutdown_ui,
+        echo=echo,
+        safe=safe,
+    )
     while frame.state != _ChatLoopState.EXIT:
-        if frame.state == _ChatLoopState.READ_INPUT:
-            _read_turn_input(frame, shutdown_ui=_shutdown_ui, echo=echo)
-            continue
-        if frame.state == _ChatLoopState.DISPATCH:
-            _dispatch_turn(frame, runtime)
-            continue
-        if frame.state == _ChatLoopState.HANDLE_COMMAND:
-            _handle_chat_command(frame, runtime, shutdown_ui=_shutdown_ui, echo=echo)
-            continue
-        if frame.state == _ChatLoopState.HANDLE_PENDING_CLARIFICATION:
-            _handle_pending_clarification_turn(
-                frame,
-                runtime,
-                shutdown_ui=_shutdown_ui,
-                echo=echo,
-                safe=safe,
-            )
-            continue
-        if frame.state == _ChatLoopState.HANDLE_FREE_TEXT:
-            _handle_free_text_turn(
-                frame,
-                runtime,
-                shutdown_ui=_shutdown_ui,
-                echo=echo,
-                safe=safe,
-            )
-            continue
-
-        frame.state = _ChatLoopState.EXIT
+        _step_chat_loop(dispatch_ctx)
