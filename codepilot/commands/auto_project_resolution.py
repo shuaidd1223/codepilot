@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 import click
 
@@ -23,8 +24,6 @@ def _is_subpath(path: Path, base: Path) -> bool:
 
 def _is_temporary_workspace(path: Path) -> bool:
     """Cross-platform temporary workspace probe."""
-    import tempfile
-
     home = Path.home().resolve()
     temp_root = Path(tempfile.gettempdir()).resolve()
     return _is_subpath(path, home) or _is_subpath(path, temp_root)
@@ -58,12 +57,10 @@ def resolve_project_for_prompt(
     auto_register: bool = True,
     allow_temporary: bool = False,
     require_registered: bool = False,
-    is_temporary_workspace_fn: Optional[Callable[[Path], bool]] = None,
 ) -> dict:
     """Resolve target project context for auto/go/chat entrypoints."""
     db.init_db()
     current_dir = Path(cwd or Path.cwd()).resolve()
-    is_temporary_workspace = is_temporary_workspace_fn or _is_temporary_workspace
 
     if project:
         proj = db.get_project(project)
@@ -99,7 +96,7 @@ def resolve_project_for_prompt(
                 config_file=str(config_path),
             )
 
-        if allow_temporary and is_temporary_workspace(current_dir):
+        if allow_temporary and _is_temporary_workspace(current_dir):
             return _build_temporary_session(current_dir)
         raise click.ClickException(_register_guidance(project_root))
 
@@ -116,7 +113,7 @@ def resolve_project_for_prompt(
             config_file=None,
         )
 
-    if allow_temporary and is_temporary_workspace(current_dir):
+    if allow_temporary and _is_temporary_workspace(current_dir):
         return _build_temporary_session(current_dir)
 
     if require_registered or not auto_register:

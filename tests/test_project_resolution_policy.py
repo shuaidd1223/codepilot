@@ -9,7 +9,6 @@ from codepilot import db
 from codepilot.cli import main
 from codepilot.commands import auto_project_resolution as auto_project_resolution_mod
 from codepilot.commands import auto as auto_cmd
-from codepilot.commands import auto_workflow as auto_workflow_mod
 
 
 def _init_test_db(tmp_path, monkeypatch):
@@ -76,7 +75,7 @@ def test_resolve_project_for_prompt_returns_temporary_session_under_system_temp(
     system_temp = tmp_path / "system-temp"
     workdir = system_temp / "scratch"
     workdir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(auto_workflow_mod.tempfile, "gettempdir", lambda: str(system_temp))
+    monkeypatch.setattr(auto_project_resolution_mod.tempfile, "gettempdir", lambda: str(system_temp))
     monkeypatch.chdir(workdir)
 
     project = auto_cmd.resolve_project_for_prompt(
@@ -95,13 +94,12 @@ def test_resolve_project_for_prompt_uses_central_project_resolution_entry(tmp_pa
     workdir = system_temp / "scratch"
     workdir.mkdir(parents=True, exist_ok=True)
     monkeypatch.chdir(workdir)
-    monkeypatch.setattr(auto_workflow_mod.tempfile, "gettempdir", lambda: str(system_temp))
+    monkeypatch.setattr(auto_project_resolution_mod.tempfile, "gettempdir", lambda: str(system_temp))
 
     captured = {}
 
-    def fake_resolver(*, is_temporary_workspace_fn, **kwargs):
+    def fake_resolver(**kwargs):
         captured["kwargs"] = kwargs
-        captured["is_temp"] = is_temporary_workspace_fn(workdir)
         return {"name": "mock", "path": str(workdir)}
 
     monkeypatch.setattr(auto_project_resolution_mod, "resolve_project_for_prompt", fake_resolver)
@@ -114,7 +112,7 @@ def test_resolve_project_for_prompt_uses_central_project_resolution_entry(tmp_pa
     assert project["name"] == "mock"
     assert captured["kwargs"]["allow_temporary"] is True
     assert captured["kwargs"]["auto_register"] is False
-    assert captured["is_temp"] is True
+    assert "is_temporary_workspace_fn" not in captured["kwargs"]
 
 
 def test_go_requires_registered_project_when_running_from_unregistered_workspace(tmp_path, monkeypatch):

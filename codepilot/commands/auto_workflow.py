@@ -15,7 +15,6 @@ from __future__ import annotations
 import inspect
 import json
 import sys
-import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -42,31 +41,6 @@ def _build_task_markdown_from_plan(item: dict) -> str:
     from codepilot.ai import build_task_markdown_from_plan
 
     return build_task_markdown_from_plan(item)
-
-
-def _is_subpath(path: Path, base: Path) -> bool:
-    return _project_resolution._is_subpath(path, base)
-
-
-def _is_temporary_workspace(path: Path) -> bool:
-    """Cross-platform temporary workspace probe.
-
-    Rules:
-    - Any path under current user's home directory is treated as temporary
-      when it is not an explicitly registered project.
-    - System temp directory is also treated as temporary.
-    """
-    home = Path.home().resolve()
-    temp_root = Path(tempfile.gettempdir()).resolve()
-    return _is_subpath(path, home) or _is_subpath(path, temp_root)
-
-
-def _build_temporary_session(path: Path) -> dict:
-    return _project_resolution._build_temporary_session(path)
-
-
-def _register_guidance(path: Path) -> str:
-    return _project_resolution._register_guidance(path)
 
 
 def _shell():
@@ -416,7 +390,6 @@ def resolve_project_for_prompt(
         auto_register=auto_register,
         allow_temporary=allow_temporary,
         require_registered=require_registered,
-        is_temporary_workspace_fn=_is_temporary_workspace,
     )
 
 
