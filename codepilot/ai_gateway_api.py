@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+from codepilot.ai_gateway_execute import execute_api_prompt
+from codepilot.ai_gateway_resolution import resolve_api_call
 from codepilot.ai_gateway_types import GatewayMode, GatewayRequest, GatewayResponse
 
 
@@ -45,33 +47,17 @@ def try_api(request: GatewayRequest, mode: GatewayMode) -> Optional[GatewayRespo
     Return ``None`` when no usable API path is configured so caller can continue
     with CLI fallback.
     """
-    if not request.classifier_provider:
+    resolved = resolve_api_call(request)
+    if resolved is None:
         return None
-
-    from codepilot.ai_providers import API_PROVIDERS, _run_api_provider, resolve_api_provider
-
-    if request.classifier_provider not in API_PROVIDERS:
-        return None
-
-    provider_ref = request.config_ref or request.project_path or None
-    provider = resolve_api_provider(request.classifier_provider, provider_ref)
-    if request.classifier_model:
-        provider.model = request.classifier_model
-    if request.api_key:
-        provider.api_key = request.api_key
-    if request.base_url:
-        provider.base_url = request.base_url
-    if provider.requires_api_key() and not provider.resolve_api_key():
-        return None  # key missing -> silently skip, try CLI
 
     try:
-        raw = _run_api_provider(provider, request.prompt)
+        raw = execute_api_prompt(resolved.provider, request.prompt)
     except Exception as exc:  # noqa: BLE001
         return GatewayResponse(
             ok=False,
-            source=f"api:{request.classifier_provider}",
+            source=resolved.source,
             error=f"api provider error: {exc}",
         )
 
-    source = f"api:{request.classifier_provider}"
-    return mode.api_formatter(raw, source)
+    return mode.api_formatter(raw, resolved.source)
