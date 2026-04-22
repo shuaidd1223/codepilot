@@ -66,9 +66,46 @@ def collect_signal_content(
 ) -> str:
     if not enabled:
         return skipped_signal
+    return collect_enabled_signal_content(
+        spec,
+        project_name=project_name,
+        project_path=project_path,
+        collectors_by_key=collectors_by_key,
+    )
+
+
+def collect_enabled_signal_content(
+    spec: InspectSignalSpec,
+    *,
+    project_name: str,
+    project_path: Path,
+    collectors_by_key: Mapping[str, InspectSignalCollector],
+) -> str:
     collector = collectors_by_key[spec.collector_key]
     arg = _COLLECTOR_ARG_GETTER_BY_SCOPE[spec.collector_scope](project_name, project_path)
     return collector(arg)
+
+
+def resolve_signal_output(
+    spec: InspectSignalSpec,
+    *,
+    requested_tokens: set[str],
+    project_name: str,
+    project_path: Path,
+    collectors_by_key: Mapping[str, InspectSignalCollector],
+    skipped_signal: str,
+) -> tuple[bool, str]:
+    """Resolve one signal's output through explicit enabled/disabled paths."""
+    enabled = is_signal_enabled(spec, requested_tokens)
+    content = collect_signal_content(
+        spec,
+        enabled=enabled,
+        project_name=project_name,
+        project_path=project_path,
+        collectors_by_key=collectors_by_key,
+        skipped_signal=skipped_signal,
+    )
+    return enabled, content
 
 
 def collect_signal_results(
@@ -83,21 +120,21 @@ def collect_signal_results(
     requested = normalize_signal_tokens(signals)
     results: list[InspectSignalResult] = []
     for spec in specs:
-        enabled = is_signal_enabled(spec, requested)
+        enabled, content = resolve_signal_output(
+            spec,
+            requested_tokens=requested,
+            project_name=project_name,
+            project_path=project_path,
+            collectors_by_key=collectors_by_key,
+            skipped_signal=skipped_signal,
+        )
         results.append(
             InspectSignalResult(
                 key=spec.key,
                 title=spec.title,
                 order=spec.order,
                 enabled=enabled,
-                content=collect_signal_content(
-                    spec,
-                    enabled=enabled,
-                    project_name=project_name,
-                    project_path=project_path,
-                    collectors_by_key=collectors_by_key,
-                    skipped_signal=skipped_signal,
-                ),
+                content=content,
             )
         )
     return results
