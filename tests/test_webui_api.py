@@ -163,6 +163,70 @@ def test_create_task_empty_title_returns_error(ui_server):
         assert "error" in body
 
 
+# ─── POST /api/goal /api/sessions/:id/messages routing ─────────────────────
+
+def test_goal_endpoint_normalizes_non_list_qa_history(ui_server, monkeypatch):
+    captured = {}
+
+    def fake_submit_goal(project, text, *, category="auto", qa_history=None, original_title=""):
+        captured.update({
+            "project": project,
+            "text": text,
+            "category": category,
+            "qa_history": qa_history,
+            "original_title": original_title,
+        })
+        return {"ok": True, "intent": "question", "message": "ok"}
+
+    monkeypatch.setattr(webui_mod, "submit_goal_action", fake_submit_goal)
+
+    status, body = _post(f"{ui_server}/api/goal", {
+        "project": "demo",
+        "text": "hello",
+        "category": "auto",
+        "qa_history": "not-a-list",
+        "original_title": "raw",
+    })
+
+    assert status == 200
+    assert body["ok"] is True
+    assert captured["qa_history"] == []
+
+
+def test_session_message_endpoint_routes_to_action(ui_server, monkeypatch):
+    session = db.create_session("demo", title="chat")
+    captured = {}
+
+    def fake_send_session_message(session_id, text, *, category="auto"):
+        captured.update({
+            "session_id": session_id,
+            "text": text,
+            "category": category,
+        })
+        return {"ok": True, "intent": "question", "message": "routed", "task_ids": []}
+
+    monkeypatch.setattr(webui_mod, "send_session_message_action", fake_send_session_message)
+
+    status, body = _post(f"{ui_server}/api/sessions/{session['id']}/messages", {
+        "text": "hello session",
+        "category": "question",
+    })
+
+    assert status == 200
+    assert body["message"] == "routed"
+    assert captured == {
+        "session_id": session["id"],
+        "text": "hello session",
+        "category": "question",
+    }
+
+
+def test_unknown_post_path_returns_404(ui_server):
+    status, body = _post(f"{ui_server}/api/no-such-post", {})
+    assert status == 404
+    assert "error" in body
+
+
 # ─── POST/DELETE /api/projects ──────────────────────────────────────────────
 
 def test_create_and_delete_project_via_api(ui_server, tmp_path):

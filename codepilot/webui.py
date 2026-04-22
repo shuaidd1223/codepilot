@@ -371,119 +371,109 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": "未找到页面。"}, status=404)
 
+    def _dispatch_post_exact(self, path: str, get_body: Callable[[], dict]) -> dict | None:
+        """Handle POST endpoints with exact paths; return ``None`` if unmatched."""
+        handlers: dict[str, Callable[[dict], dict]] = {
+            "/api/goal": lambda body: submit_goal_action(
+                body.get("project") or "",
+                body.get("text") or "",
+                category=body.get("category") or "auto",
+                qa_history=body.get("qa_history") if isinstance(body.get("qa_history"), list) else [],
+                original_title=(body.get("original_title") or "").strip(),
+            ),
+            "/api/projects": lambda body: create_project_action(
+                body.get("path") or "",
+                name=body.get("name") or "",
+                no_config=bool(body.get("no_config", False)),
+            ),
+            "/api/tasks": lambda body: create_task_action(
+                body.get("project") or "",
+                body.get("title") or "",
+                content=body.get("content") or "",
+                priority=body.get("priority") or "P2",
+                agent=body.get("agent") or None,
+                max_retries=int(body.get("max_retries") or 3),
+            ),
+            "/api/requirements": lambda body: submit_requirement_action(
+                body.get("project") or "",
+                body.get("title") or "",
+                execute=bool(body.get("execute", True)),
+                planner=(body.get("planner") or "").strip() or None,
+                agent=None if body.get("agent") in {"", None, "auto"} else body.get("agent"),
+                priority=body.get("priority") or "P2",
+                max_tasks=int(body.get("max_tasks") or 5),
+                executor=body.get("executor") or "auto",
+                auto_commit=bool(body.get("auto_commit", False)),
+                max_retries=int(body.get("max_retries") or 3),
+                run_async=bool(body.get("run_async", True)),
+                qa_history=body.get("qa_history") if isinstance(body.get("qa_history"), list) else [],
+                original_title=(body.get("original_title") or "").strip(),
+            ),
+            "/api/sessions": lambda body: create_session_action(
+                body.get("project") or "",
+                title=body.get("title") or "",
+            ),
+        }
+        handler = handlers.get(path)
+        if not handler:
+            return None
+        return handler(get_body())
+
+    def _dispatch_post_pattern(self, path: str, get_body: Callable[[], dict]) -> dict | None:
+        """Handle regex POST routes; return ``None`` if unmatched."""
+        match = re.fullmatch(r"/api/tasks/(\d+)/(retry|stop|promote|split)", path)
+        if match:
+            task_id = int(match.group(1))
+            action = match.group(2)
+            action_handlers: dict[str, Callable[[int], dict]] = {
+                "retry": retry_task_action,
+                "stop": stop_task_action,
+                "promote": promote_task_action,
+                "split": split_task_action,
+            }
+            return action_handlers[action](task_id)
+
+        match = re.fullmatch(r"/api/projects/([^/]+)/(tasks|inspect)/(start|stop|status)", path)
+        if match:
+            return project_service_action(
+                unquote(match.group(1)),
+                match.group(2),
+                match.group(3),
+            )
+
+        match = re.fullmatch(r"/api/sessions/(\d+)/messages", path)
+        if match:
+            body = get_body()
+            return send_session_message_action(
+                int(match.group(1)),
+                body.get("text") or "",
+                category=body.get("category") or "auto",
+            )
+
+        return None
+
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        body_cache: dict | None = None
+
+        def _body() -> dict:
+            nonlocal body_cache
+            if body_cache is None:
+                body_cache = self._read_json_body()
+            return body_cache
+
         try:
-            if path == "/api/goal":
-                body = self._read_json_body()
-                raw_history = body.get("qa_history") or []
-                if not isinstance(raw_history, list):
-                    raw_history = []
-                self._send_json(
-                    submit_goal_action(
-                        body.get("project") or "",
-                        body.get("text") or "",
-                        category=body.get("category") or "auto",
-                        qa_history=raw_history,
-                        original_title=(body.get("original_title") or "").strip(),
-                    )
-                )
+            payload = self._dispatch_post_exact(path, _body)
+            if payload is None:
+                payload = self._dispatch_post_pattern(path, _body)
+            if payload is None:
+                self._send_json({"error": "未找到接口。"}, status=404)
                 return
-            if path == "/api/projects":
-                body = self._read_json_body()
-                self._send_json(
-                    create_project_action(
-                        body.get("path") or "",
-                        name=body.get("name") or "",
-                        no_config=bool(body.get("no_config", False)),
-                    )
-                )
-                return
-            if path == "/api/tasks":
-                body = self._read_json_body()
-                self._send_json(
-                    create_task_action(
-                        body.get("project") or "",
-                        body.get("title") or "",
-                        content=body.get("content") or "",
-                        priority=body.get("priority") or "P2",
-                        agent=body.get("agent") or None,
-                        max_retries=int(body.get("max_retries") or 3),
-                    )
-                )
-                return
-            if path == "/api/requirements":
-                body = self._read_json_body()
-                raw_history = body.get("qa_history") or []
-                if not isinstance(raw_history, list):
-                    raw_history = []
-                self._send_json(
-                    submit_requirement_action(
-                        body.get("project") or "",
-                        body.get("title") or "",
-                        execute=bool(body.get("execute", True)),
-                        planner=(body.get("planner") or "").strip() or None,
-                        agent=None if body.get("agent") in {"", None, "auto"} else body.get("agent"),
-                        priority=body.get("priority") or "P2",
-                        max_tasks=int(body.get("max_tasks") or 5),
-                        executor=body.get("executor") or "auto",
-                        auto_commit=bool(body.get("auto_commit", False)),
-                        max_retries=int(body.get("max_retries") or 3),
-                        run_async=bool(body.get("run_async", True)),
-                        qa_history=raw_history,
-                        original_title=(body.get("original_title") or "").strip(),
-                    )
-                )
-                return
-            match = re.fullmatch(r"/api/tasks/(\d+)/(retry|stop|promote|split)", path)
-            if match:
-                task_id = int(match.group(1))
-                action = match.group(2)
-                if action == "retry":
-                    payload = retry_task_action(task_id)
-                elif action == "stop":
-                    payload = stop_task_action(task_id)
-                elif action == "split":
-                    payload = split_task_action(task_id)
-                else:
-                    payload = promote_task_action(task_id)
-                self._send_json(payload)
-                return
-            match = re.fullmatch(r"/api/projects/([^/]+)/(tasks|inspect)/(start|stop|status)", path)
-            if match:
-                self._send_json(
-                    project_service_action(
-                        unquote(match.group(1)),
-                        match.group(2),
-                        match.group(3),
-                    )
-                )
-                return
-            # Session POST endpoints
-            if path == "/api/sessions":
-                body = self._read_json_body()
-                self._send_json(
-                    create_session_action(
-                        body.get("project") or "",
-                        title=body.get("title") or "",
-                    )
-                )
-                return
-            match = re.fullmatch(r"/api/sessions/(\d+)/messages", path)
-            if match:
-                body = self._read_json_body()
-                self._send_json(
-                    send_session_message_action(
-                        int(match.group(1)),
-                        body.get("text") or "",
-                        category=body.get("category") or "auto",
-                    )
-                )
-                return
+            self._send_json(payload)
+            return
         except (RuntimeError, ValueError) as exc:
             self._send_json({"error": str(exc)}, status=400)
             return
-        self._send_json({"error": "未找到接口。"}, status=404)
 
     def do_DELETE(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)

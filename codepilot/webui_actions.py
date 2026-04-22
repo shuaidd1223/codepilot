@@ -68,6 +68,65 @@ def _append_event(message: str, *, level: str = "info", project: str | None = No
         del shell._UI_EVENTS[:-_MAX_EVENTS]
 
 
+def _normalize_goal_category(category: str | None) -> str:
+    normalized = (category or "auto").lower()
+    valid_categories = {"auto", "question", "task", "requirement", "command"}
+    if normalized not in valid_categories:
+        return "auto"
+    return normalized
+
+
+def _format_numbered_questions(questions: list[str]) -> str:
+    return "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
+
+
+def _extract_job_task_ids(result: dict) -> list[int]:
+    job = result.get("job")
+    if not isinstance(job, dict):
+        return []
+    task_ids = job.get("task_ids") or []
+    return task_ids if isinstance(task_ids, list) else []
+
+
+def _answer_project_question(project_info: dict, question: str) -> str:
+    from codepilot.ai import answer_question_via_api
+
+    answer_options = resolve_question_answer_options(project_info)
+    try:
+        answer = answer_question_via_api(
+            provider_key=answer_options["provider_key"],
+            question=question,
+            project_path=answer_options["project_path"],
+            config_ref=answer_options["config_ref"],
+            model_override=answer_options["model_override"],
+            api_key=answer_options["api_key"],
+            base_url=answer_options["base_url"],
+        )
+    except Exception as exc:
+        answer = f"回答失败：{exc}"
+    return answer or "未获得回答"
+
+
+def _submit_requirement_from_message(
+    project: str,
+    refined_title: str,
+    *,
+    planner: str,
+    max_tasks: int,
+) -> tuple[dict, str, list[int]]:
+    result = submit_requirement_action(
+        project,
+        refined_title,
+        execute=True,
+        planner=planner,
+        max_tasks=max_tasks,
+        run_async=True,
+        clarify=False,
+    )
+    reply = result.get("message") or "需求已提交"
+    return result, reply, _extract_job_task_ids(result)
+
+
 def _next_job_id() -> int:
     shell = _shell()
     with shell._UI_LOCK:
@@ -590,8 +649,6 @@ def submit_goal_action(
     ``qa_history``; the action threads them through :func:`clarify_requirement`
     and either returns a new ``clarify`` response or starts planning.
     """
-    from codepilot.ai import answer_question_via_api
-
     db.init_db()
     project_info = db.get_project(project)
     if not project_info:
@@ -603,10 +660,7 @@ def submit_goal_action(
     if len(text.encode("utf-8")) > _GOAL_MAX_BYTES:
         raise RuntimeError(f"输入超过 {_GOAL_MAX_BYTES // 1024}KB 限制。")
 
-    category = (category or "auto").lower()
-    valid_categories = {"auto", "question", "task", "requirement", "command"}
-    if category not in valid_categories:
-        category = "auto"
+    category = _normalize_goal_category(category)
 
     intent = classify_entry_intent(
         text,
@@ -628,21 +682,9 @@ def submit_goal_action(
         }
 
     if intent == "question":
-        answer_options = resolve_question_answer_options(project_info)
-        try:
-            answer = answer_question_via_api(
-                provider_key=answer_options["provider_key"],
-                question=text,
-                project_path=answer_options["project_path"],
-                config_ref=answer_options["config_ref"],
-                model_override=answer_options["model_override"],
-                api_key=answer_options["api_key"],
-                base_url=answer_options["base_url"],
-            )
-        except Exception as exc:
-            answer = f"回答失败：{exc}"
+        answer = _answer_project_question(project_info, text)
         _append_event(f"回答问题：{text[:60]}", project=project)
-        return {"ok": True, "intent": "question", "message": answer or "未获得回答"}
+        return {"ok": True, "intent": "question", "message": answer}
 
     # ── Clarification (multi-turn) gate before actually planning ──────────
     assessment = assess_requirement_for_planning(
@@ -668,14 +710,11 @@ def submit_goal_action(
 
     refined = assessment.get("refined_title") or seed_title
     max_tasks = 1 if intent == "task" else 5
-    result = submit_requirement_action(
+    result, _, _ = _submit_requirement_from_message(
         project,
         refined,
-        execute=True,
         planner=effective_planner,
         max_tasks=max_tasks,
-        run_async=True,
-        clarify=False,
     )
     result["intent"] = intent
     result["refined_title"] = refined
@@ -804,8 +843,6 @@ def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
 
 def send_session_message_action(session_id: int, text: str, *, category: str = "auto") -> dict:
     """Send a message in a session — classify intent, route, and record both user and assistant messages."""
-    from codepilot.ai import answer_question_via_api
-
     db.init_db()
     session = db.get_session(session_id)
     if not session:
@@ -818,6 +855,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
     text = (text or "").strip()
     if not text:
         raise RuntimeError("输入不能为空。")
+    normalized_category = _normalize_goal_category(category)
 
     existing_messages = db.list_session_messages(session_id)
     if not existing_messages:
@@ -826,7 +864,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
 
     # ── Multi-turn clarification: was the previous assistant turn a clarify? ──
     pending = _reconstruct_clarification_state(existing_messages)
-    if pending and category in {"auto", "", None}:
+    if pending and normalized_category == "auto":
         db.create_session_message(session_id, "user", text)
         pending = append_clarification_answer_to_state(
             pending,
@@ -847,7 +885,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
         )
         if next_state:
             questions = next_state.get("last_questions") or []
-            reply = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
+            reply = _format_numbered_questions(questions)
             db.create_session_message(session_id, "assistant", reply, intent="clarify")
             return {
                 "ok": True,
@@ -857,17 +895,12 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
                 "task_ids": [],
             }
         refined = assessment.get("refined_title") or (assessment.get("seed_title") or pending["original_title"])
-        plan_result = submit_requirement_action(
+        _, reply, task_ids = _submit_requirement_from_message(
             project,
             refined,
-            execute=True,
             planner=effective_planner,
             max_tasks=5,
-            run_async=True,
-            clarify=False,
         )
-        task_ids = (plan_result.get("job") or {}).get("task_ids") or []
-        reply = plan_result.get("message") or f"已根据澄清结果开始规划：{refined}"
         db.create_session_message(
             session_id, "assistant", reply, intent="requirement", task_ids=task_ids,
         )
@@ -881,35 +914,20 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
 
     db.create_session_message(session_id, "user", text)
 
-    category = (category or "auto").lower()
     intent = classify_entry_intent(
         text,
         project_info=project_info,
-        category=category,
+        category=normalized_category,
     )
 
-    if intent == "command":
-        reply = command_intent_guidance()
-        db.create_session_message(session_id, "assistant", reply, intent="command")
-        return {"ok": True, "intent": "command", "message": reply, "task_ids": []}
-
-    if intent == "question":
-        answer_options = resolve_question_answer_options(project_info)
-        try:
-            answer = answer_question_via_api(
-                provider_key=answer_options["provider_key"],
-                question=text,
-                project_path=answer_options["project_path"],
-                config_ref=answer_options["config_ref"],
-                model_override=answer_options["model_override"],
-                api_key=answer_options["api_key"],
-                base_url=answer_options["base_url"],
-            )
-        except Exception as exc:
-            answer = f"回答失败：{exc}"
-        reply = answer or "未获得回答"
-        db.create_session_message(session_id, "assistant", reply, intent="question")
-        return {"ok": True, "intent": "question", "message": reply, "task_ids": []}
+    if intent in {"command", "question"}:
+        response_handlers = {
+            "command": command_intent_guidance,
+            "question": lambda: _answer_project_question(project_info, text),
+        }
+        reply = response_handlers[intent]()
+        db.create_session_message(session_id, "assistant", reply, intent=intent)
+        return {"ok": True, "intent": intent, "message": reply, "task_ids": []}
 
     assessment = assess_requirement_for_planning(
         text,
@@ -919,9 +937,8 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
     )
     if assessment.get("status") == "needs_clarification":
         questions = assessment.get("questions") or []
-        reply = "为了更好地规划，请先确认以下几个点：\n" + "\n".join(
-            f"{i}. {q}" for i, q in enumerate(questions, 1)
-        )
+        numbered = _format_numbered_questions(questions)
+        reply = "为了更好地规划，请先确认以下几个点：\n" + numbered if numbered else "为了更好地规划，请先确认以下几个点。"
         db.create_session_message(session_id, "assistant", reply, intent="clarify")
         return {
             "ok": True,
@@ -933,20 +950,12 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
 
     refined = assessment.get("refined_title") or text
     max_tasks = 1 if intent == "task" else 5
-    result = submit_requirement_action(
+    _, reply, task_ids = _submit_requirement_from_message(
         project,
         refined,
-        execute=True,
         planner=effective_planner,
         max_tasks=max_tasks,
-        run_async=True,
-        clarify=False,
     )
-    task_ids = []
-    job = result.get("job")
-    if job:
-        task_ids = job.get("task_ids") or []
-    reply = result.get("message") or "需求已提交"
     db.create_session_message(session_id, "assistant", reply, intent=intent, task_ids=task_ids)
     return {"ok": True, "intent": intent, "message": reply, "refined_title": refined, "task_ids": task_ids}
 
