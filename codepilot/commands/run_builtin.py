@@ -559,7 +559,7 @@ def _run_builtin_phase(
     if not available:
         raise RuntimeError(message)
 
-    console_log = output_path.with_suffix(".console.log")
+    console_log = output_path.with_suffix(".console.md")
 
     if runner == "codex":
         exe = runner_mod.resolve_cli_provider("codex", provider_ref).find_executable()
@@ -708,7 +708,7 @@ def _make_phase_output_path(output_dir: Path, task_id: int, round_num: int, kind
     """
     fd, raw = tempfile.mkstemp(
         prefix=f"task-{task_id}-{kind}-r{round_num}-",
-        suffix=".txt",
+        suffix=".md",
         dir=output_dir,
     )
     os.close(fd)

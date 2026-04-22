@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -212,6 +213,110 @@ def _summarize_output(output: str) -> list[str]:
     return summary[:15]
 
 
+def _format_command_for_markdown(cmd: list[str]) -> str:
+    parts = [str(part) for part in (cmd or [])]
+    if not parts:
+        return ""
+    if os.name == "nt":
+        return subprocess.list2cmdline(parts)
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def _write_markdown_preamble(
+    handle,
+    *,
+    task_id: int,
+    phase: str,
+    cmd: list[str],
+    cwd: Optional[Path],
+    timeout: int,
+) -> int:
+    started = datetime.now().isoformat(timespec="seconds")
+    cwd_text = str(cwd) if cwd else str(Path.cwd())
+    cmd_text = _format_command_for_markdown(cmd)
+    text = (
+        f"# Task #{task_id} · {phase}\n\n"
+        f"- started_at: `{started}`\n"
+        f"- phase: `{phase}`\n"
+        f"- cwd: `{cwd_text}`\n"
+        f"- timeout_seconds: `{int(timeout)}`\n\n"
+        "## Command\n\n"
+        "```shell\n"
+        f"{cmd_text}\n"
+        "```\n\n"
+        "## Live Output\n\n"
+    )
+    handle.write(text)
+    handle.flush()
+    return len(text.encode("utf-8", errors="replace"))
+
+
+def _write_markdown_footer(
+    handle,
+    *,
+    status: str,
+    exit_code: int | None,
+    detail: str = "",
+    summary: list[str] | None = None,
+) -> None:
+    finished = datetime.now().isoformat(timespec="seconds")
+    lines = [
+        "",
+        "## Result",
+        "",
+        f"- status: `{status}`",
+        f"- exit_code: `{exit_code if exit_code is not None else '-'}`",
+        f"- finished_at: `{finished}`",
+    ]
+    if detail:
+        lines.append(f"- detail: `{detail}`")
+    if summary:
+        lines.extend(["", "### Summary"])
+        for item in summary[:15]:
+            clean = (item or "").strip()
+            if clean:
+                lines.append(f"- {clean}")
+    lines.append("")
+    handle.write("\n".join(lines))
+    handle.flush()
+
+
+def _format_status_console_line(line: str) -> str:
+    from rich.markup import escape as _rich_escape
+
+    s = (line or "").strip()
+    if not s:
+        return ""
+    low = s.lower()
+    show = _rich_escape(s[:220])
+
+    if s in {"user", "codex", "claude", "assistant"}:
+        color = {
+            "user": "bright_white",
+            "codex": "bright_cyan",
+            "claude": "bright_yellow",
+            "assistant": "bright_magenta",
+        }.get(s, "white")
+        return f"[bold {color}]▌ {s.upper()}[/]"
+    if s == "exec":
+        return "[bold cyan]▶ EXEC[/]"
+    if low.startswith("succeeded in"):
+        return f"[bold green]✓ {show}[/]"
+    if "failed in" in low or low.startswith("failed:") or low.startswith("error:") or "traceback" in low:
+        return f"[bold red]✗ {show}[/]"
+    if s.startswith("diff --git"):
+        return f"[bold magenta]Δ {show}[/]"
+    if s.startswith("@@ "):
+        return f"[bright_blue]{show}[/]"
+    if s.startswith(("Created ", "Modified ", "Deleted ", "Renamed ", "Wrote ", "Writing ")):
+        return f"[bold yellow]{show}[/]"
+    if s.startswith(("## ", "### ", "# ")):
+        return f"[bold bright_white]{show}[/]"
+    if re.match(r"^\s*(?:[+-]\s*)?def\s+[A-Za-z_]\w*\s*\(", s):
+        return f"[bold bright_yellow]{show}[/]"
+    return f"[dim]{show}[/]"
+
+
 
 def _run_command_live(
     cmd: list[str],
@@ -279,6 +384,18 @@ def _run_command_live(
                 from codepilot.runtime import no_window_kwargs
                 popen_kwargs.update(no_window_kwargs())
 
+        _write_markdown_preamble(
+            handle,
+            task_id=task_id,
+            phase=phase,
+            cmd=cmd,
+            cwd=cwd,
+            timeout=timeout,
+        )
+        # Stream event offsets are semantic chunk offsets (start from 0),
+        # independent of markdown preamble bytes in the log file.
+        emitted_log_bytes = [0]
+
         process = subprocess.Popen(cmd, **popen_kwargs)
         if use_pty:
             # 关掉父进程这端的 slave，让子进程退出时 read 能收到 EOF
@@ -298,7 +415,7 @@ def _run_command_live(
         # subprocess — the silence detector below compares this with
         # ``time.monotonic()`` to decide whether the agent has gone quiet.
         last_output_monotonic = [time.monotonic()]
-        emitted_log_bytes = [0]
+        run_status = {"state": "running", "detail": "", "exit_code": None}
 
         from codepilot import progress_bus
 
@@ -351,8 +468,9 @@ def _run_command_live(
                 _show = _should_show_line(stripped)
                 if _show:
                     try:
-                        from rich.markup import escape as _rich_escape
-                        STATUS_CONSOLE.print(f"    [dim]{_rich_escape(stripped[:160])}[/dim]")
+                        styled = _format_status_console_line(stripped)
+                        if styled:
+                            STATUS_CONSOLE.print(f"    {styled}")
                     except Exception:
                         pass
                     try:
@@ -407,6 +525,8 @@ def _run_command_live(
                 if requested:
                     stop_process_tree(process.pid)
                     reader.join(timeout=2)
+                    run_status["state"] = "cancelled"
+                    run_status["detail"] = reason or f"任务 #{task_id} 已停止"
                     update_task_runtime(
                         task_id,
                         phase=phase,
@@ -419,6 +539,8 @@ def _run_command_live(
                 if time.monotonic() - started > timeout:
                     stop_process_tree(process.pid)
                     reader.join(timeout=2)
+                    run_status["state"] = "timeout"
+                    run_status["detail"] = f"超过超时阈值 {timeout}s"
                     raise subprocess.TimeoutExpired(cmd, timeout)
 
                 # Agent silence detector — user opt-in via config. Guards
@@ -429,6 +551,10 @@ def _run_command_live(
                     if silent_for > silence_timeout_seconds:
                         stop_process_tree(process.pid)
                         reader.join(timeout=2)
+                        run_status["state"] = "timeout_silence"
+                        run_status["detail"] = (
+                            f"连续 {int(silent_for)}s 无输出（阈值 {silence_timeout_seconds}s）"
+                        )
                         raise subprocess.TimeoutExpired(
                             cmd,
                             silence_timeout_seconds,
@@ -455,6 +581,8 @@ def _run_command_live(
                 if exit_code is not None:
                     reader.join(timeout=5)
                     handle.flush()
+                    run_status["state"] = "ok" if exit_code == 0 else "failed"
+                    run_status["exit_code"] = exit_code
                     update_task_runtime(
                         task_id,
                         phase=phase,
@@ -462,10 +590,29 @@ def _run_command_live(
                         log_path=log_path,
                         last_output=tail_text(log_path),
                     )
+                    with recent_lock:
+                        summary = _summarize_output("".join(recent_lines))
+                    _write_markdown_footer(
+                        handle,
+                        status=str(run_status["state"]),
+                        exit_code=exit_code,
+                        detail=str(run_status["detail"] or ""),
+                        summary=summary,
+                    )
                     return exit_code, log_path.read_text(encoding="utf-8", errors="replace").strip()
 
                 time.sleep(0.1)
         finally:
+            if run_status["state"] not in {"ok", "failed"}:
+                with recent_lock:
+                    summary = _summarize_output("".join(recent_lines))
+                _write_markdown_footer(
+                    handle,
+                    status=str(run_status["state"]),
+                    exit_code=run_status["exit_code"],
+                    detail=str(run_status["detail"] or ""),
+                    summary=summary,
+                )
             if process.stdin:
                 try:
                     process.stdin.close()

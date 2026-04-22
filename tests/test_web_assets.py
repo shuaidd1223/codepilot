@@ -48,3 +48,16 @@ def test_web_ui_uses_in_app_confirm_dialog_instead_of_browser_dialogs():
     assert "window.confirm(" not in task_detail
     assert "window.alert(" not in app
     assert "window.prompt(" not in app
+
+
+def test_web_ui_wires_plugin_diff_assets():
+    index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
+    diff_viewer = Path("codepilot/web/components/DiffViewer.js").read_text(encoding="utf-8")
+    utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
+
+    assert "diff2html/bundles/css/diff2html.min.css" in index_html
+    assert "diff2html/bundles/js/diff2html.min.js" in index_html
+    assert "<script src=\"/static/components/DiffViewer.js\"></script>" in index_html
+    assert "CP.Components.DiffViewer" in diff_viewer
+    assert "window.Diff2Html.html" in diff_viewer
+    assert "CP.ensureMonaco" not in utils

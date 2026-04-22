@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CodePilot 控制台</title>
 <link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css">
 <!-- Must use the FULL build (with template compiler), not vue.global.prod.js, because we compile templates in the browser. -->
 <script src="https://unpkg.com/vue@3.5.13/dist/vue.global.js"></script>
 <!-- Syntax highlighting (core + diff + common languages), ANSI escape rendering, and
@@ -14,6 +15,7 @@
 <script src="https://unpkg.com/ansi_up@5.2.1/ansi_up.js"></script>
 <script src="https://unpkg.com/marked@12.0.2/marked.min.js"></script>
 <script src="https://unpkg.com/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html.min.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -25,6 +27,7 @@
 <script src="/static/components/Chip.js"></script>
 <script src="/static/components/CodeBlock.js"></script>
 <script src="/static/components/LiveLog.js"></script>
+<script src="/static/components/DiffViewer.js"></script>
 <script src="/static/components/AgentLog.js"></script>
 <script src="/static/components/Markdown.js"></script>
 <script src="/static/components/ToastStack.js"></script>

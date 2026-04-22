@@ -219,7 +219,7 @@ def _run_dispatch(project: dict, task_file: Path, agent_mode: str, shell: ShellI
 
     cmd, _ = build_script_command(shell, dispatch_path, script_args)
     runtime_dir = _builtin_runtime_dir(project)
-    log_path = runtime_dir / f"task-{Path(task_file).stem}-dispatch.log"
+    log_path = runtime_dir / f"task-{Path(task_file).stem}-dispatch.md"
     task_id = int(task_file.stem.split("-", 1)[0])
     return _run_command_live(
         cmd,

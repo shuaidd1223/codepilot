@@ -20,16 +20,30 @@ const PREFIX_RULES = [
   { cls: 'list',        re: /^\s*(?:[-*•]|\d+\.)\s/ },
   { cls: 'fence',       re: /^\s*```/ },
 ];
-
 const TOOL_HEAD_RE = /^(\s*)([⏺●◉▲▸▶])\s+([A-Za-z_][\w.-]*)(?:\(([^)]*)\))?\s*(.*)$/;
 const TOOL_BODY_RE = /^(\s*)[⎿└╰├│╭╮╯]\s?/;
 const DIFF_HEAD_RE = /^diff --git a\/(.+?) b\/(.+)$/;
 const DIFF_META_RE = /^(---|\+\+\+) [ab]\/(.+)$/;
 const HUNK_RE = /^@@ .+ @@/;
 const INDEX_LINE_RE = /^(index |Binary files |similarity index |rename from |rename to |new file mode |deleted file mode )/;
+const ALERT_WORD_RE = /\b(error|failed|exception|traceback|timeout|denied|fatal)\b/i;
+const ROLE_LINE_RE = /^\s*(user|codex|claude|assistant)\s*$/i;
+const EXEC_LINE_RE = /^\s*exec\s*$/i;
+const EXEC_CMD_RE = /^\s*".+"\s+in\s+.+$/;
+const EXEC_OK_RE = /^\s*succeeded in \d+ms:/i;
+const EXEC_FAIL_RE = /^\s*(?:failed in \d+ms:|failed:|error:)/i;
+const META_SEP_RE = /^\s*-{4,}\s*$/;
+const META_KV_RE = /^(workdir|model|provider|approval|sandbox|reasoning effort|reasoning summaries|session id):/i;
+const DEF_LINE_RE = /^\s*(?:[+-]\s*)?def\s+[A-Za-z_][\w]*\s*\(/;
+const CP_MD_BEGIN_RE = /^@@CP:MD-BEGIN(?:\s+(.*))?$/;
+const CP_MD_END_RE = /^@@CP:MD-END$/;
+const MD_HINT_LINE_RE = /^\s*(?:#{1,6}\s|```|\*\*.+\*\*|__.+__|[-*+]\s+\S|\d+\.\s+\S|>\s+\S|\|.+\|\s*)$/;
 const DIFF_AUTO_COLLAPSE_MIN_LINES = 36;
 const DIFF_COLLAPSE_PREVIEW_HEAD = 3;
 const DIFF_COLLAPSE_PREVIEW_TAIL = 2;
+const DIFF_HUNK_COLLAPSIBLE_MIN_LINES = 8;
+const DIFF_HUNK_AUTO_COLLAPSE_MIN_LINES = 28;
+const VIRTUAL_MIN_BLOCKS = 180;
 
 CP.Components.AgentLog = Vue.defineComponent({
   name: 'CpAgentLog',
@@ -44,6 +58,14 @@ CP.Components.AgentLog = Vue.defineComponent({
     return {
       stickToBottom: true,
       manualFollowPaused: false,
+      filterMode: 'all',
+      searchQuery: '',
+      searchPos: -1,
+      unreadLines: 0,
+      unreadDiffs: 0,
+      pluginPanelOpen: false,
+      pluginPanelKey: '',
+      expandedRows: Object.create(null),
       collapsed: Object.create(null),
       vStart: 0,
       vEnd: 0,
@@ -55,13 +77,33 @@ CP.Components.AgentLog = Vue.defineComponent({
     blocks() {
       return this._parse(this.text || '');
     },
-    blockCount() { return this.blocks.length; },
+    displayBlocks() {
+      if (this.filterMode === 'tools') return this.blocks.filter(b => b.type === 'tool');
+      if (this.filterMode === 'diffs') return this.blocks.filter(b => b.type === 'diff');
+      if (this.filterMode === 'alerts') return this.blocks.filter(b => this.isAlertBlock(b));
+      return this.blocks;
+    },
+    filterCounts() {
+      const tools = this.blocks.filter(b => b.type === 'tool').length;
+      const diffs = this.blocks.filter(b => b.type === 'diff').length;
+      const alerts = this.blocks.filter(b => this.isAlertBlock(b)).length;
+      return {
+        all: this.blocks.length,
+        tools,
+        diffs,
+        alerts,
+      };
+    },
+    blockCount() { return this.displayBlocks.length; },
     textLength() { return (this.text || '').length; },
     followEnabled() {
       return !!this.follow && !this.manualFollowPaused;
     },
     diffBlocks() {
       return this.blocks.filter(b => b.type === 'diff');
+    },
+    totalDiffCount() {
+      return this.diffBlocks.length;
     },
     collapsibleDiffBlocks() {
       return this.diffBlocks.filter(b => b && b.lines && b.lines.length > 8);
@@ -75,24 +117,115 @@ CP.Components.AgentLog = Vue.defineComponent({
     },
     totalLines() {
       let n = 0;
-      for (const b of this.blocks) n += b.lines ? b.lines.length : 1;
+      for (const b of this.blocks) n += b.lineCount || (b.lines ? b.lines.length : 1);
       return n;
     },
+    displayLines() {
+      let n = 0;
+      for (const b of this.displayBlocks) n += b.lineCount || (b.lines ? b.lines.length : 1);
+      return n;
+    },
+    linesLabel() {
+      if (this.filterMode === 'all') return `${this.totalLines} 行`;
+      return `${this.displayLines}/${this.totalLines} 行`;
+    },
+    jumpLabel() {
+      const pieces = [];
+      if (this.unreadLines > 0) pieces.push(`+${this.unreadLines} 行`);
+      if (this.unreadDiffs > 0) pieces.push(`+${this.unreadDiffs} Diff`);
+      return pieces.length ? `↓ 回到最新 · ${pieces.join(' · ')}` : '↓ 回到最新';
+    },
+    filterOptions() {
+      return [
+        { mode: 'all', label: '全部' },
+        { mode: 'tools', label: '工具' },
+        { mode: 'diffs', label: 'Diff' },
+        { mode: 'alerts', label: '关注' },
+      ];
+    },
+    searchMatches() {
+      const q = String(this.searchQuery || '').trim().toLowerCase();
+      if (!q) return [];
+      const out = [];
+      for (let i = 0; i < this.displayBlocks.length; i++) {
+        const text = this.blockSearchText(this.displayBlocks[i]);
+        if (text && text.toLowerCase().includes(q)) out.push(i);
+      }
+      return out;
+    },
+    searchMatchSet() {
+      return new Set(this.searchMatches);
+    },
+    activeSearchDisplayIndex() {
+      if (this.searchPos < 0 || this.searchPos >= this.searchMatches.length) return -1;
+      return this.searchMatches[this.searchPos];
+    },
+    searchSummary() {
+      const hasQuery = !!String(this.searchQuery || '').trim();
+      if (!hasQuery) return '搜索';
+      const total = this.searchMatches.length;
+      if (!total) return '0/0';
+      const cur = this.searchPos >= 0 ? this.searchPos + 1 : 0;
+      return `${cur}/${total}`;
+    },
+    pluginPanelBlock() {
+      if (!this.pluginPanelKey) return null;
+      return this.blocks.find(b => b && b.type === 'diff' && b.key === this.pluginPanelKey) || null;
+    },
+    shouldVirtualize() {
+      if (this.displayBlocks.length <= VIRTUAL_MIN_BLOCKS) return false;
+      return !this.displayBlocks.some(b => b && b.type === 'markdown');
+    },
     visibleBlocks() {
-      if (!this.blocks.length) return [];
-      if (this.vEnd <= this.vStart) return this.blocks;
-      return this.blocks.slice(this.vStart, this.vEnd);
+      if (!this.displayBlocks.length) return [];
+      if (!this.shouldVirtualize) return this.displayBlocks;
+      if (this.vEnd <= this.vStart) return this.displayBlocks;
+      return this.displayBlocks.slice(this.vStart, this.vEnd);
     },
   },
   watch: {
     textLength() {
       this.$nextTick(() => {
+        if (!this.textLength) this._clearUnread();
         if (this.followEnabled && this.stickToBottom) this._scrollToBottom();
         this._scheduleVirtualCalc();
       });
     },
+    totalLines(next, prev) {
+      const oldVal = Number.isFinite(prev) ? prev : 0;
+      const delta = Math.max(0, (Number.isFinite(next) ? next : 0) - oldVal);
+      if (!delta) return;
+      if (!this.followEnabled || !this.stickToBottom) this.unreadLines += delta;
+    },
+    totalDiffCount(next, prev) {
+      const oldVal = Number.isFinite(prev) ? prev : 0;
+      const delta = Math.max(0, (Number.isFinite(next) ? next : 0) - oldVal);
+      if (!delta) return;
+      if (!this.followEnabled || !this.stickToBottom) this.unreadDiffs += delta;
+    },
     blockCount() {
       this.$nextTick(() => this._scheduleVirtualCalc());
+    },
+    filterMode() {
+      this.vStart = 0;
+      this.vEnd = 0;
+      this.topPad = 0;
+      this.bottomPad = 0;
+      this.$nextTick(() => this._scheduleVirtualCalc());
+    },
+    searchQuery() {
+      this.searchPos = -1;
+    },
+    searchMatches(next) {
+      const len = Array.isArray(next) ? next.length : 0;
+      if (!len) {
+        this.searchPos = -1;
+        return;
+      }
+      if (this.searchPos >= len) this.searchPos = 0;
+    },
+    pluginPanelBlock(next) {
+      if (!next && this.pluginPanelOpen) this.closePluginDiff();
     },
   },
   created() {
@@ -119,6 +252,7 @@ CP.Components.AgentLog = Vue.defineComponent({
       this._scrollToBottom();
       this._scheduleVirtualCalc();
     });
+    window.addEventListener('keydown', this._onWindowKeydown);
   },
   beforeUnmount() {
     const body = this.$refs.body;
@@ -126,15 +260,29 @@ CP.Components.AgentLog = Vue.defineComponent({
     if (this._resizeObserver) this._resizeObserver.disconnect();
     if (this._virtualRaf) cancelAnimationFrame(this._virtualRaf);
     if (this._measureRaf) cancelAnimationFrame(this._measureRaf);
+    window.removeEventListener('keydown', this._onWindowKeydown);
   },
   methods: {
     _parse(raw) {
       if (!raw) return [];
       const lines = raw.split(/\r?\n/);
+      const hasMdSignal = !!(CP._MD_SIGNAL_RE && CP._MD_SIGNAL_RE.test(raw));
+      const hasStructuredBlocks = lines.some(line => DIFF_HEAD_RE.test(line) || TOOL_HEAD_RE.test(line));
+      if (hasMdSignal && !hasStructuredBlocks) {
+        return [{
+          type: 'markdown',
+          key: 'markdown:0',
+          raw,
+          html: (CP.renderOutput ? CP.renderOutput(raw) : CP.escapeHtml(raw).replace(/\n/g, '<br>')),
+          lineCount: lines.length || 1,
+        }];
+      }
       const ansi = CP.getAnsiRenderer && CP.getAnsiRenderer();
       const hasAnsiGlobal = CP._ANSI_RE.test(raw);
       const blocks = [];
       let cur = null;
+      let roleContext = '';
+      let channelContext = '';
 
       const fresh = (type, extra, lineNo) => {
         const key = `${type}:${lineNo}`;
@@ -142,13 +290,78 @@ CP.Components.AgentLog = Vue.defineComponent({
         blocks.push(cur);
         return cur;
       };
+      const pushMarkdownBlock = (rawText, lineNo, meta) => {
+        const mdRaw = String(rawText || '');
+        const mdLines = mdRaw ? mdRaw.split(/\r?\n/) : [''];
+        blocks.push({
+          type: 'markdown',
+          key: `markdown:${lineNo}`,
+          raw: mdRaw,
+          html: (CP.renderOutput ? CP.renderOutput(mdRaw) : CP.escapeHtml(mdRaw).replace(/\n/g, '<br>')),
+          lineCount: mdLines.length || 1,
+          meta: meta || '',
+        });
+        cur = null;
+      };
       const renderInline = (line) => {
         if (hasAnsiGlobal && ansi && CP._ANSI_RE.test(line)) return ansi.ansi_to_html(line);
         return CP.escapeHtml(line);
       };
+      const classifyTextLine = (line) => {
+        const rawLine = String(line || '');
+        const trimmed = rawLine.trim();
+
+        const roleM = ROLE_LINE_RE.exec(trimmed);
+        if (roleM) {
+          roleContext = String(roleM[1] || '').toLowerCase();
+          channelContext = '';
+          return `role-${roleContext}`;
+        }
+        if (EXEC_LINE_RE.test(trimmed)) {
+          roleContext = '';
+          channelContext = 'exec';
+          return 'exec-head';
+        }
+        if (META_SEP_RE.test(trimmed)) return 'meta-sep';
+        if (META_KV_RE.test(trimmed)) return 'meta-kv';
+        if (!trimmed) return 'plain';
+
+        if (channelContext === 'exec') {
+          if (EXEC_CMD_RE.test(rawLine)) return 'exec-cmd';
+          if (EXEC_OK_RE.test(trimmed)) return 'exec-ok';
+          if (EXEC_FAIL_RE.test(trimmed)) return 'exec-fail';
+          return 'exec-out';
+        }
+
+        if (DEF_LINE_RE.test(rawLine)) return 'code-def';
+        if (roleContext === 'codex') return 'speaker-codex';
+        if (roleContext === 'claude') return 'speaker-claude';
+        if (roleContext === 'user') return 'speaker-user';
+        if (roleContext === 'assistant') return 'speaker-assistant';
+
+        for (const rule of PREFIX_RULES) {
+          if (rule.re.test(rawLine)) return rule.cls;
+        }
+        return 'plain';
+      };
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        const trimmed = String(line || '').trim();
+
+        const mdBegin = CP_MD_BEGIN_RE.exec(trimmed);
+        if (mdBegin) {
+          const mdMeta = mdBegin[1] || '';
+          const mdLines = [];
+          let j = i + 1;
+          while (j < lines.length && !CP_MD_END_RE.test(String(lines[j] || '').trim())) {
+            mdLines.push(lines[j]);
+            j += 1;
+          }
+          pushMarkdownBlock(mdLines.join('\n'), i, mdMeta);
+          i = j;
+          continue;
+        }
 
         const dHead = DIFF_HEAD_RE.exec(line);
         if (dHead) {
@@ -203,15 +416,47 @@ CP.Components.AgentLog = Vue.defineComponent({
           cur = null;
         }
 
-        if (!cur || cur.type !== 'text') fresh('text', { lines: [] }, i);
-        let cls = 'plain';
-        for (const rule of PREFIX_RULES) {
-          if (rule.re.test(line)) {
-            cls = rule.cls;
-            break;
+        const inferMarkdown = channelContext !== 'exec'
+          && roleContext
+          && roleContext !== 'user'
+          && MD_HINT_LINE_RE.test(trimmed);
+        if (inferMarkdown) {
+          const mdLines = [line];
+          let j = i + 1;
+          while (j < lines.length) {
+            const probe = lines[j];
+            const pTrim = String(probe || '').trim();
+            if (ROLE_LINE_RE.test(pTrim)
+              || EXEC_LINE_RE.test(pTrim)
+              || DIFF_HEAD_RE.test(probe)
+              || TOOL_HEAD_RE.test(probe)
+              || CP_MD_BEGIN_RE.test(pTrim)
+              || CP_MD_END_RE.test(pTrim)) {
+              break;
+            }
+            mdLines.push(probe);
+            j += 1;
           }
+          pushMarkdownBlock(mdLines.join('\n'), i, `inferred:${roleContext}`);
+          i = j - 1;
+          continue;
         }
-        cur.lines.push({ cls, html: renderInline(line) || '&nbsp;' });
+
+        if (!cur || cur.type !== 'text') fresh('text', { lines: [] }, i);
+        const cls = classifyTextLine(line);
+        const foldable = cls === 'exec-cmd' && String(line || '').length > 150;
+        const alert = cls === 'status-err'
+          || cls === 'status-warn'
+          || cls === 'exec-fail'
+          || ALERT_WORD_RE.test(String(line || ''));
+        cur.lines.push({
+          id: `${i}:${cur.lines.length}`,
+          cls,
+          foldable,
+          alert,
+          text: line,
+          html: renderInline(line) || '&nbsp;',
+        });
       }
       return blocks;
     },
@@ -219,6 +464,61 @@ CP.Components.AgentLog = Vue.defineComponent({
     toggleFollow() {
       this.manualFollowPaused = !this.manualFollowPaused;
       if (!this.manualFollowPaused) this.scrollToBottom();
+    },
+    setFilter(mode) {
+      if (this.filterMode === mode) return;
+      this.filterMode = mode;
+    },
+    canOpenPluginDiff(block) {
+      if (!block || block.type !== 'diff') return false;
+      const rows = (block.lines && block.lines.length) || 0;
+      return rows > 0 && rows <= 6000;
+    },
+    openPluginDiff(block) {
+      if (!this.canOpenPluginDiff(block)) return;
+      this.pluginPanelKey = block.key;
+      this.pluginPanelOpen = true;
+    },
+    closePluginDiff() {
+      this.pluginPanelOpen = false;
+      this.pluginPanelKey = '';
+    },
+    _onWindowKeydown(ev) {
+      if (!this.pluginPanelOpen) return;
+      if (!ev || ev.key !== 'Escape') return;
+      this.closePluginDiff();
+    },
+    onSearchKeydown(ev) {
+      if (!ev || ev.key !== 'Enter') return;
+      if (ev.shiftKey) this.prevMatch();
+      else this.nextMatch();
+    },
+    nextMatch() {
+      const total = this.searchMatches.length;
+      if (!total) return;
+      const next = (this.searchPos + 1 + total) % total;
+      this.searchPos = next;
+      this.scrollToDisplayIndex(this.searchMatches[next]);
+    },
+    prevMatch() {
+      const total = this.searchMatches.length;
+      if (!total) return;
+      const prev = (this.searchPos - 1 + total) % total;
+      this.searchPos = prev;
+      this.scrollToDisplayIndex(this.searchMatches[prev]);
+    },
+    scrollToDisplayIndex(displayIndex) {
+      const body = this.$refs.body;
+      if (!body || !Number.isFinite(displayIndex) || displayIndex < 0) return;
+      const blocks = this.displayBlocks;
+      if (!blocks.length) return;
+      const idx = Math.min(displayIndex, blocks.length - 1);
+      let y = 0;
+      for (let i = 0; i < idx; i++) y += this._blockHeight(blocks[i]) + 6;
+      this.manualFollowPaused = true;
+      this.stickToBottom = false;
+      body.scrollTop = Math.max(0, y - 18);
+      this._scheduleVirtualCalc();
     },
     toggleAllDiffs() {
       const targetCollapsed = !this.allDiffsCollapsed;
@@ -246,14 +546,81 @@ CP.Components.AgentLog = Vue.defineComponent({
       if (!block.body) return [];
       return this.isCollapsed(block) ? block.body.slice(0, 2) : block.body;
     },
+    _diffHunkBodySizes(block) {
+      if (!block || !block.lines || !block.lines.length) return [];
+      const sizes = [];
+      let idx = -1;
+      for (const row of block.lines) {
+        if (!row) continue;
+        if (row.kind === 'hunk') {
+          idx += 1;
+          sizes[idx] = 0;
+          continue;
+        }
+        if (idx >= 0) sizes[idx] += 1;
+      }
+      return sizes;
+    },
+    _diffHunkKey(block, idx) {
+      return `${(block && block.key) || 'diff'}:hunk:${idx}`;
+    },
+    _isHunkCollapsed(hKey, bodyLines) {
+      if (hKey in this.collapsed) return this.collapsed[hKey];
+      return bodyLines >= DIFF_HUNK_AUTO_COLLAPSE_MIN_LINES;
+    },
+    toggleHunkCollapse(hKey, blockKey) {
+      if (!hKey) return;
+      this.collapsed[hKey] = !this.collapsed[hKey];
+      if (blockKey) this._heightCache.delete(blockKey);
+      this.$nextTick(() => this._scheduleVirtualCalc());
+    },
     visibleDiffLines(block) {
       const lines = (block && block.lines) || [];
-      if (!this.canCollapseDiff(block) || !this.isCollapsed(block)) return lines;
-      const head = lines.slice(0, DIFF_COLLAPSE_PREVIEW_HEAD);
-      const tail = lines.slice(-DIFF_COLLAPSE_PREVIEW_TAIL);
-      const hidden = Math.max(0, lines.length - head.length - tail.length);
-      if (!hidden) return lines;
-      return head.concat([{ kind: 'fold', text: `… 已折叠 ${hidden} 行（点击标题展开）` }], tail);
+      if (!lines.length) return lines;
+      if (this.canCollapseDiff(block) && this.isCollapsed(block)) {
+        const head = lines.slice(0, DIFF_COLLAPSE_PREVIEW_HEAD);
+        const tail = lines.slice(-DIFF_COLLAPSE_PREVIEW_TAIL);
+        const hidden = Math.max(0, lines.length - head.length - tail.length);
+        if (!hidden) return lines;
+        return head.concat([{ kind: 'fold', text: `… 已折叠 ${hidden} 行（点击标题展开）` }], tail);
+      }
+
+      const hunkSizes = this._diffHunkBodySizes(block);
+      if (!hunkSizes.length) return lines;
+      const out = [];
+      let hIdx = -1;
+      let skipHunkBody = false;
+      for (const row of lines) {
+        if (!row) continue;
+        if (row.kind === 'hunk') {
+          hIdx += 1;
+          skipHunkBody = false;
+          const bodyLines = hunkSizes[hIdx] || 0;
+          const hunkKey = this._diffHunkKey(block, hIdx);
+          const collapsible = bodyLines >= DIFF_HUNK_COLLAPSIBLE_MIN_LINES;
+          const collapsed = collapsible && this._isHunkCollapsed(hunkKey, bodyLines);
+          out.push(Object.assign({}, row, {
+            _hunkKey: hunkKey,
+            _hunkCollapsible: collapsible,
+            _hunkCollapsed: collapsed,
+            _blockKey: block.key,
+          }));
+          if (collapsed) {
+            out.push({
+              kind: 'fold',
+              text: `… hunk 折叠 ${bodyLines} 行（点击 @@ 展开）`,
+              _hunkFold: true,
+              _hunkKey: hunkKey,
+              _blockKey: block.key,
+            });
+            skipHunkBody = true;
+          }
+          continue;
+        }
+        if (skipHunkBody) continue;
+        out.push(row);
+      }
+      return out;
     },
     diffMarker(row) {
       if (!row || !row.text || !row.text.length) return '';
@@ -267,6 +634,69 @@ CP.Components.AgentLog = Vue.defineComponent({
       }
       return row.text;
     },
+    isAlertBlock(block) {
+      if (!block) return false;
+      if (block.type === 'text') {
+        return !!(block.lines && block.lines.some(row => row && row.alert));
+      }
+      if (block.type === 'tool') {
+        if (ALERT_WORD_RE.test(String(block.trail || ''))) return true;
+        return !!(block.body && block.body.some(row => ALERT_WORD_RE.test(String((row && row.text) || ''))));
+      }
+      return false;
+    },
+    _clearUnread() {
+      this.unreadLines = 0;
+      this.unreadDiffs = 0;
+    },
+    blockSearchText(block) {
+      if (!block) return '';
+      if (block.type === 'tool') {
+        const parts = [block.name || '', block.arg || '', block.trail || ''];
+        if (block.body && block.body.length) {
+          for (const row of block.body) parts.push((row && row.text) || '');
+        }
+        return parts.join('\n');
+      }
+      if (block.type === 'diff') {
+        return (block.lines || []).map(row => (row && row.text) || '').join('\n');
+      }
+      if (block.type === 'text') {
+        return (block.lines || []).map(row => (row && row.text) || '').join('\n');
+      }
+      if (block.type === 'markdown') {
+        return block.raw || '';
+      }
+      return '';
+    },
+    isSearchHit(displayIndex) {
+      return this.searchMatchSet.has(displayIndex);
+    },
+    isSearchActive(displayIndex) {
+      return this.activeSearchDisplayIndex === displayIndex;
+    },
+    rowUiKey(block, rowIndex, row) {
+      const rkey = row && row.id ? row.id : String(rowIndex);
+      return `${(block && block.key) || 'row'}:${rkey}`;
+    },
+    isRowCollapsed(block, rowIndex, row) {
+      if (!row || !row.foldable) return false;
+      const key = this.rowUiKey(block, rowIndex, row);
+      return !this.expandedRows[key];
+    },
+    toggleRowCollapsed(block, rowIndex, row) {
+      if (!row || !row.foldable) return;
+      const key = this.rowUiKey(block, rowIndex, row);
+      this.expandedRows[key] = !this.expandedRows[key];
+      this.$nextTick(() => this._scheduleVirtualCalc());
+    },
+    rowHtml(block, rowIndex, row) {
+      if (!row) return '&nbsp;';
+      if (!this.isRowCollapsed(block, rowIndex, row)) return row.html || '&nbsp;';
+      const text = String(row.text || '');
+      const short = text.length > 220 ? `${text.slice(0, 220)} ...` : text;
+      return CP.escapeHtml(short) || '&nbsp;';
+    },
 
     _estimateBlockHeight(block) {
       if (!block) return 32;
@@ -278,6 +708,10 @@ CP.Components.AgentLog = Vue.defineComponent({
       if (block.type === 'diff') {
         const rows = this.visibleDiffLines(block).length || 1;
         return 30 + (rows * 18) + 8;
+      }
+      if (block.type === 'markdown') {
+        const rows = block.lineCount || 1;
+        return Math.max(42, (rows * 20) + 12);
       }
       const rows = block.lines ? block.lines.length : 1;
       return Math.max(24, (rows * 18) + 6);
@@ -301,9 +735,16 @@ CP.Components.AgentLog = Vue.defineComponent({
     },
     _recalcVirtualWindow() {
       const body = this.$refs.body;
-      const blocks = this.blocks;
+      const blocks = this.displayBlocks;
       const total = blocks.length;
       if (!body || !total) {
+        this.vStart = 0;
+        this.vEnd = total;
+        this.topPad = 0;
+        this.bottomPad = 0;
+        return;
+      }
+      if (!this.shouldVirtualize) {
         this.vStart = 0;
         this.vEnd = total;
         this.topPad = 0;
@@ -363,11 +804,13 @@ CP.Components.AgentLog = Vue.defineComponent({
       if (!body) return;
       const distance = body.scrollHeight - body.scrollTop - body.clientHeight;
       this.stickToBottom = distance < 24;
+      if (this.stickToBottom) this._clearUnread();
       this._scheduleVirtualCalc();
     },
     scrollToBottom() {
       this.manualFollowPaused = false;
       this.stickToBottom = true;
+      this._clearUnread();
       this.$nextTick(() => {
         this._scrollToBottom();
         this._scheduleVirtualCalc();
@@ -380,6 +823,27 @@ CP.Components.AgentLog = Vue.defineComponent({
         <span class="dots"><i></i><i></i><i></i></span>
         <span class="title">{{ title }}</span>
         <span class="spacer"></span>
+        <div class="al-filter-row">
+          <button
+            v-for="opt in filterOptions"
+            :key="'flt:' + opt.mode"
+            class="al-filter-btn"
+            :class="{ active: filterMode === opt.mode }"
+            @click="setFilter(opt.mode)">
+            {{ opt.label }} <span class="n">{{ filterCounts[opt.mode] || 0 }}</span>
+          </button>
+        </div>
+        <div class="al-search-row">
+          <input
+            v-model="searchQuery"
+            class="al-search-input"
+            type="text"
+            placeholder="搜索日志…"
+            @keydown="onSearchKeydown" />
+          <button class="al-search-btn" :disabled="!searchMatches.length" @click="prevMatch" title="上一个命中 (Shift+Enter)">↑</button>
+          <button class="al-search-btn" :disabled="!searchMatches.length" @click="nextMatch" title="下一个命中 (Enter)">↓</button>
+          <span class="al-search-stat">{{ searchSummary }}</span>
+        </div>
         <button
           class="al-head-btn"
           :class="{ active: !manualFollowPaused }"
@@ -395,13 +859,18 @@ CP.Components.AgentLog = Vue.defineComponent({
           {{ allDiffsCollapsed ? '展开 Diff' : '折叠 Diff' }}
         </button>
         <span v-if="!done" class="streaming-pill">streaming…</span>
-        <span class="lines">{{ totalLines }} 行</span>
+        <span class="lines">{{ linesLabel }}</span>
       </div>
       <div class="agent-log-bodywrap">
         <div ref="body" class="agent-log-body">
-          <div v-if="topPad > 0" class="al-spacer" :style="{ height: topPad + 'px' }"></div>
+          <div v-if="shouldVirtualize && topPad > 0" class="al-spacer" :style="{ height: topPad + 'px' }"></div>
 
-          <div v-for="b in visibleBlocks" :key="b.key" class="al-virtual-item" :data-bkey="b.key">
+            <div
+              v-for="(b, vi) in visibleBlocks"
+              :key="b.key"
+              class="al-virtual-item"
+              :class="{ 'is-hit': isSearchHit((shouldVirtualize ? vStart : 0) + vi), 'is-active': isSearchActive((shouldVirtualize ? vStart : 0) + vi) }"
+              :data-bkey="b.key">
             <div v-if="b.type === 'tool'" class="al-block al-tool" :class="{ collapsed: isCollapsed(b) }">
               <div class="al-tool-head" @click="toggleCollapse(b.key)">
                 <span class="al-tool-glyph">{{ b.head }}</span>
@@ -430,6 +899,13 @@ CP.Components.AgentLog = Vue.defineComponent({
                 <span class="al-diff-file">{{ b.file }}</span>
                 <span class="al-diff-meta">+{{ b.adds || 0 }} / -{{ b.dels || 0 }}</span>
                 <span class="al-diff-count">{{ (b.lines && b.lines.length) || 0 }} 行</span>
+                <button
+                  v-if="canOpenPluginDiff(b)"
+                  class="al-diff-open"
+                  @click.stop="openPluginDiff(b)"
+                  title="在插件面板中查看这个 Diff">
+                  插件查看
+                </button>
                 <span v-if="canCollapseDiff(b)" class="al-diff-caret">
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -443,23 +919,58 @@ CP.Components.AgentLog = Vue.defineComponent({
                   v-for="(row, i) in visibleDiffLines(b)"
                   :key="b.key + ':diff:' + i"
                   class="al-diff-line"
-                  :class="'k-' + row.kind"
+                  :class="[
+                    'k-' + row.kind,
+                    row._hunkCollapsible ? 'al-diff-hunk-toggle' : '',
+                    row._hunkCollapsed ? 'al-diff-hunk-collapsed' : '',
+                    row._hunkFold ? 'al-diff-hunk-fold' : ''
+                  ]"
+                  :title="row._hunkCollapsible ? (row._hunkCollapsed ? '展开 hunk' : '折叠 hunk') : ''"
+                  @click="row._hunkKey && toggleHunkCollapse(row._hunkKey, b.key)"
                   :data-marker="diffMarker(row)">{{ diffText(row) }}</span>
               </div>
             </div>
 
+            <div v-else-if="b.type === 'markdown'" class="al-block al-text al-text-md">
+              <div class="md" v-html="b.html"></div>
+            </div>
+
             <div v-else class="al-block al-text">
-              <span v-for="(row, i) in b.lines" :key="b.key + ':text:' + i" class="al-line" :class="row.cls" v-html="row.html || '&nbsp;'"></span>
+              <span
+                v-for="(row, i) in b.lines"
+                :key="b.key + ':text:' + i"
+                class="al-line"
+                :class="[row.cls, row.foldable ? 'al-line-foldable' : '', isRowCollapsed(b, i, row) ? 'is-collapsed' : '']"
+                :title="row.foldable ? (isRowCollapsed(b, i, row) ? '点击展开完整命令' : '点击收起命令') : ''"
+                @click="row.foldable && toggleRowCollapsed(b, i, row)">
+                <span class="al-line-main" v-html="rowHtml(b, i, row)"></span>
+                <span v-if="row.foldable" class="al-line-fold-hint">{{ isRowCollapsed(b, i, row) ? '展开' : '收起' }}</span>
+              </span>
             </div>
           </div>
 
-          <div v-if="bottomPad > 0" class="al-spacer" :style="{ height: bottomPad + 'px' }"></div>
-          <div v-if="!blocks.length" class="al-empty">还没有可显示的日志</div>
+          <div v-if="shouldVirtualize && bottomPad > 0" class="al-spacer" :style="{ height: bottomPad + 'px' }"></div>
+          <div v-if="!displayBlocks.length" class="al-empty">当前筛选下暂无日志</div>
           <span v-if="!done" class="al-cursor"></span>
         </div>
         <button v-if="!stickToBottom || manualFollowPaused" class="agent-log-jump" @click="scrollToBottom" title="回到最新并恢复自动跟随">
-          ↓ 回到最新
+          {{ jumpLabel }}
         </button>
+      </div>
+      <div v-if="pluginPanelOpen" class="al-plugin-overlay" @click="closePluginDiff">
+        <section class="al-plugin-panel" role="dialog" aria-modal="true" aria-label="Diff 插件查看器" @click.stop>
+          <header class="al-plugin-head">
+            <div class="al-plugin-title">
+              <span>插件 Diff 查看</span>
+              <code v-if="pluginPanelBlock">{{ pluginPanelBlock.file }}</code>
+            </div>
+            <button class="al-plugin-close" @click="closePluginDiff" title="关闭 (Esc)">关闭</button>
+          </header>
+          <div class="al-plugin-body">
+            <cp-diff-viewer v-if="pluginPanelBlock" :block="pluginPanelBlock" :height="'100%'"></cp-diff-viewer>
+            <div v-else class="al-empty">Diff 已失效，请重新选择</div>
+          </div>
+        </section>
       </div>
     </div>
   `,
