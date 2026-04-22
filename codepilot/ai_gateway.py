@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from codepilot.ai_gateway_entrypoints import run_gateway_entry
+from codepilot.ai_gateway_errors import build_combined_failure
 from codepilot.ai_gateway_api import (
     format_api_structured as _api_format_api_structured,
     format_api_text as _api_format_api_text,
@@ -133,19 +135,10 @@ def _call_with_fallback(
     cli_runner,
 ) -> GatewayResponse:
     """Single fallback decision entry for API -> CLI routing."""
-    if mode.schema_required and request.schema is None:
-        raise ValueError(mode.schema_error)
-    if not mode.schema_required and request.schema is not None:
-        raise ValueError(mode.schema_error)
-
-    api_result = _try_api(request, mode)
-    if api_result is not None and api_result.ok:
-        return api_result
-
-    cli_result = cli_runner(request)
-    if cli_result.ok:
-        return cli_result
-
-    api_err = api_result.error if api_result is not None else ""
-    combined = "; ".join(err for err in (api_err, cli_result.error) if err)
-    return GatewayResponse(ok=False, source=cli_result.source, error=combined)
+    return run_gateway_entry(
+        request,
+        mode=mode,
+        try_api=_try_api,
+        cli_runner=cli_runner,
+        build_failure=build_combined_failure,
+    )
