@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
 import sqlite3
 import threading
 import time
@@ -14,9 +13,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-DB_PATH = Path.home() / ".codepilot" / "tasks.db"
+from codepilot.db_config import (
+    default_db_path as _cfg_default_db_path,
+    get_cache_ttl_seconds as _cfg_get_cache_ttl_seconds,
+    get_db_path as _cfg_get_db_path,
+    open_connection as _cfg_open_connection,
+)
 
-_CACHE_TTL_SECONDS = max(0.0, float(os.environ.get("CODEPILOT_DB_CACHE_TTL_SECONDS", "1.5")))
+
+DB_PATH = _cfg_default_db_path()
+
+_CACHE_TTL_SECONDS = _cfg_get_cache_ttl_seconds()
 _CACHE_MISS = object()
 _QUERY_CACHE: dict[tuple, tuple[float, object]] = {}
 _CACHE_LOCK = threading.Lock()
@@ -57,23 +64,19 @@ def _cache_invalidate(*prefixes: str) -> None:
 
 
 def _default_db_path() -> Path:
-    return Path.home() / ".codepilot" / "tasks.db"
+    """Compatibility shim for existing tests and private imports."""
+    return _cfg_default_db_path()
 
 
 def _get_db_path() -> Path:
-    """Return the effective database path and ensure its parent directory exists."""
-    raw_path = Path(os.environ.get("CODEPILOT_DB_PATH", str(_default_db_path())))
-    raw_path.parent.mkdir(parents=True, exist_ok=True)
-    return raw_path
+    """Compatibility shim for existing tests and private imports."""
+    return _cfg_get_db_path()
 
 
 @contextmanager
 def get_conn():
     """Yield a SQLite connection with common pragmas enabled."""
-    conn = sqlite3.connect(_get_db_path())
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    conn = _cfg_open_connection(_get_db_path())
     try:
         yield conn
     finally:

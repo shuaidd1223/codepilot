@@ -309,9 +309,9 @@ def _check_api_keys() -> list[CheckResult]:
 
 def _check_db_path() -> CheckResult:
     """Task DB path readable & writable."""
-    from codepilot.db import _get_db_path
+    from codepilot.db_config import get_db_path
 
-    db_path = _get_db_path()
+    db_path = get_db_path()
     if db_path.exists():
         # test read + write
         readable = os.access(db_path, os.R_OK)
