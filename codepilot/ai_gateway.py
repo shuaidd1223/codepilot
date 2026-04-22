@@ -1,20 +1,25 @@
 """Unified facade for AI calls.
 
-Public API stays in this module (`call_structured`, `call_text`, and request
-builders), while provider-specific execution now lives in focused modules:
+Public API stays in this module (`call_structured`, `call_text`, and prompt
+entrypoints), while provider-specific execution now lives in focused modules:
 
 * `ai_gateway_api`: configured API-provider path + JSON normalization.
 * `ai_gateway_cli`: local CLI runners for structured/text modes.
+* `ai_gateway_prompt_build`: request/prompt construction helpers.
+* `ai_gateway_call_skeleton`: shared API->CLI fallback skeleton assembly.
 
-This keeps callsites stable and makes responsibilities explicit:
-the facade owns request building and fallback orchestration only.
+This keeps callsites stable while shrinking facade responsibilities to wiring.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from codepilot.ai_gateway_entrypoints import run_gateway_entry
+from codepilot.ai_gateway_call_skeleton import (
+    make_structured_mode as _skeleton_make_structured_mode,
+    make_text_mode as _skeleton_make_text_mode,
+    run_with_fallback as _skeleton_run_with_fallback,
+)
 from codepilot.ai_gateway_errors import build_combined_failure
 from codepilot.ai_gateway_api import (
     format_api_structured as _api_format_api_structured,
@@ -25,6 +30,11 @@ from codepilot.ai_gateway_api import (
 from codepilot.ai_gateway_cli import (
     try_cli_structured as _cli_try_structured,
     try_cli_text as _cli_try_text,
+)
+from codepilot.ai_gateway_prompt_build import (
+    build_request as _prompt_build_request,
+    call_structured_prompt as _prompt_call_structured_prompt,
+    call_text_prompt as _prompt_call_text_prompt,
 )
 from codepilot.ai_gateway_types import (
     GatewayCallOptions,
@@ -64,18 +74,8 @@ def _try_cli_text(request: GatewayRequest) -> GatewayResponse:
     return _cli_try_text(request)
 
 
-_STRUCTURED_MODE = _GatewayMode(
-    name="structured",
-    schema_required=True,
-    schema_error="call_structured requires a schema; use call_text for free-form output",
-    api_formatter=_format_api_structured,
-)
-_TEXT_MODE = _GatewayMode(
-    name="text",
-    schema_required=False,
-    schema_error="call_text is for free-form output; use call_structured with a schema",
-    api_formatter=_format_api_text,
-)
+_STRUCTURED_MODE = _skeleton_make_structured_mode(api_formatter=_format_api_structured)
+_TEXT_MODE = _skeleton_make_text_mode(api_formatter=_format_api_text)
 
 
 def _build_request(
@@ -84,19 +84,8 @@ def _build_request(
     schema: Optional[dict],
     options: Optional[GatewayCallOptions],
 ) -> GatewayRequest:
-    opts = options or GatewayCallOptions()
-    return GatewayRequest(
-        prompt=prompt,
-        schema=schema,
-        classifier_provider=opts.classifier_provider,
-        classifier_model=opts.classifier_model,
-        api_key=opts.api_key,
-        base_url=opts.base_url,
-        project_path=opts.project_path,
-        config_ref=opts.config_ref,
-        planner=opts.planner,
-        timeout=opts.timeout,
-    )
+    """Compatibility shim for private imports and tests."""
+    return _prompt_build_request(prompt, schema=schema, options=options)
 
 
 def call_structured_prompt(
@@ -106,7 +95,12 @@ def call_structured_prompt(
     options: Optional[GatewayCallOptions] = None,
 ) -> GatewayResponse:
     """Build a structured request from shared options then run gateway."""
-    return call_structured(_build_request(prompt, schema=schema, options=options))
+    return _prompt_call_structured_prompt(
+        prompt=prompt,
+        schema=schema,
+        options=options,
+        call_structured_fn=call_structured,
+    )
 
 
 def call_text_prompt(
@@ -115,7 +109,11 @@ def call_text_prompt(
     options: Optional[GatewayCallOptions] = None,
 ) -> GatewayResponse:
     """Build a text request from shared options then run gateway."""
-    return call_text(_build_request(prompt, schema=None, options=options))
+    return _prompt_call_text_prompt(
+        prompt=prompt,
+        options=options,
+        call_text_fn=call_text,
+    )
 
 
 def call_structured(request: GatewayRequest) -> GatewayResponse:
@@ -135,8 +133,8 @@ def _call_with_fallback(
     cli_runner,
 ) -> GatewayResponse:
     """Single fallback decision entry for API -> CLI routing."""
-    return run_gateway_entry(
-        request,
+    return _skeleton_run_with_fallback(
+        request=request,
         mode=mode,
         try_api=_try_api,
         cli_runner=cli_runner,
