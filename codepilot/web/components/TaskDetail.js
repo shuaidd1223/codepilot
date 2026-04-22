@@ -6,6 +6,46 @@ CP.Components.TaskDetail = Vue.defineComponent({
   computed: {
     s() { return this.cp.state; },
     task() { return this.s.taskDetail; },
+    logText() {
+      return (this.s.taskLog && this.s.taskLog.text) || '';
+    },
+    logFileName() {
+      const task = this.task;
+      if (!task || !task.current_log_path) return 'log';
+      const parts = String(task.current_log_path).split(/[\\/]/);
+      return parts[parts.length - 1] || 'log';
+    },
+    logStats() {
+      const raw = this.logText;
+      if (!raw) return { lines: 0, tools: 0, diffs: 0, warns: 0 };
+      const rows = raw.split(/\r?\n/);
+      let lines = 0;
+      let tools = 0;
+      let diffs = 0;
+      let warns = 0;
+      for (const row of rows) {
+        const line = String(row || '');
+        if (line.trim()) lines += 1;
+        if (/^\s*[⏺●◉▲▸▶]\s+[A-Za-z_][\w.-]*/.test(line)) tools += 1;
+        if (/^diff --git /.test(line)) diffs += 1;
+        if (/^\s*[✗✖✘×⚠⚡]\s/.test(line) || /\b(error|failed|exception|traceback)\b/i.test(line)) warns += 1;
+      }
+      return { lines, tools, diffs, warns };
+    },
+    logSummaryText() {
+      if (!this.task) return '';
+      if (!this.logText) {
+        if (this.s.taskLog && this.s.taskLog.loading) return '日志加载中...';
+        return '当前暂无日志输出';
+      }
+      const done = !!(this.s.taskLog && this.s.taskLog.done);
+      if (!done || this.task.status === 'in_progress') return '流式输出中，自动跟随最新内容';
+      return '日志流已结束，可回溯查看完整上下文';
+    },
+    logTitle() {
+      const t = this.task;
+      return `${(t && t.agent) || 'agent'} · ${this.logFileName}`;
+    },
     canSplit() {
       const t = this.task;
       if (!t) return false;
@@ -79,19 +119,40 @@ CP.Components.TaskDetail = Vue.defineComponent({
           </div>
         </div>
         <div class="card-body task-detail">
-          <div class="kv-grid">
-            <div><b>项目:</b> {{ task.project }}</div>
-            <div><b>阶段:</b> {{ task.phase || '-' }}</div>
-            <div><b>开始:</b> {{ $cp.fmtTime(task.started_at) }}</div>
-            <div><b>完成:</b> {{ $cp.fmtTime(task.completed_at) }}</div>
-            <div class="full"><b>依赖:</b>
+          <div class="task-kv-grid">
+            <div class="task-kv-item">
+              <span class="task-kv-key">项目</span>
+              <span class="task-kv-value">{{ task.project || '-' }}</span>
+            </div>
+            <div class="task-kv-item">
+              <span class="task-kv-key">阶段</span>
+              <span class="task-kv-value">{{ task.phase || '-' }}</span>
+            </div>
+            <div class="task-kv-item">
+              <span class="task-kv-key">开始时间</span>
+              <span class="task-kv-value">{{ $cp.fmtTime(task.started_at) }}</span>
+            </div>
+            <div class="task-kv-item">
+              <span class="task-kv-key">完成时间</span>
+              <span class="task-kv-value">{{ $cp.fmtTime(task.completed_at) }}</span>
+            </div>
+            <div class="task-kv-item full">
+              <span class="task-kv-key">依赖任务</span>
+              <span class="task-kv-value">
               <template v-if="task.depends_on && task.depends_on.length">
                 <cp-chip v-for="id in task.depends_on" :key="id">#{{ id }}</cp-chip>
               </template>
-              <span v-else> 无</span>
+              <span v-else class="muted">无</span>
+              </span>
             </div>
-            <div class="full truncate"><b>路径:</b> {{ task.project_path || '-' }}</div>
-            <div class="full truncate"><b>日志文件:</b> {{ task.current_log_path || '-' }}</div>
+            <div class="task-kv-item full">
+              <span class="task-kv-key">工作目录</span>
+              <code class="task-inline-code">{{ task.project_path || '-' }}</code>
+            </div>
+            <div class="task-kv-item full">
+              <span class="task-kv-key">日志文件</span>
+              <code class="task-inline-code">{{ task.current_log_path || '-' }}</code>
+            </div>
           </div>
           <div v-if="task.skip_reason" class="block warning">
             <div class="block-label">预检跳过（未消耗重试次数，下一轮会自动重试）</div>
@@ -102,14 +163,25 @@ CP.Components.TaskDetail = Vue.defineComponent({
             <cp-markdown :text="task.error_message"></cp-markdown>
           </div>
           <div class="block">
-            <div class="block-label">任务内容</div>
+            <div class="block-label">任务说明</div>
             <cp-markdown :text="task.content || '暂无任务内容'"></cp-markdown>
           </div>
-          <div class="block">
-            <div class="block-label">实时日志</div>
+          <div class="block block-log-stream">
+            <div class="task-log-head">
+              <div class="min-w grow">
+                <div class="block-label">实时日志</div>
+                <div class="tiny muted">{{ logSummaryText }}</div>
+              </div>
+              <div class="chip-row task-log-stats">
+                <cp-chip tiny tone="info">{{ logStats.lines }} 行</cp-chip>
+                <cp-chip v-if="logStats.tools" tiny tone="primary">工具 {{ logStats.tools }}</cp-chip>
+                <cp-chip v-if="logStats.diffs" tiny tone="success">Diff {{ logStats.diffs }}</cp-chip>
+                <cp-chip v-if="logStats.warns" tiny tone="warning">关注 {{ logStats.warns }}</cp-chip>
+              </div>
+            </div>
             <cp-agent-log
-              :text="s.taskLog.text || ''"
-              :title="(task.agent || 'agent') + ' · ' + (task.current_log_path ? task.current_log_path.split(/[\\\\/]/).pop() : 'log')"
+              :text="logText"
+              :title="logTitle"
               :done="s.taskLog.done"
               tall follow></cp-agent-log>
           </div>

@@ -14,7 +14,11 @@ const PREFIX_RULES = [
   { cls: 'status-ok',   re: /^\s*[✓✔]\s/ },
   { cls: 'status-err',  re: /^\s*[✗✖✘×]\s/ },
   { cls: 'status-warn', re: /^\s*[⚠⚡]\s/ },
-  { cls: 'prompt',      re: /^\s*(?:&gt;|»|▸)\s/ },
+  { cls: 'status-info', re: /^\s*[•●]\s/ },
+  { cls: 'prompt',      re: /^\s*(?:>|»|▸)\s/ },
+  { cls: 'heading',     re: /^\s*#{1,4}\s/ },
+  { cls: 'list',        re: /^\s*(?:[-*•]|\d+\.)\s/ },
+  { cls: 'fence',       re: /^\s*```/ },
 ];
 
 const TOOL_HEAD_RE = /^(\s*)([⏺●◉▲▸▶])\s+([A-Za-z_][\w.-]*)(?:\(([^)]*)\))?\s*(.*)$/;
@@ -174,9 +178,8 @@ CP.Components.AgentLog = Vue.defineComponent({
 
         if (!cur || cur.type !== 'text') fresh('text', { lines: [] }, i);
         let cls = 'plain';
-        const escaped = CP.escapeHtml(line);
         for (const rule of PREFIX_RULES) {
-          if (rule.re.test(escaped)) {
+          if (rule.re.test(line)) {
             cls = rule.cls;
             break;
           }
@@ -199,6 +202,18 @@ CP.Components.AgentLog = Vue.defineComponent({
     visibleBody(block) {
       if (!block.body) return [];
       return this.isCollapsed(block) ? block.body.slice(0, 2) : block.body;
+    },
+    diffMarker(row) {
+      if (!row || !row.text || !row.text.length) return '';
+      if (row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx') return row.text[0];
+      return '';
+    },
+    diffText(row) {
+      if (!row || !row.text) return '';
+      if ((row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx') && row.text.length > 0) {
+        return row.text.slice(1);
+      }
+      return row.text;
     },
 
     _estimateBlockHeight(block) {
@@ -348,7 +363,12 @@ CP.Components.AgentLog = Vue.defineComponent({
                 <span class="al-diff-file">{{ b.file }}</span>
               </div>
               <div class="al-diff-body">
-                <span v-for="(row, i) in b.lines" :key="b.key + ':diff:' + i" class="al-diff-line" :class="'k-' + row.kind">{{ row.text }}</span>
+                <span
+                  v-for="(row, i) in b.lines"
+                  :key="b.key + ':diff:' + i"
+                  class="al-diff-line"
+                  :class="'k-' + row.kind"
+                  :data-marker="diffMarker(row)">{{ diffText(row) }}</span>
               </div>
             </div>
 
