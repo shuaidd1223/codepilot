@@ -235,16 +235,191 @@ _CHAT_INTENT_LABELS = {
     "command": "正在识别命令输入",
 }
 
+_CHAT_TASK_COMMAND_MAP = {
+    "/cancel": "cancel",
+    "/resume": "resume",
+    "/retry": "retry",
+    "/rm": "rm",
+    "/stop": "stop",
+    "/logs": "logs",
+}
+
+
+def _end_chat_session(frame: _ChatTurnFrame, *, shutdown_ui, echo, prepend_blank_line: bool = False) -> None:
+    """Stop chat loop and emit the unified session-end message."""
+    if prepend_blank_line:
+        echo()
+    shutdown_ui()
+    echo("[dim]会话已结束[/dim]")
+    frame.state = _ChatLoopState.EXIT
+
+
+def _reset_to_read_input(frame: _ChatTurnFrame) -> None:
+    """Move the chat loop back to read-input state."""
+    frame.state = _ChatLoopState.READ_INPUT
+
+
+def _handle_chat_project_runtime_command(cmd: str, parts: list[str], runtime: _ChatRuntime, *, echo) -> bool:
+    """Handle project/session-scoped slash commands."""
+    shell = runtime.shell
+
+    if cmd == "/status":
+        if runtime.project_info.get("is_temporary"):
+            echo("[yellow]临时会话没有任务看板。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
+            return True
+        watch = len(parts) > 1 and parts[1].lower() in ("watch", "live", "-w")
+        if watch:
+            echo("[dim]实时刷新中，按 Ctrl+C 停止...[/dim]")
+        try:
+            while True:
+                if watch:
+                    click.clear()
+                shell.render_project_dashboard(
+                    runtime.project_info["name"],
+                    verbose=False,
+                    include_done=False,
+                    title=f"任务面板  {runtime.project_info['name']}",
+                )
+                if not watch:
+                    break
+                time.sleep(3)
+        except KeyboardInterrupt:
+            if watch:
+                echo("\n[dim]已停止刷新[/dim]")
+        return True
+
+    if cmd == "/stats":
+        if runtime.project_info.get("is_temporary"):
+            echo("[yellow]临时会话没有项目统计。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
+            return True
+        shell.render_project_stats(runtime.project_info["name"], title=f"状态统计  {runtime.project_info['name']}")
+        return True
+
+    if cmd == "/project":
+        if len(parts) < 2:
+            echo("[yellow]用法: /project <name>[/yellow]")
+            return True
+        runtime.project_info = shell.resolve_project_for_prompt(parts[1])
+        runtime.effective = shell._resolve_effective_options(
+            runtime.project_info,
+            planner=runtime.planner_opt,
+            executor=runtime.executor_opt,
+            auto_commit=runtime.auto_commit_opt,
+            max_tasks=runtime.max_tasks_opt,
+            max_retries=runtime.max_retries_opt,
+        )
+        runtime.default_agent = shell._resolve_task_agent(
+            runtime.project_info,
+            runtime.default_agent,
+            runtime.effective["executor"],
+        )
+        echo(f"[green][OK] 已切换项目[/green] {runtime.project_info['name']}")
+        return True
+
+    if cmd == "/agent":
+        if len(parts) < 2:
+            echo("[yellow]用法: /agent <name>[/yellow]")
+            return True
+        try:
+            runtime.default_agent = shell._resolve_task_agent(
+                runtime.project_info,
+                parts[1],
+                runtime.effective["executor"],
+            )
+        except click.ClickException as exc:
+            echo(f"[red]{exc.format_message()}[/red]")
+            return True
+        echo(f"[green][OK] 默认任务智能体已设置为 {runtime.default_agent}[/green]")
+        return True
+
+    if cmd == "/execute":
+        if len(parts) < 2 or parts[1].lower() not in {"on", "off"}:
+            echo("[yellow]用法: /execute on|off[/yellow]")
+            return True
+        runtime.default_execute = parts[1].lower() == "on"
+        echo(f"[green][OK] 自动执行已设置为 {runtime.default_execute}[/green]")
+        return True
+
+    if cmd == "/plan":
+        runtime.default_execute = False
+        echo("[green][OK] 下一条需求将只规划不执行[/green]")
+        return True
+
+    if cmd == "/run":
+        runtime.default_execute = True
+        echo("[green][OK] 下一条需求将自动执行[/green]")
+        return True
+
+    return False
+
+
+def _handle_chat_task_command(cmd: str, parts: list[str], *, echo) -> bool:
+    """Handle slash commands that proxy to task management CLI commands."""
+    target_name = _CHAT_TASK_COMMAND_MAP.get(cmd)
+    if not target_name:
+        return False
+
+    ids = [int(x) for x in parts[1:] if x.isdigit()]
+    if not ids:
+        echo(f"[yellow]用法: {cmd} <task_id ...>[/yellow]")
+        return True
+
+    from click.testing import CliRunner as _InlineRunner
+    from codepilot.commands import tasks as tasks_cmd_mod
+
+    target_cmd = getattr(tasks_cmd_mod, target_name)
+    args = [str(i) for i in ids]
+    if cmd == "/rm":
+        args.append("-f")
+    _InlineRunner().invoke(target_cmd, args)
+    return True
+
+
+def _handle_chat_meta_command(
+    cmd: str,
+    runtime: _ChatRuntime,
+    frame: _ChatTurnFrame,
+    *,
+    shutdown_ui,
+    echo,
+) -> bool:
+    """Handle chat-local meta commands that do not touch workflow state."""
+    if cmd == "/exit":
+        _end_chat_session(frame, shutdown_ui=shutdown_ui, echo=echo)
+        return True
+    if cmd == "/help":
+        click.echo(_chat_help())
+        return True
+    if cmd == "/version":
+        click.echo(f"CodePilot {__version__}")
+        return True
+    if cmd == "/history":
+        if not runtime.chat_history:
+            echo("[dim]暂无对话记录[/dim]")
+        else:
+            for i, turn in enumerate(runtime.chat_history, 1):
+                intent_tag = turn.get("intent", "?")
+                echo(f"[dim]#{i}[/dim] [{intent_tag}] {turn['user'][:80]}")
+                if turn.get("assistant"):
+                    click.echo(f"  → {turn['assistant'][:120]}")
+        return True
+    if cmd == "/clear":
+        runtime.chat_history.clear()
+        if runtime.pending_clarification:
+            runtime.pending_clarification = None
+            echo("[green]对话历史已清空，当前待澄清的需求也已放弃[/green]")
+        else:
+            echo("[green]对话历史已清空[/green]")
+        return True
+    return False
+
 
 def _read_turn_input(frame: _ChatTurnFrame, *, shutdown_ui, echo) -> None:
     """Read one line and advance to the dispatch state when input is non-empty."""
     try:
         raw = click.prompt("codepilot", prompt_suffix="> ", default="", show_default=False)
     except (EOFError, KeyboardInterrupt, click.Abort):
-        echo()
-        shutdown_ui()
-        echo("[dim]会话已结束[/dim]")
-        frame.state = _ChatLoopState.EXIT
+        _end_chat_session(frame, shutdown_ui=shutdown_ui, echo=echo, prepend_blank_line=True)
         return
 
     text = raw.strip()
@@ -281,166 +456,31 @@ def _dispatch_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime) -> None:
 
 def _handle_chat_command(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdown_ui, echo) -> None:
     """Execute one slash command and transition back to input state."""
-    shell = runtime.shell
     parts = frame.text.split()
     cmd = parts[0].lower()
 
-    if cmd == "/exit":
-        shutdown_ui()
-        echo("[dim]会话已结束[/dim]")
-        frame.state = _ChatLoopState.EXIT
-        return
-    if cmd == "/help":
-        click.echo(_chat_help())
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    if cmd == "/version":
-        click.echo(f"CodePilot {__version__}")
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    if cmd == "/status":
-        if runtime.project_info.get("is_temporary"):
-            echo("[yellow]临时会话没有任务看板。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
-            frame.state = _ChatLoopState.READ_INPUT
-            return
-        watch = len(parts) > 1 and parts[1].lower() in ("watch", "live", "-w")
-        if watch:
-            echo("[dim]实时刷新中，按 Ctrl+C 停止...[/dim]")
-        try:
-            while True:
-                if watch:
-                    click.clear()
-                shell.render_project_dashboard(
-                    runtime.project_info["name"],
-                    verbose=False,
-                    include_done=False,
-                    title=f"任务面板  {runtime.project_info['name']}",
-                )
-                if not watch:
-                    break
-                time.sleep(3)
-        except KeyboardInterrupt:
-            if watch:
-                echo("\n[dim]已停止刷新[/dim]")
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    if cmd == "/stats":
-        if runtime.project_info.get("is_temporary"):
-            echo("[yellow]临时会话没有项目统计。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
-            frame.state = _ChatLoopState.READ_INPUT
-            return
-        shell.render_project_stats(runtime.project_info["name"], title=f"状态统计  {runtime.project_info['name']}")
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    if cmd == "/project":
-        if len(parts) < 2:
-            echo("[yellow]用法: /project <name>[/yellow]")
-            frame.state = _ChatLoopState.READ_INPUT
-            return
-        runtime.project_info = shell.resolve_project_for_prompt(parts[1])
-        runtime.effective = shell._resolve_effective_options(
-            runtime.project_info,
-            planner=runtime.planner_opt,
-            executor=runtime.executor_opt,
-            auto_commit=runtime.auto_commit_opt,
-            max_tasks=runtime.max_tasks_opt,
-            max_retries=runtime.max_retries_opt,
-        )
-        runtime.default_agent = shell._resolve_task_agent(
-            runtime.project_info,
-            runtime.default_agent,
-            runtime.effective["executor"],
-        )
-        echo(f"[green][OK] 已切换项目[/green] {runtime.project_info['name']}")
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    if cmd == "/agent":
-        if len(parts) < 2:
-            echo("[yellow]用法: /agent <name>[/yellow]")
-            frame.state = _ChatLoopState.READ_INPUT
-            return
-        try:
-            runtime.default_agent = shell._resolve_task_agent(
-                runtime.project_info,
-                parts[1],
-                runtime.effective["executor"],
-            )
-        except click.ClickException as exc:
-            echo(f"[red]{exc.format_message()}[/red]")
-            frame.state = _ChatLoopState.READ_INPUT
-            return
-        echo(f"[green][OK] 默认任务智能体已设置为 {runtime.default_agent}[/green]")
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    if cmd == "/execute":
-        if len(parts) < 2 or parts[1].lower() not in {"on", "off"}:
-            echo("[yellow]用法: /execute on|off[/yellow]")
-            frame.state = _ChatLoopState.READ_INPUT
-            return
-        runtime.default_execute = parts[1].lower() == "on"
-        echo(f"[green][OK] 自动执行已设置为 {runtime.default_execute}[/green]")
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    if cmd == "/plan":
-        runtime.default_execute = False
-        echo("[green][OK] 下一条需求将只规划不执行[/green]")
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    if cmd == "/run":
-        runtime.default_execute = True
-        echo("[green][OK] 下一条需求将自动执行[/green]")
-        frame.state = _ChatLoopState.READ_INPUT
+    if _handle_chat_meta_command(
+        cmd,
+        runtime,
+        frame,
+        shutdown_ui=shutdown_ui,
+        echo=echo,
+    ):
+        if frame.state != _ChatLoopState.EXIT:
+            _reset_to_read_input(frame)
         return
 
-    if cmd == "/history":
-        if not runtime.chat_history:
-            echo("[dim]暂无对话记录[/dim]")
-        else:
-            for i, turn in enumerate(runtime.chat_history, 1):
-                intent_tag = turn.get("intent", "?")
-                echo(f"[dim]#{i}[/dim] [{intent_tag}] {turn['user'][:80]}")
-                if turn.get("assistant"):
-                    click.echo(f"  → {turn['assistant'][:120]}")
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    if cmd == "/clear":
-        runtime.chat_history.clear()
-        if runtime.pending_clarification:
-            runtime.pending_clarification = None
-            echo("[green]对话历史已清空，当前待澄清的需求也已放弃[/green]")
-        else:
-            echo("[green]对话历史已清空[/green]")
-        frame.state = _ChatLoopState.READ_INPUT
+    if _handle_chat_project_runtime_command(cmd, parts, runtime, echo=echo):
+        _reset_to_read_input(frame)
         return
 
-    if cmd in ("/cancel", "/resume", "/retry", "/rm", "/stop", "/logs"):
-        ids = [int(x) for x in parts[1:] if x.isdigit()]
-        if not ids:
-            echo(f"[yellow]用法: {cmd} <task_id ...>[/yellow]")
-            frame.state = _ChatLoopState.READ_INPUT
-            return
-        from codepilot.commands import tasks as tasks_cmd_mod
-        from click.testing import CliRunner as _InlineRunner
-
-        cli_cmd_map = {
-            "/cancel": tasks_cmd_mod.cancel,
-            "/resume": tasks_cmd_mod.resume,
-            "/retry": tasks_cmd_mod.retry,
-            "/rm": tasks_cmd_mod.rm,
-            "/stop": tasks_cmd_mod.stop,
-            "/logs": tasks_cmd_mod.logs,
-        }
-        target_cmd = cli_cmd_map[cmd]
-        args = [str(i) for i in ids]
-        if cmd in ("/rm", "/cancel"):
-            args.append("-f") if cmd == "/rm" else None
-        _InlineRunner().invoke(target_cmd, args)
-        frame.state = _ChatLoopState.READ_INPUT
+    if _handle_chat_task_command(cmd, parts, echo=echo):
+        _reset_to_read_input(frame)
         return
 
     echo("[yellow]未知会话命令[/yellow]")
     click.echo(_chat_help())
-    frame.state = _ChatLoopState.READ_INPUT
+    _reset_to_read_input(frame)
 
 
 def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdown_ui, echo, safe) -> None:
@@ -469,10 +509,7 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
     )
 
     if transition.status == "interrupt":
-        echo()
-        shutdown_ui()
-        echo("[dim]会话已结束[/dim]")
-        frame.state = _ChatLoopState.EXIT
+        _end_chat_session(frame, shutdown_ui=shutdown_ui, echo=echo, prepend_blank_line=True)
         return
 
     if transition.status == "error":
@@ -515,10 +552,7 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
             "intent": pending_intent,
         })
     except KeyboardInterrupt:
-        echo()
-        shutdown_ui()
-        echo("[dim]会话已结束[/dim]")
-        frame.state = _ChatLoopState.EXIT
+        _end_chat_session(frame, shutdown_ui=shutdown_ui, echo=echo, prepend_blank_line=True)
         return
     except click.ClickException as exc:
         echo(f"[red]{safe(exc.format_message())}[/red]")
@@ -535,7 +569,7 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
             "intent": pending_intent,
         })
     click.echo()
-    frame.state = _ChatLoopState.READ_INPUT
+    _reset_to_read_input(frame)
 
 
 def _chat_max_tasks_for_intent(runtime: _ChatRuntime, intent: str) -> int:
@@ -672,10 +706,7 @@ def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shut
             )
     except KeyboardInterrupt:
         spinner.__exit__(None, None, None)
-        echo()
-        shutdown_ui()
-        echo("[dim]会话已结束[/dim]")
-        frame.state = _ChatLoopState.EXIT
+        _end_chat_session(frame, shutdown_ui=shutdown_ui, echo=echo, prepend_blank_line=True)
         return
     except click.ClickException as exc:
         spinner.__exit__(None, None, None)
@@ -692,7 +723,7 @@ def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shut
         "intent": dispatch_ctx.intent or "unknown",
     })
     click.echo()
-    frame.state = _ChatLoopState.READ_INPUT
+    _reset_to_read_input(frame)
 
 
 def run_chat_session(
