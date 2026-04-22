@@ -75,10 +75,32 @@ def _get_db_path() -> Path:
 
 @contextmanager
 def get_conn():
-    """Yield a SQLite connection with common pragmas enabled."""
+    """Compatibility shim: use the read-query connection entrypoint."""
+    with get_read_conn() as conn:
+        yield conn
+
+
+@contextmanager
+def get_read_conn():
+    """Yield a SQLite connection for read-query paths."""
     conn = _cfg_open_connection(_get_db_path())
     try:
         yield conn
+    finally:
+        conn.close()
+
+
+@contextmanager
+def get_write_conn():
+    """Yield a SQLite connection wrapped in one write transaction."""
+    conn = _cfg_open_connection(_get_db_path())
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
     finally:
         conn.close()
 
@@ -293,7 +315,7 @@ def _record_migration(conn: sqlite3.Connection, version: int, description: str) 
 
 def init_db() -> None:
     """Create baseline tables and run versioned migrations in order."""
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         conn.executescript(_BASELINE_SCHEMA)
 
         # Seed schema_migrations on an existing pre-versioned DB. If tasks
@@ -311,13 +333,12 @@ def init_db() -> None:
                 continue
             apply(conn)
             _record_migration(conn, version, description)
-        conn.commit()
     _cache_invalidate()
 
 
 def schema_status() -> dict:
     """Return current schema version and applied migration history."""
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         rows = conn.execute(
             "SELECT version, description, applied_at "
             "FROM schema_migrations ORDER BY version"
@@ -344,7 +365,7 @@ def register_project(
     intact. If a row already exists for *path*, its existing ``name`` is
     preserved to avoid orphaning dependent tasks.
     """
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         existing = conn.execute(
             "SELECT name FROM projects WHERE path = ?", (path,)
         ).fetchone()
@@ -371,7 +392,6 @@ def register_project(
                 """,
                 (name, path, base_branch, default_mode, worktree_base, config_file),
             )
-        conn.commit()
     _cache_invalidate("project_by_name", "projects", "project_by_path", "tasks", "task_by_id", "task_stats", "sessions")
     return get_project(effective_name)
 
@@ -382,7 +402,7 @@ def get_project(name: str) -> Optional[dict]:
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         row = conn.execute("SELECT * FROM projects WHERE name = ?", (name,)).fetchone()
         result = dict(row) if row else None
     return _cache_set(cache_key, result)  # type: ignore[return-value]
@@ -394,7 +414,7 @@ def list_projects() -> list[dict]:
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
         result = [dict(row) for row in rows]
     return _cache_set(cache_key, result)  # type: ignore[return-value]
@@ -423,7 +443,7 @@ def find_project_by_path(path: str | Path) -> Optional[dict]:
 
 def delete_project(name: str) -> bool:
     """Delete a project and its related tasks."""
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         conn.execute(
             "DELETE FROM task_logs WHERE task_id IN (SELECT id FROM tasks WHERE project = ?)",
             (name,),
@@ -435,7 +455,6 @@ def delete_project(name: str) -> bool:
         conn.execute("DELETE FROM sessions WHERE project = ?", (name,))
         conn.execute("DELETE FROM tasks WHERE project = ?", (name,))
         cur = conn.execute("DELETE FROM projects WHERE name = ?", (name,))
-        conn.commit()
         removed = cur.rowcount > 0
     if removed:
         _cache_invalidate("project_by_name", "projects", "project_by_path", "tasks", "task_by_id", "task_logs", "task_stats", "sessions", "session_by_id", "session_messages")
@@ -521,7 +540,7 @@ def create_task(
         proj = get_project(project)
         project_path = proj["path"] if proj else ""
 
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         existing = _find_active_duplicate(conn, project, dedup_key)
         if existing:
             import click
@@ -549,7 +568,6 @@ def create_task(
                 fallback_reason,
             ),
         )
-        conn.commit()
         task_id = cur.lastrowid
     _cache_invalidate("tasks", "task_by_id", "task_stats")
     return get_task(task_id)
@@ -557,7 +575,7 @@ def create_task(
 
 def existing_dedup_keys(project: str) -> set[str]:
     """Return dedup_keys already present in active (backlog/in_progress) tasks."""
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         rows = conn.execute(
             "SELECT dedup_key FROM tasks WHERE project = ? AND dedup_key IS NOT NULL "
             "AND status IN ('backlog','in_progress')",
@@ -572,7 +590,7 @@ def get_task(task_id: int) -> Optional[dict]:
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         result = dict(row) if row else None
     return _cache_set(cache_key, result)  # type: ignore[return-value]
@@ -597,7 +615,7 @@ def list_tasks(
         params.append(status)
     sql += " ORDER BY priority ASC, created_at DESC"
 
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
         result = [dict(row) for row in rows]
     return _cache_set(cache_key, result)  # type: ignore[return-value]
@@ -640,9 +658,8 @@ def update_task(task_id: int, **fields) -> Optional[dict]:
     set_clause = ", ".join(f"{column} = ?" for column in updates)
     values = list(updates.values()) + [task_id]
 
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
-        conn.commit()
     _cache_invalidate("tasks", "task_by_id", "task_stats")
     return get_task(task_id)
 
@@ -700,7 +717,7 @@ def reset_task_for_retry(task_id: int, *, reset_retry_count: bool = True) -> dic
 
 def next_backlog_task(project: str) -> list[dict]:
     """Return the next runnable backlog task for a project."""
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         rows = conn.execute(
             """
             SELECT t.* FROM tasks t
@@ -745,7 +762,7 @@ def compute_agent_eta_seconds(
     duration between ``started_at`` and ``completed_at``. Returns ``None``
     when there's not enough history to produce a stable number.
     """
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         if agent:
             rows = conn.execute(
                 """
@@ -800,7 +817,7 @@ def get_task_stats(project: str) -> dict:
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         rows = conn.execute(
             """
             SELECT status, COUNT(*) AS count
@@ -851,7 +868,7 @@ def create_task_log(
     duration: Optional[int] = None,
 ) -> dict:
     """Create a task execution log row."""
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         cur = conn.execute(
             """
             INSERT INTO task_logs
@@ -862,7 +879,6 @@ def create_task_log(
         )
         log_id = cur.lastrowid
         row = conn.execute("SELECT * FROM task_logs WHERE id = ?", (log_id,)).fetchone()
-        conn.commit()
         result = dict(row)
     _cache_invalidate("task_logs")
     return result
@@ -874,7 +890,7 @@ def list_task_logs(task_id: int) -> list[dict]:
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM task_logs WHERE task_id = ? ORDER BY started_at, id",
             (task_id,),
@@ -891,7 +907,7 @@ def find_stale_in_progress(
     stale_minutes: int = 30,
 ) -> list[dict]:
     """Return in_progress tasks whose heartbeat exceeds *stale_minutes*."""
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         rows = conn.execute(
             """
             SELECT * FROM tasks
@@ -907,7 +923,7 @@ def find_stale_in_progress(
 
 def find_orphan_log_paths(project: str) -> list[dict]:
     """Return tasks whose current_log_path is set but the file no longer exists."""
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         rows = conn.execute(
             """
             SELECT * FROM tasks
@@ -925,7 +941,7 @@ def find_old_done_tasks(
     retention_days: int = 30,
 ) -> list[dict]:
     """Return done tasks older than *retention_days* that still have a log path."""
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         rows = conn.execute(
             """
             SELECT * FROM tasks
@@ -1033,9 +1049,8 @@ def create_session(
     title: str = "新会话",
 ) -> dict:
     """Create a new conversation session for a project."""
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         session_id = _insert_session(conn, project, title)
-        conn.commit()
     _cache_invalidate("sessions", "session_by_id", "session_messages")
     return get_session(session_id)  # type: ignore[return-value]
 
@@ -1046,7 +1061,7 @@ def get_session(session_id: int) -> Optional[dict]:
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         result = _fetch_session_by_id(conn, session_id)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
@@ -1060,7 +1075,7 @@ def list_sessions(
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         result = _query_sessions(conn, project, status)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
@@ -1072,19 +1087,17 @@ def update_session(session_id: int, **fields) -> Optional[dict]:
     if not updates:
         return get_session(session_id)
     updates["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         _update_session_fields(conn, session_id, updates)
-        conn.commit()
     _cache_invalidate("sessions", "session_by_id")
     return get_session(session_id)
 
 
 def delete_session(session_id: int) -> bool:
     """Delete a session and its messages."""
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         _delete_session_messages(conn, session_id)
         deleted_rows = _delete_session_row(conn, session_id)
-        conn.commit()
         removed = deleted_rows > 0
     if removed:
         _cache_invalidate("sessions", "session_by_id", "session_messages")
@@ -1099,10 +1112,9 @@ def create_session_message(
     task_ids: Optional[list[int]] = None,
 ) -> dict:
     """Add a message to a session and touch updated_at."""
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         msg_id = _insert_session_message(conn, session_id, role, content, intent, task_ids)
         _touch_session_updated_at(conn, session_id)
-        conn.commit()
         result = _fetch_session_message_by_id(conn, msg_id)
     _cache_invalidate("sessions", "session_by_id", "session_messages")
     return result  # type: ignore[return-value]
@@ -1114,7 +1126,7 @@ def list_session_messages(session_id: int) -> list[dict]:
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    with get_conn() as conn:
+    with get_read_conn() as conn:
         result = _query_session_messages(conn, session_id)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
@@ -1147,6 +1159,10 @@ def _service_row_to_dict(row: sqlite3.Row) -> dict:
     return record
 
 
+def _is_missing_service_states_table(exc: sqlite3.OperationalError) -> bool:
+    return "no such table: service_states" in str(exc).lower()
+
+
 def get_service_state(service: str, scope: str = "") -> Optional[dict]:
     """Return one service runtime state row."""
     normalized_scope = _normalize_service_scope(scope)
@@ -1154,12 +1170,16 @@ def get_service_state(service: str, scope: str = "") -> Optional[dict]:
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    with get_conn() as conn:
-        _ensure_service_states_schema(conn)
-        row = conn.execute(
-            "SELECT * FROM service_states WHERE service = ? AND scope = ?",
-            (service, normalized_scope),
-        ).fetchone()
+    with get_read_conn() as conn:
+        try:
+            row = conn.execute(
+                "SELECT * FROM service_states WHERE service = ? AND scope = ?",
+                (service, normalized_scope),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if _is_missing_service_states_table(exc):
+                return _cache_set(cache_key, None)  # type: ignore[return-value]
+            raise
         result = _service_row_to_dict(row) if row else None
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
@@ -1178,9 +1198,13 @@ def list_service_states(service: Optional[str] = None) -> list[dict]:
         params.append(service)
     sql += " ORDER BY service ASC, scope ASC"
 
-    with get_conn() as conn:
-        _ensure_service_states_schema(conn)
-        rows = conn.execute(sql, params).fetchall()
+    with get_read_conn() as conn:
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            if _is_missing_service_states_table(exc):
+                return _cache_set(cache_key, [])  # type: ignore[return-value]
+            raise
         result = [_service_row_to_dict(row) for row in rows]
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
@@ -1200,7 +1224,7 @@ def upsert_service_state(
     now_iso = datetime.now().isoformat(timespec="seconds")
     heartbeat_value = heartbeat_at or now_iso
     meta_json = json.dumps(meta or {}, ensure_ascii=False)
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         _ensure_service_states_schema(conn)
         conn.execute(
             """
@@ -1226,7 +1250,6 @@ def upsert_service_state(
                 now_iso,
             ),
         )
-        conn.commit()
     _cache_invalidate("service_state", "service_states")
     state = get_service_state(service, normalized_scope)
     return state or {}
@@ -1259,13 +1282,12 @@ def touch_service_state(
 def clear_service_state(service: str, scope: str = "") -> bool:
     """Delete one service runtime state row."""
     normalized_scope = _normalize_service_scope(scope)
-    with get_conn() as conn:
+    with get_write_conn() as conn:
         _ensure_service_states_schema(conn)
         cur = conn.execute(
             "DELETE FROM service_states WHERE service = ? AND scope = ?",
             (service, normalized_scope),
         )
-        conn.commit()
         removed = cur.rowcount > 0
     if removed:
         _cache_invalidate("service_state", "service_states")

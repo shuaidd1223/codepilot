@@ -131,3 +131,43 @@ def test_schema_migrations_are_strictly_ordered():
     assert versions == sorted(versions)
     assert len(set(versions)) == len(versions), "duplicate migration versions"
     assert versions[0] == 1, "migrations must start at version 1"
+
+
+def test_write_conn_commits_automatically(fresh_db):
+    db.init_db()
+    with db.get_write_conn() as conn:
+        conn.execute(
+            "INSERT INTO projects (name, path) VALUES (?, ?)",
+            ("tx-demo", "/tmp/tx-demo"),
+        )
+
+    assert db.get_project("tx-demo") is not None
+
+
+def test_write_conn_rolls_back_on_exception(fresh_db):
+    db.init_db()
+    with pytest.raises(RuntimeError):
+        with db.get_write_conn() as conn:
+            conn.execute(
+                "INSERT INTO projects (name, path) VALUES (?, ?)",
+                ("tx-rollback", "/tmp/tx-rollback"),
+            )
+            raise RuntimeError("boom")
+
+    assert db.get_project("tx-rollback") is None
+
+
+def test_read_conn_does_not_implicitly_commit_writes(fresh_db):
+    db.init_db()
+    with db.get_read_conn() as conn:
+        conn.execute(
+            "INSERT INTO projects (name, path) VALUES (?, ?)",
+            ("read-conn", "/tmp/read-conn"),
+        )
+
+    assert db.get_project("read-conn") is None
+
+
+def test_service_state_readers_are_safe_before_init_db(fresh_db):
+    assert db.get_service_state("daemon", "demo") is None
+    assert db.list_service_states("daemon") == []
