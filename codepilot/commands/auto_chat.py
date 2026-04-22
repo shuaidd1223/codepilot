@@ -23,6 +23,12 @@ from typing import Optional
 
 import click
 
+from codepilot.interaction_controller import (
+    interpret_clarification_outcome,
+    parse_intent_prefix as _parse_intent_prefix_core,
+    resolve_turn_intent,
+    should_continue_pending_clarification,
+)
 from codepilot import __version__
 from codepilot.runtime import no_window_kwargs
 
@@ -69,16 +75,7 @@ def _chat_help() -> str:
 
 def _parse_intent_prefix(text: str) -> tuple[Optional[str], str]:
     """Return (forced_intent, stripped_text). forced_intent ∈ {question,task,requirement} 或 None."""
-    if not text:
-        return None, text
-    first, rest = text[0], text[1:].lstrip()
-    if first == "?" and rest:
-        return "question", rest
-    if first == "!" and rest:
-        return "task", rest
-    if first == "#" and rest:
-        return "requirement", rest
-    return None, text
+    return _parse_intent_prefix_core(text)
 
 
 class _Spinner:
@@ -271,7 +268,12 @@ def _dispatch_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime) -> None:
     forced_intent, payload_text = _parse_intent_prefix(frame.text)
     frame.forced_intent = forced_intent
     frame.payload_text = payload_text
-    if runtime.pending_clarification and not forced_intent and not frame.text.startswith("?"):
+    if should_continue_pending_clarification(
+        pending_state=runtime.pending_clarification,
+        forced_intent=forced_intent,
+        raw_text=frame.text,
+        category="auto",
+    ):
         frame.state = _ChatLoopState.HANDLE_PENDING_CLARIFICATION
         return
     frame.state = _ChatLoopState.HANDLE_FREE_TEXT
@@ -458,14 +460,23 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
     )
     spinner.__exit__(None, None, None)
 
-    if outcome.get("status") == "error":
-        if outcome.get("error_kind") == "interrupt":
-            echo()
-            shutdown_ui()
-            echo("[dim]会话已结束[/dim]")
-            frame.state = _ChatLoopState.EXIT
-            return
-        message = outcome.get("message") or "澄清评估失败"
+    transition = interpret_clarification_outcome(
+        outcome,
+        pending_state=pending_state,
+        fallback_title=answer_text,
+        default_error_message="澄清评估失败",
+        normalize_text=shell.normalize_requirement_text,
+    )
+
+    if transition.status == "interrupt":
+        echo()
+        shutdown_ui()
+        echo("[dim]会话已结束[/dim]")
+        frame.state = _ChatLoopState.EXIT
+        return
+
+    if transition.status == "error":
+        message = transition.message or "澄清评估失败"
         echo(f"[red]{safe(message)}[/red]")
         runtime.chat_history.append({
             "user": answer_text,
@@ -476,9 +487,9 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
         frame.state = _ChatLoopState.READ_INPUT
         return
 
-    if outcome.get("status") == "needs_clarification":
-        runtime.pending_clarification = outcome.get("pending_state")
-        questions = outcome.get("questions") or []
+    if transition.status == "needs_clarification":
+        runtime.pending_clarification = transition.pending_state or pending_state
+        questions = list(transition.questions)
         echo("[cyan]还需要再澄清一下：[/cyan]")
         for i, q in enumerate(questions, 1):
             click.echo(f"  {i}. {q}")
@@ -492,7 +503,7 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
         return
 
     # Ready — take refined title forward into planning.
-    refined = outcome.get("refined_title") or pending_state.get("original_title") or answer_text
+    refined = transition.refined_title or pending_state.get("original_title") or answer_text
     runtime.pending_clarification = None
     echo(f"[green][OK] 已澄清需求：{refined}[/green]")
 
@@ -548,17 +559,18 @@ def _run_chat_requirement_workflow(runtime: _ChatRuntime, *, title: str, intent:
 
 
 def _resolve_chat_turn_intent(ctx: _ChatMessageDispatchContext) -> str:
-    if ctx.forced_intent:
-        return ctx.forced_intent
-    try:
-        return ctx.runtime.shell.classify_entry_intent(
-            ctx.payload_text,
-            project_info=ctx.runtime.project_info,
-            category="auto",
-            gateway_options=ctx.shared_gateway_options,
-        )
-    except Exception:
-        return "requirement"
+    return resolve_turn_intent(
+        ctx.payload_text,
+        category="auto",
+        forced_intent=ctx.forced_intent,
+        classify_fn=ctx.runtime.shell.classify_entry_intent,
+        classify_kwargs={
+            "project_info": ctx.runtime.project_info,
+            "category": "auto",
+            "gateway_options": ctx.shared_gateway_options,
+        },
+        fallback_intent="requirement",
+    )
 
 
 def _dispatch_chat_qa_or_command(

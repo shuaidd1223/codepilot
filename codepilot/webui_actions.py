@@ -29,6 +29,11 @@ from codepilot.commands.auto import (  # noqa: F401 — patched in tests
 )
 from codepilot.commands.init import initialize_project
 from codepilot.config import load_project_config
+from codepilot.interaction_controller import (
+    ClarificationTransition,
+    interpret_clarification_outcome,
+    resolve_turn_intent,
+)
 from codepilot.webui_payloads import _now_iso, _task_payload
 
 
@@ -164,7 +169,11 @@ def _assess_requirement(
     )
 
 
-def _raise_clarification_error(outcome: dict) -> None:
+def _raise_clarification_error(outcome: dict | ClarificationTransition) -> None:
+    if isinstance(outcome, ClarificationTransition):
+        if outcome.status == "interrupt":
+            raise RuntimeError("澄清流程已中断，请重新发起需求。")
+        raise RuntimeError(outcome.message or "澄清评估失败。")
     if outcome.get("error_kind") == "interrupt":
         raise RuntimeError("澄清流程已中断，请重新发起需求。")
     raise RuntimeError(outcome.get("message") or "澄清评估失败。")
@@ -202,19 +211,24 @@ def _assess_or_continue_requirement(
         intent=intent,
         clarify_fn=clarify_requirement,
     )
-    status = outcome.get("status")
-    if status == "error":
-        _raise_clarification_error(outcome)
-    if status == "needs_clarification":
-        next_state = outcome.get("pending_state") or pending_state
+    transition = interpret_clarification_outcome(
+        outcome,
+        pending_state=pending_state,
+        fallback_title=normalized_original,
+        normalize_text=normalize_requirement_text,
+    )
+    if transition.status in {"interrupt", "error"}:
+        _raise_clarification_error(transition)
+    if transition.status == "needs_clarification":
+        next_state = transition.pending_state or pending_state
         return {
             "status": "needs_clarification",
-            "questions": outcome.get("questions") or next_state.get("last_questions") or [],
+            "questions": list(transition.questions) or next_state.get("last_questions") or [],
             "seed_title": next_state.get("original_title") or normalized_original,
             "qa_history": next_state.get("qa_history") or [],
         }
 
-    refined = normalize_requirement_text(outcome.get("refined_title") or normalized_original) or normalized_original
+    refined = transition.refined_title or normalized_original
     assessment = outcome.get("assessment") or {}
     return {
         "status": "ready",
@@ -812,11 +826,17 @@ def _dispatch_goal_requirement(ctx: _GoalDispatchContext, *, intent: str) -> dic
 def _dispatch_goal_by_intent(ctx: _GoalDispatchContext) -> dict:
     # Mid-clarification: treat the new text as the user's answer to the prior
     # round and skip re-classification.
-    intent = "requirement" if ctx.original_title else classify_entry_intent(
+    intent = resolve_turn_intent(
         ctx.text,
-        project_info=ctx.project_info,
         category=ctx.category,
-        gateway_options=ctx.gateway_options,
+        forced_intent="requirement" if ctx.original_title else None,
+        classify_fn=classify_entry_intent,
+        classify_kwargs={
+            "project_info": ctx.project_info,
+            "category": ctx.category,
+            "gateway_options": ctx.gateway_options,
+        },
+        fallback_intent="requirement",
     )
 
     if intent == "command":
@@ -988,16 +1008,22 @@ def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pendin
         intent=pending.get("intent") or "requirement",
         clarify_fn=clarify_requirement,
     )
-    if outcome.get("status") == "error":
-        _raise_clarification_error(outcome)
-    if outcome.get("status") == "needs_clarification":
-        next_state = outcome.get("pending_state") or pending
-        questions = outcome.get("questions") or next_state.get("last_questions") or []
+    transition = interpret_clarification_outcome(
+        outcome,
+        pending_state=pending,
+        fallback_title=ctx.text,
+        normalize_text=normalize_requirement_text,
+    )
+    if transition.status in {"interrupt", "error"}:
+        _raise_clarification_error(transition)
+    if transition.status == "needs_clarification":
+        next_state = transition.pending_state or pending
+        questions = list(transition.questions) or next_state.get("last_questions") or []
         reply = _format_numbered_questions(questions)
         db.create_session_message(ctx.session_id, "assistant", reply, intent="clarify")
         return _session_payload("clarify", reply, questions=questions)
 
-    refined = normalize_requirement_text(outcome.get("refined_title") or pending.get("original_title") or "")
+    refined = transition.refined_title or normalize_requirement_text(pending.get("original_title") or "")
     _, reply, task_ids = _submit_requirement_from_message(
         ctx.project,
         refined,
@@ -1064,11 +1090,16 @@ def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: l
         return _dispatch_session_pending_clarification(ctx, pending)
 
     db.create_session_message(ctx.session_id, "user", ctx.text)
-    intent = classify_entry_intent(
+    intent = resolve_turn_intent(
         ctx.text,
-        project_info=ctx.project_info,
         category=ctx.category,
-        gateway_options=ctx.gateway_options,
+        classify_fn=classify_entry_intent,
+        classify_kwargs={
+            "project_info": ctx.project_info,
+            "category": ctx.category,
+            "gateway_options": ctx.gateway_options,
+        },
+        fallback_intent="requirement",
     )
     if intent in {"command", "question"}:
         return _dispatch_session_qa_or_command(ctx, intent=intent)

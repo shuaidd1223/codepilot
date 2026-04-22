@@ -21,6 +21,10 @@ from typing import Optional
 import click
 
 from codepilot import db
+from codepilot.interaction_controller import (
+    interpret_clarification_outcome,
+    resolve_turn_intent,
+)
 
 # Re-exported dependencies — tests monkeypatch these on ``codepilot.commands.auto``
 # and the implementation modules resolve them via this shell at call time.
@@ -197,16 +201,21 @@ def _clarify_requirement_for_go(
             max_turns=max_turns,
             intent="requirement",
         )
-        status = outcome.get("status")
-        if status == "needs_clarification":
-            pending_state = outcome.get("pending_state") or pending_state
+        transition = interpret_clarification_outcome(
+            outcome,
+            pending_state=pending_state,
+            fallback_title=seed_title,
+            normalize_text=normalize_requirement_text,
+        )
+        if transition.status == "needs_clarification":
+            pending_state = transition.pending_state or pending_state
             continue
-        if status == "ready":
-            refined = (outcome.get("refined_title") or "").strip()
+        if transition.status == "ready":
+            refined = (transition.refined_title or "").strip()
             return refined or pending_state.get("original_title") or seed_title
-        if outcome.get("error_kind") == "interrupt":
+        if transition.status == "interrupt":
             raise click.ClickException("澄清流程被中断，已取消本次需求。")
-        raise click.ClickException(outcome.get("message") or "澄清评估失败。")
+        raise click.ClickException(transition.message or "澄清评估失败。")
 
     refined = (assessment.get("refined_title") or "").strip()
     return refined or (pending_state or clarify_state).get("original_title") or seed_title
@@ -343,11 +352,16 @@ def go(
     )
 
     shared_gateway_options = resolve_shared_gateway_options(project_info)
-    intent = classify_entry_intent(
+    intent = resolve_turn_intent(
         text,
-        project_info=project_info,
         category="auto",
-        gateway_options=shared_gateway_options,
+        classify_fn=classify_entry_intent,
+        classify_kwargs={
+            "project_info": project_info,
+            "category": "auto",
+            "gateway_options": shared_gateway_options,
+        },
+        fallback_intent="requirement",
     )
     if intent == "command":
         click.echo(command_intent_guidance(include_release=True))
