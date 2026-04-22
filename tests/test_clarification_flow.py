@@ -179,6 +179,54 @@ def test_chat_pending_clarification_interrupt_exits_cleanly(tmp_path, monkeypatc
     assert not ran, "planner should not run after clarification is interrupted"
 
 
+def test_chat_pending_clarification_keeps_task_intent_single_task_limit(tmp_path, monkeypatch):
+    _register_project(tmp_path, monkeypatch)
+
+    classify_calls: list[str] = []
+
+    def fake_classify(text, **kw):
+        classify_calls.append(text)
+        return {"intent": "task", "source": "forced"}
+
+    monkeypatch.setattr(auto_mod, "classify_intent", fake_classify)
+
+    def fake_clarify(title, *, qa_history=None, **kw):
+        if qa_history:
+            answer = qa_history[-1].get("answer", "")
+            return {
+                "status": "ready",
+                "refined_title": f"{title} / 补充: {answer}",
+                "qa_history": qa_history,
+            }
+        return {
+            "status": "needs_clarification",
+            "questions": ["先修哪一块?"],
+            "qa_history": [],
+        }
+
+    monkeypatch.setattr(auto_mod, "clarify_requirement", fake_clarify)
+
+    captured: dict = {}
+
+    def fake_run_requirement_workflow(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "tasks": []}
+
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", fake_run_requirement_workflow)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["chat", "--no-ui", "--max-tasks", "9"],
+        input="修复登录失败\n先修重试逻辑\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert len(classify_calls) == 1, "pending clarification turn should be session-driven"
+    assert captured["max_tasks"] == 1
+    assert "重试逻辑" in captured["title"]
+
+
 def test_webui_submit_goal_returns_clarify(tmp_path, monkeypatch):
     _register_project(tmp_path, monkeypatch)
 

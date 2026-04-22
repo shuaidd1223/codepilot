@@ -220,6 +220,25 @@ class _ChatTurnFrame:
     payload_text: str = ""
 
 
+@dataclass
+class _ChatMessageDispatchContext:
+    """Session-driven dispatch context for one free-text chat turn."""
+
+    runtime: _ChatRuntime
+    payload_text: str
+    forced_intent: Optional[str]
+    shared_gateway_options: object
+    intent: str = "requirement"
+
+
+_CHAT_INTENT_LABELS = {
+    "question": "正在检索上下文并回答",
+    "task": "正在评估并执行任务",
+    "requirement": "正在评估并规划需求",
+    "command": "正在识别命令输入",
+}
+
+
 def _read_turn_input(frame: _ChatTurnFrame, *, shutdown_ui, echo) -> None:
     """Read one line and advance to the dispatch state when input is non-empty."""
     try:
@@ -478,19 +497,7 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
     echo(f"[green][OK] 已澄清需求：{refined}[/green]")
 
     try:
-        max_tasks_override = 1 if pending_intent == "task" else runtime.effective["max_tasks"]
-        shell.run_requirement_workflow(
-            project_info=runtime.project_info,
-            title=refined,
-            planner=runtime.effective["planner"],
-            task_agent=runtime.default_agent,
-            execute=runtime.default_execute,
-            executor=runtime.effective["executor"],
-            auto_commit=runtime.effective["auto_commit"],
-            max_tasks=max_tasks_override,
-            max_retries=runtime.effective["max_retries"],
-            quiet=True,
-        )
+        _run_chat_requirement_workflow(runtime, title=refined, intent=pending_intent)
         runtime.chat_history.append({
             "user": answer_text,
             "assistant": "需求已规划并执行",
@@ -520,104 +527,137 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
     frame.state = _ChatLoopState.READ_INPUT
 
 
+def _chat_max_tasks_for_intent(runtime: _ChatRuntime, intent: str) -> int:
+    return 1 if intent == "task" else runtime.effective["max_tasks"]
+
+
+def _run_chat_requirement_workflow(runtime: _ChatRuntime, *, title: str, intent: str) -> None:
+    shell = runtime.shell
+    shell.run_requirement_workflow(
+        project_info=runtime.project_info,
+        title=title,
+        planner=runtime.effective["planner"],
+        task_agent=runtime.default_agent,
+        execute=runtime.default_execute,
+        executor=runtime.effective["executor"],
+        auto_commit=runtime.effective["auto_commit"],
+        max_tasks=_chat_max_tasks_for_intent(runtime, intent),
+        max_retries=runtime.effective["max_retries"],
+        quiet=True,
+    )
+
+
+def _resolve_chat_turn_intent(ctx: _ChatMessageDispatchContext) -> str:
+    if ctx.forced_intent:
+        return ctx.forced_intent
+    try:
+        return ctx.runtime.shell.classify_entry_intent(
+            ctx.payload_text,
+            project_info=ctx.runtime.project_info,
+            category="auto",
+            gateway_options=ctx.shared_gateway_options,
+        )
+    except Exception:
+        return "requirement"
+
+
+def _dispatch_chat_qa_or_command(
+    ctx: _ChatMessageDispatchContext,
+    *,
+    spinner: _Spinner,
+    echo,
+) -> str:
+    shell = ctx.runtime.shell
+    if ctx.intent == "command":
+        spinner.__exit__(None, None, None)
+        echo("[yellow]这看起来是在调用 codepilot 自身命令，请直接用下面的入口：[/yellow]")
+        click.echo(shell.command_intent_guidance(include_release=True))
+        click.echo()
+        return "请使用对应的 CLI 命令操作"
+
+    echo("[dim]阶段 2/2：正在检索上下文并回答...[/dim]")
+    answer = shell.answer_question_via_api(
+        provider_key=ctx.shared_gateway_options.classifier_provider,
+        question=ctx.payload_text,
+        gateway_options=ctx.shared_gateway_options,
+        history=ctx.runtime.chat_history,
+    )
+    spinner.__exit__(None, None, None)
+    if answer:
+        click.echo(answer)
+        return answer
+    echo("[yellow]未获得回答[/yellow]")
+    return ""
+
+
+def _dispatch_chat_requirement(
+    ctx: _ChatMessageDispatchContext,
+    *,
+    spinner: _Spinner,
+    echo,
+) -> str:
+    runtime = ctx.runtime
+    shell = runtime.shell
+    echo("[dim]阶段 2/3：正在评估需求完整度...[/dim]")
+    spinner._message = "正在评估需求完整度"
+    assessment = shell.assess_requirement_for_planning(
+        ctx.payload_text,
+        project_info=runtime.project_info,
+        planner=runtime.effective["planner"],
+    )
+    spinner.__exit__(None, None, None)
+
+    runtime.pending_clarification = shell.clarification_state_from_assessment(
+        assessment=assessment,
+        seed_title=ctx.payload_text,
+        intent=ctx.intent,
+    )
+    if runtime.pending_clarification:
+        questions = runtime.pending_clarification.get("last_questions") or []
+        echo("[cyan]为了更好地规划，我想先确认几个点：[/cyan]")
+        for i, q in enumerate(questions, 1):
+            click.echo(f"  {i}. {q}")
+        echo("[dim]请直接回复你的答案（可以一次性全写）。输入 /clear 放弃此需求。[/dim]")
+        return "请求澄清：" + " / ".join(questions)
+
+    refined = assessment.get("refined_title") or ctx.payload_text
+    echo("[dim]阶段 3/3：正在生成计划并执行任务...[/dim]")
+    spinner._message = "正在生成计划并执行任务"
+    _run_chat_requirement_workflow(runtime, title=refined, intent=ctx.intent)
+    return "任务已创建并执行" if ctx.intent == "task" else "需求已规划"
+
+
 def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdown_ui, echo, safe) -> None:
     """Run intent classification + question/requirement handling for normal input."""
-    shell = runtime.shell
     payload_text = frame.payload_text
-    forced_intent = frame.forced_intent
-    shared_gateway_options = shell.resolve_shared_gateway_options(runtime.project_info)
+    dispatch_ctx = _ChatMessageDispatchContext(
+        runtime=runtime,
+        payload_text=payload_text,
+        forced_intent=frame.forced_intent,
+        shared_gateway_options=runtime.shell.resolve_shared_gateway_options(runtime.project_info),
+    )
 
     echo("[dim]阶段 1/3：正在识别输入意图...[/dim]")
     spinner = _Spinner("正在识别输入意图")
     spinner.__enter__()
 
-    intent = forced_intent
-    if intent is None:
-        try:
-            intent = shell.classify_entry_intent(
-                payload_text,
-                project_info=runtime.project_info,
-                category="auto",
-                gateway_options=shared_gateway_options,
-            )
-        except Exception:
-            intent = "requirement"
-
-    intent_labels = {
-        "question": "正在检索上下文并回答",
-        "task": "正在评估并执行任务",
-        "requirement": "正在评估并规划需求",
-        "command": "正在识别命令输入",
-    }
-    spinner._message = intent_labels.get(intent, "正在处理中")
+    dispatch_ctx.intent = _resolve_chat_turn_intent(dispatch_ctx)
+    spinner._message = _CHAT_INTENT_LABELS.get(dispatch_ctx.intent, "正在处理中")
 
     assistant_response = ""
     try:
-        if intent == "command":
-            spinner.__exit__(None, None, None)
-            assistant_response = "请使用对应的 CLI 命令操作"
-            echo(
-                "[yellow]这看起来是在调用 codepilot 自身命令，请直接用下面的入口：[/yellow]"
+        if dispatch_ctx.intent in {"command", "question"}:
+            assistant_response = _dispatch_chat_qa_or_command(
+                dispatch_ctx,
+                spinner=spinner,
+                echo=echo,
             )
-            click.echo(shell.command_intent_guidance(include_release=True))
-            click.echo()
-        elif intent == "question":
-            echo("[dim]阶段 2/2：正在检索上下文并回答...[/dim]")
-            answer = shell.answer_question_via_api(
-                provider_key=shared_gateway_options.classifier_provider,
-                question=payload_text,
-                gateway_options=shared_gateway_options,
-                history=runtime.chat_history,
+        else:
+            assistant_response = _dispatch_chat_requirement(
+                dispatch_ctx,
+                spinner=spinner,
+                echo=echo,
             )
-            spinner.__exit__(None, None, None)
-            if answer:
-                click.echo(answer)
-                assistant_response = answer
-            else:
-                echo("[yellow]未获得回答[/yellow]")
-        elif intent in ("task", "requirement"):
-            # Step 1: clarify if the requirement looks vague.
-            echo("[dim]阶段 2/3：正在评估需求完整度...[/dim]")
-            spinner._message = "正在评估需求完整度"
-            assessment = shell.assess_requirement_for_planning(
-                payload_text,
-                project_info=runtime.project_info,
-                planner=runtime.effective["planner"],
-            )
-            spinner.__exit__(None, None, None)
-
-            runtime.pending_clarification = shell.clarification_state_from_assessment(
-                assessment=assessment,
-                seed_title=payload_text,
-                intent=intent,
-            )
-            if runtime.pending_clarification:
-                questions = runtime.pending_clarification.get("last_questions") or []
-                echo("[cyan]为了更好地规划，我想先确认几个点：[/cyan]")
-                for i, q in enumerate(questions, 1):
-                    click.echo(f"  {i}. {q}")
-                echo("[dim]请直接回复你的答案（可以一次性全写）。输入 /clear 放弃此需求。[/dim]")
-                assistant_response = "请求澄清：" + " / ".join(questions)
-            else:
-                refined = assessment.get("refined_title") or payload_text
-                echo("[dim]阶段 3/3：正在生成计划并执行任务...[/dim]")
-                spinner._message = "正在生成计划并执行任务"
-                max_tasks_override = 1 if intent == "task" else runtime.effective["max_tasks"]
-                shell.run_requirement_workflow(
-                    project_info=runtime.project_info,
-                    title=refined,
-                    planner=runtime.effective["planner"],
-                    task_agent=runtime.default_agent,
-                    execute=runtime.default_execute,
-                    executor=runtime.effective["executor"],
-                    auto_commit=runtime.effective["auto_commit"],
-                    max_tasks=max_tasks_override,
-                    max_retries=runtime.effective["max_retries"],
-                    quiet=True,
-                )
-                assistant_response = (
-                    "任务已创建并执行" if intent == "task" else "需求已规划"
-                )
     except KeyboardInterrupt:
         spinner.__exit__(None, None, None)
         echo()
@@ -637,7 +677,7 @@ def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shut
     runtime.chat_history.append({
         "user": payload_text,
         "assistant": assistant_response,
-        "intent": intent or "unknown",
+        "intent": dispatch_ctx.intent or "unknown",
     })
     click.echo()
     frame.state = _ChatLoopState.READ_INPUT
