@@ -354,8 +354,11 @@ def test_go_routes_question_intent_to_answer_without_planning(tmp_path, monkeypa
     assert result.exit_code == 0
     assert "这是 go 的问答回复" in result.output
     assert not ran
-    assert captured["classify"]["config_ref"] == str(project_path)
-    assert captured["answer"]["config_ref"] == str(project_path)
+    classify_opts = captured["classify"]["gateway_options"]
+    answer_opts = captured["answer"]["gateway_options"]
+    assert classify_opts.config_ref == str(project_path)
+    assert answer_opts.config_ref == str(project_path)
+    assert classify_opts is answer_opts
 
 
 def test_go_routes_command_intent_to_guidance_without_planning(tmp_path, monkeypatch):

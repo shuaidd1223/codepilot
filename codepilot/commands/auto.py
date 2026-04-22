@@ -105,6 +105,7 @@ from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
     clarification_state_from_assessment,
     command_intent_guidance,
     resolve_question_answer_options,
+    resolve_shared_gateway_options,
     normalize_requirement_text,
     _project_config,
     _provider_context,
@@ -333,25 +334,22 @@ def go(
         max_retries=max_retries,
     )
 
+    shared_gateway_options = resolve_shared_gateway_options(project_info)
     intent = classify_entry_intent(
         text,
         project_info=project_info,
         category="auto",
+        gateway_options=shared_gateway_options,
     )
     if intent == "command":
         click.echo(command_intent_guidance(include_release=True))
         return
     if intent == "question":
-        answer_options = resolve_question_answer_options(project_info)
         try:
             answer = answer_question_via_api(
-                provider_key=answer_options["provider_key"],
+                provider_key=shared_gateway_options.classifier_provider,
                 question=text,
-                project_path=answer_options["project_path"],
-                config_ref=answer_options["config_ref"],
-                model_override=answer_options["model_override"],
-                api_key=answer_options["api_key"],
-                base_url=answer_options["base_url"],
+                gateway_options=shared_gateway_options,
             )
         except Exception as exc:
             answer = f"回答失败：{exc}"

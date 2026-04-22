@@ -359,8 +359,11 @@ def test_chat_passes_shared_gateway_config_ref_for_classifier_and_answer(tmp_pat
 
     assert result.exit_code == 0
     assert "来自问答路径" in result.output
-    assert captured["classify"]["config_ref"] == str(project_path)
-    assert captured["answer"]["config_ref"] == str(project_path)
+    classify_opts = captured["classify"]["gateway_options"]
+    answer_opts = captured["answer"]["gateway_options"]
+    assert classify_opts.config_ref == str(project_path)
+    assert answer_opts.config_ref == str(project_path)
+    assert classify_opts is answer_opts
 
 
 def test_webui_session_chat_passes_shared_gateway_config_ref_for_classifier_and_answer(tmp_path, monkeypatch):
@@ -403,5 +406,8 @@ timeout = 17
     assert out["ok"] is True
     assert out["intent"] == "question"
     assert out["message"] == "来自会话问答路径"
-    assert captured["classify"]["config_ref"] == str(config_file)
-    assert captured["answer"]["config_ref"] == str(config_file)
+    classify_opts = captured["classify"]["gateway_options"]
+    answer_opts = captured["answer"]["gateway_options"]
+    assert classify_opts.config_ref == str(config_file)
+    assert answer_opts.config_ref == str(config_file)
+    assert classify_opts is answer_opts

@@ -543,6 +543,7 @@ def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shut
     shell = runtime.shell
     payload_text = frame.payload_text
     forced_intent = frame.forced_intent
+    shared_gateway_options = shell.resolve_shared_gateway_options(runtime.project_info)
 
     echo("[dim]阶段 1/3：正在识别输入意图...[/dim]")
     spinner = _Spinner("正在识别输入意图")
@@ -555,6 +556,7 @@ def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shut
                 payload_text,
                 project_info=runtime.project_info,
                 category="auto",
+                gateway_options=shared_gateway_options,
             )
         except Exception:
             intent = "requirement"
@@ -579,15 +581,10 @@ def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shut
             click.echo()
         elif intent == "question":
             echo("[dim]阶段 2/2：正在检索上下文并回答...[/dim]")
-            answer_options = shell.resolve_question_answer_options(runtime.project_info)
             answer = shell.answer_question_via_api(
-                provider_key=answer_options["provider_key"],
+                provider_key=shared_gateway_options.classifier_provider,
                 question=payload_text,
-                project_path=answer_options["project_path"],
-                config_ref=answer_options["config_ref"],
-                model_override=answer_options["model_override"],
-                api_key=answer_options["api_key"],
-                base_url=answer_options["base_url"],
+                gateway_options=shared_gateway_options,
                 history=runtime.chat_history,
             )
             spinner.__exit__(None, None, None)

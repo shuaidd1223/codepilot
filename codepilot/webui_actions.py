@@ -26,7 +26,7 @@ from codepilot.commands.auto import (  # noqa: F401 — patched in tests
     clarify_requirement,
     command_intent_guidance,
     normalize_requirement_text,
-    resolve_question_answer_options,
+    resolve_shared_gateway_options,
 )
 from codepilot.commands.init import initialize_project
 from codepilot.config import load_project_config
@@ -89,19 +89,15 @@ def _extract_job_task_ids(result: dict) -> list[int]:
     return task_ids if isinstance(task_ids, list) else []
 
 
-def _answer_project_question(project_info: dict, question: str) -> str:
+def _answer_project_question(project_info: dict, question: str, *, gateway_options=None) -> str:
     from codepilot.ai import answer_question_via_api
 
-    answer_options = resolve_question_answer_options(project_info)
+    shared_gateway_options = gateway_options or resolve_shared_gateway_options(project_info)
     try:
         answer = answer_question_via_api(
-            provider_key=answer_options["provider_key"],
+            provider_key=shared_gateway_options.classifier_provider,
             question=question,
-            project_path=answer_options["project_path"],
-            config_ref=answer_options["config_ref"],
-            model_override=answer_options["model_override"],
-            api_key=answer_options["api_key"],
-            base_url=answer_options["base_url"],
+            gateway_options=shared_gateway_options,
         )
     except Exception as exc:
         answer = f"回答失败：{exc}"
@@ -137,6 +133,7 @@ class _GoalDispatchContext:
     category: str
     qa_history: Optional[list[dict]]
     original_title: str
+    gateway_options: object
 
 
 @dataclass(frozen=True)
@@ -147,6 +144,7 @@ class _SessionDispatchContext:
     planner: str
     text: str
     category: str
+    gateway_options: object
 
 
 def _assess_requirement(
@@ -711,7 +709,11 @@ def _dispatch_goal_command(ctx: _GoalDispatchContext) -> dict:
 
 
 def _dispatch_goal_question(ctx: _GoalDispatchContext) -> dict:
-    answer = _answer_project_question(ctx.project_info, ctx.text)
+    answer = _answer_project_question(
+        ctx.project_info,
+        ctx.text,
+        gateway_options=ctx.gateway_options,
+    )
     _append_event(f"回答问题：{ctx.text[:60]}", project=ctx.project)
     return {"ok": True, "intent": "question", "message": answer}
 
@@ -753,6 +755,7 @@ def _dispatch_goal_by_intent(ctx: _GoalDispatchContext) -> dict:
         ctx.text,
         project_info=ctx.project_info,
         category=ctx.category,
+        gateway_options=ctx.gateway_options,
     )
 
     if intent == "command":
@@ -789,6 +792,7 @@ def submit_goal_action(
         category=_normalize_goal_category(category),
         qa_history=qa_history,
         original_title=original_title,
+        gateway_options=resolve_shared_gateway_options(project_info),
     )
     return _dispatch_goal_by_intent(ctx)
 
@@ -957,7 +961,11 @@ def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pendin
 def _dispatch_session_qa_or_command(ctx: _SessionDispatchContext, *, intent: str) -> dict:
     response_handlers = {
         "command": command_intent_guidance,
-        "question": lambda: _answer_project_question(ctx.project_info, ctx.text),
+        "question": lambda: _answer_project_question(
+            ctx.project_info,
+            ctx.text,
+            gateway_options=ctx.gateway_options,
+        ),
     }
     reply = response_handlers[intent]()
     db.create_session_message(ctx.session_id, "assistant", reply, intent=intent)
@@ -1004,6 +1012,7 @@ def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: l
         ctx.text,
         project_info=ctx.project_info,
         category=ctx.category,
+        gateway_options=ctx.gateway_options,
     )
     if intent in {"command", "question"}:
         return _dispatch_session_qa_or_command(ctx, intent=intent)
@@ -1037,6 +1046,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
         planner=_effective_planner(project_info),
         text=text,
         category=normalized_category,
+        gateway_options=resolve_shared_gateway_options(project_info),
     )
     return _dispatch_session_message(ctx, existing_messages)
 

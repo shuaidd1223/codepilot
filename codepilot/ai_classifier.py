@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from codepilot.ai_gateway_types import GatewayCallOptions
 from codepilot.ai_providers import _collect_project_context
 from codepilot.prompts import load_prompt as _load_prompt
 
@@ -106,6 +107,35 @@ def _looks_like_codepilot_command(text: str) -> bool:
     return any(kw in t for kw in command_keywords)
 
 
+def _resolve_gateway_options(
+    *,
+    gateway_options: Optional[GatewayCallOptions],
+    classifier_provider: str,
+    classifier_model: str,
+    api_key: Optional[str],
+    base_url: Optional[str],
+    project_path: str,
+    config_ref: str,
+    planner: str,
+    timeout: int,
+) -> GatewayCallOptions:
+    """Merge explicit kwargs with an optional shared gateway context object."""
+    shared = gateway_options
+    effective_timeout = timeout
+    if shared is not None and shared.timeout:
+        effective_timeout = int(shared.timeout)
+    return GatewayCallOptions(
+        classifier_provider=(shared.classifier_provider if shared else "") or classifier_provider,
+        classifier_model=(shared.classifier_model if shared else "") or classifier_model,
+        api_key=shared.api_key if shared and shared.api_key is not None else api_key,
+        base_url=shared.base_url if shared and shared.base_url is not None else base_url,
+        project_path=(shared.project_path if shared else "") or project_path,
+        config_ref=(shared.config_ref if shared else "") or config_ref,
+        planner=planner,
+        timeout=effective_timeout,
+    )
+
+
 def classify_intent(
     text: str,
     project_path: str = "",
@@ -115,6 +145,7 @@ def classify_intent(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     config_ref: str = "",
+    gateway_options: Optional[GatewayCallOptions] = None,
 ) -> dict:
     """Classify a chat input as question / task / requirement.
 
@@ -133,21 +164,24 @@ def classify_intent(
 
     valid_intents = {"question", "task", "requirement", "command"}
 
-    from codepilot.ai_gateway import GatewayCallOptions, call_structured_prompt
+    from codepilot.ai_gateway import call_structured_prompt
 
+    shared_options = _resolve_gateway_options(
+        gateway_options=gateway_options,
+        classifier_provider=classifier_provider,
+        classifier_model=classifier_model,
+        api_key=api_key,
+        base_url=base_url,
+        project_path=project_path,
+        config_ref=config_ref,
+        planner="claude",
+        timeout=timeout,
+    )
     response = call_structured_prompt(
         prompt=INTENT_PROMPT.format(text=text),
         schema=INTENT_SCHEMA,
-        options=GatewayCallOptions(
-            classifier_provider=classifier_provider,
-            classifier_model=classifier_model,
-            api_key=api_key,
-            base_url=base_url,
-            project_path=project_path,
-            config_ref=config_ref,
-            planner="claude",  # classification is latency-sensitive; prefer claude
-            timeout=timeout,
-        ),
+        # Classification is latency-sensitive; keep claude as CLI fallback family.
+        options=shared_options,
     )
 
     if response.ok and response.payload:
@@ -181,6 +215,7 @@ def answer_question_via_api(
     base_url: Optional[str] = None,
     history: list[dict] | None = None,
     config_ref: str = "",
+    gateway_options: Optional[GatewayCallOptions] = None,
 ) -> str:
     """Answer a user question directly without creating a task.
 
@@ -203,19 +238,21 @@ def answer_question_via_api(
         f"## 项目上下文\n{context}\n{history_block}\n## 用户问题\n{question}"
     )
 
-    from codepilot.ai_gateway import GatewayCallOptions, call_text_prompt
+    from codepilot.ai_gateway import call_text_prompt
 
+    shared_options = _resolve_gateway_options(
+        gateway_options=gateway_options,
+        classifier_provider=provider_key,
+        classifier_model=model_override,
+        api_key=api_key,
+        base_url=base_url,
+        project_path=project_path,
+        config_ref=config_ref,
+        planner="claude",
+        timeout=120,
+    )
     response = call_text_prompt(
         prompt=prompt,
-        options=GatewayCallOptions(
-            classifier_provider=provider_key,
-            classifier_model=model_override,
-            api_key=api_key,
-            base_url=base_url,
-            project_path=project_path,
-            config_ref=config_ref,
-            planner="claude",
-            timeout=120,
-        ),
+        options=shared_options,
     )
     return response.text if response.ok else ""

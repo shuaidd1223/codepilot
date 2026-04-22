@@ -21,6 +21,7 @@ from typing import Optional
 
 import click
 
+from codepilot.ai_gateway_types import GatewayCallOptions
 from codepilot import db
 from codepilot.config import (
     find_config,
@@ -448,16 +449,31 @@ def _classifier_runtime(project_info: dict) -> dict:
     }
 
 
+def resolve_shared_gateway_options(project_info: dict) -> GatewayCallOptions:
+    """Build one shared gateway context for classifier + question-answer paths."""
+    runtime = _classifier_runtime(project_info)
+    return GatewayCallOptions(
+        classifier_provider=runtime["classifier_provider"],
+        classifier_model=runtime["classifier_model"],
+        api_key=runtime["api_key"],
+        base_url=runtime["base_url"],
+        project_path=runtime["project_path"],
+        config_ref=runtime["config_ref"],
+        planner="claude",
+        timeout=runtime["classifier_timeout"] or 30,
+    )
+
+
 def resolve_question_answer_options(project_info: dict) -> dict:
     """Return unified gateway options for question-answer paths."""
-    runtime = _classifier_runtime(project_info)
+    gateway_options = resolve_shared_gateway_options(project_info)
     return {
-        "provider_key": runtime["classifier_provider"],
-        "model_override": runtime["classifier_model"],
-        "project_path": runtime["project_path"],
-        "config_ref": runtime["config_ref"],
-        "api_key": runtime["api_key"],
-        "base_url": runtime["base_url"],
+        "provider_key": gateway_options.classifier_provider,
+        "model_override": gateway_options.classifier_model,
+        "project_path": gateway_options.project_path,
+        "config_ref": gateway_options.config_ref,
+        "api_key": gateway_options.api_key,
+        "base_url": gateway_options.base_url,
     }
 
 
@@ -466,6 +482,7 @@ def classify_entry_intent(
     *,
     project_info: dict,
     category: str = "auto",
+    gateway_options: Optional[GatewayCallOptions] = None,
 ) -> str:
     """Classify user input intent using the shared auto/chat/webui chain."""
     forced = (category or "auto").strip().lower()
@@ -473,18 +490,12 @@ def classify_entry_intent(
     if forced in valid:
         return forced
 
-    runtime = _classifier_runtime(project_info)
+    shared_options = gateway_options or resolve_shared_gateway_options(project_info)
     shell = _shell()
     try:
         result = shell.classify_intent(
             text,
-            project_path=runtime["project_path"],
-            config_ref=runtime["config_ref"],
-            classifier_provider=runtime["classifier_provider"],
-            classifier_model=runtime["classifier_model"],
-            timeout=runtime["classifier_timeout"],
-            api_key=runtime["api_key"],
-            base_url=runtime["base_url"],
+            gateway_options=shared_options,
         )
         intent = (result.get("intent") or "").strip().lower()
         if intent in valid:
