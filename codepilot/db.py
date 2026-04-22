@@ -19,6 +19,37 @@ from codepilot.db_config import (
     get_db_path as _cfg_get_db_path,
     open_connection as _cfg_open_connection,
 )
+from codepilot.db_project_store import (
+    delete_project_with_children as _delete_project_with_children,
+    fetch_project_by_name as _fetch_project_by_name,
+    fetch_projects as _fetch_projects,
+    upsert_project_by_path as _upsert_project_by_path,
+)
+from codepilot.db_session_store import (
+    delete_session_messages as _delete_session_messages,
+    delete_session_row as _delete_session_row,
+    fetch_session_by_id as _fetch_session_by_id,
+    fetch_session_message_by_id as _fetch_session_message_by_id,
+    insert_session as _insert_session,
+    insert_session_message as _insert_session_message,
+    query_session_messages as _query_session_messages,
+    query_sessions as _query_sessions,
+    touch_session_updated_at as _touch_session_updated_at,
+    update_session_fields as _update_session_fields,
+)
+from codepilot.db_task_read_model import (
+    fetch_active_dedup_keys as _fetch_active_dedup_keys,
+    fetch_task_by_id as _fetch_task_by_id,
+    find_active_duplicate as _find_active_duplicate,
+    query_done_task_windows as _query_done_task_windows,
+    query_next_backlog_task as _query_next_backlog_task,
+    query_old_done_tasks as _query_old_done_tasks,
+    query_orphan_log_paths as _query_orphan_log_paths,
+    query_stale_in_progress as _query_stale_in_progress,
+    query_task_logs as _query_task_logs,
+    query_task_status_counts as _query_task_status_counts,
+    query_tasks as _query_tasks,
+)
 
 
 DB_PATH = _cfg_default_db_path()
@@ -366,32 +397,15 @@ def register_project(
     preserved to avoid orphaning dependent tasks.
     """
     with get_write_conn() as conn:
-        existing = conn.execute(
-            "SELECT name FROM projects WHERE path = ?", (path,)
-        ).fetchone()
-        if existing:
-            effective_name = existing["name"]
-            conn.execute(
-                """
-                UPDATE projects
-                   SET base_branch = ?,
-                       default_mode = ?,
-                       worktree_base = ?,
-                       config_file = ?
-                 WHERE path = ?
-                """,
-                (base_branch, default_mode, worktree_base, config_file, path),
-            )
-        else:
-            effective_name = name
-            conn.execute(
-                """
-                INSERT INTO projects
-                    (name, path, base_branch, default_mode, worktree_base, config_file)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (name, path, base_branch, default_mode, worktree_base, config_file),
-            )
+        effective_name = _upsert_project_by_path(
+            conn,
+            name=name,
+            path=path,
+            base_branch=base_branch,
+            default_mode=default_mode,
+            worktree_base=worktree_base,
+            config_file=config_file,
+        )
     _cache_invalidate("project_by_name", "projects", "project_by_path", "tasks", "task_by_id", "task_stats", "sessions")
     return get_project(effective_name)
 
@@ -403,8 +417,7 @@ def get_project(name: str) -> Optional[dict]:
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
     with get_read_conn() as conn:
-        row = conn.execute("SELECT * FROM projects WHERE name = ?", (name,)).fetchone()
-        result = dict(row) if row else None
+        result = _fetch_project_by_name(conn, name)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
 
@@ -415,8 +428,7 @@ def list_projects() -> list[dict]:
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
     with get_read_conn() as conn:
-        rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
-        result = [dict(row) for row in rows]
+        result = _fetch_projects(conn)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
 
@@ -444,18 +456,7 @@ def find_project_by_path(path: str | Path) -> Optional[dict]:
 def delete_project(name: str) -> bool:
     """Delete a project and its related tasks."""
     with get_write_conn() as conn:
-        conn.execute(
-            "DELETE FROM task_logs WHERE task_id IN (SELECT id FROM tasks WHERE project = ?)",
-            (name,),
-        )
-        conn.execute(
-            "DELETE FROM session_messages WHERE session_id IN (SELECT id FROM sessions WHERE project = ?)",
-            (name,),
-        )
-        conn.execute("DELETE FROM sessions WHERE project = ?", (name,))
-        conn.execute("DELETE FROM tasks WHERE project = ?", (name,))
-        cur = conn.execute("DELETE FROM projects WHERE name = ?", (name,))
-        removed = cur.rowcount > 0
+        removed = _delete_project_with_children(conn, name)
     if removed:
         _cache_invalidate("project_by_name", "projects", "project_by_path", "tasks", "task_by_id", "task_logs", "task_stats", "sessions", "session_by_id", "session_messages")
     return removed
@@ -465,15 +466,6 @@ def compute_dedup_key(project: str, title: str, content: str = "") -> str:
     """Return a 16-char hex dedup key: sha256(project + normalized_title + normalized_content)[:16]."""
     normalized = (project.strip() + "|" + title.strip() + "|" + content.strip()).lower()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
-
-
-def _find_active_duplicate(conn: sqlite3.Connection, project: str, dedup_key: str) -> Optional[dict]:
-    """Return an existing task with the same dedup_key in backlog/in_progress status, or None."""
-    row = conn.execute(
-        "SELECT * FROM tasks WHERE project = ? AND dedup_key = ? AND status IN ('backlog', 'in_progress') LIMIT 1",
-        (project, dedup_key),
-    ).fetchone()
-    return dict(row) if row else None
 
 
 def _normalize_depends_on_value(value: object) -> str | None:
@@ -576,12 +568,7 @@ def create_task(
 def existing_dedup_keys(project: str) -> set[str]:
     """Return dedup_keys already present in active (backlog/in_progress) tasks."""
     with get_read_conn() as conn:
-        rows = conn.execute(
-            "SELECT dedup_key FROM tasks WHERE project = ? AND dedup_key IS NOT NULL "
-            "AND status IN ('backlog','in_progress')",
-            (project,),
-        ).fetchall()
-    return {row["dedup_key"] for row in rows if row["dedup_key"]}
+        return _fetch_active_dedup_keys(conn, project)
 
 
 def get_task(task_id: int) -> Optional[dict]:
@@ -591,8 +578,7 @@ def get_task(task_id: int) -> Optional[dict]:
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
     with get_read_conn() as conn:
-        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        result = dict(row) if row else None
+        result = _fetch_task_by_id(conn, task_id)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
 
@@ -605,19 +591,8 @@ def list_tasks(
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    sql = "SELECT * FROM tasks WHERE 1=1"
-    params: list = []
-    if project:
-        sql += " AND project = ?"
-        params.append(project)
-    if status:
-        sql += " AND status = ?"
-        params.append(status)
-    sql += " ORDER BY priority ASC, created_at DESC"
-
     with get_read_conn() as conn:
-        rows = conn.execute(sql, params).fetchall()
-        result = [dict(row) for row in rows]
+        result = _query_tasks(conn, project, status)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
 
@@ -718,35 +693,7 @@ def reset_task_for_retry(task_id: int, *, reset_retry_count: bool = True) -> dic
 def next_backlog_task(project: str) -> list[dict]:
     """Return the next runnable backlog task for a project."""
     with get_read_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT t.* FROM tasks t
-            WHERE t.project = ?
-              AND t.status = 'backlog'
-              AND (
-                  t.depends_on IS NULL
-                  OR t.depends_on = ''
-                  OR NOT EXISTS (
-                      SELECT 1 FROM tasks t2, json_each(t.depends_on) j
-                      WHERE CAST(j.value AS INTEGER) = t2.id
-                        AND t2.project = t.project
-                        AND t2.status != 'done'
-                  )
-              )
-            ORDER BY
-                CASE t.priority
-                    WHEN 'P0' THEN 1
-                    WHEN 'P1' THEN 2
-                    WHEN 'P2' THEN 3
-                    WHEN 'P3' THEN 4
-                    ELSE 5
-                END,
-                t.created_at ASC
-            LIMIT 1
-            """,
-            (project,),
-        ).fetchall()
-        return [dict(row) for row in rows]
+        return _query_next_backlog_task(conn, project)
 
 
 def compute_agent_eta_seconds(
@@ -763,30 +710,12 @@ def compute_agent_eta_seconds(
     when there's not enough history to produce a stable number.
     """
     with get_read_conn() as conn:
-        if agent:
-            rows = conn.execute(
-                """
-                SELECT started_at, completed_at
-                FROM tasks
-                WHERE project = ? AND agent = ? AND status = 'done'
-                  AND started_at IS NOT NULL AND completed_at IS NOT NULL
-                ORDER BY completed_at DESC
-                LIMIT ?
-                """,
-                (project, agent, sample_size),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT started_at, completed_at
-                FROM tasks
-                WHERE project = ? AND status = 'done'
-                  AND started_at IS NOT NULL AND completed_at IS NOT NULL
-                ORDER BY completed_at DESC
-                LIMIT ?
-                """,
-                (project, sample_size),
-            ).fetchall()
+        rows = _query_done_task_windows(
+            conn,
+            project,
+            agent=agent,
+            sample_size=sample_size,
+        )
 
     from datetime import datetime as _dt
 
@@ -818,16 +747,7 @@ def get_task_stats(project: str) -> dict:
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
     with get_read_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT status, COUNT(*) AS count
-            FROM tasks
-            WHERE project = ?
-            GROUP BY status
-            """,
-            (project,),
-        ).fetchall()
-    stats = {row["status"]: row["count"] for row in rows}
+        stats = _query_task_status_counts(conn, project)
     result = {
         "backlog": stats.get("backlog", 0),
         "in_progress": stats.get("in_progress", 0),
@@ -891,11 +811,7 @@ def list_task_logs(task_id: int) -> list[dict]:
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
     with get_read_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM task_logs WHERE task_id = ? ORDER BY started_at, id",
-            (task_id,),
-        ).fetchall()
-        result = [dict(row) for row in rows]
+        result = _query_task_logs(conn, task_id)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
 
@@ -908,32 +824,13 @@ def find_stale_in_progress(
 ) -> list[dict]:
     """Return in_progress tasks whose heartbeat exceeds *stale_minutes*."""
     with get_read_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM tasks
-            WHERE project = ?
-              AND status = 'in_progress'
-              AND heartbeat_at IS NOT NULL
-              AND (julianday('now') - julianday(heartbeat_at)) * 1440 > ?
-            """,
-            (project, stale_minutes),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        return _query_stale_in_progress(conn, project, stale_minutes)
 
 
 def find_orphan_log_paths(project: str) -> list[dict]:
     """Return tasks whose current_log_path is set but the file no longer exists."""
     with get_read_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM tasks
-            WHERE project = ?
-              AND current_log_path IS NOT NULL
-              AND current_log_path != ''
-            """,
-            (project,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        return _query_orphan_log_paths(conn, project)
 
 
 def find_old_done_tasks(
@@ -942,106 +839,10 @@ def find_old_done_tasks(
 ) -> list[dict]:
     """Return done tasks older than *retention_days* that still have a log path."""
     with get_read_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM tasks
-            WHERE project = ?
-              AND status = 'done'
-              AND current_log_path IS NOT NULL
-              AND current_log_path != ''
-              AND (julianday('now') - julianday(COALESCE(completed_at, created_at))) > ?
-            """,
-            (project, retention_days),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        return _query_old_done_tasks(conn, project, retention_days)
 
 
 # ── Session CRUD ───────────────────────────────────────────────────────────
-
-
-def _fetch_session_by_id(conn: sqlite3.Connection, session_id: int) -> Optional[dict]:
-    row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-    return dict(row) if row else None
-
-
-def _query_sessions(
-    conn: sqlite3.Connection,
-    project: Optional[str] = None,
-    status: Optional[str] = None,
-) -> list[dict]:
-    sql = "SELECT * FROM sessions WHERE 1=1"
-    params: list[str] = []
-    if project:
-        sql += " AND project = ?"
-        params.append(project)
-    if status:
-        sql += " AND status = ?"
-        params.append(status)
-    sql += " ORDER BY updated_at DESC, id DESC"
-    rows = conn.execute(sql, params).fetchall()
-    return [dict(row) for row in rows]
-
-
-def _insert_session(conn: sqlite3.Connection, project: str, title: str) -> int:
-    cur = conn.execute(
-        "INSERT INTO sessions (project, title) VALUES (?, ?)",
-        (project, title),
-    )
-    return int(cur.lastrowid)
-
-
-def _update_session_fields(
-    conn: sqlite3.Connection,
-    session_id: int,
-    updates: dict[str, object],
-) -> None:
-    set_clause = ", ".join(f"{col} = ?" for col in updates)
-    values = list(updates.values()) + [session_id]
-    conn.execute(f"UPDATE sessions SET {set_clause} WHERE id = ?", values)
-
-
-def _delete_session_messages(conn: sqlite3.Connection, session_id: int) -> None:
-    conn.execute("DELETE FROM session_messages WHERE session_id = ?", (session_id,))
-
-
-def _delete_session_row(conn: sqlite3.Connection, session_id: int) -> int:
-    cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-    return cur.rowcount
-
-
-def _fetch_session_message_by_id(conn: sqlite3.Connection, message_id: int) -> Optional[dict]:
-    row = conn.execute("SELECT * FROM session_messages WHERE id = ?", (message_id,)).fetchone()
-    return dict(row) if row else None
-
-
-def _query_session_messages(conn: sqlite3.Connection, session_id: int) -> list[dict]:
-    rows = conn.execute(
-        "SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at ASC, id ASC",
-        (session_id,),
-    ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def _insert_session_message(
-    conn: sqlite3.Connection,
-    session_id: int,
-    role: str,
-    content: str,
-    intent: Optional[str],
-    task_ids: Optional[list[int]],
-) -> int:
-    cur = conn.execute(
-        "INSERT INTO session_messages (session_id, role, content, intent, task_ids) VALUES (?, ?, ?, ?, ?)",
-        (session_id, role, content, intent, json.dumps(task_ids) if task_ids else None),
-    )
-    return int(cur.lastrowid)
-
-
-def _touch_session_updated_at(conn: sqlite3.Connection, session_id: int) -> None:
-    conn.execute(
-        "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?",
-        (session_id,),
-    )
 
 
 def create_session(
