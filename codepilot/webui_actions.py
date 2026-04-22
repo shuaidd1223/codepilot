@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -125,6 +126,77 @@ def _submit_requirement_from_message(
     )
     reply = result.get("message") or "需求已提交"
     return result, reply, _extract_job_task_ids(result)
+
+
+@dataclass(frozen=True)
+class _GoalDispatchContext:
+    project: str
+    project_info: dict
+    planner: str
+    text: str
+    category: str
+    qa_history: Optional[list[dict]]
+    original_title: str
+
+
+@dataclass(frozen=True)
+class _SessionDispatchContext:
+    session_id: int
+    project: str
+    project_info: dict
+    planner: str
+    text: str
+    category: str
+
+
+def _assess_requirement(
+    text: str,
+    *,
+    project_info: dict,
+    planner: str,
+    qa_history: Optional[list[dict]] = None,
+    original_title: str = "",
+) -> dict:
+    return assess_requirement_for_planning(
+        text,
+        project_info=project_info,
+        planner=planner,
+        qa_history=qa_history,
+        original_title=original_title,
+        clarify_fn=clarify_requirement,
+    )
+
+
+def _goal_clarify_payload(*, seed_title: str, questions: list[str], qa_history: Optional[list[dict]] = None) -> dict:
+    return {
+        "ok": True,
+        "intent": "clarify",
+        "questions": questions,
+        "original_title": seed_title,
+        "qa_history": qa_history or [],
+        "message": "为了更好地规划，请先回答几个问题。",
+    }
+
+
+def _session_payload(
+    intent: str,
+    message: str,
+    *,
+    task_ids: Optional[list[int]] = None,
+    questions: Optional[list[str]] = None,
+    refined_title: str = "",
+) -> dict:
+    payload: dict = {
+        "ok": True,
+        "intent": intent,
+        "message": message,
+        "task_ids": task_ids or [],
+    }
+    if questions is not None:
+        payload["questions"] = questions
+    if refined_title:
+        payload["refined_title"] = refined_title
+    return payload
 
 
 def _next_job_id() -> int:
@@ -493,26 +565,22 @@ def submit_requirement_action(
     effective_planner = _effective_planner(project_info, planner)
 
     if clarify:
-        assessment = assess_requirement_for_planning(
+        assessment = _assess_requirement(
             normalized_title,
             project_info=project_info,
             planner=effective_planner,
             qa_history=qa_history,
             original_title=original_title,
-            clarify_fn=clarify_requirement,
         )
         seed_title = assessment.get("seed_title") or normalized_title
         if assessment.get("status") == "needs_clarification":
             questions = assessment.get("questions") or []
             _append_event(f"需求需要澄清：{seed_title[:60]}", project=project)
-            return {
-                "ok": True,
-                "intent": "clarify",
-                "questions": questions,
-                "original_title": seed_title,
-                "qa_history": assessment.get("qa_history") or [],
-                "message": "为了更好地规划，请先回答几个问题。",
-            }
+            return _goal_clarify_payload(
+                seed_title=seed_title,
+                questions=questions,
+                qa_history=assessment.get("qa_history") or [],
+            )
         normalized_title = assessment.get("refined_title") or seed_title
 
     job_id = _next_job_id()
@@ -633,6 +701,67 @@ def submit_requirement_action(
     return {"ok": True, "message": f"需求已提交，后台任务 #{job_id} 已启动。", "job": dict(shell._UI_JOBS[job_id])}
 
 
+def _dispatch_goal_command(ctx: _GoalDispatchContext) -> dict:
+    _append_event(f"收到命令类输入（已提示用户使用 CLI）：{ctx.text[:60]}", project=ctx.project)
+    return {
+        "ok": True,
+        "intent": "command",
+        "message": command_intent_guidance(),
+    }
+
+
+def _dispatch_goal_question(ctx: _GoalDispatchContext) -> dict:
+    answer = _answer_project_question(ctx.project_info, ctx.text)
+    _append_event(f"回答问题：{ctx.text[:60]}", project=ctx.project)
+    return {"ok": True, "intent": "question", "message": answer}
+
+
+def _dispatch_goal_requirement(ctx: _GoalDispatchContext, *, intent: str) -> dict:
+    assessment = _assess_requirement(
+        ctx.text,
+        project_info=ctx.project_info,
+        planner=ctx.planner,
+        qa_history=ctx.qa_history,
+        original_title=ctx.original_title,
+    )
+    seed_title = assessment.get("seed_title") or ctx.text
+    if assessment.get("status") == "needs_clarification":
+        _append_event(f"需求需要澄清：{seed_title[:60]}", project=ctx.project)
+        return _goal_clarify_payload(
+            seed_title=seed_title,
+            questions=assessment.get("questions") or [],
+            qa_history=assessment.get("qa_history") or [],
+        )
+
+    refined = assessment.get("refined_title") or seed_title
+    max_tasks = 1 if intent == "task" else 5
+    result, _, _ = _submit_requirement_from_message(
+        ctx.project,
+        refined,
+        planner=ctx.planner,
+        max_tasks=max_tasks,
+    )
+    result["intent"] = intent
+    result["refined_title"] = refined
+    return result
+
+
+def _dispatch_goal_by_intent(ctx: _GoalDispatchContext) -> dict:
+    # Mid-clarification: treat the new text as the user's answer to the prior
+    # round and skip re-classification.
+    intent = "requirement" if ctx.original_title else classify_entry_intent(
+        ctx.text,
+        project_info=ctx.project_info,
+        category=ctx.category,
+    )
+
+    if intent == "command":
+        return _dispatch_goal_command(ctx)
+    if intent == "question":
+        return _dispatch_goal_question(ctx)
+    return _dispatch_goal_requirement(ctx, intent=intent)
+
+
 def submit_goal_action(
     project: str,
     text: str,
@@ -641,84 +770,27 @@ def submit_goal_action(
     qa_history: Optional[list[dict]] = None,
     original_title: str = "",
 ) -> dict:
-    """POST /api/goal — classify intent and route accordingly.
-
-    *category* can be ``auto``, ``question``, ``requirement``, or ``command``.
-
-    For multi-turn clarification, callers pass ``original_title`` and
-    ``qa_history``; the action threads them through :func:`clarify_requirement`
-    and either returns a new ``clarify`` response or starts planning.
-    """
+    """POST /api/goal — validate payload then delegate to intent handlers."""
     db.init_db()
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
-    effective_planner = _effective_planner(project_info)
     text = (text or "").strip()
     if not text:
         raise RuntimeError("输入不能为空。")
     if len(text.encode("utf-8")) > _GOAL_MAX_BYTES:
         raise RuntimeError(f"输入超过 {_GOAL_MAX_BYTES // 1024}KB 限制。")
 
-    category = _normalize_goal_category(category)
-
-    intent = classify_entry_intent(
-        text,
+    ctx = _GoalDispatchContext(
+        project=project,
         project_info=project_info,
-        category=category,
-    )
-
-    # Mid-clarification: treat the new text as the user's answer to the prior
-    # round and skip re-classification.
-    if original_title:
-        intent = "requirement"
-
-    if intent == "command":
-        _append_event(f"收到命令类输入（已提示用户使用 CLI）：{text[:60]}", project=project)
-        return {
-            "ok": True,
-            "intent": "command",
-            "message": command_intent_guidance(),
-        }
-
-    if intent == "question":
-        answer = _answer_project_question(project_info, text)
-        _append_event(f"回答问题：{text[:60]}", project=project)
-        return {"ok": True, "intent": "question", "message": answer}
-
-    # ── Clarification (multi-turn) gate before actually planning ──────────
-    assessment = assess_requirement_for_planning(
-        text,
-        project_info=project_info,
-        planner=effective_planner,
+        planner=_effective_planner(project_info),
+        text=text,
+        category=_normalize_goal_category(category),
         qa_history=qa_history,
         original_title=original_title,
-        clarify_fn=clarify_requirement,
     )
-    seed_title = assessment.get("seed_title") or text
-
-    if assessment.get("status") == "needs_clarification":
-        _append_event(f"需求需要澄清：{seed_title[:60]}", project=project)
-        return {
-            "ok": True,
-            "intent": "clarify",
-            "questions": assessment.get("questions") or [],
-            "original_title": seed_title,
-            "qa_history": assessment.get("qa_history") or [],
-            "message": "为了更好地规划，请先回答几个问题。",
-        }
-
-    refined = assessment.get("refined_title") or seed_title
-    max_tasks = 1 if intent == "task" else 5
-    result, _, _ = _submit_requirement_from_message(
-        project,
-        refined,
-        planner=effective_planner,
-        max_tasks=max_tasks,
-    )
-    result["intent"] = intent
-    result["refined_title"] = refined
-    return result
+    return _dispatch_goal_by_intent(ctx)
 
 
 # ── Session actions ────────────────────────────────────────────────────────
@@ -841,8 +913,105 @@ def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
     )
 
 
+def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pending: dict) -> dict:
+    db.create_session_message(ctx.session_id, "user", ctx.text)
+    pending = append_clarification_answer_to_state(
+        pending,
+        answer=ctx.text,
+    )
+    assessment = _assess_requirement(
+        pending["original_title"],
+        project_info=ctx.project_info,
+        planner=ctx.planner,
+        qa_history=pending["qa_history"],
+    )
+    next_state = clarification_state_from_assessment(
+        assessment=assessment,
+        seed_title=pending["original_title"],
+        previous_state=pending,
+        intent=pending.get("intent") or "requirement",
+    )
+    if next_state:
+        questions = next_state.get("last_questions") or []
+        reply = _format_numbered_questions(questions)
+        db.create_session_message(ctx.session_id, "assistant", reply, intent="clarify")
+        return _session_payload("clarify", reply, questions=questions)
+
+    refined = assessment.get("refined_title") or (assessment.get("seed_title") or pending["original_title"])
+    _, reply, task_ids = _submit_requirement_from_message(
+        ctx.project,
+        refined,
+        planner=ctx.planner,
+        max_tasks=5,
+    )
+    db.create_session_message(
+        ctx.session_id,
+        "assistant",
+        reply,
+        intent="requirement",
+        task_ids=task_ids,
+    )
+    return _session_payload("requirement", reply, refined_title=refined, task_ids=task_ids)
+
+
+def _dispatch_session_qa_or_command(ctx: _SessionDispatchContext, *, intent: str) -> dict:
+    response_handlers = {
+        "command": command_intent_guidance,
+        "question": lambda: _answer_project_question(ctx.project_info, ctx.text),
+    }
+    reply = response_handlers[intent]()
+    db.create_session_message(ctx.session_id, "assistant", reply, intent=intent)
+    return _session_payload(intent, reply)
+
+
+def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) -> dict:
+    assessment = _assess_requirement(
+        ctx.text,
+        project_info=ctx.project_info,
+        planner=ctx.planner,
+    )
+    if assessment.get("status") == "needs_clarification":
+        questions = assessment.get("questions") or []
+        numbered = _format_numbered_questions(questions)
+        reply = (
+            "为了更好地规划，请先确认以下几个点：\n" + numbered
+            if numbered
+            else "为了更好地规划，请先确认以下几个点。"
+        )
+        db.create_session_message(ctx.session_id, "assistant", reply, intent="clarify")
+        return _session_payload("clarify", reply, questions=questions)
+
+    refined = assessment.get("refined_title") or ctx.text
+    max_tasks = 1 if intent == "task" else 5
+    _, reply, task_ids = _submit_requirement_from_message(
+        ctx.project,
+        refined,
+        planner=ctx.planner,
+        max_tasks=max_tasks,
+    )
+    db.create_session_message(ctx.session_id, "assistant", reply, intent=intent, task_ids=task_ids)
+    return _session_payload(intent, reply, refined_title=refined, task_ids=task_ids)
+
+
+def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: list[dict]) -> dict:
+    # ── Multi-turn clarification: continue only for default auto routing. ──
+    pending = _reconstruct_clarification_state(existing_messages)
+    if pending and ctx.category == "auto":
+        return _dispatch_session_pending_clarification(ctx, pending)
+
+    db.create_session_message(ctx.session_id, "user", ctx.text)
+    intent = classify_entry_intent(
+        ctx.text,
+        project_info=ctx.project_info,
+        category=ctx.category,
+    )
+    if intent in {"command", "question"}:
+        return _dispatch_session_qa_or_command(ctx, intent=intent)
+    return _dispatch_session_requirement(ctx, intent=intent)
+
+
 def send_session_message_action(session_id: int, text: str, *, category: str = "auto") -> dict:
-    """Send a message in a session — classify intent, route, and record both user and assistant messages."""
+    """Send a message in a session — validate payload then delegate by scenario."""
     db.init_db()
     session = db.get_session(session_id)
     if not session:
@@ -851,7 +1020,6 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
-    effective_planner = _effective_planner(project_info)
     text = (text or "").strip()
     if not text:
         raise RuntimeError("输入不能为空。")
@@ -862,102 +1030,15 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
         short_title = text[:40] + ("…" if len(text) > 40 else "")
         db.update_session(session_id, title=short_title)
 
-    # ── Multi-turn clarification: was the previous assistant turn a clarify? ──
-    pending = _reconstruct_clarification_state(existing_messages)
-    if pending and normalized_category == "auto":
-        db.create_session_message(session_id, "user", text)
-        pending = append_clarification_answer_to_state(
-            pending,
-            answer=text,
-        )
-        assessment = assess_requirement_for_planning(
-            pending["original_title"],
-            project_info=project_info,
-            planner=effective_planner,
-            qa_history=pending["qa_history"],
-            clarify_fn=clarify_requirement,
-        )
-        next_state = clarification_state_from_assessment(
-            assessment=assessment,
-            seed_title=pending["original_title"],
-            previous_state=pending,
-            intent=pending.get("intent") or "requirement",
-        )
-        if next_state:
-            questions = next_state.get("last_questions") or []
-            reply = _format_numbered_questions(questions)
-            db.create_session_message(session_id, "assistant", reply, intent="clarify")
-            return {
-                "ok": True,
-                "intent": "clarify",
-                "message": reply,
-                "questions": questions,
-                "task_ids": [],
-            }
-        refined = assessment.get("refined_title") or (assessment.get("seed_title") or pending["original_title"])
-        _, reply, task_ids = _submit_requirement_from_message(
-            project,
-            refined,
-            planner=effective_planner,
-            max_tasks=5,
-        )
-        db.create_session_message(
-            session_id, "assistant", reply, intent="requirement", task_ids=task_ids,
-        )
-        return {
-            "ok": True,
-            "intent": "requirement",
-            "message": reply,
-            "refined_title": refined,
-            "task_ids": task_ids,
-        }
-
-    db.create_session_message(session_id, "user", text)
-
-    intent = classify_entry_intent(
-        text,
+    ctx = _SessionDispatchContext(
+        session_id=session_id,
+        project=project,
         project_info=project_info,
+        planner=_effective_planner(project_info),
+        text=text,
         category=normalized_category,
     )
-
-    if intent in {"command", "question"}:
-        response_handlers = {
-            "command": command_intent_guidance,
-            "question": lambda: _answer_project_question(project_info, text),
-        }
-        reply = response_handlers[intent]()
-        db.create_session_message(session_id, "assistant", reply, intent=intent)
-        return {"ok": True, "intent": intent, "message": reply, "task_ids": []}
-
-    assessment = assess_requirement_for_planning(
-        text,
-        project_info=project_info,
-        planner=effective_planner,
-        clarify_fn=clarify_requirement,
-    )
-    if assessment.get("status") == "needs_clarification":
-        questions = assessment.get("questions") or []
-        numbered = _format_numbered_questions(questions)
-        reply = "为了更好地规划，请先确认以下几个点：\n" + numbered if numbered else "为了更好地规划，请先确认以下几个点。"
-        db.create_session_message(session_id, "assistant", reply, intent="clarify")
-        return {
-            "ok": True,
-            "intent": "clarify",
-            "message": reply,
-            "questions": questions,
-            "task_ids": [],
-        }
-
-    refined = assessment.get("refined_title") or text
-    max_tasks = 1 if intent == "task" else 5
-    _, reply, task_ids = _submit_requirement_from_message(
-        project,
-        refined,
-        planner=effective_planner,
-        max_tasks=max_tasks,
-    )
-    db.create_session_message(session_id, "assistant", reply, intent=intent, task_ids=task_ids)
-    return {"ok": True, "intent": intent, "message": reply, "refined_title": refined, "task_ids": task_ids}
+    return _dispatch_session_message(ctx, existing_messages)
 
 
 def delete_session_action(session_id: int) -> dict:
