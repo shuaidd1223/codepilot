@@ -235,7 +235,7 @@ def test_call_text_reports_combined_error_when_both_fail(monkeypatch):
     monkeypatch.setattr(
         ai_gateway,
         "_try_api",
-        lambda _request: GatewayResponse(ok=False, source="api:test", error="api down"),
+        lambda _request, _mode: GatewayResponse(ok=False, source="api:test", error="api down"),
     )
     monkeypatch.setattr(
         ai_gateway,
@@ -248,6 +248,25 @@ def test_call_text_reports_combined_error_when_both_fail(monkeypatch):
     assert resp.ok is False
     assert resp.source == "cli:none"
     assert resp.error == "api down; cli down"
+
+
+def test_call_text_prefers_api_when_key_available(gateway_state):
+    provider = _FakeAPIProvider(needs_key=True, api_key="sk-test")
+    gateway_state["registry"]["openai"] = provider
+
+    resp = ai_gateway.call_text(
+        GatewayRequest(
+            prompt="hi",
+            classifier_provider="openai",
+            api_key="sk-test",
+            planner="claude",
+        )
+    )
+
+    assert resp.ok is True
+    assert resp.source == "api:openai"
+    assert resp.text == '{"intent": "task", "reason": "from api"}'
+    assert gateway_state["cli_calls"] == []
 
 
 def test_call_text_requires_no_schema():

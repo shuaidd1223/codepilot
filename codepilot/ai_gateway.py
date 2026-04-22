@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -63,6 +63,16 @@ class GatewayResponse:
     payload: Optional[dict] = None   # populated when schema was set
     text: str = ""                   # populated when schema was None
     error: str = ""                  # non-empty when ok is False
+
+
+@dataclass(frozen=True)
+class _GatewayMode:
+    """Mode-specific pieces while sharing one routing skeleton."""
+
+    name: str
+    schema_required: bool
+    schema_error: str
+    api_formatter: Callable[[str, str], GatewayResponse]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -95,7 +105,7 @@ def _strip_json_envelope(raw: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _try_api(request: GatewayRequest) -> Optional[GatewayResponse]:
+def _try_api(request: GatewayRequest, mode: _GatewayMode) -> Optional[GatewayResponse]:
     """Invoke the configured API provider. Return None if not configured;
     return a failed GatewayResponse only when the provider was configured
     but raised (so the caller can decide whether to fall back)."""
@@ -128,17 +138,7 @@ def _try_api(request: GatewayRequest) -> Optional[GatewayResponse]:
         )
 
     source = f"api:{request.classifier_provider}"
-    if request.schema is not None:
-        try:
-            payload = json.loads(_strip_json_envelope(raw))
-        except Exception as exc:  # noqa: BLE001
-            return GatewayResponse(
-                ok=False,
-                source=source,
-                error=f"api provider returned non-JSON: {exc}",
-            )
-        return GatewayResponse(ok=True, source=source, payload=payload)
-    return GatewayResponse(ok=True, source=source, text=raw.strip())
+    return mode.api_formatter(raw, source)
 
 
 def _try_cli_structured(request: GatewayRequest) -> GatewayResponse:
@@ -268,6 +268,36 @@ def _try_cli_text(request: GatewayRequest) -> GatewayResponse:
     )
 
 
+def _format_api_structured(raw: str, source: str) -> GatewayResponse:
+    try:
+        payload = json.loads(_strip_json_envelope(raw))
+    except Exception as exc:  # noqa: BLE001
+        return GatewayResponse(
+            ok=False,
+            source=source,
+            error=f"api provider returned non-JSON: {exc}",
+        )
+    return GatewayResponse(ok=True, source=source, payload=payload)
+
+
+def _format_api_text(raw: str, source: str) -> GatewayResponse:
+    return GatewayResponse(ok=True, source=source, text=raw.strip())
+
+
+_STRUCTURED_MODE = _GatewayMode(
+    name="structured",
+    schema_required=True,
+    schema_error="call_structured requires a schema; use call_text for free-form output",
+    api_formatter=_format_api_structured,
+)
+_TEXT_MODE = _GatewayMode(
+    name="text",
+    schema_required=False,
+    schema_error="call_text is for free-form output; use call_structured with a schema",
+    api_formatter=_format_api_text,
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #   Public entry points
 # ═══════════════════════════════════════════════════════════════════════════
@@ -279,21 +309,18 @@ def call_structured(request: GatewayRequest) -> GatewayResponse:
     The schema is advisory for the API path (provider decides how to enforce
     it) and authoritative for the CLI path (passed as ``--json-schema``).
     """
-    if request.schema is None:
-        raise ValueError("call_structured requires a schema; use call_text for free-form output")
-    return _call_with_fallback(request, cli_runner=_try_cli_structured)
+    return _call_with_fallback(request, mode=_STRUCTURED_MODE, cli_runner=_try_cli_structured)
 
 
 def call_text(request: GatewayRequest) -> GatewayResponse:
     """Run a prompt expecting a free-form textual answer."""
-    if request.schema is not None:
-        raise ValueError("call_text is for free-form output; use call_structured with a schema")
-    return _call_with_fallback(request, cli_runner=_try_cli_text)
+    return _call_with_fallback(request, mode=_TEXT_MODE, cli_runner=_try_cli_text)
 
 
 def _call_with_fallback(
     request: GatewayRequest,
     *,
+    mode: _GatewayMode,
     cli_runner,
 ) -> GatewayResponse:
     """Single fallback decision entry for API → CLI routing.
@@ -302,7 +329,12 @@ def _call_with_fallback(
     calls: try API first (when configured), then fall through to CLI, and
     surface a merged error tail when both paths fail.
     """
-    api_result = _try_api(request)
+    if mode.schema_required and request.schema is None:
+        raise ValueError(mode.schema_error)
+    if not mode.schema_required and request.schema is not None:
+        raise ValueError(mode.schema_error)
+
+    api_result = _try_api(request, mode)
     if api_result is not None and api_result.ok:
         return api_result
 
