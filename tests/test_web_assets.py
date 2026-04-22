@@ -28,11 +28,19 @@ def test_task_detail_distinguishes_loading_and_empty_state():
 
 def test_sidebar_category_toggle_uses_project_scoped_accordion():
     sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
-    app = Path("codepilot/web/app.js").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
 
     assert "this.cp.toggleCategory(project, cat);" in sidebar
-    assert "const CATEGORY_VIEWS = ['sessions', 'tasks', 'jobs'];" in app
-    assert "function _openProjectCategory(project, view)" in app
+    assert "const CATEGORY_VIEWS = ['sessions', 'tasks', 'jobs'];" in app_state
+    assert "function _openProjectCategory(project, view)" in app_state
+
+
+def test_web_ui_bootstrap_wires_app_state_boundary_before_mount():
+    index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
+    app = Path("codepilot/web/app.js").read_text(encoding="utf-8")
+
+    assert "<script src=\"/static/boundaries/AppStateBoundary.js\"></script>" in index_html
+    assert "setup: CP.AppStateBoundary.setup," in app
 
 
 def test_web_ui_uses_in_app_confirm_dialog_instead_of_browser_dialogs():
@@ -64,16 +72,16 @@ def test_web_ui_wires_plugin_diff_assets():
 
 
 def test_web_ui_action_protocol_exposes_scoped_pending_keys():
-    app = Path("codepilot/web/app.js").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
 
-    assert "const ACTION_KEYS = Object.freeze({" in app
-    assert "GOAL_SUBMIT: 'goal.submit'" in app
-    assert "COMPOSER_SUBMIT: 'composer.submit'" in app
-    assert "SESSION_SEND: 'session.send'" in app
-    assert "SESSION_DELETE: 'session.delete'" in app
-    assert "SESSION_CLARIFY_REPLY: 'session.clarify.reply'" in app
-    assert "isActionPending: (actionKey) => _isActionPending(actionKey)" in app
-    assert "ACTION_KEYS," in app
+    assert "const ACTION_KEYS = Object.freeze({" in app_state
+    assert "GOAL_SUBMIT: 'goal.submit'" in app_state
+    assert "COMPOSER_SUBMIT: 'composer.submit'" in app_state
+    assert "SESSION_SEND: 'session.send'" in app_state
+    assert "SESSION_DELETE: 'session.delete'" in app_state
+    assert "SESSION_CLARIFY_REPLY: 'session.clarify.reply'" in app_state
+    assert "isActionPending: (actionKey) => _isActionPending(actionKey)" in app_state
+    assert "ACTION_KEYS," in app_state
 
 
 def test_form_components_use_scoped_action_pending_instead_of_global_sending():
