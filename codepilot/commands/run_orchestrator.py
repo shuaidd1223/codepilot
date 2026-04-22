@@ -281,6 +281,201 @@ def _emit_phase_summaries(result) -> None:
     click.echo()
 
 
+def _render_dashboard(project: str, *, quiet: bool, title: str) -> None:
+    if quiet:
+        return
+    _runner_module().render_project_dashboard(project, include_done=False, max_rows=10, title=title)
+
+
+def _handle_workspace_preflight_error(
+    *,
+    context: _RunContext,
+    task: dict,
+    preflight_error: str,
+    retry_on_failure: bool,
+    stats: dict,
+    project: str,
+    quiet: bool,
+) -> bool:
+    """Handle workspace preparation failures before the executor starts.
+
+    Returns whether the outer loop should stop for this run.
+    """
+    runner = _runner_module()
+    task_id = task["id"]
+    if retry_on_failure:
+        db.update_task(task_id, status="backlog", error_message=preflight_error)
+        runner.echo(f"[yellow]{preflight_error}[/yellow]")
+        click.echo(f"  处理: 任务 #{task_id} 保持 backlog，等待你修正环境后再执行")
+        stats["requeued"] += 1
+    else:
+        runner._mark_task_failed(task, preflight_error)
+        runner.echo(f"[red]{preflight_error}[/red]")
+        click.echo(f"  处理: 任务 #{task_id} 已直接标记 failed，不再自动回退")
+        stats["failed"] += 1
+
+    stats["processed"] += 1
+    _render_dashboard(project, quiet=quiet, title="当前任务面板")
+    return True
+
+
+def _handle_executor_cancelled(
+    *,
+    context: _RunContext,
+    task: dict,
+    task_id: int,
+    workspace: _TaskWorkspacePlan,
+    exc: Exception,
+    stats: dict,
+    once: bool,
+) -> bool:
+    """Finalize task state after receiving a cancellation signal."""
+    runner = _runner_module()
+    runner.clear_task_runtime(
+        task_id,
+        status="cancelled",
+        completed_at=datetime.now().isoformat(),
+        error_message=str(exc),
+        delivery_record="",
+        stop_requested=0,
+        stop_reason=None,
+    )
+    runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
+    runner.echo(f"[yellow]任务 #{task_id} 已停止[/yellow]")
+    runner.notify_task_status(str(context.project_path), task_id, task["title"], "cancelled", str(exc))
+    stats["cancelled"] += 1
+    stats["processed"] += 1
+    return once
+
+
+def _handle_executor_preflight_skip(
+    *,
+    task_id: int,
+    skip_message: str,
+    stats: dict,
+    once: bool,
+) -> bool:
+    """Requeue task when builtin executor asks to skip without consuming retry."""
+    runner = _runner_module()
+    runner.clear_task_runtime(
+        task_id,
+        status="backlog",
+        started_at=None,
+        error_message=skip_message[:4000],
+        stop_requested=0,
+        stop_reason=None,
+    )
+    runner.echo(f"[yellow]任务 #{task_id} 预检跳过（不扣重试次数）：{skip_message.splitlines()[0]}[/yellow]")
+    stats["requeued"] += 1
+    stats["processed"] += 1
+    return once
+
+
+def _handle_executor_exception(
+    *,
+    context: _RunContext,
+    task: dict,
+    task_id: int,
+    error_text: str,
+    retry_on_failure: bool,
+    project: str,
+    quiet: bool,
+    once: bool,
+    stats: dict,
+) -> bool:
+    """Finalize task state after unexpected executor exceptions.
+
+    Returns whether the outer loop should stop.
+    """
+    runner = _runner_module()
+    if retry_on_failure:
+        updated, should_stop = runner._handle_failure(task, error_text, stop_on_failure=(context.executor == "builtin"))
+    else:
+        updated = runner._mark_task_failed(task, error_text)
+        should_stop = True
+    runner.echo(f"[red]执行出错: {runner.safe(error_text)}[/red]")
+    if updated["status"] == "failed":
+        stats["failed"] += 1
+        runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_text)
+    else:
+        stats["requeued"] += 1
+    runner._show_failure_feedback(
+        task_id,
+        title=task["title"],
+        error_message=error_text,
+        requeued=updated["status"] != "failed",
+    )
+    stats["processed"] += 1
+    _render_dashboard(project, quiet=quiet, title="当前任务面板")
+    return should_stop or once
+
+
+def _handle_execution_result(
+    *,
+    context: _RunContext,
+    task: dict,
+    task_id: int,
+    workspace: _TaskWorkspacePlan,
+    result,
+    retry_on_failure: bool,
+    project: str,
+    quiet: bool,
+    once: bool,
+    stats: dict,
+) -> bool:
+    """Finalize a normal execution result and return loop stop decision."""
+    runner = _runner_module()
+
+    if result.exit_code == 0:
+        runner.clear_task_runtime(
+            task_id,
+            status="done",
+            completed_at=datetime.now().isoformat(),
+            error_message="",
+            delivery_record=result.summary or result.review_output or result.output,
+            stop_requested=0,
+            stop_reason=None,
+        )
+        runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
+        runner.echo(f"[green][OK] 任务 #{task_id} 完成[/green]")
+        runner.notify_task_status(str(context.project_path), task_id, task["title"], "done")
+        stats["done"] += 1
+    else:
+        error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
+        if result.deterministic_failure:
+            error_message = runner._apply_deterministic_failure_triage(task, error_message)
+            updated = runner._mark_task_failed(task, error_message)
+            should_stop = context.executor == "builtin"
+        elif retry_on_failure:
+            updated, should_stop = runner._handle_failure(task, error_message, stop_on_failure=(context.executor == "builtin"))
+        else:
+            updated = runner._mark_task_failed(task, error_message)
+            should_stop = True
+        runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
+        if updated["status"] == "failed":
+            stats["failed"] += 1
+            runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_message)
+        else:
+            stats["requeued"] += 1
+        runner._show_failure_feedback(
+            task_id,
+            title=task["title"],
+            error_message=error_message,
+            review_output=result.review_output,
+            output=result.output,
+            requeued=updated["status"] != "failed",
+        )
+        if should_stop:
+            stats["processed"] += 1
+            _render_dashboard(project, quiet=quiet, title="当前任务面板")
+            return True
+
+    _emit_phase_summaries(result)
+    stats["processed"] += 1
+    _render_dashboard(project, quiet=quiet, title="当前任务面板")
+    return once
+
+
 def run_backlog(
     project: str,
     *,
@@ -319,8 +514,7 @@ def run_backlog(
     runner.echo(f"[dim]使用执行器: {context.executor}[/dim]")
     if context.executor == "dispatch":
         runner.echo(f"[dim]使用 Shell: {context.shell_info.version_hint}[/dim]")
-    if not quiet:
-        runner.render_project_dashboard(project, include_done=False, max_rows=10, title="执行队列")
+    _render_dashboard(project, quiet=quiet, title="执行队列")
 
     stats = {
         "processed": 0,
@@ -341,21 +535,16 @@ def run_backlog(
         task_id = task["id"]
         workspace = _prepare_task_workspace(context, task, auto_commit=auto_commit, dry_run=dry_run)
         if workspace.preflight_error:
-            if retry_on_failure:
-                db.update_task(task_id, status="backlog", error_message=workspace.preflight_error)
-                runner.echo(f"[yellow]{workspace.preflight_error}[/yellow]")
-                click.echo(f"  处理: 任务 #{task_id} 保持 backlog，等待你修正环境后再执行")
-            else:
-                runner._mark_task_failed(task, workspace.preflight_error)
-                runner.echo(f"[red]{workspace.preflight_error}[/red]")
-                click.echo(f"  处理: 任务 #{task_id} 已直接标记 failed，不再自动回退")
-                stats["failed"] += 1
-            stats["processed"] += 1
-            if retry_on_failure:
-                stats["requeued"] += 1
-            if not quiet:
-                runner.render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
-            break
+            if _handle_workspace_preflight_error(
+                context=context,
+                task=task,
+                preflight_error=workspace.preflight_error,
+                retry_on_failure=retry_on_failure,
+                stats=stats,
+                project=project,
+                quiet=quiet,
+            ):
+                break
 
         task_file = runner._pick_task_file(
             context.project_path,
@@ -386,117 +575,54 @@ def run_backlog(
                 execution_path=workspace.execution_path,
             )
         except runner.TaskCancelled as exc:
-            runner.clear_task_runtime(
-                task_id,
-                status="cancelled",
-                completed_at=datetime.now().isoformat(),
-                error_message=str(exc),
-                delivery_record="",
-                stop_requested=0,
-                stop_reason=None,
-            )
-            runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
-            runner.echo(f"[yellow]任务 #{task_id} 已停止[/yellow]")
-            runner.notify_task_status(str(context.project_path), task_id, task["title"], "cancelled", str(exc))
-            stats["cancelled"] += 1
-            stats["processed"] += 1
-            if once:
+            if _handle_executor_cancelled(
+                context=context,
+                task=task,
+                task_id=task_id,
+                workspace=workspace,
+                exc=exc,
+                stats=stats,
+                once=once,
+            ):
                 break
             continue
         except runner.PreflightSkipError as exc:
-            skip_message = str(exc)
-            runner.clear_task_runtime(
-                task_id,
-                status="backlog",
-                started_at=None,
-                error_message=skip_message[:4000],
-                stop_requested=0,
-                stop_reason=None,
-            )
-            runner.echo(f"[yellow]任务 #{task_id} 预检跳过（不扣重试次数）：{skip_message.splitlines()[0]}[/yellow]")
-            stats["requeued"] += 1
-            stats["processed"] += 1
-            if once:
+            if _handle_executor_preflight_skip(
+                task_id=task_id,
+                skip_message=str(exc),
+                stats=stats,
+                once=once,
+            ):
                 break
             continue
         except Exception as exc:
-            error_text = str(exc)
-            if retry_on_failure:
-                updated, should_stop = runner._handle_failure(task, error_text, stop_on_failure=(context.executor == "builtin"))
-            else:
-                updated = runner._mark_task_failed(task, error_text)
-                should_stop = True
-            runner.echo(f"[red]执行出错: {runner.safe(exc)}[/red]")
-            if updated["status"] == "failed":
-                stats["failed"] += 1
-                runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_text)
-            else:
-                stats["requeued"] += 1
-            runner._show_failure_feedback(
-                task_id,
-                title=task["title"],
-                error_message=error_text,
-                requeued=updated["status"] != "failed",
-            )
-            stats["processed"] += 1
-            if not quiet:
-                runner.render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
-            if should_stop or once:
+            if _handle_executor_exception(
+                context=context,
+                task=task,
+                task_id=task_id,
+                error_text=str(exc),
+                retry_on_failure=retry_on_failure,
+                project=project,
+                quiet=quiet,
+                once=once,
+                stats=stats,
+            ):
                 break
             continue
 
         result = _maybe_merge_task_branch(context, task, workspace, result)
-
-        if result.exit_code == 0:
-            runner.clear_task_runtime(
-                task_id,
-                status="done",
-                completed_at=datetime.now().isoformat(),
-                error_message="",
-                delivery_record=result.summary or result.review_output or result.output,
-                stop_requested=0,
-                stop_reason=None,
-            )
-            runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
-            runner.echo(f"[green][OK] 任务 #{task_id} 完成[/green]")
-            runner.notify_task_status(str(context.project_path), task_id, task["title"], "done")
-            stats["done"] += 1
-        else:
-            error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
-            if result.deterministic_failure:
-                error_message = runner._apply_deterministic_failure_triage(task, error_message)
-                updated = runner._mark_task_failed(task, error_message)
-                should_stop = context.executor == "builtin"
-            elif retry_on_failure:
-                updated, should_stop = runner._handle_failure(task, error_message, stop_on_failure=(context.executor == "builtin"))
-            else:
-                updated = runner._mark_task_failed(task, error_message)
-                should_stop = True
-            runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
-            if updated["status"] == "failed":
-                stats["failed"] += 1
-                runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_message)
-            else:
-                stats["requeued"] += 1
-            runner._show_failure_feedback(
-                task_id,
-                title=task["title"],
-                error_message=error_message,
-                review_output=result.review_output,
-                output=result.output,
-                requeued=updated["status"] != "failed",
-            )
-            if should_stop:
-                stats["processed"] += 1
-                if not quiet:
-                    runner.render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
-                break
-
-        _emit_phase_summaries(result)
-
-        stats["processed"] += 1
-        runner.render_project_dashboard(project, include_done=False, max_rows=10, title="当前任务面板")
-        if once:
+        if _handle_execution_result(
+            context=context,
+            task=task,
+            task_id=task_id,
+            workspace=workspace,
+            result=result,
+            retry_on_failure=retry_on_failure,
+            project=project,
+            quiet=quiet,
+            once=once,
+            stats=stats,
+        ):
             break
         if context.executor == "dispatch":
             time.sleep(2)
