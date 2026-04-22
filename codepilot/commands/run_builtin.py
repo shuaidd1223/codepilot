@@ -693,6 +693,8 @@ class _BuiltinLoopOutcome:
     builder: _PhaseOutcome
     reviewer: Optional[_PhaseOutcome] = None
     verdict: str = ""
+    summary: str = ""
+    deterministic_failure: bool = False
 
 
 @dataclass
@@ -885,6 +887,7 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
                 round_num=round_num,
                 builder=builder,
                 reviewer=reviewer,
+                summary="review 命令执行失败",
             )
 
         verdict = _runner_module()._extract_review_verdict(reviewer.output, reviewer.agent)
@@ -923,6 +926,8 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
                 builder=builder,
                 reviewer=reviewer,
                 verdict=verdict,
+                summary=summary,
+                deterministic_failure=True,
             )
 
         progress_bus.emit(
@@ -961,7 +966,7 @@ def _map_builtin_loop_outcome(
             exit_code=reviewer_exit,
             output=outcome.builder.output,
             review_output=reviewer_output,
-            summary="review 命令执行失败",
+            summary=outcome.summary or "review 命令执行失败",
             executor="builtin",
         )
 
@@ -980,7 +985,7 @@ def _map_builtin_loop_outcome(
     if outcome.status == "exhausted":
         reviewer = outcome.reviewer
         review_output = reviewer.output if reviewer else ""
-        summary = (
+        summary = outcome.summary or (
             "review 未通过（已用完重做轮次）"
             if outcome.verdict == "fail"
             else "review 结果不明确（已用完重做轮次）"
@@ -991,7 +996,7 @@ def _map_builtin_loop_outcome(
             review_output=review_output,
             summary=summary,
             executor="builtin",
-            deterministic_failure=True,
+            deterministic_failure=outcome.deterministic_failure or outcome.status == "exhausted",
         )
 
     raise RuntimeError(f"_map_builtin_loop_outcome: unsupported status={outcome.status!r}")

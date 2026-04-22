@@ -495,6 +495,37 @@ def test_map_builtin_loop_outcome_exhausted_is_deterministic(fake_project, tmp_p
     assert result.review_output == "review out"
 
 
+def test_map_builtin_loop_outcome_uses_loop_provided_terminal_fields(fake_project, tmp_path):
+    """Loop-owned terminal summary/flags should pass through mapping unchanged."""
+    task = _sample_task()
+    task_file = tmp_path / "42-task.md"
+    task_file.write_text("stub", encoding="utf-8")
+    ctx = run_mod._ExecutorContext(
+        task=task,
+        project=fake_project,
+        project_path=Path(fake_project["path"]),
+        config_ref=None,
+        output_dir=tmp_path,
+        task_file=task_file,
+        max_rounds=2,
+        task_id_for_events=task["id"],
+    )
+    outcome = run_mod._BuiltinLoopOutcome(
+        status="reviewer_error",
+        round_num=1,
+        summary="reviewer transport failed",
+        builder=run_mod._PhaseOutcome(agent="codex", exit_code=0, output="builder out"),
+        reviewer=run_mod._PhaseOutcome(agent="codex-review", exit_code=7, output="review out"),
+    )
+
+    result = run_mod._map_builtin_loop_outcome(ctx, outcome, auto_commit=False)
+
+    assert result.exit_code == 7
+    assert result.summary == "reviewer transport failed"
+    assert result.output == "builder out"
+    assert result.review_output == "review out"
+
+
 def test_config_threads_max_review_rounds():
     """AutomationConfig should expose max_review_rounds with a sane default."""
     from codepilot.config import AutomationConfig
