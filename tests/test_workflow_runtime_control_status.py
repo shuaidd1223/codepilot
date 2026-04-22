@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -263,6 +264,26 @@ def test_run_command_live_emits_task_log_stream_with_offsets(tmp_path, monkeypat
 
     combined = "".join((e.get("extra") or {}).get("task_log_chunk") or "" for e in stream_events)
     assert "abcdefghi" in combined
+
+
+def test_run_command_live_writes_timeout_status_to_log(tmp_path, monkeypatch):
+    log_path = tmp_path / "timeout.log"
+    monkeypatch.setattr(run_cmd, "update_task_runtime", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "get_stop_request", lambda task_id: (False, ""))
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_cmd._run_command_live(
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            task_id=8,
+            phase="builder",
+            log_path=log_path,
+            timeout=1,
+        )
+
+    body = log_path.read_text(encoding="utf-8", errors="replace")
+    assert "## Result" in body
+    assert "status: `timeout`" in body
+    assert "超过超时阈值 1s" in body
 
 
 def test_stop_command_cancels_in_progress_task_without_live_process(tmp_path, monkeypatch):
