@@ -846,6 +846,94 @@ def _call_llm(
     )
 
 
+def collect_inspection_signals(
+    project_name: str,
+    project_path: Path,
+    *,
+    signals: tuple[str, ...],
+) -> dict[str, str]:
+    """Collect all inspect signals and return a normalized signal map."""
+    enabled = set(signals)
+    signal_map = {
+        "git_log": collect_git_log(project_path) if "git_log" in enabled else "（跳过）",
+        "failed_tasks": collect_failed_tasks(project_name) if "failed_tasks" in enabled else "（跳过）",
+        "todos": collect_todos(project_path) if "todos" in enabled else "（跳过）",
+        "ruff": collect_ruff(project_path) if "ruff" in enabled else "（跳过）",
+        "pytest": collect_pytest_collect(project_path) if "pytest" in enabled else "（跳过）",
+        "deps": collect_dependency_health(project_path) if "deps" in enabled else "（跳过）",
+    }
+    code_metrics_enabled = bool({"code_metrics", "code_size", "complexity"} & enabled)
+    signal_map["code_metrics"] = collect_code_metrics(project_path) if code_metrics_enabled else "（跳过）"
+    return signal_map
+
+
+def _build_inspection_prompt(
+    *,
+    project_name: str,
+    max_new_tasks: int,
+    signal_map: dict[str, str],
+) -> str:
+    existing = _existing_titles(project_name)
+    return INSPECT_PROMPT.format(
+        max_tasks=max_new_tasks,
+        existing_titles=existing,
+        git_log=signal_map["git_log"],
+        failed_tasks=signal_map["failed_tasks"],
+        todos=signal_map["todos"],
+        ruff=signal_map["ruff"],
+        pytest=signal_map["pytest"],
+        deps=signal_map["deps"],
+        code_metrics=signal_map["code_metrics"],
+    )
+
+
+def _extract_candidates(payload: dict) -> list[dict]:
+    candidates = payload.get("candidates") or []
+    return candidates if isinstance(candidates, list) else []
+
+
+def _materialize_inspection_output(
+    candidates: list[dict],
+    *,
+    max_new_tasks: int,
+    project_name: str,
+    project_path: Path,
+    priority: str,
+    agent: str,
+    dry_run: bool,
+) -> tuple[list[dict], list[dict]]:
+    """Write candidate output to the selected path (preview or DB)."""
+    existing_keys = db.existing_dedup_keys(project_name)
+    created: list[dict] = []
+    skipped: list[dict] = []
+    for item in candidates[:max_new_tasks]:
+        title = (item.get("title") or "").strip()
+        goal = (item.get("goal") or "").strip()
+        if not title or not goal:
+            continue
+        key = _dedup_key(title, goal)
+        if key in existing_keys:
+            skipped.append({"title": title, "reason": "duplicate"})
+            continue
+        content = _build_content(item)
+        if dry_run:
+            created.append({"title": title, "goal": goal, "priority": item.get("priority") or priority})
+            continue
+        task = db.create_task(
+            project=project_name,
+            title=title,
+            content=content,
+            agent=agent,
+            priority=item.get("priority") or priority,
+            project_path=str(project_path),
+            source="inspector",
+            dedup_key=key,
+        )
+        created.append(task)
+        existing_keys.add(key)
+    return created, skipped
+
+
 def run_inspection(
     project_info: dict,
     *,
@@ -861,26 +949,15 @@ def run_inspection(
     project_name = project_info["name"]
     project_path = Path(project_info["path"])
 
-    git_log = collect_git_log(project_path) if "git_log" in signals else "（跳过）"
-    failed = collect_failed_tasks(project_name) if "failed_tasks" in signals else "（跳过）"
-    todos = collect_todos(project_path) if "todos" in signals else "（跳过）"
-    ruff_report = collect_ruff(project_path) if "ruff" in signals else "（跳过）"
-    pytest_report = collect_pytest_collect(project_path) if "pytest" in signals else "（跳过）"
-    deps_report = collect_dependency_health(project_path) if "deps" in signals else "（跳过）"
-    code_metrics_enabled = bool({"code_metrics", "code_size", "complexity"} & set(signals))
-    code_metrics = collect_code_metrics(project_path) if code_metrics_enabled else "（跳过）"
-
-    existing = _existing_titles(project_name)
-    prompt = INSPECT_PROMPT.format(
-        max_tasks=max_new_tasks,
-        existing_titles=existing,
-        git_log=git_log,
-        failed_tasks=failed,
-        todos=todos,
-        ruff=ruff_report,
-        pytest=pytest_report,
-        deps=deps_report,
-        code_metrics=code_metrics,
+    signal_map = collect_inspection_signals(
+        project_name,
+        project_path,
+        signals=signals,
+    )
+    prompt = _build_inspection_prompt(
+        project_name=project_name,
+        max_new_tasks=max_new_tasks,
+        signal_map=signal_map,
     )
 
     cfg = load_project_config(project_info)
@@ -909,39 +986,16 @@ def run_inspection(
             "created": [],
         }
 
-    candidates = payload.get("candidates") or []
-    if not isinstance(candidates, list):
-        candidates = []
-
-    # Dedup
-    existing_keys = db.existing_dedup_keys(project_name)
-    created = []
-    skipped = []
-    for item in candidates[:max_new_tasks]:
-        title = (item.get("title") or "").strip()
-        goal = (item.get("goal") or "").strip()
-        if not title or not goal:
-            continue
-        key = _dedup_key(title, goal)
-        if key in existing_keys:
-            skipped.append({"title": title, "reason": "duplicate"})
-            continue
-        content = _build_content(item)
-        if dry_run:
-            created.append({"title": title, "goal": goal, "priority": item.get("priority") or priority})
-            continue
-        task = db.create_task(
-            project=project_name,
-            title=title,
-            content=content,
-            agent=agent,
-            priority=item.get("priority") or priority,
-            project_path=str(project_path),
-            source="inspector",
-            dedup_key=key,
-        )
-        created.append(task)
-        existing_keys.add(key)
+    candidates = _extract_candidates(payload)
+    created, skipped = _materialize_inspection_output(
+        candidates,
+        max_new_tasks=max_new_tasks,
+        project_name=project_name,
+        project_path=project_path,
+        priority=priority,
+        agent=agent,
+        dry_run=dry_run,
+    )
 
     return {
         "project": project_name,
@@ -994,6 +1048,23 @@ def _print_result(result: dict, dry_run: bool) -> None:
             echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]  source=inspector")
     for skipped in result["skipped"]:
         echo(f"  [dim]跳过: {skipped['title']} ({skipped['reason']})[/dim]")
+
+
+def _print_round_header(*, project_name: str, planner: str, agent: str, max_new_tasks: int, signals: tuple[str, ...], once: bool, round_num: int) -> None:
+    head = f"巡检项目 {project_name}"
+    if not once:
+        head += f"  第 {round_num} 轮"
+    echo(
+        f"[cyan]{head}[/cyan]  planner={planner}  agent={agent}  "
+        f"max={max_new_tasks}  signals={','.join(signals)}"
+    )
+
+
+def _emit_inspection_result(result: dict, *, dry_run: bool, json_mode: bool) -> None:
+    if json_mode:
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return
+    _print_result(result, dry_run)
 
 
 @click.command("inspect")
@@ -1090,12 +1161,14 @@ def inspect(
             )
             round_num += 1
             if not json_mode:
-                head = f"巡检项目 {project_info['name']}"
-                if not once:
-                    head += f"  第 {round_num} 轮"
-                echo(
-                    f"[cyan]{head}[/cyan]  planner={effective_planner}  agent={agent}  "
-                    f"max={limit}  signals={','.join(ins.signals)}"
+                _print_round_header(
+                    project_name=project_info["name"],
+                    planner=effective_planner,
+                    agent=agent,
+                    max_new_tasks=limit,
+                    signals=ins.signals,
+                    once=once,
+                    round_num=round_num,
                 )
 
             result = run_inspection(
@@ -1109,10 +1182,7 @@ def inspect(
                 dry_run=dry_run,
             )
 
-            if json_mode:
-                click.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-            else:
-                _print_result(result, dry_run)
+            _emit_inspection_result(result, dry_run=dry_run, json_mode=json_mode)
 
             if once:
                 break
