@@ -54,6 +54,10 @@ def _should_fallback_codex_planning(exc: Exception) -> bool:
     return "超时" in str(exc) or "timed out" in message or "timeout" in message
 
 
+def _is_claude_family_planner(planner: str) -> bool:
+    return _normalize_agent_name(planner).startswith("claude")
+
+
 def _generate_task_breakdown_via_shell(shell, **kwargs):
     """Call the shell-exported planner with backward-compatible kwargs.
 
@@ -657,34 +661,58 @@ def _plan_requirement_breakdown(
     echo(f"[dim]  {planning_text.format(planner=planner)}[/dim]")
     existing_tasks = _list_existing_open_tasks(project_name)
 
-    try:
-        breakdown = _generate_task_breakdown_via_shell(
+    def _plan_once(active_planner: str) -> dict:
+        raw_breakdown = _generate_task_breakdown_via_shell(
             shell,
             title=title,
             project_path=project_path,
-            planner=planner,
+            planner=active_planner,
             max_tasks=max_tasks,
             config_ref=_provider_context(project_info),
             two_stage=two_stage_enabled,
             existing_tasks=existing_tasks,
         )
-    except Exception as exc:
-        if _normalize_agent_name(planner) == "codex" and _should_fallback_codex_planning(exc):
-            echo("[yellow]Codex 规划没有及时完成，已降级为单任务直接执行。[/yellow]")
-            breakdown = _fallback_single_task_breakdown(title=title, priority=priority, exc=exc)
-        else:
-            raise click.ClickException(str(exc)) from exc
+        return shell.parse_automation_planner_result(
+            raw_breakdown,
+            title=title,
+            max_tasks=max_tasks,
+            existing_tasks=existing_tasks,
+        )
 
-    try:
-        parsed = shell.parse_automation_planner_result(
+    def _codex_single_task_fallback(exc: Exception) -> dict:
+        echo("[yellow]Codex 规划没有及时完成，已降级为单任务直接执行。[/yellow]")
+        breakdown = _fallback_single_task_breakdown(title=title, priority=priority, exc=exc)
+        return shell.parse_automation_planner_result(
             breakdown,
             title=title,
             max_tasks=max_tasks,
             existing_tasks=existing_tasks,
         )
-    except Exception as exc:
-        raise click.ClickException(str(exc)) from exc
-    return parsed
+
+    try:
+        return _plan_once(planner)
+    except Exception as primary_exc:
+        normalized = _normalize_agent_name(planner)
+        if normalized == "codex" and _should_fallback_codex_planning(primary_exc):
+            return _codex_single_task_fallback(primary_exc)
+
+        if _is_claude_family_planner(planner):
+            echo("[yellow]Claude 规划失败，正在重试一次...[/yellow]")
+            try:
+                return _plan_once(planner)
+            except Exception as retry_exc:
+                echo("[yellow]Claude 规划仍失败，已回退到 codex 继续规划。[/yellow]")
+                echo(f"[dim]  Claude 原始原因：{retry_exc}[/dim]")
+                try:
+                    return _plan_once("codex")
+                except Exception as codex_exc:
+                    if _should_fallback_codex_planning(codex_exc):
+                        return _codex_single_task_fallback(codex_exc)
+                    raise click.ClickException(
+                        f"Claude 规划失败，且回退 Codex 也失败：{codex_exc}"
+                    ) from codex_exc
+
+        raise click.ClickException(str(primary_exc)) from primary_exc
 
 
 def _echo_dedup_skips(dedup_skipped: list[dict]) -> None:

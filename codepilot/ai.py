@@ -372,6 +372,20 @@ def _extract_error_hint(raw: str) -> str:
     return _extract_error_hint_core(raw)
 
 
+def _decode_planner_chunk(chunk: str | bytes | None) -> str:
+    """Decode planner stdout/stderr chunks with pragmatic Windows fallbacks."""
+    if not chunk:
+        return ""
+    if isinstance(chunk, str):
+        return chunk
+    for encoding in ("utf-8", "utf-8-sig", "gb18030", "cp936"):
+        try:
+            return chunk.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return chunk.decode("utf-8", errors="replace")
+
+
 
 
 def _run_claude_schema_prompt(
@@ -428,36 +442,37 @@ def _run_claude_schema_prompt(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             **_planner_process_group_kwargs(),
         )
 
         stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
         last_activity = [_time.monotonic()]
 
         # stderr 线程实时打印 claude 进度
         def _stream_stderr():
             assert process.stderr is not None
             for line in process.stderr:
-                stripped = line.rstrip()
-                if stripped:
-                    last_activity[0] = _time.monotonic()
-                    sys.stderr.write(f"  [planner] {stripped}\n")
-                    sys.stderr.flush()
-                    if _planner_progress_callback:
-                        try:
-                            _planner_progress_callback(stripped)
-                        except Exception:
-                            pass
+                decoded_line = _decode_planner_chunk(line)
+                stderr_chunks.append(decoded_line)
+                stripped = decoded_line.rstrip()
+                if not stripped:
+                    continue
+                last_activity[0] = _time.monotonic()
+                sys.stderr.write(f"  [planner] {stripped}\n")
+                sys.stderr.flush()
+                if _planner_progress_callback:
+                    try:
+                        _planner_progress_callback(stripped)
+                    except Exception:
+                        pass
 
         stderr_thread = threading.Thread(target=_stream_stderr, daemon=True)
         stderr_thread.start()
 
         def _read_stdout():
             assert process.stdout is not None
-            stdout_chunks.append(process.stdout.read())
+            stdout_chunks.append(_decode_planner_chunk(process.stdout.read()))
 
         stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
         stdout_thread.start()
@@ -511,6 +526,7 @@ def _run_claude_schema_prompt(
         stderr_thread.join(timeout=2)
 
         result_stdout = "".join(stdout_chunks)
+        result_stderr = "".join(stderr_chunks)
         result_returncode = process.returncode
     except subprocess.TimeoutExpired as exc:
         _terminate_planner_process(process)
@@ -528,7 +544,7 @@ def _run_claude_schema_prompt(
         raise
 
     if result_returncode != 0:
-        hint = _extract_error_hint(result_stdout)
+        hint = _extract_error_hint("\n".join(part for part in (result_stderr, result_stdout) if part))
         suffix = f"原因：{hint}" if hint else "请检查 Claude CLI 当前是否可用。"
         raise RuntimeError(f"{provider.name} 没有成功完成任务拆分。{suffix}")
 

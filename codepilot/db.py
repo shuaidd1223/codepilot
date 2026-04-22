@@ -943,22 +943,101 @@ def find_old_done_tasks(
 # ── Session CRUD ───────────────────────────────────────────────────────────
 
 
+def _fetch_session_by_id(conn: sqlite3.Connection, session_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def _query_sessions(
+    conn: sqlite3.Connection,
+    project: Optional[str] = None,
+    status: Optional[str] = None,
+) -> list[dict]:
+    sql = "SELECT * FROM sessions WHERE 1=1"
+    params: list[str] = []
+    if project:
+        sql += " AND project = ?"
+        params.append(project)
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY updated_at DESC, id DESC"
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _insert_session(conn: sqlite3.Connection, project: str, title: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO sessions (project, title) VALUES (?, ?)",
+        (project, title),
+    )
+    return int(cur.lastrowid)
+
+
+def _update_session_fields(
+    conn: sqlite3.Connection,
+    session_id: int,
+    updates: dict[str, object],
+) -> None:
+    set_clause = ", ".join(f"{col} = ?" for col in updates)
+    values = list(updates.values()) + [session_id]
+    conn.execute(f"UPDATE sessions SET {set_clause} WHERE id = ?", values)
+
+
+def _delete_session_messages(conn: sqlite3.Connection, session_id: int) -> None:
+    conn.execute("DELETE FROM session_messages WHERE session_id = ?", (session_id,))
+
+
+def _delete_session_row(conn: sqlite3.Connection, session_id: int) -> int:
+    cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    return cur.rowcount
+
+
+def _fetch_session_message_by_id(conn: sqlite3.Connection, message_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM session_messages WHERE id = ?", (message_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def _query_session_messages(conn: sqlite3.Connection, session_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at ASC, id ASC",
+        (session_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _insert_session_message(
+    conn: sqlite3.Connection,
+    session_id: int,
+    role: str,
+    content: str,
+    intent: Optional[str],
+    task_ids: Optional[list[int]],
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO session_messages (session_id, role, content, intent, task_ids) VALUES (?, ?, ?, ?, ?)",
+        (session_id, role, content, intent, json.dumps(task_ids) if task_ids else None),
+    )
+    return int(cur.lastrowid)
+
+
+def _touch_session_updated_at(conn: sqlite3.Connection, session_id: int) -> None:
+    conn.execute(
+        "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?",
+        (session_id,),
+    )
+
+
 def create_session(
     project: str,
     title: str = "新会话",
 ) -> dict:
     """Create a new conversation session for a project."""
     with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO sessions (project, title) VALUES (?, ?)",
-            (project, title),
-        )
+        session_id = _insert_session(conn, project, title)
         conn.commit()
-        session_id = cur.lastrowid
-        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        result = dict(row)
     _cache_invalidate("sessions", "session_by_id", "session_messages")
-    return result
+    return get_session(session_id)  # type: ignore[return-value]
 
 
 def get_session(session_id: int) -> Optional[dict]:
@@ -968,8 +1047,7 @@ def get_session(session_id: int) -> Optional[dict]:
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        result = dict(row) if row else None
+        result = _fetch_session_by_id(conn, session_id)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
 
@@ -982,18 +1060,8 @@ def list_sessions(
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
-    sql = "SELECT * FROM sessions WHERE 1=1"
-    params: list = []
-    if project:
-        sql += " AND project = ?"
-        params.append(project)
-    if status:
-        sql += " AND status = ?"
-        params.append(status)
-    sql += " ORDER BY updated_at DESC, id DESC"
     with get_conn() as conn:
-        rows = conn.execute(sql, params).fetchall()
-        result = [dict(row) for row in rows]
+        result = _query_sessions(conn, project, status)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
 
@@ -1004,10 +1072,8 @@ def update_session(session_id: int, **fields) -> Optional[dict]:
     if not updates:
         return get_session(session_id)
     updates["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    set_clause = ", ".join(f"{col} = ?" for col in updates)
-    values = list(updates.values()) + [session_id]
     with get_conn() as conn:
-        conn.execute(f"UPDATE sessions SET {set_clause} WHERE id = ?", values)
+        _update_session_fields(conn, session_id, updates)
         conn.commit()
     _cache_invalidate("sessions", "session_by_id")
     return get_session(session_id)
@@ -1016,10 +1082,10 @@ def update_session(session_id: int, **fields) -> Optional[dict]:
 def delete_session(session_id: int) -> bool:
     """Delete a session and its messages."""
     with get_conn() as conn:
-        conn.execute("DELETE FROM session_messages WHERE session_id = ?", (session_id,))
-        cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        _delete_session_messages(conn, session_id)
+        deleted_rows = _delete_session_row(conn, session_id)
         conn.commit()
-        removed = cur.rowcount > 0
+        removed = deleted_rows > 0
     if removed:
         _cache_invalidate("sessions", "session_by_id", "session_messages")
     return removed
@@ -1034,20 +1100,12 @@ def create_session_message(
 ) -> dict:
     """Add a message to a session and touch updated_at."""
     with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO session_messages (session_id, role, content, intent, task_ids) VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, content, intent, json.dumps(task_ids) if task_ids else None),
-        )
-        conn.execute(
-            "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?",
-            (session_id,),
-        )
+        msg_id = _insert_session_message(conn, session_id, role, content, intent, task_ids)
+        _touch_session_updated_at(conn, session_id)
         conn.commit()
-        msg_id = cur.lastrowid
-        row = conn.execute("SELECT * FROM session_messages WHERE id = ?", (msg_id,)).fetchone()
-        result = dict(row)
+        result = _fetch_session_message_by_id(conn, msg_id)
     _cache_invalidate("sessions", "session_by_id", "session_messages")
-    return result
+    return result  # type: ignore[return-value]
 
 
 def list_session_messages(session_id: int) -> list[dict]:
@@ -1057,11 +1115,7 @@ def list_session_messages(session_id: int) -> list[dict]:
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at ASC, id ASC",
-            (session_id,),
-        ).fetchall()
-        result = [dict(row) for row in rows]
+        result = _query_session_messages(conn, session_id)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
 

@@ -1744,6 +1744,45 @@ def test_run_claude_schema_prompt_kills_process_and_raises_runtime_error_on_inte
     assert fake_process.returncode == -9
 
 
+def test_run_claude_schema_prompt_surfaces_stderr_hint_with_gbk_fallback(monkeypatch):
+    class _FakeProvider:
+        name = "Claude Code"
+
+        def find_executable(self):
+            return Path("claude")
+
+    class _FakeBytesStream:
+        def __init__(self, *, lines=None, blob=b""):
+            self._lines = list(lines or [])
+            self._blob = blob
+
+        def __iter__(self):
+            return iter(self._lines)
+
+        def read(self):
+            return self._blob
+
+    class _FakeProcess:
+        def __init__(self):
+            self.pid = 9527
+            self.stdout = _FakeBytesStream(blob=b"")
+            self.stderr = _FakeBytesStream(lines=["系统繁忙，请稍后重试".encode("gb18030") + b"\n"])
+            self.returncode = 1
+
+        def poll(self):
+            return self.returncode
+
+    fake_process = _FakeProcess()
+
+    monkeypatch.setattr(ai_mod, "resolve_cli_provider", lambda *args, **kwargs: _FakeProvider())
+    monkeypatch.setattr(ai_mod.subprocess, "Popen", lambda *args, **kwargs: fake_process)
+
+    with pytest.raises(RuntimeError) as exc:
+        ai_mod._run_claude_schema_prompt("prompt", {"type": "object"}, planner="claude")
+
+    assert "系统繁忙" in str(exc.value)
+
+
 def test_run_requirement_workflow_falls_back_to_single_codex_task(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
@@ -1769,6 +1808,56 @@ def test_run_requirement_workflow_falls_back_to_single_codex_task(tmp_path, monk
 
     assert payload["complexity"] == "simple"
     assert payload["should_split"] is False
+    assert len(payload["tasks"]) == 1
+    assert payload["tasks"][0]["agent"] == "codex"
+
+
+def test_run_requirement_workflow_retries_claude_then_falls_back_to_codex(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path), default_mode="codex")
+    project = db.get_project("demo")
+
+    monkeypatch.setattr(auto_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    planner_calls: list[str] = []
+
+    def _mock_breakdown(**kwargs):
+        planner = kwargs.get("planner") or ""
+        planner_calls.append(planner)
+        if planner == "claude":
+            raise RuntimeError("Claude Code 没有成功完成任务拆分。请检查 Claude CLI 当前是否可用。")
+        return {
+            "summary": "fallback to codex",
+            "complexity": "simple",
+            "should_split": False,
+            "tasks": [
+                {
+                    "title": "补齐账单中心页面",
+                    "priority": "P1",
+                    "goal": "补齐账单中心核心能力",
+                    "acceptance_criteria": ["页面可展示余额与余额记录", "支持充值入口"],
+                    "builder_notes": ["优先复用现有余额模块"],
+                    "reviewer_notes": ["检查充值流程和余额一致性"],
+                    "files": ["src/billing/page.tsx"],
+                    "notes": [],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(auto_cmd, "generate_task_breakdown", _mock_breakdown)
+
+    payload = auto_cmd.run_requirement_workflow(
+        project_info=project,
+        title="新建账单中心并支持充值",
+        planner="claude",
+        execute=False,
+        executor="builtin",
+        auto_commit=False,
+    )
+
+    assert planner_calls == ["claude", "claude", "codex"]
     assert len(payload["tasks"]) == 1
     assert payload["tasks"][0]["agent"] == "codex"
 
