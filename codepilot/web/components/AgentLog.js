@@ -37,7 +37,8 @@ const META_KV_RE = /^(workdir|model|provider|approval|sandbox|reasoning effort|r
 const DEF_LINE_RE = /^\s*(?:[+-]\s*)?def\s+[A-Za-z_][\w]*\s*\(/;
 const CP_MD_BEGIN_RE = /^@@CP:MD-BEGIN(?:\s+(.*))?$/;
 const CP_MD_END_RE = /^@@CP:MD-END$/;
-const MD_HINT_LINE_RE = /^\s*(?:#{1,6}\s|```|\*\*.+\*\*|__.+__|[-*+]\s+\S|\d+\.\s+\S|>\s+\S|\|.+\|\s*)$/;
+const MD_HINT_LINE_RE = /^\s*(?:#{1,6}\s|```|~{3,}|\*\*.+\*\*|__.+__|[-*+]\s+\S|\d+\.\s+\S|>\s+\S|\|.+\|\s*)$/;
+const LIVE_OUTPUT_HEAD_RE = /^\s*##\s+Live Output\s*$/i;
 const DIFF_AUTO_COLLAPSE_MIN_LINES = 36;
 const DIFF_COLLAPSE_PREVIEW_HEAD = 3;
 const DIFF_COLLAPSE_PREVIEW_TAIL = 2;
@@ -345,7 +346,24 @@ CP.Components.AgentLog = Vue.defineComponent({
         return 'plain';
       };
 
-      for (let i = 0; i < lines.length; i++) {
+      let startIndex = 0;
+      const firstNonEmpty = lines.findIndex(line => String(line || '').trim());
+      if (firstNonEmpty >= 0 && /^#\s+Task\s+#\d+/i.test(String(lines[firstNonEmpty] || ''))) {
+        let liveIdx = -1;
+        for (let k = firstNonEmpty; k < lines.length; k++) {
+          if (LIVE_OUTPUT_HEAD_RE.test(String(lines[k] || '').trim())) {
+            liveIdx = k;
+            break;
+          }
+        }
+        if (liveIdx >= firstNonEmpty) {
+          pushMarkdownBlock(lines.slice(firstNonEmpty, liveIdx + 1).join('\n'), firstNonEmpty, 'run-header');
+          startIndex = liveIdx + 1;
+          while (startIndex < lines.length && !String(lines[startIndex] || '').trim()) startIndex += 1;
+        }
+      }
+
+      for (let i = startIndex; i < lines.length; i++) {
         const line = lines[i];
         const trimmed = String(line || '').trim();
 
@@ -416,9 +434,38 @@ CP.Components.AgentLog = Vue.defineComponent({
           cur = null;
         }
 
+        const isAiRole = roleContext === 'codex' || roleContext === 'claude' || roleContext === 'assistant';
+        const aiNarrative = isAiRole
+          && channelContext !== 'exec'
+          && !ROLE_LINE_RE.test(trimmed)
+          && !EXEC_LINE_RE.test(trimmed)
+          && !DIFF_HEAD_RE.test(line)
+          && !TOOL_HEAD_RE.test(line);
+        if (aiNarrative) {
+          const mdLines = [line];
+          let j = i + 1;
+          while (j < lines.length) {
+            const probe = lines[j];
+            const pTrim = String(probe || '').trim();
+            if (ROLE_LINE_RE.test(pTrim)
+              || EXEC_LINE_RE.test(pTrim)
+              || DIFF_HEAD_RE.test(probe)
+              || TOOL_HEAD_RE.test(probe)
+              || CP_MD_BEGIN_RE.test(pTrim)
+              || CP_MD_END_RE.test(pTrim)
+              || LIVE_OUTPUT_HEAD_RE.test(pTrim)) {
+              break;
+            }
+            mdLines.push(probe);
+            j += 1;
+          }
+          pushMarkdownBlock(mdLines.join('\n'), i, `speaker:${roleContext}`);
+          i = j - 1;
+          continue;
+        }
+
         const inferMarkdown = channelContext !== 'exec'
-          && roleContext
-          && roleContext !== 'user'
+          && !roleContext
           && MD_HINT_LINE_RE.test(trimmed);
         if (inferMarkdown) {
           const mdLines = [line];
@@ -431,13 +478,14 @@ CP.Components.AgentLog = Vue.defineComponent({
               || DIFF_HEAD_RE.test(probe)
               || TOOL_HEAD_RE.test(probe)
               || CP_MD_BEGIN_RE.test(pTrim)
-              || CP_MD_END_RE.test(pTrim)) {
+              || CP_MD_END_RE.test(pTrim)
+              || LIVE_OUTPUT_HEAD_RE.test(pTrim)) {
               break;
             }
             mdLines.push(probe);
             j += 1;
           }
-          pushMarkdownBlock(mdLines.join('\n'), i, `inferred:${roleContext}`);
+          pushMarkdownBlock(mdLines.join('\n'), i, 'inferred');
           i = j - 1;
           continue;
         }
