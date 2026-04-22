@@ -745,6 +745,26 @@ def test_parse_automation_planner_result_accepts_json_string():
     assert result["should_split"] is False
 
 
+def test_parse_automation_planner_result_accepts_structured_output_envelope():
+    result = ai_mod.parse_automation_planner_result(
+        {
+            "structured_output": {
+                "summary": "wrapped",
+                "tasks": [
+                    {
+                        "title": "do x",
+                    }
+                ],
+            }
+        },
+        title="do x",
+        max_tasks=3,
+    )
+
+    assert result["summary"] == "wrapped"
+    assert result["tasks"][0]["title"] == "do x"
+
+
 def test_parse_automation_planner_result_rejects_non_json_text():
     with pytest.raises(RuntimeError, match="不是有效 JSON"):
         ai_mod.parse_automation_planner_result(
@@ -796,6 +816,56 @@ def test_parse_automation_planner_result_surfaces_dedup_to_progress_callback(mon
     assert result["tasks"] == []
     assert result.get("dedup_skipped")
     assert any("跳过重复任务" in line for line in progress_messages)
+
+
+def test_parse_automation_planner_result_normalizes_task_fields_and_dependencies():
+    result = ai_mod.parse_automation_planner_result(
+        {
+            "summary": 123,
+            "complexity": "",
+            "should_split": "yes",
+            "tasks": [
+                {
+                    "title": "  first task  ",
+                    "priority": "p9",
+                    "goal": "",
+                    "acceptance_criteria": "- 验收1\n- 验收2",
+                    "builder_notes": "实现 first",
+                    "reviewer_notes": [None, "  review first  "],
+                    "files": "pkg/a.py\npkg/b.py",
+                    "notes": 42,
+                    "depends_on_indices": [0, -1, 99, "bad"],
+                },
+                {
+                    "title": "second task",
+                    "priority": "P1",
+                    "goal": "完成 second",
+                    "acceptance_criteria": ["验收A"],
+                    "builder_notes": [],
+                    "reviewer_notes": [],
+                    "files": [],
+                    "notes": [],
+                    "depends_on_indices": [0, 1, 1],
+                },
+            ],
+        },
+        title="拆分任务",
+        max_tasks=5,
+    )
+
+    assert result["summary"] == "123"
+    assert result["complexity"] == "complex"
+    assert result["should_split"] is True
+
+    first, second = result["tasks"]
+    assert first["title"] == "first task"
+    assert first["priority"] == "P2"
+    assert first["goal"].startswith("完成「first task」")
+    assert first["acceptance_criteria"] == ["验收1", "验收2"]
+    assert first["depends_on_indices"] == []
+
+    assert second["priority"] == "P1"
+    assert second["depends_on_indices"] == [0]
 
 
 def test_generate_task_breakdown_can_return_raw_payload(tmp_path, monkeypatch):

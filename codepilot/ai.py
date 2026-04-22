@@ -47,6 +47,10 @@ from codepilot.ai_classifier import (  # noqa: F401 (re-export)
     answer_question_via_api,
     classify_intent,
 )
+from codepilot.ai_result_parse import (
+    extract_error_hint as _extract_error_hint_core,
+    parse_structured_json_output as _parse_structured_json_output,
+)
 
 # ── Module-level state (kept here so monkeypatch in tests keeps working) ─────
 # Set by external code (e.g. WebUI) to receive planner stderr lines in real time.
@@ -364,41 +368,8 @@ _normalize_agent_name = normalize_agent_name
 
 
 def _extract_error_hint(raw: str) -> str:
-    """Condense stderr / exception text into one readable line."""
-    text = (raw or "").strip()
-    if not text:
-        return ""
-
-    def _from_payload(payload: dict) -> str:
-        value = payload.get("result") or payload.get("message")
-        if isinstance(payload.get("error"), dict):
-            value = payload["error"].get("message") or value
-        elif isinstance(payload.get("error"), str):
-            value = payload.get("error") or value
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        return ""
-
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    for line in lines:
-        if line.startswith("{") and line.endswith("}"):
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                payload = None
-            if isinstance(payload, dict):
-                extracted = _from_payload(payload)
-                if extracted:
-                    text = extracted
-                    break
-        else:
-            text = line
-            break
-
-    text = text.replace("You've hit your limit", "当前账号额度已用完")
-    text = text.replace("resets", "重置时间")
-    text = text.replace("·", "，")
-    return text[:220]
+    """Compatibility wrapper: keep ai._extract_error_hint import path stable."""
+    return _extract_error_hint_core(raw)
 
 
 
@@ -564,22 +535,7 @@ def _run_claude_schema_prompt(
     output = result_stdout.strip()
     if not output:
         raise RuntimeError("Claude 任务拆分返回空内容")
-
-    try:
-        payload = json.loads(output)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"{provider.name} 返回的任务拆分结果不是有效 JSON，暂时无法继续自动规划。"
-        ) from exc
-
-    if isinstance(payload, dict):
-        if isinstance(payload.get("structured_output"), dict):
-            return payload["structured_output"]
-        if isinstance(payload.get("result"), dict):
-            return payload["result"]
-        return payload
-
-    raise RuntimeError(f"{provider.name} 返回的任务拆分结果格式不正确，暂时无法继续自动规划。")
+    return _parse_structured_json_output(output, provider_name=provider.name)
 
 
 def _kill_process_tree(pid: int) -> None:
@@ -786,18 +742,9 @@ def _run_codex_schema_prompt(
         output = output_path.read_text(encoding="utf-8", errors="replace").strip() if output_path.exists() else ""
         if not output:
             output = codex_stdout.strip()
-        if not output:
-            raise RuntimeError("Codex 没有返回任务拆分结果，暂时无法继续自动规划。")
-
-    try:
-        payload = json.loads(output)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Codex 返回的任务拆分结果不是有效 JSON，暂时无法继续自动规划。") from exc
-
-    if isinstance(payload, dict):
-        return payload
-
-    raise RuntimeError("Codex 返回的任务拆分结果格式不正确，暂时无法继续自动规划。")
+    if not output:
+        raise RuntimeError("Codex 没有返回任务拆分结果，暂时无法继续自动规划。")
+    return _parse_structured_json_output(output, provider_name="Codex")
 
 
 def build_task_markdown_from_plan(task: dict) -> str:
