@@ -17,6 +17,8 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Optional
 
 import click
@@ -178,6 +180,490 @@ def _stop_chat_ui(_handle) -> None:
     return
 
 
+class _ChatLoopState(Enum):
+    """Discrete states for the chat REPL loop."""
+
+    READ_INPUT = auto()
+    DISPATCH = auto()
+    HANDLE_COMMAND = auto()
+    HANDLE_PENDING_CLARIFICATION = auto()
+    HANDLE_FREE_TEXT = auto()
+    EXIT = auto()
+
+
+@dataclass
+class _ChatRuntime:
+    """Mutable runtime context shared across chat loop states."""
+
+    shell: object
+    project_info: dict
+    effective: dict
+    default_execute: bool
+    default_agent: str
+    planner_opt: Optional[str]
+    executor_opt: Optional[str]
+    auto_commit_opt: Optional[bool]
+    max_tasks_opt: int
+    max_retries_opt: int
+    chat_history: list[dict] = field(default_factory=list)
+    pending_clarification: Optional[dict] = None
+
+
+@dataclass
+class _ChatTurnFrame:
+    """Per-turn frame that drives state transitions in the REPL."""
+
+    state: _ChatLoopState = _ChatLoopState.READ_INPUT
+    raw: str = ""
+    text: str = ""
+    forced_intent: Optional[str] = None
+    payload_text: str = ""
+
+
+def _read_turn_input(frame: _ChatTurnFrame, *, shutdown_ui, echo) -> None:
+    """Read one line and advance to the dispatch state when input is non-empty."""
+    try:
+        raw = click.prompt("codepilot", prompt_suffix="> ", default="", show_default=False)
+    except (EOFError, KeyboardInterrupt, click.Abort):
+        echo()
+        shutdown_ui()
+        echo("[dim]会话已结束[/dim]")
+        frame.state = _ChatLoopState.EXIT
+        return
+
+    text = raw.strip()
+    if not text:
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+
+    frame.raw = raw
+    frame.text = text
+    frame.forced_intent = None
+    frame.payload_text = ""
+    frame.state = _ChatLoopState.DISPATCH
+
+
+def _dispatch_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime) -> None:
+    """Route input to command/pending-clarification/free-text handlers."""
+    if frame.text.startswith("/"):
+        frame.state = _ChatLoopState.HANDLE_COMMAND
+        return
+
+    forced_intent, payload_text = _parse_intent_prefix(frame.text)
+    frame.forced_intent = forced_intent
+    frame.payload_text = payload_text
+    if runtime.pending_clarification and not forced_intent and not frame.text.startswith("?"):
+        frame.state = _ChatLoopState.HANDLE_PENDING_CLARIFICATION
+        return
+    frame.state = _ChatLoopState.HANDLE_FREE_TEXT
+
+
+def _handle_chat_command(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdown_ui, echo) -> None:
+    """Execute one slash command and transition back to input state."""
+    shell = runtime.shell
+    parts = frame.text.split()
+    cmd = parts[0].lower()
+
+    if cmd == "/exit":
+        shutdown_ui()
+        echo("[dim]会话已结束[/dim]")
+        frame.state = _ChatLoopState.EXIT
+        return
+    if cmd == "/help":
+        click.echo(_chat_help())
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    if cmd == "/version":
+        click.echo(f"CodePilot {__version__}")
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    if cmd == "/status":
+        if runtime.project_info.get("is_temporary"):
+            echo("[yellow]临时会话没有任务看板。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
+            frame.state = _ChatLoopState.READ_INPUT
+            return
+        watch = len(parts) > 1 and parts[1].lower() in ("watch", "live", "-w")
+        if watch:
+            echo("[dim]实时刷新中，按 Ctrl+C 停止...[/dim]")
+        try:
+            while True:
+                if watch:
+                    click.clear()
+                shell.render_project_dashboard(
+                    runtime.project_info["name"],
+                    verbose=False,
+                    include_done=False,
+                    title=f"任务面板  {runtime.project_info['name']}",
+                )
+                if not watch:
+                    break
+                time.sleep(3)
+        except KeyboardInterrupt:
+            if watch:
+                echo("\n[dim]已停止刷新[/dim]")
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    if cmd == "/stats":
+        if runtime.project_info.get("is_temporary"):
+            echo("[yellow]临时会话没有项目统计。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
+            frame.state = _ChatLoopState.READ_INPUT
+            return
+        shell.render_project_stats(runtime.project_info["name"], title=f"状态统计  {runtime.project_info['name']}")
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    if cmd == "/project":
+        if len(parts) < 2:
+            echo("[yellow]用法: /project <name>[/yellow]")
+            frame.state = _ChatLoopState.READ_INPUT
+            return
+        runtime.project_info = shell.resolve_project_for_prompt(parts[1])
+        runtime.effective = shell._resolve_effective_options(
+            runtime.project_info,
+            planner=runtime.planner_opt,
+            executor=runtime.executor_opt,
+            auto_commit=runtime.auto_commit_opt,
+            max_tasks=runtime.max_tasks_opt,
+            max_retries=runtime.max_retries_opt,
+        )
+        runtime.default_agent = shell._resolve_task_agent(
+            runtime.project_info,
+            runtime.default_agent,
+            runtime.effective["executor"],
+        )
+        echo(f"[green][OK] 已切换项目[/green] {runtime.project_info['name']}")
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    if cmd == "/agent":
+        if len(parts) < 2:
+            echo("[yellow]用法: /agent <name>[/yellow]")
+            frame.state = _ChatLoopState.READ_INPUT
+            return
+        try:
+            runtime.default_agent = shell._resolve_task_agent(
+                runtime.project_info,
+                parts[1],
+                runtime.effective["executor"],
+            )
+        except click.ClickException as exc:
+            echo(f"[red]{exc.format_message()}[/red]")
+            frame.state = _ChatLoopState.READ_INPUT
+            return
+        echo(f"[green][OK] 默认任务智能体已设置为 {runtime.default_agent}[/green]")
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    if cmd == "/execute":
+        if len(parts) < 2 or parts[1].lower() not in {"on", "off"}:
+            echo("[yellow]用法: /execute on|off[/yellow]")
+            frame.state = _ChatLoopState.READ_INPUT
+            return
+        runtime.default_execute = parts[1].lower() == "on"
+        echo(f"[green][OK] 自动执行已设置为 {runtime.default_execute}[/green]")
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    if cmd == "/plan":
+        runtime.default_execute = False
+        echo("[green][OK] 下一条需求将只规划不执行[/green]")
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    if cmd == "/run":
+        runtime.default_execute = True
+        echo("[green][OK] 下一条需求将自动执行[/green]")
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+
+    if cmd == "/history":
+        if not runtime.chat_history:
+            echo("[dim]暂无对话记录[/dim]")
+        else:
+            for i, turn in enumerate(runtime.chat_history, 1):
+                intent_tag = turn.get("intent", "?")
+                echo(f"[dim]#{i}[/dim] [{intent_tag}] {turn['user'][:80]}")
+                if turn.get("assistant"):
+                    click.echo(f"  → {turn['assistant'][:120]}")
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    if cmd == "/clear":
+        runtime.chat_history.clear()
+        if runtime.pending_clarification:
+            runtime.pending_clarification = None
+            echo("[green]对话历史已清空，当前待澄清的需求也已放弃[/green]")
+        else:
+            echo("[green]对话历史已清空[/green]")
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+
+    if cmd in ("/cancel", "/resume", "/retry", "/rm", "/stop", "/logs"):
+        ids = [int(x) for x in parts[1:] if x.isdigit()]
+        if not ids:
+            echo(f"[yellow]用法: {cmd} <task_id ...>[/yellow]")
+            frame.state = _ChatLoopState.READ_INPUT
+            return
+        from codepilot.commands import tasks as tasks_cmd_mod
+        from click.testing import CliRunner as _InlineRunner
+
+        cli_cmd_map = {
+            "/cancel": tasks_cmd_mod.cancel,
+            "/resume": tasks_cmd_mod.resume,
+            "/retry": tasks_cmd_mod.retry,
+            "/rm": tasks_cmd_mod.rm,
+            "/stop": tasks_cmd_mod.stop,
+            "/logs": tasks_cmd_mod.logs,
+        }
+        target_cmd = cli_cmd_map[cmd]
+        args = [str(i) for i in ids]
+        if cmd in ("/rm", "/cancel"):
+            args.append("-f") if cmd == "/rm" else None
+        _InlineRunner().invoke(target_cmd, args)
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+
+    echo("[yellow]未知会话命令[/yellow]")
+    click.echo(_chat_help())
+    frame.state = _ChatLoopState.READ_INPUT
+
+
+def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdown_ui, echo, safe) -> None:
+    """Continue an in-flight clarification dialog and possibly trigger planning."""
+    shell = runtime.shell
+    answer_text = frame.payload_text
+    answered_state = shell.append_clarification_answer_to_state(
+        runtime.pending_clarification,
+        answer=answer_text,
+    )
+
+    spinner = _Spinner("正在评估补充信息")
+    spinner.__enter__()
+    try:
+        assessment = shell.assess_requirement_for_planning(
+            answered_state["original_title"],
+            project_info=runtime.project_info,
+            qa_history=answered_state["qa_history"],
+            planner=runtime.effective["planner"],
+        )
+    except KeyboardInterrupt:
+        echo()
+        shutdown_ui()
+        echo("[dim]会话已结束[/dim]")
+        frame.state = _ChatLoopState.EXIT
+        return
+    except click.ClickException as exc:
+        echo(f"[red]{safe(exc.format_message())}[/red]")
+        runtime.chat_history.append({
+            "user": answer_text,
+            "assistant": f"错误: {exc.format_message()}",
+            "intent": "clarify",
+        })
+        click.echo()
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    except Exception as exc:
+        echo(f"[red]{safe(exc)}[/red]")
+        runtime.chat_history.append({
+            "user": answer_text,
+            "assistant": f"错误: {exc}",
+            "intent": "clarify",
+        })
+        click.echo()
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    finally:
+        spinner.__exit__(None, None, None)
+
+    next_state = shell.clarification_state_from_assessment(
+        assessment=assessment,
+        seed_title=answered_state["original_title"],
+        previous_state=answered_state,
+    )
+    if next_state:
+        runtime.pending_clarification = next_state
+        questions = runtime.pending_clarification.get("last_questions") or []
+        echo("[cyan]还需要再澄清一下：[/cyan]")
+        for i, q in enumerate(questions, 1):
+            click.echo(f"  {i}. {q}")
+        runtime.chat_history.append({
+            "user": answer_text,
+            "assistant": "继续澄清：" + " / ".join(questions),
+            "intent": "clarify",
+        })
+        click.echo()
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+
+    # Ready — take refined title forward into planning.
+    refined = assessment.get("refined_title") or runtime.pending_clarification["original_title"]
+    pending_intent = runtime.pending_clarification.get("intent", "requirement")
+    runtime.pending_clarification = None
+    echo(f"[green][OK] 已澄清需求：{refined}[/green]")
+
+    try:
+        max_tasks_override = 1 if pending_intent == "task" else runtime.effective["max_tasks"]
+        shell.run_requirement_workflow(
+            project_info=runtime.project_info,
+            title=refined,
+            planner=runtime.effective["planner"],
+            task_agent=runtime.default_agent,
+            execute=runtime.default_execute,
+            executor=runtime.effective["executor"],
+            auto_commit=runtime.effective["auto_commit"],
+            max_tasks=max_tasks_override,
+            max_retries=runtime.effective["max_retries"],
+            quiet=True,
+        )
+        runtime.chat_history.append({
+            "user": answer_text,
+            "assistant": "需求已规划并执行",
+            "intent": pending_intent,
+        })
+    except KeyboardInterrupt:
+        echo()
+        shutdown_ui()
+        echo("[dim]会话已结束[/dim]")
+        frame.state = _ChatLoopState.EXIT
+        return
+    except click.ClickException as exc:
+        echo(f"[red]{safe(exc.format_message())}[/red]")
+        runtime.chat_history.append({
+            "user": answer_text,
+            "assistant": f"错误: {exc.format_message()}",
+            "intent": pending_intent,
+        })
+    except Exception as exc:
+        echo(f"[red]{safe(exc)}[/red]")
+        runtime.chat_history.append({
+            "user": answer_text,
+            "assistant": f"错误: {exc}",
+            "intent": pending_intent,
+        })
+    click.echo()
+    frame.state = _ChatLoopState.READ_INPUT
+
+
+def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdown_ui, echo, safe) -> None:
+    """Run intent classification + question/requirement handling for normal input."""
+    shell = runtime.shell
+    payload_text = frame.payload_text
+    forced_intent = frame.forced_intent
+
+    echo("[dim]阶段 1/3：正在识别输入意图...[/dim]")
+    spinner = _Spinner("正在识别输入意图")
+    spinner.__enter__()
+
+    intent = forced_intent
+    if intent is None:
+        try:
+            intent = shell.classify_entry_intent(
+                payload_text,
+                project_info=runtime.project_info,
+                category="auto",
+            )
+        except Exception:
+            intent = "requirement"
+
+    intent_labels = {
+        "question": "正在检索上下文并回答",
+        "task": "正在评估并执行任务",
+        "requirement": "正在评估并规划需求",
+        "command": "正在识别命令输入",
+    }
+    spinner._message = intent_labels.get(intent, "正在处理中")
+
+    assistant_response = ""
+    try:
+        if intent == "command":
+            spinner.__exit__(None, None, None)
+            assistant_response = "请使用对应的 CLI 命令操作"
+            echo(
+                "[yellow]这看起来是在调用 codepilot 自身命令，请直接用下面的入口：[/yellow]"
+            )
+            click.echo(shell.command_intent_guidance(include_release=True))
+            click.echo()
+        elif intent == "question":
+            echo("[dim]阶段 2/2：正在检索上下文并回答...[/dim]")
+            answer_options = shell.resolve_question_answer_options(runtime.project_info)
+            answer = shell.answer_question_via_api(
+                provider_key=answer_options["provider_key"],
+                question=payload_text,
+                project_path=answer_options["project_path"],
+                config_ref=answer_options["config_ref"],
+                model_override=answer_options["model_override"],
+                api_key=answer_options["api_key"],
+                base_url=answer_options["base_url"],
+                history=runtime.chat_history,
+            )
+            spinner.__exit__(None, None, None)
+            if answer:
+                click.echo(answer)
+                assistant_response = answer
+            else:
+                echo("[yellow]未获得回答[/yellow]")
+        elif intent in ("task", "requirement"):
+            # Step 1: clarify if the requirement looks vague.
+            echo("[dim]阶段 2/3：正在评估需求完整度...[/dim]")
+            spinner._message = "正在评估需求完整度"
+            assessment = shell.assess_requirement_for_planning(
+                payload_text,
+                project_info=runtime.project_info,
+                planner=runtime.effective["planner"],
+            )
+            spinner.__exit__(None, None, None)
+
+            runtime.pending_clarification = shell.clarification_state_from_assessment(
+                assessment=assessment,
+                seed_title=payload_text,
+                intent=intent,
+            )
+            if runtime.pending_clarification:
+                questions = runtime.pending_clarification.get("last_questions") or []
+                echo("[cyan]为了更好地规划，我想先确认几个点：[/cyan]")
+                for i, q in enumerate(questions, 1):
+                    click.echo(f"  {i}. {q}")
+                echo("[dim]请直接回复你的答案（可以一次性全写）。输入 /clear 放弃此需求。[/dim]")
+                assistant_response = "请求澄清：" + " / ".join(questions)
+            else:
+                refined = assessment.get("refined_title") or payload_text
+                echo("[dim]阶段 3/3：正在生成计划并执行任务...[/dim]")
+                spinner._message = "正在生成计划并执行任务"
+                max_tasks_override = 1 if intent == "task" else runtime.effective["max_tasks"]
+                shell.run_requirement_workflow(
+                    project_info=runtime.project_info,
+                    title=refined,
+                    planner=runtime.effective["planner"],
+                    task_agent=runtime.default_agent,
+                    execute=runtime.default_execute,
+                    executor=runtime.effective["executor"],
+                    auto_commit=runtime.effective["auto_commit"],
+                    max_tasks=max_tasks_override,
+                    max_retries=runtime.effective["max_retries"],
+                    quiet=True,
+                )
+                assistant_response = (
+                    "任务已创建并执行" if intent == "task" else "需求已规划"
+                )
+    except KeyboardInterrupt:
+        spinner.__exit__(None, None, None)
+        echo()
+        shutdown_ui()
+        echo("[dim]会话已结束[/dim]")
+        frame.state = _ChatLoopState.EXIT
+        return
+    except click.ClickException as exc:
+        spinner.__exit__(None, None, None)
+        echo(f"[red]{safe(exc.format_message())}[/red]")
+        assistant_response = f"错误: {exc.format_message()}"
+    except Exception as exc:
+        spinner.__exit__(None, None, None)
+        echo(f"[red]{safe(exc)}[/red]")
+        assistant_response = f"错误: {exc}"
+
+    runtime.chat_history.append({
+        "user": payload_text,
+        "assistant": assistant_response,
+        "intent": intent or "unknown",
+    })
+    click.echo()
+    frame.state = _ChatLoopState.READ_INPUT
+
+
 def run_chat_session(
     *,
     project: Optional[str] = None,
@@ -215,17 +701,24 @@ def run_chat_session(
     if enable_ui:
         ui_handle = _start_chat_ui(ui_port)
 
-    chat_history: list[dict] = []
-    # Multi-turn requirement clarification state. When AI asks for more info we
-    # stash the original title + accumulated Q/A here, and the next user input
-    # is treated as the answer to the most-recent batch of questions.
-    pending_clarification: Optional[dict] = None
+    runtime = _ChatRuntime(
+        shell=shell,
+        project_info=project_info,
+        effective=effective,
+        default_execute=default_execute,
+        default_agent=default_agent,
+        planner_opt=planner,
+        executor_opt=executor,
+        auto_commit_opt=auto_commit,
+        max_tasks_opt=max_tasks,
+        max_retries_opt=max_retries,
+    )
 
     echo(
-        f"[cyan]CodePilot Chat[/cyan]  项目: {project_info['name']}  "
-        f"planner={effective['planner']} executor={effective['executor']} agent={default_agent}"
+        f"[cyan]CodePilot Chat[/cyan]  项目: {runtime.project_info['name']}  "
+        f"planner={runtime.effective['planner']} executor={runtime.effective['executor']} agent={runtime.default_agent}"
     )
-    if project_info.get("is_temporary"):
+    if runtime.project_info.get("is_temporary"):
         echo(
             "[yellow]当前为公共临时会话：可继续问答；如需创建需求/任务，请先在目标目录执行 codepilot init，"
             "或使用 /project 切换到已注册项目。[/yellow]"
@@ -237,375 +730,34 @@ def run_chat_session(
     def _shutdown_ui():
         _stop_chat_ui(ui_handle)
 
-    while True:
-        try:
-            raw = click.prompt("codepilot", prompt_suffix="> ", default="", show_default=False)
-        except (EOFError, KeyboardInterrupt, click.Abort):
-            echo()
-            _shutdown_ui()
-            echo("[dim]会话已结束[/dim]")
-            return
-
-        text = raw.strip()
-        if not text:
+    frame = _ChatTurnFrame()
+    while frame.state != _ChatLoopState.EXIT:
+        if frame.state == _ChatLoopState.READ_INPUT:
+            _read_turn_input(frame, shutdown_ui=_shutdown_ui, echo=echo)
             continue
-
-        if text.startswith("/"):
-            parts = text.split()
-            cmd = parts[0].lower()
-
-            if cmd == "/exit":
-                _shutdown_ui()
-                echo("[dim]会话已结束[/dim]")
-                return
-            if cmd == "/help":
-                click.echo(_chat_help())
-                continue
-            if cmd == "/version":
-                click.echo(f"CodePilot {__version__}")
-                continue
-            if cmd == "/status":
-                if project_info.get("is_temporary"):
-                    echo("[yellow]临时会话没有任务看板。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
-                    continue
-                watch = len(parts) > 1 and parts[1].lower() in ("watch", "live", "-w")
-                if watch:
-                    echo("[dim]实时刷新中，按 Ctrl+C 停止...[/dim]")
-                try:
-                    while True:
-                        if watch:
-                            click.clear()
-                        shell.render_project_dashboard(
-                            project_info["name"],
-                            verbose=False,
-                            include_done=False,
-                            title=f"任务面板  {project_info['name']}",
-                        )
-                        if not watch:
-                            break
-                        time.sleep(3)
-                except KeyboardInterrupt:
-                    if watch:
-                        echo("\n[dim]已停止刷新[/dim]")
-                continue
-            if cmd == "/stats":
-                if project_info.get("is_temporary"):
-                    echo("[yellow]临时会话没有项目统计。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
-                    continue
-                shell.render_project_stats(project_info["name"], title=f"状态统计  {project_info['name']}")
-                continue
-            if cmd == "/project":
-                if len(parts) < 2:
-                    echo("[yellow]用法: /project <name>[/yellow]")
-                    continue
-                project_info = shell.resolve_project_for_prompt(parts[1])
-                effective = shell._resolve_effective_options(
-                    project_info,
-                    planner=planner,
-                    executor=executor,
-                    auto_commit=auto_commit,
-                    max_tasks=max_tasks,
-                    max_retries=max_retries,
-                )
-                default_agent = shell._resolve_task_agent(project_info, default_agent, effective["executor"])
-                echo(f"[green][OK] 已切换项目[/green] {project_info['name']}")
-                continue
-            if cmd == "/agent":
-                if len(parts) < 2:
-                    echo("[yellow]用法: /agent <name>[/yellow]")
-                    continue
-                try:
-                    default_agent = shell._resolve_task_agent(project_info, parts[1], effective["executor"])
-                except click.ClickException as exc:
-                    echo(f"[red]{exc.format_message()}[/red]")
-                    continue
-                echo(f"[green][OK] 默认任务智能体已设置为 {default_agent}[/green]")
-                continue
-            if cmd == "/execute":
-                if len(parts) < 2 or parts[1].lower() not in {"on", "off"}:
-                    echo("[yellow]用法: /execute on|off[/yellow]")
-                    continue
-                default_execute = parts[1].lower() == "on"
-                echo(f"[green][OK] 自动执行已设置为 {default_execute}[/green]")
-                continue
-            if cmd == "/plan":
-                default_execute = False
-                echo("[green][OK] 下一条需求将只规划不执行[/green]")
-                continue
-            if cmd == "/run":
-                default_execute = True
-                echo("[green][OK] 下一条需求将自动执行[/green]")
-                continue
-
-            if cmd == "/history":
-                if not chat_history:
-                    echo("[dim]暂无对话记录[/dim]")
-                else:
-                    for i, turn in enumerate(chat_history, 1):
-                        intent_tag = turn.get("intent", "?")
-                        echo(f"[dim]#{i}[/dim] [{intent_tag}] {turn['user'][:80]}")
-                        if turn.get("assistant"):
-                            click.echo(f"  → {turn['assistant'][:120]}")
-                continue
-            if cmd == "/clear":
-                chat_history.clear()
-                if pending_clarification:
-                    pending_clarification = None
-                    echo("[green]对话历史已清空，当前待澄清的需求也已放弃[/green]")
-                else:
-                    echo("[green]对话历史已清空[/green]")
-                continue
-
-            if cmd in ("/cancel", "/resume", "/retry", "/rm", "/stop", "/logs"):
-                ids = [int(x) for x in parts[1:] if x.isdigit()]
-                if not ids:
-                    echo(f"[yellow]用法: {cmd} <task_id ...>[/yellow]")
-                    continue
-                from codepilot.commands import tasks as tasks_cmd_mod
-                from click.testing import CliRunner as _InlineRunner
-                cli_cmd_map = {
-                    "/cancel": tasks_cmd_mod.cancel,
-                    "/resume": tasks_cmd_mod.resume,
-                    "/retry": tasks_cmd_mod.retry,
-                    "/rm": tasks_cmd_mod.rm,
-                    "/stop": tasks_cmd_mod.stop,
-                    "/logs": tasks_cmd_mod.logs,
-                }
-                target_cmd = cli_cmd_map[cmd]
-                args = [str(i) for i in ids]
-                if cmd in ("/rm", "/cancel"):
-                    args.append("-f") if cmd == "/rm" else None
-                _InlineRunner().invoke(target_cmd, args)
-                continue
-
-            echo("[yellow]未知会话命令[/yellow]")
-            click.echo(_chat_help())
+        if frame.state == _ChatLoopState.DISPATCH:
+            _dispatch_turn(frame, runtime)
             continue
-
-        forced_intent, payload_text = _parse_intent_prefix(text)
-
-        # ── Multi-turn clarification: user is answering outstanding questions ──
-        if pending_clarification and not forced_intent and not text.startswith("?"):
-            answer_text = payload_text
-            answered_state = shell.append_clarification_answer_to_state(
-                pending_clarification,
-                answer=answer_text,
+        if frame.state == _ChatLoopState.HANDLE_COMMAND:
+            _handle_chat_command(frame, runtime, shutdown_ui=_shutdown_ui, echo=echo)
+            continue
+        if frame.state == _ChatLoopState.HANDLE_PENDING_CLARIFICATION:
+            _handle_pending_clarification_turn(
+                frame,
+                runtime,
+                shutdown_ui=_shutdown_ui,
+                echo=echo,
+                safe=safe,
             )
-
-            spinner = _Spinner("正在评估补充信息")
-            spinner.__enter__()
-            try:
-                assessment = shell.assess_requirement_for_planning(
-                    answered_state["original_title"],
-                    project_info=project_info,
-                    qa_history=answered_state["qa_history"],
-                    planner=effective["planner"],
-                )
-            except KeyboardInterrupt:
-                echo()
-                _shutdown_ui()
-                echo("[dim]会话已结束[/dim]")
-                return
-            except click.ClickException as exc:
-                echo(f"[red]{safe(exc.format_message())}[/red]")
-                chat_history.append({
-                    "user": answer_text,
-                    "assistant": f"错误: {exc.format_message()}",
-                    "intent": "clarify",
-                })
-                click.echo()
-                continue
-            except Exception as exc:
-                echo(f"[red]{safe(exc)}[/red]")
-                chat_history.append({
-                    "user": answer_text,
-                    "assistant": f"错误: {exc}",
-                    "intent": "clarify",
-                })
-                click.echo()
-                continue
-            finally:
-                spinner.__exit__(None, None, None)
-
-            next_state = shell.clarification_state_from_assessment(
-                assessment=assessment,
-                seed_title=answered_state["original_title"],
-                previous_state=answered_state,
+            continue
+        if frame.state == _ChatLoopState.HANDLE_FREE_TEXT:
+            _handle_free_text_turn(
+                frame,
+                runtime,
+                shutdown_ui=_shutdown_ui,
+                echo=echo,
+                safe=safe,
             )
-            if next_state:
-                pending_clarification = next_state
-                questions = pending_clarification.get("last_questions") or []
-                echo("[cyan]还需要再澄清一下：[/cyan]")
-                for i, q in enumerate(questions, 1):
-                    click.echo(f"  {i}. {q}")
-                chat_history.append({
-                    "user": answer_text,
-                    "assistant": "继续澄清：" + " / ".join(questions),
-                    "intent": "clarify",
-                })
-                click.echo()
-                continue
-
-            # Ready — take refined title forward into planning.
-            refined = assessment.get("refined_title") or pending_clarification["original_title"]
-            pending_intent = pending_clarification.get("intent", "requirement")
-            pending_clarification = None
-            echo(f"[green][OK] 已澄清需求：{refined}[/green]")
-
-            try:
-                max_tasks_override = 1 if pending_intent == "task" else effective["max_tasks"]
-                shell.run_requirement_workflow(
-                    project_info=project_info,
-                    title=refined,
-                    planner=effective["planner"],
-                    task_agent=default_agent,
-                    execute=default_execute,
-                    executor=effective["executor"],
-                    auto_commit=effective["auto_commit"],
-                    max_tasks=max_tasks_override,
-                    max_retries=effective["max_retries"],
-                    quiet=True,
-                )
-                chat_history.append({
-                    "user": answer_text,
-                    "assistant": "需求已规划并执行",
-                    "intent": pending_intent,
-                })
-            except KeyboardInterrupt:
-                echo()
-                _shutdown_ui()
-                echo("[dim]会话已结束[/dim]")
-                return
-            except click.ClickException as exc:
-                echo(f"[red]{safe(exc.format_message())}[/red]")
-                chat_history.append({
-                    "user": answer_text,
-                    "assistant": f"错误: {exc.format_message()}",
-                    "intent": pending_intent,
-                })
-            except Exception as exc:
-                echo(f"[red]{safe(exc)}[/red]")
-                chat_history.append({
-                    "user": answer_text,
-                    "assistant": f"错误: {exc}",
-                    "intent": pending_intent,
-                })
-            click.echo()
             continue
 
-        echo("[dim]阶段 1/3：正在识别输入意图...[/dim]")
-        spinner = _Spinner("正在识别输入意图")
-        spinner.__enter__()
-
-        intent = forced_intent
-        if intent is None:
-            try:
-                intent = shell.classify_entry_intent(
-                    payload_text,
-                    project_info=project_info,
-                    category="auto",
-                )
-            except Exception:
-                intent = "requirement"
-
-        intent_labels = {
-            "question": "正在检索上下文并回答",
-            "task": "正在评估并执行任务",
-            "requirement": "正在评估并规划需求",
-            "command": "正在识别命令输入",
-        }
-        spinner._message = intent_labels.get(intent, "正在处理中")
-
-        assistant_response = ""
-        try:
-            if intent == "command":
-                spinner.__exit__(None, None, None)
-                assistant_response = "请使用对应的 CLI 命令操作"
-                echo(
-                    "[yellow]这看起来是在调用 codepilot 自身命令，请直接用下面的入口：[/yellow]"
-                )
-                click.echo(shell.command_intent_guidance(include_release=True))
-                click.echo()
-            elif intent == "question":
-                echo("[dim]阶段 2/2：正在检索上下文并回答...[/dim]")
-                answer_options = shell.resolve_question_answer_options(project_info)
-                answer = shell.answer_question_via_api(
-                    provider_key=answer_options["provider_key"],
-                    question=payload_text,
-                    project_path=answer_options["project_path"],
-                    config_ref=answer_options["config_ref"],
-                    model_override=answer_options["model_override"],
-                    api_key=answer_options["api_key"],
-                    base_url=answer_options["base_url"],
-                    history=chat_history,
-                )
-                spinner.__exit__(None, None, None)
-                if answer:
-                    click.echo(answer)
-                    assistant_response = answer
-                else:
-                    echo("[yellow]未获得回答[/yellow]")
-            elif intent in ("task", "requirement"):
-                # ── Step 1: clarify if the requirement looks vague ──
-                echo("[dim]阶段 2/3：正在评估需求完整度...[/dim]")
-                spinner._message = "正在评估需求完整度"
-                assessment = shell.assess_requirement_for_planning(
-                    payload_text,
-                    project_info=project_info,
-                    planner=effective["planner"],
-                )
-                spinner.__exit__(None, None, None)
-
-                pending_clarification = shell.clarification_state_from_assessment(
-                    assessment=assessment,
-                    seed_title=payload_text,
-                    intent=intent,
-                )
-                if pending_clarification:
-                    questions = pending_clarification.get("last_questions") or []
-                    echo("[cyan]为了更好地规划，我想先确认几个点：[/cyan]")
-                    for i, q in enumerate(questions, 1):
-                        click.echo(f"  {i}. {q}")
-                    echo("[dim]请直接回复你的答案（可以一次性全写）。输入 /clear 放弃此需求。[/dim]")
-                    assistant_response = "请求澄清：" + " / ".join(questions)
-                else:
-                    refined = assessment.get("refined_title") or payload_text
-                    echo("[dim]阶段 3/3：正在生成计划并执行任务...[/dim]")
-                    spinner._message = "正在生成计划并执行任务"
-                    max_tasks_override = 1 if intent == "task" else effective["max_tasks"]
-                    shell.run_requirement_workflow(
-                        project_info=project_info,
-                        title=refined,
-                        planner=effective["planner"],
-                        task_agent=default_agent,
-                        execute=default_execute,
-                        executor=effective["executor"],
-                        auto_commit=effective["auto_commit"],
-                        max_tasks=max_tasks_override,
-                        max_retries=effective["max_retries"],
-                        quiet=True,
-                    )
-                    assistant_response = (
-                        "任务已创建并执行" if intent == "task" else "需求已规划"
-                    )
-        except KeyboardInterrupt:
-            spinner.__exit__(None, None, None)
-            echo()
-            _shutdown_ui()
-            echo("[dim]会话已结束[/dim]")
-            return
-        except click.ClickException as exc:
-            spinner.__exit__(None, None, None)
-            echo(f"[red]{safe(exc.format_message())}[/red]")
-            assistant_response = f"错误: {exc.format_message()}"
-        except Exception as exc:
-            spinner.__exit__(None, None, None)
-            echo(f"[red]{safe(exc)}[/red]")
-            assistant_response = f"错误: {exc}"
-
-        chat_history.append({
-            "user": payload_text,
-            "assistant": assistant_response,
-            "intent": intent or "unknown",
-        })
-        click.echo()
+        frame.state = _ChatLoopState.EXIT

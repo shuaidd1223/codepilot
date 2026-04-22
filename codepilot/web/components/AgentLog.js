@@ -27,6 +27,9 @@ const DIFF_HEAD_RE = /^diff --git a\/(.+?) b\/(.+)$/;
 const DIFF_META_RE = /^(---|\+\+\+) [ab]\/(.+)$/;
 const HUNK_RE = /^@@ .+ @@/;
 const INDEX_LINE_RE = /^(index |Binary files |similarity index |rename from |rename to |new file mode |deleted file mode )/;
+const DIFF_AUTO_COLLAPSE_MIN_LINES = 36;
+const DIFF_COLLAPSE_PREVIEW_HEAD = 3;
+const DIFF_COLLAPSE_PREVIEW_TAIL = 2;
 
 CP.Components.AgentLog = Vue.defineComponent({
   name: 'CpAgentLog',
@@ -40,6 +43,7 @@ CP.Components.AgentLog = Vue.defineComponent({
   data() {
     return {
       stickToBottom: true,
+      manualFollowPaused: false,
       collapsed: Object.create(null),
       vStart: 0,
       vEnd: 0,
@@ -53,6 +57,22 @@ CP.Components.AgentLog = Vue.defineComponent({
     },
     blockCount() { return this.blocks.length; },
     textLength() { return (this.text || '').length; },
+    followEnabled() {
+      return !!this.follow && !this.manualFollowPaused;
+    },
+    diffBlocks() {
+      return this.blocks.filter(b => b.type === 'diff');
+    },
+    collapsibleDiffBlocks() {
+      return this.diffBlocks.filter(b => b && b.lines && b.lines.length > 8);
+    },
+    diffBlockCount() {
+      return this.collapsibleDiffBlocks.length;
+    },
+    allDiffsCollapsed() {
+      if (!this.collapsibleDiffBlocks.length) return false;
+      return this.collapsibleDiffBlocks.every(b => this.isCollapsed(b));
+    },
     totalLines() {
       let n = 0;
       for (const b of this.blocks) n += b.lines ? b.lines.length : 1;
@@ -67,7 +87,7 @@ CP.Components.AgentLog = Vue.defineComponent({
   watch: {
     textLength() {
       this.$nextTick(() => {
-        if (this.follow && this.stickToBottom) this._scrollToBottom();
+        if (this.followEnabled && this.stickToBottom) this._scrollToBottom();
         this._scheduleVirtualCalc();
       });
     },
@@ -132,12 +152,19 @@ CP.Components.AgentLog = Vue.defineComponent({
 
         const dHead = DIFF_HEAD_RE.exec(line);
         if (dHead) {
-          fresh('diff', { file: dHead[2] || dHead[1], lines: [{ kind: 'hdr', text: line }] }, i);
+          fresh('diff', {
+            file: dHead[2] || dHead[1],
+            lines: [{ kind: 'hdr', text: line }],
+            adds: 0,
+            dels: 0,
+            hunks: 0,
+          }, i);
           continue;
         }
         if (cur && cur.type === 'diff') {
           if (HUNK_RE.test(line)) {
             cur.lines.push({ kind: 'hunk', text: line });
+            cur.hunks += 1;
             continue;
           }
           const metaM = DIFF_META_RE.exec(line);
@@ -150,8 +177,8 @@ CP.Components.AgentLog = Vue.defineComponent({
             cur.lines.push({ kind: 'meta', text: line });
             continue;
           }
-          if (line.startsWith('+')) { cur.lines.push({ kind: 'add', text: line }); continue; }
-          if (line.startsWith('-')) { cur.lines.push({ kind: 'del', text: line }); continue; }
+          if (line.startsWith('+')) { cur.lines.push({ kind: 'add', text: line }); cur.adds += 1; continue; }
+          if (line.startsWith('-')) { cur.lines.push({ kind: 'del', text: line }); cur.dels += 1; continue; }
           if (line.startsWith(' ')) { cur.lines.push({ kind: 'ctx', text: line }); continue; }
           cur = null;
         }
@@ -189,19 +216,44 @@ CP.Components.AgentLog = Vue.defineComponent({
       return blocks;
     },
 
+    toggleFollow() {
+      this.manualFollowPaused = !this.manualFollowPaused;
+      if (!this.manualFollowPaused) this.scrollToBottom();
+    },
+    toggleAllDiffs() {
+      const targetCollapsed = !this.allDiffsCollapsed;
+      for (const block of this.collapsibleDiffBlocks) {
+        this.collapsed[block.key] = targetCollapsed;
+        this._heightCache.delete(block.key);
+      }
+      this.$nextTick(() => this._scheduleVirtualCalc());
+    },
     toggleCollapse(key) {
       this.collapsed[key] = !this.collapsed[key];
       this._heightCache.delete(key);
       this.$nextTick(() => this._scheduleVirtualCalc());
     },
+    canCollapseDiff(block) {
+      return !!(block && block.type === 'diff' && block.lines && block.lines.length > 8);
+    },
     isCollapsed(block) {
       if (block.key in this.collapsed) return this.collapsed[block.key];
       if (block.type === 'tool' && block.body && block.body.length > 12) return true;
+      if (block.type === 'diff' && block.lines && block.lines.length >= DIFF_AUTO_COLLAPSE_MIN_LINES) return true;
       return false;
     },
     visibleBody(block) {
       if (!block.body) return [];
       return this.isCollapsed(block) ? block.body.slice(0, 2) : block.body;
+    },
+    visibleDiffLines(block) {
+      const lines = (block && block.lines) || [];
+      if (!this.canCollapseDiff(block) || !this.isCollapsed(block)) return lines;
+      const head = lines.slice(0, DIFF_COLLAPSE_PREVIEW_HEAD);
+      const tail = lines.slice(-DIFF_COLLAPSE_PREVIEW_TAIL);
+      const hidden = Math.max(0, lines.length - head.length - tail.length);
+      if (!hidden) return lines;
+      return head.concat([{ kind: 'fold', text: `… 已折叠 ${hidden} 行（点击标题展开）` }], tail);
     },
     diffMarker(row) {
       if (!row || !row.text || !row.text.length) return '';
@@ -224,7 +276,7 @@ CP.Components.AgentLog = Vue.defineComponent({
         return 42 + (shown * 19) + 8;
       }
       if (block.type === 'diff') {
-        const rows = block.lines ? block.lines.length : 1;
+        const rows = this.visibleDiffLines(block).length || 1;
         return 30 + (rows * 18) + 8;
       }
       const rows = block.lines ? block.lines.length : 1;
@@ -314,6 +366,7 @@ CP.Components.AgentLog = Vue.defineComponent({
       this._scheduleVirtualCalc();
     },
     scrollToBottom() {
+      this.manualFollowPaused = false;
       this.stickToBottom = true;
       this.$nextTick(() => {
         this._scrollToBottom();
@@ -327,6 +380,20 @@ CP.Components.AgentLog = Vue.defineComponent({
         <span class="dots"><i></i><i></i><i></i></span>
         <span class="title">{{ title }}</span>
         <span class="spacer"></span>
+        <button
+          class="al-head-btn"
+          :class="{ active: !manualFollowPaused }"
+          @click="toggleFollow"
+          :title="manualFollowPaused ? '恢复自动跟随新日志' : '暂停自动跟随，便于回看'">
+          {{ manualFollowPaused ? '恢复跟随' : '暂停跟随' }}
+        </button>
+        <button
+          v-if="diffBlockCount"
+          class="al-head-btn"
+          @click="toggleAllDiffs"
+          :title="allDiffsCollapsed ? '展开所有 Diff 区块' : '折叠所有 Diff 区块'">
+          {{ allDiffsCollapsed ? '展开 Diff' : '折叠 Diff' }}
+        </button>
         <span v-if="!done" class="streaming-pill">streaming…</span>
         <span class="lines">{{ totalLines }} 行</span>
       </div>
@@ -357,14 +424,23 @@ CP.Components.AgentLog = Vue.defineComponent({
               </div>
             </div>
 
-            <div v-else-if="b.type === 'diff'" class="al-block al-diff">
-              <div class="al-diff-head">
+            <div v-else-if="b.type === 'diff'" class="al-block al-diff" :class="{ collapsed: isCollapsed(b) }">
+              <div class="al-diff-head" :class="{ clickable: canCollapseDiff(b) }" @click="canCollapseDiff(b) && toggleCollapse(b.key)">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                 <span class="al-diff-file">{{ b.file }}</span>
+                <span class="al-diff-meta">+{{ b.adds || 0 }} / -{{ b.dels || 0 }}</span>
+                <span class="al-diff-count">{{ (b.lines && b.lines.length) || 0 }} 行</span>
+                <span v-if="canCollapseDiff(b)" class="al-diff-caret">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                    :style="{transform: isCollapsed(b) ? 'rotate(-90deg)' : 'rotate(0deg)'}">
+                    <polyline points="6 9 12 15 18 9"/>
+                  </svg>
+                </span>
               </div>
               <div class="al-diff-body">
                 <span
-                  v-for="(row, i) in b.lines"
+                  v-for="(row, i) in visibleDiffLines(b)"
                   :key="b.key + ':diff:' + i"
                   class="al-diff-line"
                   :class="'k-' + row.kind"
@@ -381,7 +457,7 @@ CP.Components.AgentLog = Vue.defineComponent({
           <div v-if="!blocks.length" class="al-empty">还没有可显示的日志</div>
           <span v-if="!done" class="al-cursor"></span>
         </div>
-        <button v-if="!stickToBottom" class="agent-log-jump" @click="scrollToBottom" title="回到最新">
+        <button v-if="!stickToBottom || manualFollowPaused" class="agent-log-jump" @click="scrollToBottom" title="回到最新并恢复自动跟随">
           ↓ 回到最新
         </button>
       </div>
