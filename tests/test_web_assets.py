@@ -89,3 +89,17 @@ def test_form_components_use_scoped_action_pending_instead_of_global_sending():
     assert "s.sending" not in goal
     assert "s.sending" not in composer
     assert "s.sending" not in chat
+
+
+def test_agent_log_splits_rendering_and_interaction_state_into_boundaries():
+    index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
+    agent_log = Path("codepilot/web/components/AgentLog.js").read_text(encoding="utf-8")
+    render_boundary = Path("codepilot/web/boundaries/AgentLogRenderBoundary.js").read_text(encoding="utf-8")
+    interaction_boundary = Path("codepilot/web/boundaries/AgentLogInteractionBoundary.js").read_text(encoding="utf-8")
+
+    assert "<script src=\"/static/boundaries/AgentLogRenderBoundary.js\"></script>" in index_html
+    assert "<script src=\"/static/boundaries/AgentLogInteractionBoundary.js\"></script>" in index_html
+    assert "const AgentLogRender = CP.AgentLogRenderBoundary || {};" in agent_log
+    assert "const AgentLogInteraction = CP.AgentLogInteractionBoundary || {};" in agent_log
+    assert "CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {" in render_boundary
+    assert "CP.AgentLogInteractionBoundary = CP.AgentLogInteractionBoundary || (() => {" in interaction_boundary

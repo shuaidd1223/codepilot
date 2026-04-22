@@ -14,9 +14,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from codepilot import db
-from codepilot.commands.inspect import run_inspection
 from codepilot.commands.run import run_backlog
-from codepilot.config import load_project_config, resolve_planner
 from codepilot.output import echo, safe
 from codepilot.paths import _slugify_project_name, global_storage_root
 from codepilot.runtime import is_process_alive, reap_stalled_tasks
@@ -475,7 +473,6 @@ def _run_loop(
     echo("[yellow]守护进程运行中，按 Ctrl+C 停止[/yellow]")
     click.echo()
 
-    last_inspect_at: dict[str, float] = {}
     heartbeat_stop = _start_heartbeat_thread(project)
 
     try:
@@ -487,8 +484,6 @@ def _run_loop(
             reaped = reap_stalled_tasks(project)
             for task in reaped:
                 echo(f"[yellow]已回收卡住任务 #{task['id']}：{task['title']}[/yellow]")
-
-            _maybe_run_inspect(project, last_inspect_at, verbose)
 
             stats = _get_combined_stats(project)
             timestamp = time.strftime("%H:%M:%S")
@@ -537,52 +532,6 @@ def _run_loop(
                 break
     finally:
         heartbeat_stop.set()
-
-
-def _maybe_run_inspect(project: str | None, last_at: dict[str, float], verbose: bool) -> None:
-    """Run periodic inspection for each configured project when the interval elapses."""
-    now = time.monotonic()
-    targets = [project] if project else [proj["name"] for proj in db.list_projects()]
-    for name in targets:
-        proj = db.get_project(name)
-        if not proj:
-            continue
-        try:
-            cfg = load_project_config(proj)
-        except Exception:
-            continue
-        ins = getattr(cfg, "inspect", None)
-        if not ins or not ins.enabled:
-            continue
-        elapsed = now - last_at.get(name, 0.0)
-        if last_at.get(name) and elapsed < ins.interval_seconds:
-            continue
-        last_at[name] = now
-        stamp = time.strftime("%H:%M:%S")
-        echo(f"[cyan][{stamp}] 巡检 {name}[/cyan]")
-        try:
-            result = run_inspection(
-                {"name": name, "path": proj["path"], "config_file": proj.get("config_file")},
-                max_new_tasks=ins.max_new_tasks_per_round,
-                signals=ins.signals,
-                auto_execute=ins.auto_execute,
-                priority=ins.priority,
-                agent="codex",                # 执行器：写代码默认 codex
-                planner=resolve_planner(cfg, "inspect"),
-            )
-        except Exception as exc:
-            echo(f"[yellow]巡检 {name} 失败：{safe(exc)}[/yellow]")
-            continue
-        if result.get("error"):
-            echo(f"[yellow]巡检 {name}：{result['error']}[/yellow]")
-            continue
-        created = result.get("created") or []
-        if created:
-            echo(f"[green][{stamp}] {name} 新增 {len(created)} 条建议[/green]")
-            for task in created:
-                echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]")
-        elif verbose:
-            echo(f"[dim][{stamp}] {name} 巡检无新建议[/dim]")
 
 
 def _get_combined_stats(project: str | None) -> dict:
