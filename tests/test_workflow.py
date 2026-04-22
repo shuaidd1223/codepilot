@@ -717,6 +717,54 @@ planner = "claude"
     assert captured["planner"] == "claude"
 
 
+def test_assess_requirement_for_planning_uses_shared_input_builder(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project_info = db.register_project("demo", str(project_path))
+    seen: dict[str, object] = {}
+
+    def _fake_clarify(title, *, qa_history=None, **kwargs):
+        seen["title"] = title
+        seen["qa_history"] = qa_history
+        return {"status": "ready", "refined_title": "  细化需求  ", "qa_history": qa_history}
+
+    monkeypatch.setattr(auto_cmd, "clarify_requirement", _fake_clarify)
+
+    result = auto_cmd.assess_requirement_for_planning(
+        "  先做 Web UI  ",
+        project_info=project_info,
+        planner="codex",
+        original_title="  优化一下 ",
+        qa_history=[{"question": "Q1", "answer": "A1"}],
+        last_questions=[" 先做哪块? ", ""],
+    )
+
+    assert seen["title"] == "优化一下"
+    assert seen["qa_history"] == [
+        {"question": "Q1", "answer": "A1"},
+        {"question": "先做哪块?", "answer": "先做 Web UI"},
+    ]
+    assert result["seed_title"] == "优化一下"
+    assert result["refined_title"] == "细化需求"
+
+
+def test_append_clarification_answer_normalizes_history_rows():
+    qa_history = [{"question": "Q1", "answer": "A1"}]
+    merged = auto_cmd.append_clarification_answer(
+        qa_history,
+        answer="  继续补充  ",
+        questions=["", " 先确认范围 ", " "],
+    )
+
+    assert merged == [
+        {"question": "Q1", "answer": "A1"},
+        {"question": "先确认范围", "answer": "继续补充"},
+    ]
+    # Original input remains untouched.
+    assert qa_history == [{"question": "Q1", "answer": "A1"}]
+
+
 def test_resolve_project_for_prompt_uses_current_directory(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

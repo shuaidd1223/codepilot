@@ -97,9 +97,12 @@ from codepilot.commands.auto_chat import (  # noqa: F401 (re-export)
     run_chat_session,
 )
 from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
+    append_clarification_answer,
+    assess_requirement_for_planning,
     classify_entry_intent,
     command_intent_guidance,
     resolve_question_answer_options,
+    normalize_requirement_text,
     _project_config,
     _provider_context,
     _has_explicit_automation_task_agent,
@@ -142,12 +145,13 @@ def _clarify_requirement_for_go(
         if cfg and getattr(cfg, "automation", None)
         else 3
     )
+    seed_title = normalize_requirement_text(text)
     qa_history: list[dict] = []
-    assessment = clarify_requirement(
-        text,
+    assessment = assess_requirement_for_planning(
+        seed_title,
         project_info=project_info,
-        qa_history=qa_history,
         planner=planner,
+        qa_history=qa_history,
         max_turns=max_turns,
     )
 
@@ -163,12 +167,13 @@ def _clarify_requirement_for_go(
             echo("[yellow]未收到补充信息，将按当前内容继续规划。[/yellow]")
             break
 
-        qa_history.append({
-            "question": " | ".join(questions),
-            "answer": answer,
-        })
-        assessment = clarify_requirement(
-            text,
+        qa_history = append_clarification_answer(
+            qa_history,
+            answer=answer,
+            questions=questions,
+        )
+        assessment = assess_requirement_for_planning(
+            seed_title,
             project_info=project_info,
             qa_history=qa_history,
             planner=planner,
@@ -176,7 +181,7 @@ def _clarify_requirement_for_go(
         )
 
     refined = (assessment.get("refined_title") or "").strip()
-    return refined or text
+    return refined or seed_title
 
 
 @click.command("auto")

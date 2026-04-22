@@ -17,9 +17,11 @@ from typing import Optional
 
 from codepilot import db
 from codepilot.commands.auto import (  # noqa: F401 — patched in tests
+    assess_requirement_for_planning,
     classify_entry_intent,
     clarify_requirement,
     command_intent_guidance,
+    normalize_requirement_text,
     resolve_question_answer_options,
 )
 from codepilot.commands.init import initialize_project
@@ -423,22 +425,21 @@ def submit_requirement_action(
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
-    normalized_title = " ".join((title or "").split())
+    normalized_title = normalize_requirement_text(title)
     if not normalized_title:
         raise RuntimeError("需求文本不能为空。")
     effective_planner = _effective_planner(project_info, planner)
 
     if clarify:
-        seed_title = " ".join((original_title or normalized_title).split())
-        merged_history = list(qa_history or [])
-        if original_title:
-            merged_history.append({"question": "", "answer": normalized_title})
-        assessment = clarify_requirement(
-            seed_title,
+        assessment = assess_requirement_for_planning(
+            normalized_title,
             project_info=project_info,
-            qa_history=merged_history,
             planner=effective_planner,
+            qa_history=qa_history,
+            original_title=original_title,
+            clarify_fn=clarify_requirement,
         )
+        seed_title = assessment.get("seed_title") or normalized_title
         if assessment.get("status") == "needs_clarification":
             questions = assessment.get("questions") or []
             _append_event(f"需求需要澄清：{seed_title[:60]}", project=project)
@@ -447,10 +448,10 @@ def submit_requirement_action(
                 "intent": "clarify",
                 "questions": questions,
                 "original_title": seed_title,
-                "qa_history": assessment.get("qa_history") or merged_history,
+                "qa_history": assessment.get("qa_history") or [],
                 "message": "为了更好地规划，请先回答几个问题。",
             }
-        normalized_title = " ".join((assessment.get("refined_title") or seed_title).split())
+        normalized_title = assessment.get("refined_title") or seed_title
 
     job_id = _next_job_id()
     with shell._UI_LOCK:
@@ -641,19 +642,15 @@ def submit_goal_action(
         return {"ok": True, "intent": "question", "message": answer or "未获得回答"}
 
     # ── Clarification (multi-turn) gate before actually planning ──────────
-    if original_title:
-        merged_history = list(qa_history or []) + [{"question": "", "answer": text}]
-        seed_title = original_title
-    else:
-        merged_history = []
-        seed_title = text
-
-    assessment = clarify_requirement(
-        seed_title,
+    assessment = assess_requirement_for_planning(
+        text,
         project_info=project_info,
-        qa_history=merged_history,
         planner=effective_planner,
+        qa_history=qa_history,
+        original_title=original_title,
+        clarify_fn=clarify_requirement,
     )
+    seed_title = assessment.get("seed_title") or text
 
     if assessment.get("status") == "needs_clarification":
         _append_event(f"需求需要澄清：{seed_title[:60]}", project=project)
@@ -826,17 +823,14 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
     pending = _reconstruct_clarification_state(existing_messages)
     if pending and category in {"auto", "", None}:
         db.create_session_message(session_id, "user", text)
-        merged_history = list(pending["qa_history"])
-        last_qs = pending.get("last_questions") or []
-        merged_history.append({
-            "question": " | ".join(last_qs),
-            "answer": text,
-        })
-        assessment = clarify_requirement(
-            pending["original_title"],
+        assessment = assess_requirement_for_planning(
+            text,
             project_info=project_info,
-            qa_history=merged_history,
             planner=effective_planner,
+            qa_history=pending["qa_history"],
+            original_title=pending["original_title"],
+            last_questions=pending.get("last_questions") or [],
+            clarify_fn=clarify_requirement,
         )
         if assessment.get("status") == "needs_clarification":
             questions = assessment.get("questions") or []
@@ -849,7 +843,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
                 "questions": questions,
                 "task_ids": [],
             }
-        refined = assessment.get("refined_title") or pending["original_title"]
+        refined = assessment.get("refined_title") or (assessment.get("seed_title") or pending["original_title"])
         plan_result = submit_requirement_action(
             project,
             refined,
@@ -904,11 +898,11 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
         db.create_session_message(session_id, "assistant", reply, intent="question")
         return {"ok": True, "intent": "question", "message": reply, "task_ids": []}
 
-    assessment = clarify_requirement(
+    assessment = assess_requirement_for_planning(
         text,
         project_info=project_info,
-        qa_history=[],
         planner=effective_planner,
+        clarify_fn=clarify_requirement,
     )
     if assessment.get("status") == "needs_clarification":
         questions = assessment.get("questions") or []

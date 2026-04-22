@@ -387,19 +387,17 @@ def run_chat_session(
         # ── Multi-turn clarification: user is answering outstanding questions ──
         if pending_clarification and not forced_intent and not text.startswith("?"):
             answer_text = payload_text
-            qa_history = list(pending_clarification.get("qa_history", []))
             last_questions = pending_clarification.get("last_questions") or []
-            # Attach the user's answer to the most-recent round of questions.
-            if last_questions:
-                merged_q = " | ".join(last_questions)
-                qa_history.append({"question": merged_q, "answer": answer_text})
-            else:
-                qa_history.append({"question": "", "answer": answer_text})
+            qa_history = shell.append_clarification_answer(
+                pending_clarification.get("qa_history"),
+                answer=answer_text,
+                questions=last_questions,
+            )
 
             spinner = _Spinner("正在评估补充信息")
             spinner.__enter__()
             try:
-                assessment = shell.clarify_requirement(
+                assessment = shell.assess_requirement_for_planning(
                     pending_clarification["original_title"],
                     project_info=project_info,
                     qa_history=qa_history,
@@ -435,7 +433,7 @@ def run_chat_session(
                 questions = assessment.get("questions") or []
                 pending_clarification = {
                     "original_title": pending_clarification["original_title"],
-                    "qa_history": qa_history,
+                    "qa_history": assessment.get("qa_history") or qa_history,
                     "last_questions": questions,
                     "intent": pending_clarification.get("intent", "requirement"),
                 }
@@ -553,10 +551,9 @@ def run_chat_session(
                 # ── Step 1: clarify if the requirement looks vague ──
                 echo("[dim]阶段 2/3：正在评估需求完整度...[/dim]")
                 spinner._message = "正在评估需求完整度"
-                assessment = shell.clarify_requirement(
+                assessment = shell.assess_requirement_for_planning(
                     payload_text,
                     project_info=project_info,
-                    qa_history=[],
                     planner=effective["planner"],
                 )
                 spinner.__exit__(None, None, None)
@@ -565,7 +562,7 @@ def run_chat_session(
                     questions = assessment.get("questions") or []
                     pending_clarification = {
                         "original_title": payload_text,
-                        "qa_history": [],
+                        "qa_history": assessment.get("qa_history") or [],
                         "last_questions": questions,
                         "intent": intent,
                     }

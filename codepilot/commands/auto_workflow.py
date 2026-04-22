@@ -166,6 +166,81 @@ def clarify_requirement(
     return result
 
 
+def normalize_requirement_text(text: str) -> str:
+    """Normalize a free-text requirement into a planner-friendly single line."""
+    return " ".join((text or "").split())
+
+
+def append_clarification_answer(
+    qa_history: Optional[list[dict]],
+    *,
+    answer: str,
+    questions: Optional[list[str]] = None,
+) -> list[dict]:
+    """Append one clarification Q/A turn with shared normalization rules."""
+    merged_history = list(qa_history or [])
+    normalized_answer = normalize_requirement_text(answer)
+    if not normalized_answer:
+        return merged_history
+    normalized_questions = [
+        q.strip()
+        for q in (questions or [])
+        if isinstance(q, str) and q.strip()
+    ]
+    merged_history.append({
+        "question": " | ".join(normalized_questions),
+        "answer": normalized_answer,
+    })
+    return merged_history
+
+
+def assess_requirement_for_planning(
+    text: str,
+    *,
+    project_info: dict,
+    planner: str = "codex",
+    qa_history: Optional[list[dict]] = None,
+    original_title: str = "",
+    last_questions: Optional[list[str]] = None,
+    max_turns: int = 3,
+    clarify_fn=None,
+) -> dict:
+    """Shared entrypoint for clarification + planning input construction.
+
+    This keeps chat/webui/go aligned on how ``seed_title`` / ``qa_history`` are
+    assembled before calling :func:`clarify_requirement`.
+    """
+    normalized_text = normalize_requirement_text(text)
+    normalized_original = normalize_requirement_text(original_title)
+    seed_title = normalized_original or normalized_text
+
+    merged_history = list(qa_history or [])
+    if normalized_original:
+        merged_history = append_clarification_answer(
+            merged_history,
+            answer=normalized_text,
+            questions=last_questions,
+        )
+
+    clarifier = clarify_fn or _shell().clarify_requirement
+    assessment = clarifier(
+        seed_title,
+        project_info=project_info,
+        qa_history=merged_history,
+        planner=planner,
+        max_turns=max_turns,
+    )
+    result = dict(assessment)
+    result["seed_title"] = seed_title
+    result["qa_history"] = assessment.get("qa_history") or merged_history
+
+    if result.get("status") == "ready":
+        result["refined_title"] = normalize_requirement_text(
+            result.get("refined_title") or seed_title
+        )
+    return result
+
+
 def resolve_project_for_prompt(
     project: Optional[str] = None,
     cwd: Optional[Path] = None,
@@ -461,7 +536,7 @@ def run_requirement_workflow(
             "请先在目标目录运行 codepilot init，或使用 --project 指定已注册项目。"
         )
 
-    title = " ".join(title.strip().split())
+    title = normalize_requirement_text(title)
     if not title:
         raise click.ClickException("需求文本不能为空")
 
