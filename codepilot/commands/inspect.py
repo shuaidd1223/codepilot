@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -209,28 +208,8 @@ collect_pytest_collect = inspect_signals.collect_pytest_collect
 collect_dependency_health = inspect_signals.collect_dependency_health
 collect_code_metrics = inspect_signals.collect_code_metrics
 
-
-@dataclass(frozen=True)
-class InspectSignalSpec:
-    """One canonical inspect signal definition."""
-
-    key: str
-    title: str
-    order: int
-    aliases: tuple[str, ...]
-    collector_attr: str
-    uses_project_name: bool = False
-
-
-@dataclass(frozen=True)
-class InspectSignalResult:
-    """Unified signal result model used by prompt aggregation."""
-
-    key: str
-    title: str
-    order: int
-    enabled: bool
-    content: str
+InspectSignalSpec = inspect_signals.InspectSignalSpec
+InspectSignalResult = inspect_signals.InspectSignalResult
 
 
 INSPECT_SIGNAL_SPECS: tuple[InspectSignalSpec, ...] = (
@@ -239,56 +218,70 @@ INSPECT_SIGNAL_SPECS: tuple[InspectSignalSpec, ...] = (
         title="最近 git 提交",
         order=1,
         aliases=("git_log",),
-        collector_attr="collect_git_log",
+        collector_key="collect_git_log",
+        collector_scope="project_path",
     ),
     InspectSignalSpec(
         key="failed_tasks",
         title="最近失败或取消的任务",
         order=2,
         aliases=("failed_tasks",),
-        collector_attr="collect_failed_tasks",
-        uses_project_name=True,
+        collector_key="collect_failed_tasks",
+        collector_scope="project_name",
     ),
     InspectSignalSpec(
         key="todos",
         title="代码里的 TODO/FIXME/XXX",
         order=3,
         aliases=("todos",),
-        collector_attr="collect_todos",
+        collector_key="collect_todos",
+        collector_scope="project_path",
     ),
     InspectSignalSpec(
         key="ruff",
         title="ruff lint 报告",
         order=4,
         aliases=("ruff",),
-        collector_attr="collect_ruff",
+        collector_key="collect_ruff",
+        collector_scope="project_path",
     ),
     InspectSignalSpec(
         key="pytest",
         title="pytest --collect-only 摘要",
         order=5,
         aliases=("pytest",),
-        collector_attr="collect_pytest_collect",
+        collector_key="collect_pytest_collect",
+        collector_scope="project_path",
     ),
     InspectSignalSpec(
         key="deps",
         title="依赖健康线索",
         order=6,
         aliases=("deps",),
-        collector_attr="collect_dependency_health",
+        collector_key="collect_dependency_health",
+        collector_scope="project_path",
     ),
     InspectSignalSpec(
         key="code_metrics",
         title="代码规模与复杂度线索",
         order=7,
         aliases=("code_metrics", "code_size", "complexity"),
-        collector_attr="collect_code_metrics",
+        collector_key="collect_code_metrics",
+        collector_scope="project_path",
     ),
 )
 
 
-def _normalize_signal_tokens(signals: tuple[str, ...]) -> set[str]:
-    return {signal.strip().lower() for signal in signals if isinstance(signal, str) and signal.strip()}
+def _inspect_signal_collectors() -> dict[str, inspect_signals.InspectSignalCollector]:
+    return {
+        "collect_git_log": lambda value: collect_git_log(value),
+        "collect_failed_tasks": lambda value: collect_failed_tasks(value),
+        "collect_todos": lambda value: collect_todos(value),
+        "collect_ruff": lambda value: collect_ruff(value),
+        "collect_pytest_collect": lambda value: collect_pytest_collect(value),
+        "collect_dependency_health": lambda value: collect_dependency_health(value),
+        "collect_code_metrics": lambda value: collect_code_metrics(value),
+    }
 
 
 def collect_inspection_signal_results(
@@ -298,25 +291,14 @@ def collect_inspection_signal_results(
     signals: tuple[str, ...],
 ) -> list[InspectSignalResult]:
     """Aggregate inspect signals with one unified model, order, and combination path."""
-    requested = _normalize_signal_tokens(signals)
-    results: list[InspectSignalResult] = []
-    for spec in INSPECT_SIGNAL_SPECS:
-        enabled = bool(requested & set(spec.aliases))
-        if enabled:
-            collector = globals()[spec.collector_attr]
-            content = collector(project_name) if spec.uses_project_name else collector(project_path)
-        else:
-            content = SKIPPED_SIGNAL
-        results.append(
-            InspectSignalResult(
-                key=spec.key,
-                title=spec.title,
-                order=spec.order,
-                enabled=enabled,
-                content=content,
-            )
-        )
-    return results
+    return inspect_signals.collect_signal_results(
+        project_name,
+        project_path,
+        signals=signals,
+        specs=INSPECT_SIGNAL_SPECS,
+        collectors_by_key=_inspect_signal_collectors(),
+        skipped_signal=SKIPPED_SIGNAL,
+    )
 
 
 def _render_signal_sections(signal_results: list[InspectSignalResult]) -> str:
