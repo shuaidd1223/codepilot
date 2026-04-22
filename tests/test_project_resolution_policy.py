@@ -7,6 +7,7 @@ from click.testing import CliRunner
 
 from codepilot import db
 from codepilot.cli import main
+from codepilot.commands import auto_project_resolution as auto_project_resolution_mod
 from codepilot.commands import auto as auto_cmd
 from codepilot.commands import auto_workflow as auto_workflow_mod
 
@@ -86,6 +87,34 @@ def test_resolve_project_for_prompt_returns_temporary_session_under_system_temp(
     assert project.get("is_temporary") is True
     assert "临时会话" in project.get("name", "")
     assert db.list_projects() == []
+
+
+def test_resolve_project_for_prompt_uses_central_project_resolution_entry(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    system_temp = tmp_path / "system-temp"
+    workdir = system_temp / "scratch"
+    workdir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(workdir)
+    monkeypatch.setattr(auto_workflow_mod.tempfile, "gettempdir", lambda: str(system_temp))
+
+    captured = {}
+
+    def fake_resolver(*, is_temporary_workspace_fn, **kwargs):
+        captured["kwargs"] = kwargs
+        captured["is_temp"] = is_temporary_workspace_fn(workdir)
+        return {"name": "mock", "path": str(workdir)}
+
+    monkeypatch.setattr(auto_project_resolution_mod, "resolve_project_for_prompt", fake_resolver)
+
+    project = auto_cmd.resolve_project_for_prompt(
+        auto_register=False,
+        allow_temporary=True,
+    )
+
+    assert project["name"] == "mock"
+    assert captured["kwargs"]["allow_temporary"] is True
+    assert captured["kwargs"]["auto_register"] is False
+    assert captured["is_temp"] is True
 
 
 def test_go_requires_registered_project_when_running_from_unregistered_workspace(tmp_path, monkeypatch):

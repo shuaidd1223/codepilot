@@ -897,6 +897,15 @@ pre.code.live-log { padding: 6px 10px; }
 .al-virtual-item.is-active .al-block {
   box-shadow: 0 0 0 1px rgba(130, 170, 255, .55) inset, 0 0 0 1px rgba(130, 170, 255, .28);
 }
+.al-md-wrap {
+  margin-bottom: 6px;
+}
+.al-md-wrap.is-hit .al-md-block {
+  box-shadow: 0 0 0 1px rgba(130, 170, 255, .35) inset;
+}
+.al-md-wrap.is-active .al-md-block {
+  box-shadow: 0 0 0 1px rgba(130, 170, 255, .55) inset, 0 0 0 1px rgba(130, 170, 255, .28);
+}
 .al-empty {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
@@ -1181,6 +1190,48 @@ pre.code.live-log { padding: 6px 10px; }
   color: #ccdbf3;
   border-left-color: rgba(130, 170, 255, .55);
   background: rgba(130, 170, 255, .10);
+}
+.al-md-block .md-code-head {
+  gap: 6px;
+}
+.al-md-toggle {
+  margin-left: auto;
+  border: 1px solid rgba(130, 170, 255, .25);
+  border-radius: 999px;
+  background: rgba(130, 170, 255, .10);
+  color: #cde0ff;
+  font-size: 10.5px;
+  line-height: 1.2;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.al-md-toggle:hover {
+  background: rgba(130, 170, 255, .18);
+  border-color: rgba(130, 170, 255, .42);
+}
+.al-md-collapsible {
+  position: relative;
+}
+.al-md-collapsible.is-collapsed pre {
+  max-height: var(--al-md-collapse-height, 220px) !important;
+  overflow: hidden !important;
+}
+.al-md-collapsible.is-collapsed:not(.is-expanded)::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 44px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(5, 8, 15, 0), rgba(5, 8, 15, .88));
+}
+[data-theme="light"] .al-md-collapsible.is-collapsed:not(.is-expanded)::after {
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(248, 250, 252, .96));
+}
+.al-md-collapsible.is-expanded pre {
+  max-height: 680px !important;
+  overflow: auto !important;
 }
 
 /* ── Tool call card ───────────────────────────── */

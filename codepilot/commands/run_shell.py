@@ -281,6 +281,85 @@ def _write_markdown_footer(
     handle.flush()
 
 
+class _MarkdownLiveWriter:
+    """Stream subprocess stdout into markdown-friendly live sections."""
+
+    _ROLE_NAMES = {"user", "codex", "claude", "assistant"}
+
+    def __init__(self, handle) -> None:
+        self._handle = handle
+        self._section = ""
+        self._runtime_fence_open = False
+        self._exec_fence_open = False
+
+    @staticmethod
+    def _escape_fence(text: str) -> str:
+        return text.replace("~~~", "~~\u200b~")
+
+    def _close_runtime_fence(self) -> None:
+        if not self._runtime_fence_open:
+            return
+        self._handle.write("\n~~~\n\n")
+        self._runtime_fence_open = False
+
+    def _close_exec_fence(self) -> None:
+        if not self._exec_fence_open:
+            return
+        self._handle.write("\n~~~\n\n")
+        self._exec_fence_open = False
+
+    def _switch_section(self, name: str, *, open_fence: bool = False) -> None:
+        self._close_runtime_fence()
+        self._close_exec_fence()
+        self._section = name
+        self._handle.write(f"\n### {name}\n\n")
+        if open_fence:
+            self._handle.write("~~~text\n")
+            self._exec_fence_open = True
+
+    def feed(self, raw: str) -> None:
+        if not raw:
+            return
+        for line in raw.splitlines(keepends=True):
+            has_newline = line.endswith("\n")
+            text = line[:-1] if has_newline else line
+            marker = text.strip()
+            is_clean_marker = bool(marker) and marker == text
+
+            if is_clean_marker and marker.lower() in self._ROLE_NAMES:
+                self._switch_section(marker.capitalize())
+                continue
+
+            if is_clean_marker and marker.lower() == "exec":
+                self._switch_section("Exec", open_fence=True)
+                continue
+
+            if self._section == "Exec":
+                self._handle.write(self._escape_fence(text))
+                if has_newline:
+                    self._handle.write("\n")
+                continue
+
+            if not self._section:
+                self._section = "Runtime"
+                self._handle.write("\n### Runtime\n\n~~~text\n")
+                self._runtime_fence_open = True
+
+            if self._section == "Runtime":
+                self._handle.write(self._escape_fence(text))
+                if has_newline:
+                    self._handle.write("\n")
+                continue
+
+            self._handle.write(text)
+            if has_newline:
+                self._handle.write("\n")
+
+    def finalize(self) -> None:
+        self._close_runtime_fence()
+        self._close_exec_fence()
+
+
 def _format_status_console_line(line: str) -> str:
     from rich.markup import escape as _rich_escape
 
@@ -392,6 +471,7 @@ def _run_command_live(
             cwd=cwd,
             timeout=timeout,
         )
+        md_live_writer = _MarkdownLiveWriter(handle)
         # Stream event offsets are semantic chunk offsets (start from 0),
         # independent of markdown preamble bytes in the log file.
         emitted_log_bytes = [0]
@@ -455,7 +535,7 @@ def _run_command_live(
             stream_start = emitted_log_bytes[0]
             emitted_log_bytes[0] = stream_start + len(raw_bytes)
             try:
-                handle.write(raw)
+                md_live_writer.feed(raw)
                 handle.flush()
             except Exception:
                 pass
@@ -592,6 +672,7 @@ def _run_command_live(
                     )
                     with recent_lock:
                         summary = _summarize_output("".join(recent_lines))
+                    md_live_writer.finalize()
                     _write_markdown_footer(
                         handle,
                         status=str(run_status["state"]),
@@ -606,6 +687,7 @@ def _run_command_live(
             if run_status["state"] not in {"ok", "failed"}:
                 with recent_lock:
                     summary = _summarize_output("".join(recent_lines))
+                md_live_writer.finalize()
                 _write_markdown_footer(
                     handle,
                     status=str(run_status["state"]),
