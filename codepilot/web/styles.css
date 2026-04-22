@@ -1233,6 +1233,210 @@ pre.code.live-log { padding: 6px 10px; }
   max-height: 680px !important;
   overflow: auto !important;
 }
+.al-md-diff-pre {
+  padding: 0 !important;
+  background: rgba(4, 10, 22, .56);
+  font-variant-numeric: tabular-nums;
+}
+.al-md-diff-code {
+  display: block;
+}
+.al-md-diff-line {
+  display: flex;
+  align-items: stretch;
+  white-space: pre;
+  word-break: normal;
+  min-width: max-content;
+  border-bottom: 1px solid rgba(130, 170, 255, .06);
+}
+.al-md-diff-line:last-child {
+  border-bottom: 0;
+}
+.al-md-diff-gutter {
+  width: 90px;
+  flex: 0 0 90px;
+  display: grid;
+  grid-template-columns: 30px 30px 20px;
+  align-items: center;
+  column-gap: 0;
+  border-right: 1px solid rgba(130, 170, 255, .16);
+  background: rgba(130, 170, 255, .06);
+}
+.al-md-ln {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  padding-right: 6px;
+  color: #8ea2c4;
+  font-size: 10.5px;
+  line-height: 1.1;
+}
+.al-md-sign {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #a8bad7;
+  font-weight: 700;
+  font-size: 11px;
+}
+.al-md-diff-text {
+  flex: 1;
+  min-width: 0;
+  padding: 0 10px;
+  color: #d5e2fa;
+}
+.al-md-diff-line.k-hdr {
+  color: var(--agent-meta);
+  font-weight: 600;
+  background: rgba(168, 142, 234, .13);
+}
+.al-md-diff-line.k-hdr .al-md-diff-gutter,
+.al-md-diff-line.k-meta .al-md-diff-gutter {
+  background: rgba(125, 106, 176, .18);
+}
+.al-md-diff-line.k-meta {
+  color: var(--agent-meta);
+}
+.al-md-diff-line.k-hunk {
+  color: #c8deff;
+  background: rgba(92, 136, 215, .22);
+  font-weight: 500;
+}
+.al-md-diff-line.k-hunk .al-md-diff-gutter {
+  background: rgba(78, 119, 196, .30);
+}
+.al-md-diff-line.k-add {
+  background: var(--agent-add-bg);
+  color: var(--agent-add-fg);
+}
+.al-md-diff-line.k-add .al-md-diff-gutter {
+  background: rgba(70, 170, 110, .23);
+}
+.al-md-diff-line.k-del {
+  background: var(--agent-del-bg);
+  color: var(--agent-del-fg);
+}
+.al-md-diff-line.k-del .al-md-diff-gutter {
+  background: rgba(200, 95, 95, .23);
+}
+.al-md-diff-line.k-ctx {
+  color: var(--agent-dim);
+}
+.al-md-diff-line.k-exec-cmd {
+  background: rgba(82, 128, 220, .16);
+  color: #d3e3ff;
+}
+.al-md-diff-line.k-exec-ok {
+  background: rgba(66, 156, 103, .16);
+  color: #b7efc8;
+}
+.al-md-diff-line.k-exec-fail {
+  background: rgba(182, 84, 84, .2);
+  color: #ffd2d2;
+}
+.al-md-diff-line.k-exec-cmd .al-md-diff-gutter,
+.al-md-diff-line.k-exec-ok .al-md-diff-gutter,
+.al-md-diff-line.k-exec-fail .al-md-diff-gutter {
+  background: rgba(95, 123, 170, .22);
+}
+.al-md-path {
+  color: #9fcbff;
+  font-weight: 600;
+  background: rgba(130, 170, 255, .2);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.al-md-path-line {
+  display: block;
+  white-space: pre;
+}
+.al-md-path-prefix {
+  color: #9db0d2;
+  font-weight: 600;
+}
+.al-md-path-arrow {
+  color: #b7c8e8;
+}
+.al-md-exec-pre {
+  padding: 2px 0 !important;
+}
+.al-md-exec-code {
+  display: block;
+}
+.al-md-exec-line {
+  display: block;
+  padding: 0 10px;
+  min-width: max-content;
+  white-space: pre;
+  border-left: 3px solid transparent;
+}
+.al-md-exec-line.k-cmd {
+  color: #d7e6ff;
+  background: rgba(89, 132, 213, .14);
+  border-left-color: rgba(116, 156, 232, .72);
+}
+.al-md-exec-line.k-ok {
+  color: #b9f4ca;
+  background: rgba(62, 158, 103, .14);
+  border-left-color: rgba(82, 185, 126, .8);
+}
+.al-md-exec-line.k-fail {
+  color: #ffd8d8;
+  background: rgba(183, 82, 82, .16);
+  border-left-color: rgba(214, 108, 108, .82);
+}
+.al-md-exec-line.k-path {
+  color: #d2ddf1;
+  background: rgba(88, 112, 148, .11);
+  border-left-color: rgba(116, 140, 176, .58);
+}
+.al-md-exec-line.k-out {
+  color: #c7d6ef;
+}
+.al-md-exec-bin {
+  color: #ffe39e;
+  font-weight: 700;
+}
+.al-md-exec-args {
+  color: #cddcf7;
+}
+.al-md-exec-in {
+  color: #95add3;
+  font-weight: 600;
+}
+[data-theme="light"] .al-md-diff-pre {
+  background: rgba(233, 239, 248, .65);
+}
+[data-theme="light"] .al-md-diff-text {
+  color: #223754;
+}
+[data-theme="light"] .al-md-diff-gutter {
+  background: rgba(125, 153, 196, .12);
+  border-right-color: rgba(125, 153, 196, .22);
+}
+[data-theme="light"] .al-md-ln {
+  color: #58739a;
+}
+[data-theme="light"] .al-md-sign {
+  color: #607da5;
+}
+[data-theme="light"] .al-md-exec-line.k-cmd {
+  color: #243f67;
+  background: rgba(110, 146, 214, .17);
+}
+[data-theme="light"] .al-md-exec-line.k-ok {
+  color: #1f6a3f;
+  background: rgba(105, 180, 132, .18);
+}
+[data-theme="light"] .al-md-exec-line.k-fail {
+  color: #7f2530;
+  background: rgba(212, 115, 115, .19);
+}
+[data-theme="light"] .al-md-exec-line.k-path {
+  color: #2d4364;
+  background: rgba(126, 151, 194, .18);
+}
 
 /* ── Tool call card ───────────────────────────── */
 .al-tool {

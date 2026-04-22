@@ -272,6 +272,88 @@ def clarification_state_from_assessment(
     )
 
 
+def continue_pending_clarification(
+    pending_state: Optional[dict],
+    *,
+    answer: str,
+    project_info: dict,
+    planner: str = "codex",
+    max_turns: int = 3,
+    intent: str = _DEFAULT_CLARIFICATION_INTENT,
+    clarify_fn=None,
+) -> dict:
+    """Advance one pending-clarification turn with normalized status/errors.
+
+    Returns one of:
+    - ``{"status": "needs_clarification", "pending_state": {...}, "questions": [...]}``
+    - ``{"status": "ready", "refined_title": str}``
+    - ``{"status": "error", "error_kind": "interrupt"|"click"|"runtime", "message": str}``
+    """
+    base_state = build_clarification_state(
+        original_title=(pending_state or {}).get("original_title") or "",
+        qa_history=(pending_state or {}).get("qa_history"),
+        last_questions=(pending_state or {}).get("last_questions"),
+        intent=(pending_state or {}).get("intent") or intent,
+    )
+    try:
+        assessment = assess_requirement_for_planning(
+            answer,
+            project_info=project_info,
+            planner=planner,
+            qa_history=base_state["qa_history"],
+            original_title=base_state["original_title"],
+            last_questions=base_state["last_questions"],
+            max_turns=max_turns,
+            clarify_fn=clarify_fn,
+        )
+    except KeyboardInterrupt:
+        return {
+            "status": "error",
+            "error_kind": "interrupt",
+            "message": "clarification interrupted",
+            "pending_state": base_state,
+        }
+    except click.ClickException as exc:
+        return {
+            "status": "error",
+            "error_kind": "click",
+            "message": exc.format_message(),
+            "pending_state": base_state,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "error_kind": "runtime",
+            "message": str(exc),
+            "pending_state": base_state,
+        }
+
+    next_state = clarification_state_from_assessment(
+        assessment=assessment,
+        seed_title=base_state["original_title"],
+        previous_state=base_state,
+        intent=base_state["intent"],
+    )
+    if next_state:
+        questions = next_state.get("last_questions") or []
+        return {
+            "status": "needs_clarification",
+            "questions": questions,
+            "pending_state": next_state,
+            "assessment": assessment,
+        }
+
+    refined = normalize_requirement_text(
+        assessment.get("refined_title") or base_state["original_title"]
+    )
+    return {
+        "status": "ready",
+        "refined_title": refined,
+        "pending_state": None,
+        "assessment": assessment,
+    }
+
+
 def assess_requirement_for_planning(
     text: str,
     *,

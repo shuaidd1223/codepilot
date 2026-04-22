@@ -286,8 +286,7 @@ class _MarkdownLiveWriter:
 
     _ROLE_NAMES = {"user", "codex", "claude", "assistant"}
 
-    def __init__(self, handle) -> None:
-        self._handle = handle
+    def __init__(self) -> None:
         self._section = ""
         self._runtime_fence_open = False
         self._exec_fence_open = False
@@ -296,30 +295,36 @@ class _MarkdownLiveWriter:
     def _escape_fence(text: str) -> str:
         return text.replace("~~~", "~~\u200b~")
 
-    def _close_runtime_fence(self) -> None:
+    @staticmethod
+    def _append(buf: list[str], text: str) -> None:
+        if text:
+            buf.append(text)
+
+    def _close_runtime_fence(self, out: list[str]) -> None:
         if not self._runtime_fence_open:
             return
-        self._handle.write("\n~~~\n\n")
+        self._append(out, "\n~~~\n\n")
         self._runtime_fence_open = False
 
-    def _close_exec_fence(self) -> None:
+    def _close_exec_fence(self, out: list[str]) -> None:
         if not self._exec_fence_open:
             return
-        self._handle.write("\n~~~\n\n")
+        self._append(out, "\n~~~\n\n")
         self._exec_fence_open = False
 
-    def _switch_section(self, name: str, *, open_fence: bool = False) -> None:
-        self._close_runtime_fence()
-        self._close_exec_fence()
+    def _switch_section(self, out: list[str], name: str, *, open_fence: bool = False) -> None:
+        self._close_runtime_fence(out)
+        self._close_exec_fence(out)
         self._section = name
-        self._handle.write(f"\n### {name}\n\n")
+        self._append(out, f"\n### {name}\n\n")
         if open_fence:
-            self._handle.write("~~~text\n")
+            self._append(out, "~~~text\n")
             self._exec_fence_open = True
 
-    def feed(self, raw: str) -> None:
+    def feed(self, raw: str) -> str:
         if not raw:
-            return
+            return ""
+        out: list[str] = []
         for line in raw.splitlines(keepends=True):
             has_newline = line.endswith("\n")
             text = line[:-1] if has_newline else line
@@ -327,37 +332,40 @@ class _MarkdownLiveWriter:
             is_clean_marker = bool(marker) and marker == text
 
             if is_clean_marker and marker.lower() in self._ROLE_NAMES:
-                self._switch_section(marker.capitalize())
+                self._switch_section(out, marker.capitalize())
                 continue
 
             if is_clean_marker and marker.lower() == "exec":
-                self._switch_section("Exec", open_fence=True)
+                self._switch_section(out, "Exec", open_fence=True)
                 continue
 
             if self._section == "Exec":
-                self._handle.write(self._escape_fence(text))
+                self._append(out, self._escape_fence(text))
                 if has_newline:
-                    self._handle.write("\n")
+                    self._append(out, "\n")
                 continue
 
             if not self._section:
                 self._section = "Runtime"
-                self._handle.write("\n### Runtime\n\n~~~text\n")
+                self._append(out, "\n### Runtime\n\n~~~text\n")
                 self._runtime_fence_open = True
 
             if self._section == "Runtime":
-                self._handle.write(self._escape_fence(text))
+                self._append(out, self._escape_fence(text))
                 if has_newline:
-                    self._handle.write("\n")
+                    self._append(out, "\n")
                 continue
 
-            self._handle.write(text)
+            self._append(out, text)
             if has_newline:
-                self._handle.write("\n")
+                self._append(out, "\n")
+        return "".join(out)
 
-    def finalize(self) -> None:
-        self._close_runtime_fence()
-        self._close_exec_fence()
+    def finalize(self) -> str:
+        out: list[str] = []
+        self._close_runtime_fence(out)
+        self._close_exec_fence(out)
+        return "".join(out)
 
 
 def _format_status_console_line(line: str) -> str:
@@ -471,7 +479,7 @@ def _run_command_live(
             cwd=cwd,
             timeout=timeout,
         )
-        md_live_writer = _MarkdownLiveWriter(handle)
+        md_live_writer = _MarkdownLiveWriter()
         # Stream event offsets are semantic chunk offsets (start from 0),
         # independent of markdown preamble bytes in the log file.
         emitted_log_bytes = [0]
@@ -531,15 +539,18 @@ def _run_command_live(
             # Any inbound byte resets the silence clock — even whitespace
             # counts as "agent still responsive".
             last_output_monotonic[0] = time.monotonic()
-            raw_bytes = raw.encode("utf-8", errors="replace")
+            markdown_chunk = md_live_writer.feed(raw)
+            if not markdown_chunk:
+                return
+            chunk_bytes = markdown_chunk.encode("utf-8", errors="replace")
             stream_start = emitted_log_bytes[0]
-            emitted_log_bytes[0] = stream_start + len(raw_bytes)
+            emitted_log_bytes[0] = stream_start + len(chunk_bytes)
             try:
-                md_live_writer.feed(raw)
+                handle.write(markdown_chunk)
                 handle.flush()
             except Exception:
                 pass
-            _emit_log_stream(raw, stream_start)
+            _emit_log_stream(markdown_chunk, stream_start)
             stripped = raw.rstrip()
             if stripped:
                 # Only surface concise progress lines (the CLI tools emit
@@ -672,7 +683,16 @@ def _run_command_live(
                     )
                     with recent_lock:
                         summary = _summarize_output("".join(recent_lines))
-                    md_live_writer.finalize()
+                    finalize_chunk = md_live_writer.finalize()
+                    if finalize_chunk:
+                        stream_start = emitted_log_bytes[0]
+                        emitted_log_bytes[0] = stream_start + len(finalize_chunk.encode("utf-8", errors="replace"))
+                        try:
+                            handle.write(finalize_chunk)
+                            handle.flush()
+                        except Exception:
+                            pass
+                        _emit_log_stream(finalize_chunk, stream_start)
                     _write_markdown_footer(
                         handle,
                         status=str(run_status["state"]),
@@ -687,7 +707,16 @@ def _run_command_live(
             if run_status["state"] not in {"ok", "failed"}:
                 with recent_lock:
                     summary = _summarize_output("".join(recent_lines))
-                md_live_writer.finalize()
+                finalize_chunk = md_live_writer.finalize()
+                if finalize_chunk:
+                    stream_start = emitted_log_bytes[0]
+                    emitted_log_bytes[0] = stream_start + len(finalize_chunk.encode("utf-8", errors="replace"))
+                    try:
+                        handle.write(finalize_chunk)
+                        handle.flush()
+                    except Exception:
+                        pass
+                    _emit_log_stream(finalize_chunk, stream_start)
                 _write_markdown_footer(
                     handle,
                     status=str(run_status["state"]),

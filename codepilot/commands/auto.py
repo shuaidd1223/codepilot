@@ -104,6 +104,7 @@ from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
     classify_entry_intent,
     clarification_state_from_assessment,
     command_intent_guidance,
+    continue_pending_clarification,
     resolve_question_answer_options,
     resolve_shared_gateway_options,
     normalize_requirement_text,

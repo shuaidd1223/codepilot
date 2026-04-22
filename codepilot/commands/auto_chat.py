@@ -426,57 +426,40 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
     """Continue an in-flight clarification dialog and possibly trigger planning."""
     shell = runtime.shell
     answer_text = frame.payload_text
-    answered_state = shell.append_clarification_answer_to_state(
-        runtime.pending_clarification,
-        answer=answer_text,
-    )
+    pending_state = runtime.pending_clarification or {}
+    pending_intent = pending_state.get("intent", "requirement")
 
     spinner = _Spinner("正在评估补充信息")
     spinner.__enter__()
-    try:
-        assessment = shell.assess_requirement_for_planning(
-            answered_state["original_title"],
-            project_info=runtime.project_info,
-            qa_history=answered_state["qa_history"],
-            planner=runtime.effective["planner"],
-        )
-    except KeyboardInterrupt:
-        echo()
-        shutdown_ui()
-        echo("[dim]会话已结束[/dim]")
-        frame.state = _ChatLoopState.EXIT
-        return
-    except click.ClickException as exc:
-        echo(f"[red]{safe(exc.format_message())}[/red]")
-        runtime.chat_history.append({
-            "user": answer_text,
-            "assistant": f"错误: {exc.format_message()}",
-            "intent": "clarify",
-        })
-        click.echo()
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    except Exception as exc:
-        echo(f"[red]{safe(exc)}[/red]")
-        runtime.chat_history.append({
-            "user": answer_text,
-            "assistant": f"错误: {exc}",
-            "intent": "clarify",
-        })
-        click.echo()
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    finally:
-        spinner.__exit__(None, None, None)
-
-    next_state = shell.clarification_state_from_assessment(
-        assessment=assessment,
-        seed_title=answered_state["original_title"],
-        previous_state=answered_state,
+    outcome = shell.continue_pending_clarification(
+        pending_state,
+        answer=answer_text,
+        project_info=runtime.project_info,
+        planner=runtime.effective["planner"],
     )
-    if next_state:
-        runtime.pending_clarification = next_state
-        questions = runtime.pending_clarification.get("last_questions") or []
+    spinner.__exit__(None, None, None)
+
+    if outcome.get("status") == "error":
+        if outcome.get("error_kind") == "interrupt":
+            echo()
+            shutdown_ui()
+            echo("[dim]会话已结束[/dim]")
+            frame.state = _ChatLoopState.EXIT
+            return
+        message = outcome.get("message") or "澄清评估失败"
+        echo(f"[red]{safe(message)}[/red]")
+        runtime.chat_history.append({
+            "user": answer_text,
+            "assistant": f"错误: {message}",
+            "intent": "clarify",
+        })
+        click.echo()
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+
+    if outcome.get("status") == "needs_clarification":
+        runtime.pending_clarification = outcome.get("pending_state")
+        questions = outcome.get("questions") or []
         echo("[cyan]还需要再澄清一下：[/cyan]")
         for i, q in enumerate(questions, 1):
             click.echo(f"  {i}. {q}")
@@ -490,8 +473,7 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
         return
 
     # Ready — take refined title forward into planning.
-    refined = assessment.get("refined_title") or runtime.pending_clarification["original_title"]
-    pending_intent = runtime.pending_clarification.get("intent", "requirement")
+    refined = outcome.get("refined_title") or pending_state.get("original_title") or answer_text
     runtime.pending_clarification = None
     echo(f"[green][OK] 已澄清需求：{refined}[/green]")
 

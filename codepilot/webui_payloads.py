@@ -9,6 +9,7 @@ DB and compose JSON-shaped dicts.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,9 @@ from codepilot.runtime import runtime_summary
 
 
 STATUS_ORDER = {"in_progress": 0, "backlog": 1, "failed": 2, "cancelled": 3, "done": 4}
+_LIVE_HEAD_RE = re.compile(r"^\s*##\s+Live Output\s*$", re.IGNORECASE)
+_FENCE_RE = re.compile(r"^\s*(```+|~~~+)\s*([A-Za-z0-9_-]+)?\s*$")
+_ROLE_MARK_RE = re.compile(r"^(user|codex|claude|assistant)$", re.IGNORECASE)
 
 
 def _shell():
@@ -45,6 +49,128 @@ def _read_text(path: str | None) -> str:
     if not target.exists():
         return ""
     return target.read_text(encoding="utf-8", errors="replace")
+
+
+def _normalize_legacy_live_output_markdown(text: str) -> str:
+    """Convert legacy ``## Live Output`` fenced text protocol to markdown sections.
+
+    Older runs stored Codex/Claude stream protocol as one giant ``~~~text`` block:
+    ``user`` / ``codex`` / ``exec`` markers remained plain text so the renderer
+    couldn't style or parse markdown content inside that fence.
+    """
+    if not text:
+        return text
+
+    lines = text.splitlines()
+    if not lines:
+        return text
+
+    head_idx = -1
+    for i, line in enumerate(lines):
+        if _LIVE_HEAD_RE.match(str(line or "").strip()):
+            head_idx = i
+            break
+    if head_idx < 0:
+        return text
+
+    body_start = head_idx + 1
+    while body_start < len(lines) and not str(lines[body_start] or "").strip():
+        body_start += 1
+    if body_start >= len(lines):
+        return text
+
+    open_m = _FENCE_RE.match(str(lines[body_start] or "").strip())
+    if not open_m:
+        return text
+    lang = (open_m.group(2) or "").lower()
+    if lang and lang != "text":
+        return text
+
+    fence_char = open_m.group(1)[0]
+    body_end = -1
+    for i in range(body_start + 1, len(lines)):
+        m = _FENCE_RE.match(str(lines[i] or "").strip())
+        if m and m.group(1)[0] == fence_char:
+            body_end = i
+            break
+    has_closing_fence = body_end >= 0
+    if not has_closing_fence:
+        body_end = len(lines)
+
+    inner = lines[body_start + 1 : body_end]
+    has_markers = any(
+        _ROLE_MARK_RE.match(str(line or "").strip()) or str(line or "").strip().lower() == "exec"
+        for line in inner
+    )
+    if not has_markers:
+        return text
+
+    out: list[str] = []
+    out.extend(lines[: head_idx + 1])
+    out.append("")
+    mode = ""
+    runtime_open = False
+    exec_open = False
+
+    def close_runtime() -> None:
+        nonlocal runtime_open
+        if not runtime_open:
+            return
+        out.extend(["~~~", ""])
+        runtime_open = False
+
+    def close_exec() -> None:
+        nonlocal exec_open
+        if not exec_open:
+            return
+        out.extend(["~~~", ""])
+        exec_open = False
+
+    def open_role(name: str) -> None:
+        nonlocal mode
+        close_runtime()
+        close_exec()
+        out.extend([f"### {name}", ""])
+        mode = name.lower()
+
+    def open_exec() -> None:
+        nonlocal mode, exec_open
+        close_runtime()
+        close_exec()
+        out.extend(["### Exec", "", "~~~text"])
+        exec_open = True
+        mode = "exec"
+
+    def open_runtime() -> None:
+        nonlocal mode, runtime_open
+        if mode == "runtime" and runtime_open:
+            return
+        close_exec()
+        if not runtime_open:
+            out.extend(["### Runtime", "", "~~~text"])
+        runtime_open = True
+        mode = "runtime"
+
+    for line in inner:
+        raw = str(line or "")
+        trimmed = raw.strip()
+        if _ROLE_MARK_RE.match(trimmed):
+            open_role(trimmed[0].upper() + trimmed[1:].lower())
+            continue
+        if trimmed.lower() == "exec":
+            open_exec()
+            continue
+        if not mode:
+            open_runtime()
+        out.append(raw)
+
+    close_runtime()
+    close_exec()
+
+    tail_start = body_end + 1 if has_closing_fence else body_end
+    out.extend(lines[tail_start:])
+    normalized = "\n".join(out).rstrip() + "\n"
+    return normalized
 
 
 def _parse_depends(raw: str | None) -> list[int]:
@@ -123,6 +249,19 @@ def task_log_delta(task_id: int, *, offset: int = 0) -> dict:
     target = Path(path_str)
     if not target.exists():
         return out
+
+    # Legacy runs may still contain raw protocol under one ``~~~text`` fence
+    # (no markdown sections inside Live Output). For completed tasks we can
+    # safely normalize in-place so both API polling and direct file viewing
+    # become markdown-native.
+    try:
+        if str(task.get("status") or "") != "in_progress":
+            raw_full = target.read_text(encoding="utf-8", errors="replace")
+            normalized = _normalize_legacy_live_output_markdown(raw_full)
+            if normalized != raw_full:
+                target.write_text(normalized, encoding="utf-8")
+    except Exception:
+        pass
 
     try:
         size = target.stat().st_size
