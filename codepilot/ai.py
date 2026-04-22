@@ -51,6 +51,12 @@ from codepilot.ai_result_parse import (
     extract_error_hint as _extract_error_hint_core,
     parse_structured_json_output as _parse_structured_json_output,
 )
+from codepilot.ai_main_resolution import (
+    resolve_task_content_call as _main_resolve_task_content_call,
+)
+from codepilot.ai_main_execute import (
+    execute_task_content_call as _main_execute_task_content_call,
+)
 from codepilot.text_decode import decode_subprocess_text
 
 # ── Module-level state (kept here so monkeypatch in tests keeps working) ─────
@@ -177,57 +183,28 @@ def generate_task_content(
     Returns:
         生成的 Markdown 内容
     """
-    # 规范化 agent 名称
-    normalized = normalize_agent_name(agent)
-    provider_ref = config_ref or project_path
-    available, message = check_provider_availability(normalized, project_path=provider_ref)
-    if not available:
-        raise RuntimeError(message)
-    if normalized == "dual":
-        # 双代理模式用于执行阶段；生成任务内容时统一交给 Codex。
-        normalized = "codex"
+    resolved = _main_resolve_task_content_call(
+        title,
+        project_path=project_path,
+        agent=agent,
+        api_keys=api_keys,
+        config_ref=config_ref,
+        normalize_agent_name=normalize_agent_name,
+        check_provider_availability=check_provider_availability,
+        collect_project_context=_collect_project_context,
+        task_prompt_template=TASK_PROMPT_TEMPLATE,
+        api_provider_keys=set(API_PROVIDERS.keys()),
+        cli_provider_keys=set(CLI_PROVIDERS.keys()),
+    )
 
-    # 收集上下文
-    ctx = _collect_project_context(project_path)
-    prompt = TASK_PROMPT_TEMPLATE.format(title=title, project_context=ctx)
-
-    # API 密钥环境变量覆盖
-    env_overrides = {}
-    if api_keys:
-        for provider, key in api_keys.items():
-            env_key = f"{provider.upper()}_API_KEY"
-            env_overrides[env_key] = key
-
-    # 根据类型选择执行方式
-    if normalized in API_PROVIDERS:
-        provider = resolve_api_provider(normalized, provider_ref)
-
-        # 覆盖 API 密钥
-        if api_keys and normalized in api_keys:
-            provider.api_key = api_keys[normalized]
-
-        return _run_api_provider(provider, prompt)
-
-    elif normalized in CLI_PROVIDERS:
-        provider = resolve_cli_provider(normalized, provider_ref)
-
-        # Claude Node 特殊处理
-        if normalized == "claude-node":
-            node_modules = _get_node_modules_path()
-            if not Path(node_modules, "@anthropic-ai", "claude-code", "cli.js").exists():
-                raise RuntimeError(
-                    f"未找到 Claude Code CLI: {node_modules}/@anthropic-ai/claude-code/cli.js\n"
-                    "请运行: npm install -g @anthropic-ai/claude-code"
-                )
-
-        return _run_cli_provider(provider, prompt, env_overrides)
-
-    else:
-        raise ValueError(
-            f"未知的 agent: {agent} (normalized: {normalized})\n"
-            f"支持的 CLI: {', '.join(CLI_PROVIDERS.keys())}\n"
-            f"支持的 API: {', '.join(API_PROVIDERS.keys())}"
-        )
+    return _main_execute_task_content_call(
+        resolved,
+        resolve_api_provider=resolve_api_provider,
+        resolve_cli_provider=resolve_cli_provider,
+        run_api_provider=_run_api_provider,
+        run_cli_provider=_run_cli_provider,
+        get_node_modules_path=_get_node_modules_path,
+    )
 
 
 def list_available_providers() -> dict[str, list[str]]:
