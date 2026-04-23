@@ -165,17 +165,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         The client opens one long-lived connection; every event published via
         ``progress_bus.emit`` is forwarded as a ``data: {...}\\n\\n`` SSE
-        frame. Heartbeats are sent every 15s so intermediate proxies keep
-        the connection alive; disconnects tear down the subscription.
+        frame. Frames include ``id: <event_id>`` when available so reconnects
+        can resume from ``Last-Event-ID`` without losing progress. Heartbeats
+        are sent every 15s so intermediate proxies keep the connection alive;
+        disconnects tear down the subscription.
 
         Daemon health is piggy-backed onto the same stream: we poll the
         local heartbeat file every 2s and push a ``stage=daemon-health``
         event whenever the state changes (alive ↔ stale ↔ dead). That way
         the Web UI banner reacts in ~2s without a separate polling timer.
         """
-        import queue as _queue
+        from collections import deque
         import time
         from codepilot import progress_bus
+
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        health_project = (query.get("project") or [""])[0].strip() or None
+        last_event_raw = (
+            (self.headers.get("Last-Event-ID") or "").strip()
+            or (query.get("last_event_id") or [""])[0].strip()
+        )
+        try:
+            last_event_id = max(0, int(last_event_raw or "0"))
+        except ValueError:
+            last_event_id = 0
 
         try:
             self.send_response(200)
@@ -192,26 +206,52 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
 
-        # Keep a larger in-memory queue so task_log_stream micro-events can
-        # flow smoothly during heavy output bursts without starving normal
-        # progress events.
-        event_queue: "_queue.Queue[dict]" = _queue.Queue(maxsize=2048)
+        event_queue_limit = 2048
+        event_queue: "deque[dict]" = deque()
+        event_queue_cv = threading.Condition()
 
-        def _forward(event: dict) -> None:
+        def _is_priority_event(event: dict) -> bool:
+            extra = (event or {}).get("extra") or {}
+            if extra.get("task_log_stream"):
+                return False
+            return True
+
+        def _enqueue_event(event: dict) -> None:
+            incoming = dict(event or {})
+            incoming_priority = _is_priority_event(incoming)
+            with event_queue_cv:
+                if len(event_queue) >= event_queue_limit:
+                    if not incoming_priority:
+                        # Under load, keep existing key events and drop noisy
+                        # task-log micro-chunks first.
+                        return
+                    drop_idx = None
+                    for idx, queued in enumerate(event_queue):
+                        if not _is_priority_event(queued):
+                            drop_idx = idx
+                            break
+                    if drop_idx is None:
+                        event_queue.popleft()
+                    else:
+                        del event_queue[drop_idx]
+                event_queue.append(incoming)
+                event_queue_cv.notify()
+
+        def _write_event_frame(event: dict) -> bool:
             try:
-                event_queue.put_nowait(event)
-            except _queue.Full:
-                # If the client can't drain fast enough, drop the oldest
-                # event in favour of the newest — better than blocking emit.
-                try:
-                    event_queue.get_nowait()
-                    event_queue.put_nowait(event)
-                except Exception:
-                    pass
-
-        parsed = urlparse(self.path)
-        query = parse_qs(parsed.query)
-        health_project = (query.get("project") or [""])[0].strip() or None
+                event_id = int((event or {}).get("id") or 0)
+            except (TypeError, ValueError):
+                event_id = 0
+            frame = ""
+            if event_id > 0:
+                frame += f"id: {event_id}\n"
+            frame += f"data: {json.dumps(event or {}, ensure_ascii=False)}\n\n"
+            try:
+                self.wfile.write(frame.encode("utf-8"))
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return False
 
         def _health_event() -> dict:
             payload = daemon_health_payload(health_project)
@@ -235,36 +275,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 int((int(extra.get("stale_seconds") or 0)) // 10),
             )
 
-        token = progress_bus.subscribe(_forward)
+        token, replay_events = progress_bus.subscribe_with_backlog(_enqueue_event, after_id=last_event_id)
         last_keepalive = time.monotonic()
         last_health_check = 0.0
         last_health_key: tuple | None = None
         try:
+            # Replay buffered progress first when the client reconnects with a
+            # last-seen event id. This closes gaps from transient disconnects.
+            for replay in replay_events:
+                if not _write_event_frame(replay):
+                    return
+                last_keepalive = time.monotonic()
+
             # Prime the stream with current daemon health so the client has
             # something to render before any progress event arrives.
             initial_health = _health_event()
             last_health_key = _health_key(initial_health)
-            try:
-                self.wfile.write(f"data: {json.dumps(initial_health, ensure_ascii=False)}\n\n".encode("utf-8"))
-                self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, OSError):
+            if not _write_event_frame(initial_health):
                 return
 
             while True:
-                try:
-                    # Short poll — lets the daemon-health checker below run
+                event = None
+                with event_queue_cv:
+                    # Short wait — lets the daemon-health checker below run
                     # even when no progress events are flowing, so the UI
                     # sees state changes within ~2 seconds.
-                    event = event_queue.get(timeout=2)
-                    frame = f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    try:
-                        self.wfile.write(frame.encode("utf-8"))
-                        self.wfile.flush()
-                        last_keepalive = time.monotonic()
-                    except (BrokenPipeError, ConnectionResetError, OSError):
+                    if not event_queue:
+                        event_queue_cv.wait(timeout=2.0)
+                    if event_queue:
+                        event = event_queue.popleft()
+                if event is not None:
+                    if not _write_event_frame(event):
                         break
-                except _queue.Empty:
-                    pass  # fall through to health / keepalive below
+                    last_keepalive = time.monotonic()
 
                 now = time.monotonic()
                 # Push daemon-health event whenever the state actually
@@ -275,14 +318,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     key = _health_key(health)
                     if key != last_health_key:
                         last_health_key = key
-                        try:
-                            self.wfile.write(
-                                f"data: {json.dumps(health, ensure_ascii=False)}\n\n".encode("utf-8")
-                            )
-                            self.wfile.flush()
-                            last_keepalive = now
-                        except (BrokenPipeError, ConnectionResetError, OSError):
+                        if not _write_event_frame(health):
                             break
+                        last_keepalive = now
 
                 # Keep the connection alive through proxies even when
                 # nothing's changing.

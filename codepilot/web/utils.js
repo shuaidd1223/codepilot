@@ -257,16 +257,23 @@ CP.sse = {
   open(url, onEvent, onError) {
     let es = null;
     let closed = false;
+    let lastEventId = '';
+    const connectUrl = () => {
+      if (!lastEventId) return url;
+      const sep = url.includes('?') ? '&' : '?';
+      return `${url}${sep}last_event_id=${encodeURIComponent(lastEventId)}`;
+    };
     const connect = () => {
       if (closed) return;
       try {
-        es = new EventSource(url);
+        es = new EventSource(connectUrl());
       } catch (err) {
         if (onError) onError(err);
         return;
       }
       es.onmessage = (ev) => {
         if (!ev || !ev.data) return;
+        if (ev.lastEventId) lastEventId = String(ev.lastEventId);
         try {
           onEvent(JSON.parse(ev.data));
         } catch (err) {

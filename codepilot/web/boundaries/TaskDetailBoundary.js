@@ -13,6 +13,7 @@ CP.createTaskDetailBoundary = (options = {}) => {
   let taskLogFlushRaf = 0;
   let taskLogPendingText = '';
   let taskLogPendingTaskId = null;
+  let taskLogReloadTaskId = null;
 
   function cancelTaskLogFlush() {
     if (taskLogFlushRaf) {
@@ -87,9 +88,13 @@ CP.createTaskDetailBoundary = (options = {}) => {
     if (!taskId) return;
     if (reset || state.taskLog.taskId !== taskId) {
       cancelTaskLogFlush();
+      taskLogReloadTaskId = null;
       state.taskLog = { taskId, text: '', nextOffset: 0, size: 0, done: false, loading: false };
     }
-    if (state.taskLog.loading) return;
+    if (state.taskLog.loading) {
+      taskLogReloadTaskId = taskId;
+      return;
+    }
     state.taskLog.loading = true;
     try {
       let guard = 64;
@@ -98,6 +103,12 @@ CP.createTaskDetailBoundary = (options = {}) => {
         const off = state.taskLog.nextOffset || 0;
         const data = await CP.api.get(`/api/tasks/${taskId}/log?offset=${off}`);
         if (state.taskLog.taskId !== taskId) return;
+        const currentOffset = Number.isFinite(state.taskLog.nextOffset) ? state.taskLog.nextOffset : 0;
+        if (currentOffset !== off) {
+          /* A newer SSE chunk already advanced the cursor while this request
+           * was in-flight. Skip stale payload to avoid duplicated segments. */
+          continue;
+        }
         const chunk = (data && typeof data.text === 'string') ? data.text : '';
         const nextOffset = Number.isFinite(data && data.next_offset) ? data.next_offset : off;
         if (chunk) queueTaskLogText(taskId, chunk);
@@ -116,6 +127,10 @@ CP.createTaskDetailBoundary = (options = {}) => {
       }
       flushTaskLogPending();
       state.taskLog.loading = false;
+      if (taskLogReloadTaskId === taskId && state.taskLog.taskId === taskId) {
+        taskLogReloadTaskId = null;
+        loadTaskLog(taskId).catch(() => {});
+      }
     }
   }
 

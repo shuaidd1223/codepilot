@@ -21,13 +21,15 @@ Event shape (``dict``):
 * ``extra`` (dict — optional structured payload: ``round``, ``round_total``,
   ``pid``, ``exit_code``, etc.)
 
-The bus is intentionally in-process and stateless (no buffering of past
-events) — subscribers that miss an event don't get it retroactively. Long-
-running UIs (Web UI job log, SSE endpoint) keep their own buffer.
+The bus is intentionally in-process and keeps a short in-memory ring buffer
+of recent events. Subscribers can request a replay tail (by event id) to
+bridge transient disconnects; long-running UIs may still keep their own
+view-specific buffers.
 """
 
 from __future__ import annotations
 
+from collections import deque
 import threading
 from datetime import datetime
 from typing import Any, Callable, Optional
@@ -42,6 +44,9 @@ Subscriber = Callable[[Event], None]
 _LOCK = threading.Lock()
 _SUBSCRIBERS: dict[int, Subscriber] = {}
 _NEXT_TOKEN = 1
+_NEXT_EVENT_ID = 1
+_EVENT_HISTORY_LIMIT = 4096
+_EVENT_HISTORY: "deque[Event]" = deque(maxlen=_EVENT_HISTORY_LIMIT)
 
 
 def _now_iso() -> str:
@@ -61,7 +66,8 @@ def emit(
     Subscriber exceptions are swallowed per-subscriber so a broken Web UI
     consumer never stalls the terminal.
     """
-    event: Event = {
+    global _NEXT_EVENT_ID
+    base: Event = {
         "timestamp": _now_iso(),
         "task_id": task_id,
         "stage": stage,
@@ -70,10 +76,14 @@ def emit(
         "extra": dict(extra or {}),
     }
     with _LOCK:
+        event: Event = dict(base)
+        event["id"] = int(_NEXT_EVENT_ID)
+        _NEXT_EVENT_ID += 1
+        _EVENT_HISTORY.append(dict(event))
         targets = list(_SUBSCRIBERS.values())
     for cb in targets:
         try:
-            cb(event)
+            cb(dict(event))
         except Exception:
             # One bad subscriber must not block the rest.
             continue
@@ -87,6 +97,35 @@ def subscribe(callback: Subscriber) -> int:
         _NEXT_TOKEN += 1
         _SUBSCRIBERS[token] = callback
     return token
+
+
+def subscribe_with_backlog(callback: Subscriber, *, after_id: int = 0) -> tuple[int, list[Event]]:
+    """Subscribe and return buffered events with ``id > after_id``.
+
+    The subscribe+snapshot operation is atomic under one lock, so callers
+    can replay a consistent tail and then continue with live delivery.
+    """
+    global _NEXT_TOKEN
+    try:
+        last_seen = max(0, int(after_id or 0))
+    except Exception:
+        last_seen = 0
+    with _LOCK:
+        token = _NEXT_TOKEN
+        _NEXT_TOKEN += 1
+        _SUBSCRIBERS[token] = callback
+        backlog = [dict(event) for event in _EVENT_HISTORY if int(event.get("id") or 0) > last_seen]
+    return token, backlog
+
+
+def events_since(after_id: int = 0) -> list[Event]:
+    """Return buffered events with ``id > after_id`` (snapshot copy)."""
+    try:
+        last_seen = max(0, int(after_id or 0))
+    except Exception:
+        last_seen = 0
+    with _LOCK:
+        return [dict(event) for event in _EVENT_HISTORY if int(event.get("id") or 0) > last_seen]
 
 
 def unsubscribe(token: int) -> None:
@@ -113,6 +152,10 @@ class subscription:
 
 
 def clear_subscribers_for_tests() -> None:
-    """Internal: drop all subscribers. Only tests use this to isolate cases."""
+    """Internal: reset subscriber and event state for isolated tests."""
+    global _NEXT_TOKEN, _NEXT_EVENT_ID
     with _LOCK:
         _SUBSCRIBERS.clear()
+        _EVENT_HISTORY.clear()
+        _NEXT_TOKEN = 1
+        _NEXT_EVENT_ID = 1
