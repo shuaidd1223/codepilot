@@ -9,6 +9,7 @@ from typing import Any
 import click
 
 from codepilot import db
+from codepilot.display_sort import sort_tasks_for_display
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.commands.status import _resolve_project
 from codepilot.output import echo
@@ -433,11 +434,9 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
         like = f"%{keyword}%"
         params.extend([like, like])
 
-    sql += " ORDER BY priority ASC, created_at DESC LIMIT ?"
-    params.append(limit)
-
     with db.get_conn() as conn:
-        rows = conn.execute(sql, params).fetchall()
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    rows = sort_tasks_for_display(rows)[: max(1, int(limit or 1))]
 
     if not rows:
         if json_mode:
@@ -447,7 +446,7 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
         return
 
     if json_mode:
-        emit_json_payload("find", ok=True, data={"tasks": [dict(r) for r in rows], "count": len(rows)})
+        emit_json_payload("find", ok=True, data={"tasks": rows, "count": len(rows)})
         return
 
     echo(f"[cyan]找到 {len(rows)} 个任务：[/cyan]")

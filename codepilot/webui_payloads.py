@@ -15,10 +15,11 @@ from datetime import datetime
 from pathlib import Path
 
 from codepilot import db
+from codepilot.display_sort import TASK_STATUS_ORDER, sort_tasks_for_display
 from codepilot.runtime import runtime_summary
 
 
-STATUS_ORDER = {"in_progress": 0, "backlog": 1, "failed": 2, "cancelled": 3, "done": 4}
+STATUS_ORDER = TASK_STATUS_ORDER
 _LIVE_HEAD_RE = re.compile(r"^\s*##\s+Live Output\s*$", re.IGNORECASE)
 _FENCE_RE = re.compile(r"^\s*(```+|~~~+)\s*([A-Za-z0-9_-]+)?\s*$")
 _ROLE_MARK_RE = re.compile(r"^(user|codex|claude|assistant)$", re.IGNORECASE)
@@ -445,7 +446,7 @@ def _task_payload(task: dict) -> dict:
 
 
 def _sorted_tasks(tasks: list[dict]) -> list[dict]:
-    return sorted(tasks, key=lambda item: (STATUS_ORDER.get(item["status"], 9), item["priority"], item["id"]))
+    return sort_tasks_for_display(tasks)
 
 
 def project_summary(project: dict, *, job_count: int | None = None) -> dict:

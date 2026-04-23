@@ -25,7 +25,7 @@ def query_sessions(
     if status:
         sql += " AND status = ?"
         params.append(status)
-    sql += " ORDER BY updated_at DESC, id DESC"
+    sql += " ORDER BY updated_at DESC, created_at DESC, id DESC"
     rows = conn.execute(sql, params).fetchall()
     return [dict(row) for row in rows]
 

@@ -13,6 +13,7 @@ from rich.text import Text
 from rich.console import Group
 
 from codepilot import db
+from codepilot.display_sort import sort_tasks_for_display
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.output import echo
 from codepilot.runtime import runtime_summary
@@ -148,8 +149,7 @@ def render_project_dashboard(
         console.print("[dim]当前没有可显示的任务[/dim]\n")
         return
 
-    status_order = {"in_progress": 0, "backlog": 1, "failed": 2, "cancelled": 3, "done": 4}
-    tasks = sorted(tasks, key=lambda item: (status_order.get(item["status"], 9), item["priority"], item["id"]))
+    tasks = sort_tasks_for_display(tasks)
     sections = [
         ("进行中", "blue", [task for task in tasks if task["status"] == "in_progress"][: max(1, max_rows // 2)]),
         ("待办", "yellow", [task for task in tasks if task["status"] == "backlog"][: max_rows]),
@@ -238,7 +238,7 @@ def _show_project_status(project: str, verbose: bool, json_mode: bool):
         return
 
     if json_mode:
-        tasks = db.list_tasks(project=project)
+        tasks = sort_tasks_for_display(db.list_tasks(project=project))
         stats = db.get_task_stats(project)
         emit_json_payload(
             "status",
@@ -268,7 +268,7 @@ def _show_all_projects_status(verbose: bool, json_mode: bool):
         all_data = []
         for proj in projects:
             stats = db.get_task_stats(proj["name"])
-            tasks = db.list_tasks(project=proj["name"])
+            tasks = sort_tasks_for_display(db.list_tasks(project=proj["name"]))
             all_data.append({
                 "project": proj["name"],
                 "path": proj["path"],

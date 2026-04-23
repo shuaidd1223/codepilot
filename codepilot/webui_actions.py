@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from codepilot import db
+from codepilot.display_sort import sort_jobs_for_display, sort_sessions_for_display
 from codepilot.commands.auto import (  # noqa: F401 — patched in tests
     assess_requirement_for_planning,
     build_clarification_state,
@@ -309,8 +310,7 @@ def list_ui_jobs(project: str | None = None) -> list[dict]:
         items = [dict(job) for job in shell._UI_JOBS.values()]
     if project:
         items = [job for job in items if job.get("project") == project]
-    items.sort(key=lambda item: (item.get("updated_at") or item.get("created_at") or "", item["id"]), reverse=True)
-    return items[:12]
+    return sort_jobs_for_display(items)[:12]
 
 
 def list_ui_events(project: str | None = None) -> list[dict]:
@@ -651,6 +651,9 @@ def submit_requirement_action(
     normalized_title = normalize_requirement_text(title)
     if not normalized_title:
         raise RuntimeError("需求文本不能为空。")
+    normalized_priority = (priority or "P2").upper()
+    if normalized_priority not in {"P0", "P1", "P2", "P3"}:
+        raise RuntimeError("优先级只支持 P0 / P1 / P2 / P3。")
     effective_planner = _effective_planner(project_info, planner)
 
     if clarify:
@@ -682,6 +685,7 @@ def submit_requirement_action(
             "title": normalized_title,
             "planner": effective_planner,
             "agent": (agent or "").lower(),
+            "priority": normalized_priority,
             "status": "queued",
             "phase": "queued",
             "created_at": _now_iso(),
@@ -739,7 +743,7 @@ def submit_requirement_action(
                     title=normalized_title,
                     planner=effective_planner,
                     task_agent=agent or None,
-                    priority=priority,
+                    priority=normalized_priority,
                     max_tasks=max_tasks,
                     execute=execute,
                     executor=executor,
@@ -907,7 +911,7 @@ def submit_goal_action(
 
 def list_sessions_action(project: str = "") -> dict:
     db.init_db()
-    sessions = db.list_sessions(project=project or None, status="active")
+    sessions = sort_sessions_for_display(db.list_sessions(project=project or None, status="active"))
     return {
         "ok": True,
         "sessions": [
