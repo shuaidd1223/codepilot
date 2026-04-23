@@ -170,10 +170,19 @@ INSPECT_SCHEMA = {
                         "type": "string",
                         "enum": ["refactor", "bug", "test", "docs", "perf", "chore"],
                     },
+                    "evidence": {
+                        "type": "string",
+                        "description": "Must quote or cite the specific signal line/file/commit that justifies this candidate. No evidence => candidate is hallucinated and will be dropped.",
+                    },
+                    "effort": {
+                        "type": "string",
+                        "enum": ["small", "medium", "large"],
+                        "description": "Rough implementation effort. 'small' = hours, 'medium' = day, 'large' = multi-day.",
+                    },
                 },
                 # OpenAI strict structured-output: every object needs
                 # additionalProperties=false AND ALL properties in `required`.
-                "required": ["title", "goal", "priority", "rationale", "kind"],
+                "required": ["title", "goal", "priority", "rationale", "kind", "evidence", "effort"],
                 "additionalProperties": False,
             },
         }
@@ -182,21 +191,46 @@ INSPECT_SCHEMA = {
     "additionalProperties": False,
 }
 
-INSPECT_PROMPT = """你是当前项目的资深巡检工程师。基于下列信号，挑出 0~{max_tasks} 个真正值得做的改进项，形成结构化候选任务。
+INSPECT_PROMPT = """[Role]
+You are the senior inspection engineer for project `{project_name}`.
+Look at the signals below and surface 0 to {max_tasks} improvement candidates that are actually worth working on.
 
-硬性要求：
-- 只输出确实有价值的，可以为 0 条。宁缺毋滥。
-- 每条 title 不超过 40 个中文字符，goal 两三句讲清楚"做什么 + 为什么"。
-- 避免建"补一下文档/加日志"这类泛泛的东西，除非信号里直接指向了具体位置。
-- 不要重复下面"已存在任务"里的内容。
+[Core principle — ZERO IS PREFERRED OVER FILLER]
+- Returning an empty `candidates` array is a valid, encouraged outcome.
+- Do NOT invent work to justify your existence. Only raise something if a signal *directly* points to it.
+- If every signal is empty / skipped / benign, return `{{"candidates": []}}` — this is the correct answer, not a failure.
+
+[Signal semantics]
+- `最近 git 提交`: recent commits. Look for reverts, WIPs, incomplete chains, suspiciously large commits.
+- `最近失败或取消的任务`: failed tasks. Recurring error patterns imply a systemic fix.
+- `代码里的 TODO/FIXME/XXX`: literal markers with file:line. Only propose cleanup if the marker content describes real work, not placeholders.
+- `ruff lint 报告`: style/quality warnings. Prefer grouping by rule code or file.
+- `pytest --collect-only 摘要`: collection errors or missing tests. Real collection errors are high priority; low test count is usually NOT actionable alone.
+- `依赖健康线索`: missing/stale lockfiles or unpinned deps. Only if signal lists concrete paths.
+- `代码规模与复杂度线索`: hotspots. Only if signal already flagged a specific file/function.
+
+[Hard rules]
+- Each candidate MUST cite `evidence` referencing a concrete line/file/commit from the signals. No evidence → drop the candidate yourself; do not emit it.
+- `title` ≤ 40 Chinese characters; `goal` = 2–3 sentences covering "what to do + why".
+- Do NOT propose generic items like "补一下文档", "加日志", "通用优化", "重构一下" unless the signal names the exact target.
+- Do NOT repeat anything in the existing-tasks list below.
+- Fill `effort` honestly; prefer `small`/`medium`. If it smells like `large`, split or skip.
+
+[Language rules]
+- Instruction language is English (above).
+- The following output fields MUST be Chinese: `title`, `goal`, `rationale`.
+- The following output fields are fixed vocabulary (English): `priority` ∈ P1–P4, `kind` ∈ enum, `effort` ∈ enum.
+- `evidence` may be Chinese or English, but must point at a signal line.
 
 ## 已存在任务（backlog / in-progress）
 {existing_titles}
 
 {signal_sections}
 
-请以下列 JSON 返回：{{"candidates": [{{"title": "...", "goal": "...", "priority": "P3", "rationale": "...", "kind": "refactor"}}]}}
-如果没有值得提的改进项，返回 {{"candidates": []}}。
+[Output]
+Return strict JSON in this shape:
+{{"candidates": [{{"title": "...", "goal": "...", "priority": "P3", "rationale": "...", "kind": "refactor", "evidence": "signal 3: codepilot/foo.py:42 TODO ...", "effort": "small"}}]}}
+If nothing is worth surfacing, return: {{"candidates": []}}
 """
 
 
@@ -401,15 +435,138 @@ def _build_inspection_prompt(
 ) -> str:
     existing = _existing_titles(project_name)
     return INSPECT_PROMPT.format(
+        project_name=project_name,
         max_tasks=max_new_tasks,
         existing_titles=existing,
         signal_sections=_render_signal_sections(signal_results),
     )
 
 
+# Phrases that a filler task tends to use. Deliberately omits bare "todo" /
+# "placeholder" / "pending" because inspect's signals legitimately reference
+# real TODO markers in code; only blanket filler phrases are listed here.
+_GENERIC_FILLER_KEYWORDS = (
+    "补一下文档",
+    "补充文档",
+    "加日志",
+    "加点日志",
+    "通用优化",
+    "泛化",
+    "占位任务",
+    "待补充",
+    "杂项优化",
+    "其它优化",
+    "其他优化",
+    "简单优化",
+    "小优化",
+    "随手优化",
+    "整体重构",
+    "全面梳理",
+)
+
+
+def _is_empty_signal_content(content: str) -> bool:
+    """Return True for signal outputs that carry no actionable findings.
+
+    Empty signals are single-line bracketed status markers like ``（跳过）``,
+    ``（无）``, ``（ruff 无发现）`` or whitespace.
+    """
+    text = (content or "").strip()
+    if not text:
+        return True
+    if "\n" in text:
+        return False
+    if text.startswith("（") and text.endswith("）"):
+        return True
+    return False
+
+
+def _has_substantive_signal(signal_results: list[InspectSignalResult]) -> bool:
+    return any(not _is_empty_signal_content(result.content) for result in signal_results)
+
+
 def _extract_candidates(payload: dict) -> list[dict]:
     candidates = payload.get("candidates") or []
     return candidates if isinstance(candidates, list) else []
+
+
+def _signal_evidence_tokens(signal_results: list[InspectSignalResult]) -> set[str]:
+    """Tokens planner may legitimately cite as evidence (signal titles + content words)."""
+    tokens: set[str] = set()
+    for result in signal_results:
+        if not result.enabled or _is_empty_signal_content(result.content):
+            continue
+        tokens.add(result.title)
+        tokens.add(result.key)
+        tokens.add(f"signal {result.order}")
+        tokens.add(f"信号 {result.order}")
+        for line in result.content.splitlines():
+            stripped = line.strip(" -#*`")
+            if len(stripped) >= 4:
+                tokens.add(stripped)
+    return {token for token in tokens if token}
+
+
+def _candidate_looks_generic(title: str, goal: str) -> bool:
+    merged = f"{title} {goal}".lower()
+    return any(keyword.lower() in merged for keyword in _GENERIC_FILLER_KEYWORDS)
+
+
+def _evidence_references_signal(evidence: str, signal_tokens: set[str]) -> bool:
+    """Cheap containment check: does the evidence text overlap any known signal token?"""
+    if not evidence or not signal_tokens:
+        return False
+    ev = evidence.strip()
+    if not ev:
+        return False
+    ev_lower = ev.lower()
+    for token in signal_tokens:
+        token_stripped = token.strip()
+        if not token_stripped:
+            continue
+        if len(token_stripped) <= 3:
+            continue
+        if token_stripped.lower() in ev_lower or ev_lower in token_stripped.lower():
+            return True
+    return False
+
+
+def _filter_candidates(
+    candidates: list[dict],
+    *,
+    signal_results: list[InspectSignalResult],
+) -> tuple[list[dict], list[dict]]:
+    """Drop low-quality / hallucinated candidates before materialization.
+
+    Returns (kept, dropped) where dropped entries carry a ``reason`` string.
+    """
+    signal_tokens = _signal_evidence_tokens(signal_results)
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            dropped.append({"title": str(item)[:60], "reason": "not_an_object"})
+            continue
+        title = (item.get("title") or "").strip()
+        goal = (item.get("goal") or "").strip()
+        evidence = (item.get("evidence") or "").strip()
+        if not title or not goal:
+            dropped.append({"title": title or "(untitled)", "reason": "missing_title_or_goal"})
+            continue
+        if len(title) > 40:
+            dropped.append({"title": title, "reason": "title_too_long"})
+            continue
+        if _candidate_looks_generic(title, goal):
+            dropped.append({"title": title, "reason": "generic_filler"})
+            continue
+        if not evidence:
+            dropped.append({"title": title, "reason": "missing_evidence"})
+            continue
+        if not _evidence_references_signal(evidence, signal_tokens):
+            dropped.append({"title": title, "reason": "evidence_not_grounded"})
+            continue
+        kept.append(item)
+    return kept, dropped
 
 
 def _materialize_inspection_output(
@@ -474,6 +631,19 @@ def run_inspection(
         project_path,
         signals=signals,
     )
+
+    if not _has_substantive_signal(signal_results):
+        return {
+            "project": project_name,
+            "candidates_total": 0,
+            "created": [],
+            "skipped": [],
+            "dropped": [],
+            "auto_execute": auto_execute,
+            "reason": "no_substantive_signals",
+            "note": "本轮所有信号都是空/跳过，不触发 LLM，避免硬规划填充任务。",
+        }
+
     prompt = _build_inspection_prompt(
         project_name=project_name,
         max_new_tasks=max_new_tasks,
@@ -506,9 +676,10 @@ def run_inspection(
             "created": [],
         }
 
-    candidates = _extract_candidates(payload)
+    raw_candidates = _extract_candidates(payload)
+    kept_candidates, dropped = _filter_candidates(raw_candidates, signal_results=signal_results)
     created, skipped = _materialize_inspection_output(
-        candidates,
+        kept_candidates,
         max_new_tasks=max_new_tasks,
         project_name=project_name,
         project_path=project_path,
@@ -519,22 +690,25 @@ def run_inspection(
 
     return {
         "project": project_name,
-        "candidates_total": len(candidates),
+        "candidates_total": len(raw_candidates),
         "created": created,
         "skipped": skipped,
+        "dropped": dropped,
         "auto_execute": auto_execute,
     }
 
 
 def _build_content(item: dict) -> str:
     kind = item.get("kind") or "chore"
+    effort = (item.get("effort") or "small").strip() or "small"
     rationale = (item.get("rationale") or "").strip()
     goal = (item.get("goal") or "").strip()
+    evidence = (item.get("evidence") or "").strip()
     return "\n".join(
         [
             f"# {item.get('title','').strip()}",
             "",
-            f"> 由 `codepilot inspect` 自动建议（kind={kind}）",
+            f"> 由 `codepilot inspect` 自动建议（kind={kind}, effort={effort}）",
             "",
             "## 任务目标",
             "",
@@ -543,6 +717,10 @@ def _build_content(item: dict) -> str:
             "## 动机",
             "",
             rationale or "（待补充）",
+            "",
+            "## 信号证据",
+            "",
+            evidence or "（未提供，建议复核后再执行）",
             "",
             "## 备注",
             "",
@@ -557,9 +735,16 @@ def _print_result(result: dict, dry_run: bool) -> None:
         echo(f"[red]{result['error']}[/red]")
         return
 
+    if result.get("reason") == "no_substantive_signals":
+        note = result.get("note") or "所有信号为空，不触发 LLM。"
+        echo(f"[dim]{note}[/dim]")
+        return
+
+    dropped = result.get("dropped") or []
     echo(
         f"[green]候选总数 {result['candidates_total']}，"
-        f"新建 {len(result['created'])}，跳过 {len(result['skipped'])}[/green]"
+        f"新建 {len(result['created'])}，跳过 {len(result['skipped'])}，"
+        f"过滤 {len(dropped)}[/green]"
     )
     for task in result["created"]:
         if dry_run:
@@ -568,6 +753,8 @@ def _print_result(result: dict, dry_run: bool) -> None:
             echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]  source=inspector")
     for skipped in result["skipped"]:
         echo(f"  [dim]跳过: {skipped['title']} ({skipped['reason']})[/dim]")
+    for drop in dropped:
+        echo(f"  [dim]过滤: {drop['title']} ({drop['reason']})[/dim]")
 
 
 def _print_round_header(*, project_name: str, planner: str, agent: str, max_new_tasks: int, signals: tuple[str, ...], once: bool, round_num: int) -> None:

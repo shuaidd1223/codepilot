@@ -145,6 +145,139 @@ def test_emit_inspection_result_routes_json_and_terminal(monkeypatch):
     assert payload["data"]["candidates_total"] == 1
 
 
+def test_has_substantive_signal_detects_bracketed_markers():
+    empty_results = [
+        inspect_cmd.InspectSignalResult(key="git_log", title="git", order=1, enabled=False, content="（跳过）"),
+        inspect_cmd.InspectSignalResult(key="todos", title="todos", order=2, enabled=True, content="（无）"),
+        inspect_cmd.InspectSignalResult(key="ruff", title="ruff", order=3, enabled=True, content="（ruff 无发现）"),
+        inspect_cmd.InspectSignalResult(key="deps", title="deps", order=4, enabled=True, content="  "),
+    ]
+    assert inspect_cmd._has_substantive_signal(empty_results) is False
+
+    mixed_results = [
+        *empty_results,
+        inspect_cmd.InspectSignalResult(
+            key="failed_tasks",
+            title="失败任务",
+            order=5,
+            enabled=True,
+            content="#12 [failed] 解析错误\n#13 [cancelled] 超时",
+        ),
+    ]
+    assert inspect_cmd._has_substantive_signal(mixed_results) is True
+
+
+def test_run_inspection_short_circuits_when_all_signals_empty(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+
+    def _only_empty_signals(*_, **__):
+        return [
+            inspect_cmd.InspectSignalResult(key="git_log", title="git", order=1, enabled=True, content="（近 7 天无提交）"),
+            inspect_cmd.InspectSignalResult(key="todos", title="todos", order=2, enabled=True, content="（无）"),
+        ]
+
+    monkeypatch.setattr(inspect_cmd, "collect_inspection_signal_results", _only_empty_signals)
+
+    def _llm_should_not_be_called(*_, **__):
+        raise AssertionError("LLM must not be called when every signal is empty")
+
+    monkeypatch.setattr(inspect_cmd, "_call_llm", _llm_should_not_be_called)
+    monkeypatch.setattr(inspect_cmd, "load_project_config", lambda *_: None)
+
+    result = inspect_cmd.run_inspection(
+        {"name": "demo", "path": str(project)},
+        signals=("git_log", "todos"),
+        dry_run=True,
+    )
+
+    assert result["candidates_total"] == 0
+    assert result["created"] == []
+    assert result["reason"] == "no_substantive_signals"
+    assert "硬规划" in result["note"]
+
+
+def test_filter_candidates_drops_generic_overlong_and_ungrounded():
+    signal_results = [
+        inspect_cmd.InspectSignalResult(
+            key="todos",
+            title="代码里的 TODO/FIXME/XXX",
+            order=3,
+            enabled=True,
+            content="codepilot/foo.py:42: TODO handle timeout in stream reader",
+        ),
+    ]
+    candidates = [
+        {  # kept: cites signal content
+            "title": "修复 foo.py 的超时 TODO",
+            "goal": "处理 codepilot/foo.py:42 标注的超时问题。确保下游读完整数据。",
+            "priority": "P3",
+            "rationale": "TODO 明确指向具体行。",
+            "kind": "bug",
+            "evidence": "signal 3: codepilot/foo.py:42 TODO handle timeout",
+            "effort": "small",
+        },
+        {  # dropped: generic filler
+            "title": "通用优化",
+            "goal": "补一下文档，加点日志。",
+            "priority": "P3",
+            "rationale": "看起来可以做。",
+            "kind": "chore",
+            "evidence": "signal 3: codepilot/foo.py:42",
+            "effort": "small",
+        },
+        {  # dropped: title too long (>40 Chinese chars)
+            "title": "给系统的全部模块逐一补齐文档说明并且梳理依赖关系让新人也能看明白这块复杂业务逻辑的前因后果",
+            "goal": "人肉补注释。",
+            "priority": "P3",
+            "rationale": "reasonable",
+            "kind": "docs",
+            "evidence": "signal 3: codepilot/foo.py:42",
+            "effort": "medium",
+        },
+        {  # dropped: no evidence
+            "title": "改造 bar 模块",
+            "goal": "让它支持并发调用。",
+            "priority": "P2",
+            "rationale": "想到的。",
+            "kind": "refactor",
+            "evidence": "",
+            "effort": "medium",
+        },
+        {  # dropped: evidence not grounded in any signal
+            "title": "新增审计日志管线",
+            "goal": "引入集中审计日志。",
+            "priority": "P3",
+            "rationale": "安全性考虑。",
+            "kind": "feat",
+            "evidence": "上次线上故障后的讨论记录",
+            "effort": "large",
+        },
+    ]
+
+    kept, dropped = inspect_cmd._filter_candidates(candidates, signal_results=signal_results)
+    reasons = {item["reason"] for item in dropped}
+
+    assert len(kept) == 1
+    assert kept[0]["title"] == "修复 foo.py 的超时 TODO"
+    assert reasons == {"generic_filler", "title_too_long", "missing_evidence", "evidence_not_grounded"}
+
+
+def test_build_content_surfaces_evidence_and_effort():
+    content = inspect_cmd._build_content({
+        "title": "修复 foo.py 的超时 TODO",
+        "goal": "处理 codepilot/foo.py:42 的 TODO。",
+        "rationale": "TODO 指向明确行。",
+        "kind": "bug",
+        "evidence": "signal 3: codepilot/foo.py:42",
+        "effort": "small",
+    })
+    assert "kind=bug" in content
+    assert "effort=small" in content
+    assert "## 信号证据" in content
+    assert "codepilot/foo.py:42" in content
+
+
 def test_emit_inspection_result_maps_error_into_contract(monkeypatch):
     rendered: dict[str, object] = {}
 
