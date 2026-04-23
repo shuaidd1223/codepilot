@@ -347,3 +347,125 @@ def test_auto_command_creates_linear_subtasks(tmp_path, monkeypatch):
     assert tasks[0]["depends_on"] is None
     assert tasks[1]["title"] == "step 2"
     assert json.loads(tasks[1]["depends_on"]) == [tasks[0]["id"]]
+
+
+def test_webui_dashboard_task_sort_matches_display_rules(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    backlog_p1 = db.create_task("demo", "backlog-p1", priority="P1")
+    backlog_p0 = db.create_task("demo", "backlog-p0", priority="P0")
+    done_early = db.create_task("demo", "done-early", priority="P0")
+    done_late = db.create_task("demo", "done-late", priority="P2")
+    db.update_task(done_early["id"], status="done", completed_at="2026-04-23T10:00:00")
+    db.update_task(done_late["id"], status="done", completed_at="2026-04-23T11:00:00")
+
+    with db.get_write_conn() as conn:
+        conn.execute(
+            "UPDATE tasks SET created_at = ? WHERE id = ?",
+            ("2026-04-23T08:00:00", backlog_p1["id"]),
+        )
+        conn.execute(
+            "UPDATE tasks SET created_at = ? WHERE id = ?",
+            ("2026-04-23T09:00:00", backlog_p0["id"]),
+        )
+        conn.execute(
+            "UPDATE tasks SET created_at = ? WHERE id = ?",
+            ("2026-04-23T07:00:00", done_early["id"]),
+        )
+        conn.execute(
+            "UPDATE tasks SET created_at = ? WHERE id = ?",
+            ("2026-04-23T06:00:00", done_late["id"]),
+        )
+
+    payload = webui_mod.dashboard_payload("demo")
+    ordered_ids = [item["id"] for item in payload["tasks"]]
+    assert ordered_ids == [backlog_p0["id"], backlog_p1["id"], done_late["id"], done_early["id"]]
+
+
+def test_webui_requirement_list_sort_matches_display_rules(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    with webui_mod._UI_LOCK:
+        webui_mod._UI_JOBS = {
+            1: {
+                "id": 1,
+                "project": "demo",
+                "title": "queued-p1",
+                "status": "queued",
+                "phase": "queued",
+                "priority": "P1",
+                "created_at": "2026-04-23T10:00:00",
+                "updated_at": "2026-04-23T10:00:00",
+                "finished_at": "",
+            },
+            2: {
+                "id": 2,
+                "project": "demo",
+                "title": "running-p0",
+                "status": "running",
+                "phase": "planning",
+                "priority": "P0",
+                "created_at": "2026-04-23T12:00:00",
+                "updated_at": "2026-04-23T12:00:00",
+                "finished_at": "",
+            },
+            3: {
+                "id": 3,
+                "project": "demo",
+                "title": "done-older",
+                "status": "succeeded",
+                "phase": "done",
+                "priority": "P0",
+                "created_at": "2026-04-23T09:00:00",
+                "updated_at": "2026-04-23T11:00:00",
+                "finished_at": "2026-04-23T11:00:00",
+            },
+            4: {
+                "id": 4,
+                "project": "demo",
+                "title": "done-newer",
+                "status": "succeeded",
+                "phase": "done",
+                "priority": "P2",
+                "created_at": "2026-04-23T08:00:00",
+                "updated_at": "2026-04-23T13:00:00",
+                "finished_at": "2026-04-23T13:00:00",
+            },
+        }
+
+    jobs = webui_mod.list_ui_jobs("demo")
+    assert [job["id"] for job in jobs] == [2, 1, 4, 3]
+
+
+def test_webui_session_list_sorts_by_activity_then_creation(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    first = db.create_session("demo", title="first")
+    second = db.create_session("demo", title="second")
+    third = db.create_session("demo", title="third")
+
+    with db.get_write_conn() as conn:
+        conn.execute(
+            "UPDATE sessions SET updated_at = ?, created_at = ? WHERE id = ?",
+            ("2026-04-23T10:00:00", "2026-04-23T09:00:00", first["id"]),
+        )
+        conn.execute(
+            "UPDATE sessions SET updated_at = ?, created_at = ? WHERE id = ?",
+            ("2026-04-23T10:00:00", "2026-04-23T09:30:00", second["id"]),
+        )
+        conn.execute(
+            "UPDATE sessions SET updated_at = ?, created_at = ? WHERE id = ?",
+            ("2026-04-23T10:30:00", "2026-04-23T08:30:00", third["id"]),
+        )
+
+    payload = webui_mod.list_sessions_action("demo")
+    assert [item["id"] for item in payload["sessions"]] == [third["id"], second["id"], first["id"]]

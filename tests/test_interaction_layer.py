@@ -73,6 +73,30 @@ def test_progress_bus_subscription_context_manager():
     assert received[0]["message"] == "hello"
 
 
+def test_progress_bus_assigns_monotonic_event_ids():
+    progress_bus.clear_subscribers_for_tests()
+    progress_bus.emit(stage="planner", message="a")
+    progress_bus.emit(stage="planner", message="b")
+    events = progress_bus.events_since(0)
+    assert [event["id"] for event in events] == [1, 2]
+
+
+def test_progress_bus_subscribe_with_backlog_replays_tail_since_event_id():
+    progress_bus.clear_subscribers_for_tests()
+    progress_bus.emit(stage="planner", message="first")
+    progress_bus.emit(stage="builder", message="second")
+    first_id = progress_bus.events_since(0)[0]["id"]
+
+    live: list[dict] = []
+    token, backlog = progress_bus.subscribe_with_backlog(live.append, after_id=first_id)
+    try:
+        assert [item["message"] for item in backlog] == ["second"]
+        progress_bus.emit(stage="reviewer", message="third")
+        assert [item["message"] for item in live] == ["third"]
+    finally:
+        progress_bus.unsubscribe(token)
+
+
 # ─── executor emits events on the bus ─────────────────────────────────────
 
 
