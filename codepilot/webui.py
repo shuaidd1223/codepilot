@@ -43,6 +43,7 @@ from codepilot.webui_actions import (  # noqa: F401 (re-export)
     create_project_action,
     create_session_action,
     create_task_action,
+    batch_task_action,
     delete_task_action,
     delete_project_action,
     delete_session_action,
@@ -438,6 +439,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             max_retries=int(body.get("max_retries") or 3),
         )
 
+    def _handle_post_tasks_batch(self, body: dict) -> dict:
+        return batch_task_action(
+            body.get("task_ids") if isinstance(body.get("task_ids"), list) else [],
+            body.get("action") or "",
+            message=body.get("message") or "",
+        )
+
     def _handle_post_requirements(self, body: dict) -> dict:
         return submit_requirement_action(
             body.get("project") or "",
@@ -467,6 +475,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/goal": self._handle_post_goal,
             "/api/projects": self._handle_post_projects,
             "/api/tasks": self._handle_post_tasks,
+            "/api/tasks/batch": self._handle_post_tasks_batch,
             "/api/requirements": self._handle_post_requirements,
             "/api/sessions": self._handle_post_sessions,
         }

@@ -461,6 +461,69 @@ p { margin: 0; }
   border-bottom: 1px solid hsl(var(--border));
   display: flex; justify-content: space-between; align-items: center;
 }
+.task-batch-bar {
+  position: relative;
+  padding: 8px 14px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / .2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.task-batch-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.task-batch-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  user-select: none;
+}
+.task-batch-check input {
+  margin: 0;
+  width: 13px;
+  height: 13px;
+}
+.task-batch-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.inline-batch-confirm {
+  position: absolute;
+  right: 10px;
+  top: calc(100% - 4px);
+  min-width: 220px;
+  max-width: 320px;
+  padding: 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--card));
+  box-shadow: var(--shadow-md);
+  z-index: 24;
+}
+.inline-batch-confirm-text {
+  font-size: 11px;
+  color: hsl(var(--foreground));
+  line-height: 1.3;
+  margin-bottom: 6px;
+}
+.inline-batch-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.inline-batch-confirm-actions .btn-sm {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+}
 .task-list > .task-item + .task-item { border-top: 1px solid hsl(var(--border)); }
 .list-load-more {
   padding: 10px 14px 12px;
@@ -476,6 +539,19 @@ p { margin: 0; }
   cursor: pointer;
   transition: background .12s;
   display: flex; gap: 10px; justify-content: space-between;
+}
+.task-item-select {
+  margin-top: 2px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 2px;
+}
+.task-item-select input {
+  margin: 0;
+  width: 14px;
+  height: 14px;
 }
 .task-item:hover { background: hsl(var(--accent) / .5); }
 .task-item-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 6px; }

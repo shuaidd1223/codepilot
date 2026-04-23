@@ -86,9 +86,10 @@ CP.Components.SessionsView = Vue.defineComponent({
           再展开 {{ nextChunkCount }} 条（剩余 {{ remainingCount }}）
         </button>
         <button v-if="canCollapse" class="btn btn-outline btn-sm" @click="collapseList">
-          收起到 {{ pageSize }} 条
+          全部收起
         </button>
       </div>
     </div>
   `,
 });
+

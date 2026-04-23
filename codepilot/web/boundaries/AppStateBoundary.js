@@ -449,6 +449,9 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
     async function taskAction(taskId, action) {
       return _ensureTaskDetailBoundary().taskAction(taskId, action);
     }
+    async function taskBatchAction(taskIds, action) {
+      return _ensureTaskDetailBoundary().taskBatchAction(taskIds, action);
+    }
 
     async function submitGoal() {
       if (!state.nav.project) { pushToast('先选择一个项目', 'error'); return; }
@@ -901,6 +904,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       loadDashboard, loadTaskDetail, loadTaskLog, loadSessions, loadSessionChat, loadDaemonHealth,
       /* actions */
       taskAction, submitGoal, submitComposer,
+      taskBatchAction,
       toggleProjectForm, submitProject, deleteProject,
       projectService,
       newSession, sendChat, deleteSession,

@@ -231,7 +231,7 @@ CP.Components.Sidebar = Vue.defineComponent({
                 <button v-if="leafCanCollapse(projectSessions(p.name), p.name, 'sessions')"
                         class="tree-row tree-more"
                         @click.stop="collapseLeaf(p.name, 'sessions')">
-                  收起到 {{ pageSize }} 条
+                  全部收起
                 </button>
                 <button class="tree-row tree-add" @click="cp.newSession()">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
@@ -308,7 +308,7 @@ CP.Components.Sidebar = Vue.defineComponent({
                 <button v-if="leafCanCollapse(projectTasks(p.name), p.name, 'tasks')"
                         class="tree-row tree-more"
                         @click.stop="collapseLeaf(p.name, 'tasks')">
-                  收起到 {{ pageSize }} 条
+                  全部收起
                 </button>
               </div>
 
@@ -344,7 +344,7 @@ CP.Components.Sidebar = Vue.defineComponent({
                 <button v-if="leafCanCollapse(projectJobs(p.name), p.name, 'jobs')"
                         class="tree-row tree-more"
                         @click.stop="collapseLeaf(p.name, 'jobs')">
-                  收起到 {{ pageSize }} 条
+                  全部收起
                 </button>
               </div>
             </div>
@@ -369,3 +369,4 @@ CP.Components.Sidebar = Vue.defineComponent({
     </aside>
   `,
 });
+

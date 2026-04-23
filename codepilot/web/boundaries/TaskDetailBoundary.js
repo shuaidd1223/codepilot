@@ -184,10 +184,43 @@ CP.createTaskDetailBoundary = (options = {}) => {
     }
   }
 
+  async function taskBatchAction(taskIds, action) {
+    const ids = [];
+    const seen = new Set();
+    for (const raw of (taskIds || [])) {
+      const tid = Number(raw);
+      if (!Number.isFinite(tid) || tid <= 0 || seen.has(tid)) continue;
+      seen.add(tid);
+      ids.push(tid);
+    }
+    if (!ids.length) return null;
+
+    for (const tid of ids) state.pendingTasks[tid] = action;
+    try {
+      const out = await CP.api.post('/api/tasks/batch', { task_ids: ids, action });
+      if (out && out.message) {
+        pushToast(out.message, out.ok ? 'success' : 'warning');
+      } else {
+        pushToast('批量操作完成', 'success');
+      }
+      await loadDashboard();
+      if (state.nav.view === 'task' && ids.includes(state.nav.id)) {
+        await loadTaskDetail();
+      }
+      return out;
+    } catch (err) {
+      pushToast(err.message, 'error');
+      return null;
+    } finally {
+      for (const tid of ids) delete state.pendingTasks[tid];
+    }
+  }
+
   return {
     loadTaskDetail,
     loadTaskLog,
     handleTaskLogStreamEvent,
     taskAction,
+    taskBatchAction,
   };
 };

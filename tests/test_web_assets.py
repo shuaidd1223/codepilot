@@ -50,6 +50,20 @@ def test_sidebar_task_leaf_includes_quick_actions():
     assert "class=\"tree-inline-confirm\"" in sidebar
 
 
+def test_task_section_includes_batch_quick_actions():
+    task_section = Path("codepilot/web/components/TaskSection.js").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+
+    assert "selectedTaskIds" in task_section
+    assert "requestBatchAction(act, ev)" in task_section
+    assert "confirmBatchAction(ev)" in task_section
+    assert "this.cp.taskBatchAction(ids, act);" in task_section
+    assert "批量取消" in task_section
+    assert "批量归档" in task_section
+    assert "批量删除" in task_section
+    assert "taskBatchAction," in app_state
+
+
 def test_web_ui_bootstrap_wires_app_state_boundary_before_mount():
     index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
     app = Path("codepilot/web/app.js").read_text(encoding="utf-8")

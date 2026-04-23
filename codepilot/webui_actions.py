@@ -647,6 +647,75 @@ def delete_task_action(task_id: int) -> dict:
     return {"ok": True, "message": f"任务 #{task_id} 已删除。", "deleted_task_id": task_id}
 
 
+def batch_task_action(task_ids: list[int], action: str, *, message: str = "") -> dict:
+    """Apply one quick action to multiple tasks.
+
+    Supports the same list quick-actions as the UI buttons:
+    ``cancel`` / ``archive`` / ``delete``.
+    """
+    normalized_action = (action or "").strip().lower()
+    handlers: dict[str, Callable[[int], dict]] = {
+        "cancel": lambda tid: cancel_task_action(tid, message=message),
+        "archive": archive_task_action,
+        "delete": delete_task_action,
+    }
+    handler = handlers.get(normalized_action)
+    if handler is None:
+        raise RuntimeError("批量操作只支持 cancel / archive / delete。")
+
+    if not isinstance(task_ids, list) or not task_ids:
+        raise RuntimeError("task_ids 不能为空。")
+
+    normalized_ids: list[int] = []
+    seen: set[int] = set()
+    for raw in task_ids:
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid <= 0 or tid in seen:
+            continue
+        seen.add(tid)
+        normalized_ids.append(tid)
+
+    if not normalized_ids:
+        raise RuntimeError("task_ids 没有有效任务 ID。")
+
+    succeeded: list[dict] = []
+    failed: list[dict] = []
+    for tid in normalized_ids:
+        try:
+            result = handler(tid)
+            succeeded.append(
+                {
+                    "task_id": tid,
+                    "message": str(result.get("message") or ""),
+                    "task": result.get("task"),
+                    "deleted_task_id": result.get("deleted_task_id"),
+                }
+            )
+        except Exception as exc:
+            failed.append({"task_id": tid, "error": str(exc)})
+
+    success_count = len(succeeded)
+    failed_count = len(failed)
+    if failed_count:
+        summary = f"批量{normalized_action}完成：成功 {success_count}，失败 {failed_count}。"
+    else:
+        summary = f"批量{normalized_action}完成：共 {success_count} 个任务。"
+
+    return {
+        "ok": failed_count == 0,
+        "action": normalized_action,
+        "total": len(normalized_ids),
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "succeeded": succeeded,
+        "failed": failed,
+        "message": summary,
+    }
+
+
 def create_task_action(
     project: str,
     title: str,

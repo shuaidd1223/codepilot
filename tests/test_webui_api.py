@@ -352,6 +352,42 @@ def test_delete_running_task_rejected_via_api(ui_server):
     assert "不能删除" in body["error"]
 
 
+# ─── POST /api/tasks/batch ──────────────────────────────────────────────────
+
+def test_batch_cancel_tasks_via_api_all_success(ui_server):
+    one = db.create_task("demo", "batch cancel 1", agent="codex")
+    two = db.create_task("demo", "batch cancel 2", agent="codex")
+
+    status, body = _post(
+        f"{ui_server}/api/tasks/batch",
+        {"action": "cancel", "task_ids": [one["id"], two["id"]]},
+    )
+    assert status == 200
+    assert body["ok"] is True
+    assert body["success_count"] == 2
+    assert body["failed_count"] == 0
+    assert db.get_task(one["id"])["status"] == "cancelled"
+    assert db.get_task(two["id"])["status"] == "cancelled"
+
+
+def test_batch_delete_tasks_via_api_reports_partial_failures(ui_server):
+    done = db.create_task("demo", "batch delete done", agent="codex")
+    running = db.create_task("demo", "batch delete running", agent="codex")
+    db.update_task(done["id"], status="done")
+    db.update_task(running["id"], status="in_progress")
+
+    status, body = _post(
+        f"{ui_server}/api/tasks/batch",
+        {"action": "delete", "task_ids": [done["id"], running["id"]]},
+    )
+    assert status == 200
+    assert body["ok"] is False
+    assert body["success_count"] == 1
+    assert body["failed_count"] == 1
+    assert db.get_task(done["id"]) is None
+    assert db.get_task(running["id"])["status"] == "in_progress"
+
+
 # ─── HTML page ──────────────────────────────────────────────────────────────
 
 def test_root_serves_html(ui_server):
