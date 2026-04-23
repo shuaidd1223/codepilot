@@ -644,6 +644,105 @@ def _list_existing_open_tasks(project_name: str) -> list[dict]:
     ]
 
 
+_QUALITY_GENERIC_KEYWORDS = (
+    "占位",
+    "待补充",
+    "placeholder",
+    "todo",
+    "pending",
+    "awaiting",
+    "misc",
+    "其它优化",
+    "其他优化",
+    "通用优化",
+    "泛化",
+)
+
+
+def _evaluate_planning_quality(title: str, breakdown: dict) -> tuple[list[str], list[str]]:
+    """Rough structural checks only (format/template), no semantic hard gates."""
+    tasks = breakdown.get("tasks") or []
+    if not isinstance(tasks, list) or not tasks:
+        return ["No executable tasks were produced."], []
+
+    repair_signals: list[str] = []
+    advisory: list[str] = []
+    placeholder_like_tasks = 0
+    title_missing_count = 0
+    goal_missing_count = 0
+    ac_missing_count = 0
+    files_missing_count = 0
+
+    for idx, task in enumerate(tasks, 1):
+        if not isinstance(task, dict):
+            repair_signals.append(f"Task {idx} is not an object.")
+            continue
+
+        task_title = str(task.get("title") or "").strip()
+        goal = str(task.get("goal") or "").strip()
+        acceptance_raw = task.get("acceptance_criteria")
+        files_raw = task.get("files")
+        acceptance = [
+            str(item).strip()
+            for item in (acceptance_raw if isinstance(acceptance_raw, list) else [])
+            if str(item).strip()
+        ]
+        files = [
+            str(path).strip()
+            for path in (files_raw if isinstance(files_raw, list) else [])
+            if str(path).strip()
+        ]
+
+        if not task_title:
+            title_missing_count += 1
+            advisory.append(f"Task {idx} is missing `title`.")
+
+        if not goal:
+            goal_missing_count += 1
+            advisory.append(f"Task {idx} is missing `goal`.")
+
+        merged_text = " ".join([task_title, goal]).lower()
+        if any(keyword in merged_text for keyword in _QUALITY_GENERIC_KEYWORDS):
+            placeholder_like_tasks += 1
+            advisory.append(f"Task {idx} looks placeholder-like: `{task_title or 'unnamed task'}`.")
+
+        if not acceptance:
+            ac_missing_count += 1
+            advisory.append(f"Task {idx} is missing `acceptance_criteria` entries.")
+
+        if not files:
+            files_missing_count += 1
+            advisory.append(f"Task {idx} is missing `files` entries.")
+
+    should_split = breakdown.get("should_split")
+    if isinstance(should_split, bool):
+        if should_split and len(tasks) <= 1:
+            advisory.append("`should_split=true` but only one task was produced.")
+        if (not should_split) and len(tasks) > 1:
+            advisory.append("`should_split=false` but multiple tasks were produced.")
+
+    # Trigger automatic re-plan only for obvious template/format failures.
+    if placeholder_like_tasks == len(tasks):
+        repair_signals.append("All tasks look placeholder-like and lack concrete deliverables.")
+    if title_missing_count == len(tasks):
+        repair_signals.append("All tasks are missing `title`.")
+    if goal_missing_count == len(tasks):
+        repair_signals.append("All tasks are missing `goal`.")
+    if ac_missing_count == len(tasks):
+        repair_signals.append("All tasks are missing `acceptance_criteria` entries.")
+    if files_missing_count == len(tasks):
+        repair_signals.append("All tasks are missing `files` entries.")
+    return repair_signals, advisory
+
+
+def _render_quality_feedback(blocking: list[str], advisory: list[str], *, limit: int = 8) -> str:
+    issues = [*blocking, *advisory]
+    lines = [f"{idx}. {item}" for idx, item in enumerate(issues[:limit], 1)]
+    if len(issues) > limit:
+        lines.append(f"{limit + 1}. Also address the remaining {len(issues) - limit} similar issues.")
+    return "\n".join(lines)
+
+
 def _plan_requirement_breakdown(
     *,
     shell,
@@ -662,10 +761,10 @@ def _plan_requirement_breakdown(
     echo(f"[dim]  {planning_text.format(planner=planner)}[/dim]")
     existing_tasks = _list_existing_open_tasks(project_name)
 
-    def _plan_once(active_planner: str) -> dict:
+    def _plan_once(active_planner: str, requirement_text: str) -> dict:
         raw_breakdown = _generate_task_breakdown_via_shell(
             shell,
-            title=title,
+            title=requirement_text,
             project_path=project_path,
             planner=active_planner,
             max_tasks=max_tasks,
@@ -680,6 +779,43 @@ def _plan_requirement_breakdown(
             existing_tasks=existing_tasks,
         )
 
+    def _plan_with_quality_repair(active_planner: str) -> dict:
+        first = _plan_once(active_planner, title)
+        blocking, advisory = _evaluate_planning_quality(title, first)
+        if not blocking:
+            if advisory:
+                echo(f"[yellow]规划质量提醒：{len(advisory)} 个可优化项（继续执行当前规划）[/yellow]")
+            return first
+
+        echo(f"[yellow]规划质量检查发现 {len(blocking)} 个阻塞问题，自动触发一次重规划...[/yellow]")
+        feedback = _render_quality_feedback(blocking, advisory)
+        corrected_title = (
+            f"{title}\n\n"
+            "Previous planning output needs correction:\n"
+            f"{feedback}\n"
+            "Regenerate tasks that are directly executable, aligned with the requirement, "
+            "and strictly follow the task template fields."
+        )
+        second = _plan_once(active_planner, corrected_title)
+        second_blocking, second_advisory = _evaluate_planning_quality(title, second)
+        if len(second_blocking) < len(blocking):
+            if second_blocking:
+                echo(
+                    f"[yellow]重规划后仍有 {len(second_blocking)} 个阻塞问题，"
+                    "但已优于首轮结果，继续采用重规划版本。[/yellow]"
+                )
+            elif second_advisory:
+                echo(
+                    f"[yellow]重规划已消除阻塞问题，仍有 {len(second_advisory)} 个可优化项。[/yellow]"
+                )
+            return second
+
+        echo(
+            "[yellow]自动重规划未明显改善，本轮沿用首轮结果；"
+            "建议后续补充更明确的需求边界。[/yellow]"
+        )
+        return first
+
     def _codex_single_task_fallback(exc: Exception) -> dict:
         echo("[yellow]Codex 规划没有及时完成，已降级为单任务直接执行。[/yellow]")
         breakdown = _fallback_single_task_breakdown(title=title, priority=priority, exc=exc)
@@ -691,7 +827,7 @@ def _plan_requirement_breakdown(
         )
 
     try:
-        return _plan_once(planner)
+        return _plan_with_quality_repair(planner)
     except Exception as primary_exc:
         normalized = _normalize_agent_name(planner)
         if normalized == "codex" and _should_fallback_codex_planning(primary_exc):
@@ -700,12 +836,12 @@ def _plan_requirement_breakdown(
         if _is_claude_family_planner(planner):
             echo("[yellow]Claude 规划失败，正在重试一次...[/yellow]")
             try:
-                return _plan_once(planner)
+                return _plan_with_quality_repair(planner)
             except Exception as retry_exc:
                 echo("[yellow]Claude 规划仍失败，已回退到 codex 继续规划。[/yellow]")
                 echo(f"[dim]  Claude 原始原因：{retry_exc}[/dim]")
                 try:
-                    return _plan_once("codex")
+                    return _plan_with_quality_repair("codex")
                 except Exception as codex_exc:
                     if _should_fallback_codex_planning(codex_exc):
                         return _codex_single_task_fallback(codex_exc)
@@ -756,10 +892,12 @@ def _create_tasks_from_breakdown(
         ]
         if not dep_ids and previous_task_id and not item.get("depends_on_indices"):
             dep_ids = [previous_task_id]
+        task_spec = dict(item)
+        task_spec["agent"] = task_agent
         task = db.create_task(
             project=project_name,
             title=item["title"],
-            content=_build_task_markdown_from_plan(item),
+            content=_build_task_markdown_from_plan(task_spec),
             agent=task_agent,
             priority=item.get("priority") or priority,
             depends_on=dep_ids or None,
