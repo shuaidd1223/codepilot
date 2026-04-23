@@ -42,5 +42,5 @@ def test_collect_project_context_uses_rich_summary_for_project_root(tmp_path):
 
     context = _collect_project_context(str(project), query_text="分析项目结构")
 
-    assert "结构化概览" in context
-    assert "目录结构" in context
+    assert "structured overview" in context
+    assert "Directory Layout" in context
