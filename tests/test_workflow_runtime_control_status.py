@@ -306,6 +306,137 @@ def test_stop_command_cancels_in_progress_task_without_live_process(tmp_path, mo
     assert current["status"] == "cancelled"
 
 
+def test_cancel_command_rejects_in_progress_done_and_archived(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    backlog = db.create_task("demo", "cancel backlog", agent="codex")
+    running = db.create_task("demo", "cancel running", agent="codex")
+    done = db.create_task("demo", "cancel done", agent="codex")
+    archived = db.create_task("demo", "cancel archived", agent="codex")
+
+    db.update_task(running["id"], status="in_progress")
+    db.update_task(done["id"], status="done")
+    db.update_task(archived["id"], status="archived")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "cancel",
+            str(backlog["id"]),
+            str(running["id"]),
+            str(done["id"]),
+            str(archived["id"]),
+            "-m",
+            "manual cancel",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "共取消 1 个任务" in result.output
+    assert "不能取消；请使用 stop" in result.output
+    assert "已完成，无法取消" in result.output
+    assert "已归档，无法取消" in result.output
+    assert db.get_task(backlog["id"])["status"] == "cancelled"
+    assert db.get_task(running["id"])["status"] == "in_progress"
+    assert db.get_task(done["id"])["status"] == "done"
+    assert db.get_task(archived["id"])["status"] == "archived"
+
+
+def test_archive_command_only_allows_done_tasks(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    done = db.create_task("demo", "done archive", agent="codex")
+    backlog = db.create_task("demo", "backlog archive", agent="codex")
+    cancelled = db.create_task("demo", "cancelled archive", agent="codex")
+
+    db.update_task(done["id"], status="done")
+    db.update_task(cancelled["id"], status="cancelled")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["archive", str(done["id"]), str(backlog["id"]), str(cancelled["id"])],
+    )
+
+    assert result.exit_code == 0
+    assert "共归档 1 个任务" in result.output
+    assert "只有已完成任务可以归档" in result.output
+    assert db.get_task(done["id"])["status"] == "archived"
+    assert db.get_task(backlog["id"])["status"] == "backlog"
+    assert db.get_task(cancelled["id"])["status"] == "cancelled"
+
+
+def test_rm_command_only_deletes_allowed_statuses(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    backlog = db.create_task("demo", "rm backlog", agent="codex")
+    cancelled = db.create_task("demo", "rm cancelled", agent="codex")
+    done = db.create_task("demo", "rm done", agent="codex")
+    archived = db.create_task("demo", "rm archived", agent="codex")
+    running = db.create_task("demo", "rm running", agent="codex")
+    failed = db.create_task("demo", "rm failed", agent="codex")
+
+    db.update_task(cancelled["id"], status="cancelled")
+    db.update_task(done["id"], status="done")
+    db.update_task(archived["id"], status="archived")
+    db.update_task(running["id"], status="in_progress")
+    db.update_task(failed["id"], status="failed")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "rm",
+            str(backlog["id"]),
+            str(cancelled["id"]),
+            str(done["id"]),
+            str(archived["id"]),
+            str(running["id"]),
+            str(failed["id"]),
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "已删除 4 个任务" in result.output
+    assert "不能删除；请先停止" in result.output
+    assert "不允许直接删除" in result.output
+    assert db.get_task(backlog["id"]) is None
+    assert db.get_task(cancelled["id"]) is None
+    assert db.get_task(done["id"]) is None
+    assert db.get_task(archived["id"]) is None
+    assert db.get_task(running["id"])["status"] == "in_progress"
+    assert db.get_task(failed["id"])["status"] == "failed"
+
+
+def test_edit_and_find_support_archived_status(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "archived status", agent="codex")
+
+    runner = CliRunner()
+    edit_result = runner.invoke(main, ["edit", str(task["id"]), "--status", "archived"])
+    find_result = runner.invoke(main, ["find", "--status", "archived", "--json"])
+
+    assert edit_result.exit_code == 0
+    assert db.get_task(task["id"])["status"] == "archived"
+    assert find_result.exit_code == 0
+    payload = json.loads(find_result.output)
+    assert payload["ok"] is True
+    assert payload["data"]["count"] == 1
+    assert payload["data"]["tasks"][0]["id"] == task["id"]
+
+
 def test_logs_command_reads_live_runtime_log(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

@@ -1,4 +1,4 @@
-"""codepilot 任务管理命令：show / edit / rm / done / retry / find."""
+"""codepilot 任务管理命令：show / edit / rm / done / retry / archive / find."""
 
 from __future__ import annotations
 
@@ -234,21 +234,26 @@ def cancel(task_ids: tuple[int, ...], message: str):
         if not task:
             echo(f"[yellow]任务 #{tid} 不存在，跳过[/yellow]")
             continue
-        if task["status"] == "done":
+        status = str(task.get("status") or "")
+        if status == "in_progress":
+            echo(f"[yellow]任务 #{tid} 正在执行中，不能取消；请使用 stop[/yellow]")
+            continue
+        if status == "done":
             echo(f"[yellow]任务 #{tid} 已完成，无法取消[/yellow]")
             continue
-        if task["status"] == "in_progress":
-            pid = task.get("active_pid")
-            if pid:
-                stop_process_tree(pid)
-            reason = message or f"任务 #{tid} 已取消"
-            request_task_stop(tid, reason)
+        if status == "archived":
+            echo(f"[yellow]任务 #{tid} 已归档，无法取消[/yellow]")
+            continue
+        if status == "cancelled":
+            echo(f"[yellow]任务 #{tid} 已取消，无需重复操作[/yellow]")
+            continue
         from datetime import datetime
+        reason = (message or "手动取消").strip() or "手动取消"
         clear_task_runtime(
             tid,
             status="cancelled",
             completed_at=datetime.now().isoformat(),
-            error_message=message or "手动取消",
+            error_message=reason,
             stop_requested=0,
             stop_reason=None,
         )
@@ -265,6 +270,36 @@ def cancel(task_ids: tuple[int, ...], message: str):
         count += 1
     if count:
         echo(f"[green][OK] 共取消 {count} 个任务[/green]")
+
+
+# ── archive ───────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("task_ids", type=int, nargs=-1, required=True)
+def archive(task_ids: tuple[int, ...]):
+    """归档一个或多个已完成任务。"""
+    db.init_db()
+    count = 0
+    for tid in task_ids:
+        task = db.get_task(tid)
+        if not task:
+            echo(f"[yellow]任务 #{tid} 不存在，跳过[/yellow]")
+            continue
+        status = str(task.get("status") or "")
+        if status == "archived":
+            echo(f"[yellow]任务 #{tid} 已归档，无需重复操作[/yellow]")
+            continue
+        if status != "done":
+            echo(f"[yellow]任务 #{tid} 当前状态为 {status}，只有已完成任务可以归档[/yellow]")
+            continue
+        updated = db.update_task(tid, status="archived")
+        if not updated:
+            echo(f"[yellow]任务 #{tid} 归档失败，已跳过[/yellow]")
+            continue
+        echo(f"[cyan]已归档 #{tid}[/cyan]  {task['title']}")
+        count += 1
+    if count:
+        echo(f"[green][OK] 共归档 {count} 个任务[/green]")
 
 
 # ── resume ────────────────────────────────────────────────────────────────────
@@ -305,7 +340,7 @@ def resume(task_ids: tuple[int, ...]):
                type=click.Choice(["P0", "P1", "P2", "P3"], case_sensitive=False),
                help="修改优先级")
 @click.option("--status", "-s",
-               type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled"], case_sensitive=False),
+               type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled", "archived"], case_sensitive=False),
                help="修改状态")
 @click.option("--agent", "-a",
                type=click.Choice(["dual", "builder", "reviewer", "claude", "codex"], case_sensitive=False),
@@ -379,8 +414,24 @@ def rm(task_ids: tuple[int, ...], force: bool):
     if not tasks:
         return
 
-    echo(f"[cyan]将删除以下 {len(tasks)} 个任务：[/cyan]")
-    for t in tasks:
+    deletable_statuses = {"backlog", "cancelled", "done", "archived"}
+    deletable: list[dict] = []
+    for task in tasks:
+        status = str(task.get("status") or "")
+        if status == "in_progress":
+            echo(f"[yellow]任务 #{task['id']} 正在执行中，不能删除；请先停止[/yellow]")
+            continue
+        if status not in deletable_statuses:
+            echo(f"[yellow]任务 #{task['id']} 当前状态为 {status}，不允许直接删除[/yellow]")
+            continue
+        deletable.append(task)
+
+    if not deletable:
+        echo("[yellow]没有可删除的任务[/yellow]")
+        return
+
+    echo(f"[cyan]将删除以下 {len(deletable)} 个任务：[/cyan]")
+    for t in deletable:
         click.echo(f"  #{t['id']}  {t['title']}  [{t['status']}]")
 
     if not force:
@@ -388,13 +439,12 @@ def rm(task_ids: tuple[int, ...], force: bool):
             echo("[yellow]已取消[/yellow]")
             return
 
-    with db.get_conn() as conn:
-        for t in tasks:
-            conn.execute("DELETE FROM task_logs WHERE task_id = ?", (t["id"],))
-            conn.execute("DELETE FROM tasks WHERE id = ?", (t["id"],))
-        conn.commit()
+    deleted = 0
+    for task in deletable:
+        if db.delete_task(task["id"]):
+            deleted += 1
 
-    echo(f"[green][OK] 已删除 {len(tasks)} 个任务[/green]")
+    echo(f"[green][OK] 已删除 {deleted} 个任务[/green]")
 
 
 # ── find ────────────────────────────────────────────────────────────────────────
@@ -403,7 +453,7 @@ def rm(task_ids: tuple[int, ...], force: bool):
 @click.argument("keyword", required=False)
 @click.option("--project", "-p", callback=_resolve_project, help="限定项目")
 @click.option("--status", "-s",
-              type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled"], case_sensitive=False),
+              type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled", "archived"], case_sensitive=False),
               help="按状态过滤")
 @click.option("--priority", "--pri",
               type=click.Choice(["P0", "P1", "P2", "P3"], case_sensitive=False),
@@ -458,6 +508,7 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
             "done": "green",
             "failed": "red",
             "cancelled": "magenta",
+            "archived": "white",
         }.get(r["status"], "dim")
 
         echo(
