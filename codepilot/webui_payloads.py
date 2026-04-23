@@ -441,6 +441,9 @@ def _task_payload(task: dict) -> dict:
             "retry": status in {"failed", "cancelled", "backlog"},
             "stop": status == "in_progress",
             "promote": status in {"backlog", "failed", "cancelled"},
+            "cancel": status in {"backlog", "failed"},
+            "archive": status == "done",
+            "delete": status in {"backlog", "cancelled", "done", "archived"},
         },
     }
 
@@ -501,7 +504,11 @@ def dashboard_payload(selected_project: str | None = None) -> dict:
     jobs_by_project: dict[str, list[dict]] = {}
     for proj in project_rows:
         name = proj["name"]
-        raw_tasks = _sorted_tasks(db.list_tasks(project=name))
+        raw_tasks = [
+            task
+            for task in _sorted_tasks(db.list_tasks(project=name))
+            if str(task.get("status") or "") != "archived"
+        ]
         tasks_by_project[name] = [_task_payload(task) for task in raw_tasks]
         try:
             jobs_by_project[name] = shell.list_ui_jobs(name)

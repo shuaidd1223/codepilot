@@ -12,6 +12,7 @@ TASK_STATUS_ORDER = {
     "failed": 2,
     "cancelled": 3,
     "done": 4,
+    "archived": 5,
 }
 
 _PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
@@ -105,4 +106,3 @@ def sort_sessions_for_display(sessions: Iterable[dict]) -> list[dict]:
             -_int_key(item.get("id"), default=0),
         ),
     )
-

@@ -13,6 +13,7 @@ import json
 import sys
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -35,6 +36,7 @@ from codepilot.interaction_controller import (
     interpret_clarification_outcome,
     resolve_turn_intent,
 )
+from codepilot.runtime import clear_task_runtime, stop_worktree_leftovers
 from codepilot.webui_payloads import _now_iso, _task_payload
 
 
@@ -565,6 +567,84 @@ def stop_task_action(task_id: int) -> dict:
     if task:
         _append_event(f"任务 #{task_id} 已收到停止请求。", level="warning", project=task["project"], task_id=task_id)
     return {"ok": True, "message": result.output.strip(), "task": _task_payload(task) if task else None}
+
+
+def cancel_task_action(task_id: int, *, message: str = "") -> dict:
+    """Cancel a non-running task while keeping history."""
+    db.init_db()
+    task = db.get_task(task_id)
+    if not task:
+        raise RuntimeError(f"任务 #{task_id} 不存在。")
+
+    status = str(task.get("status") or "")
+    if status == "in_progress":
+        raise RuntimeError(f"任务 #{task_id} 正在执行中，不能取消；请在详情里使用停止。")
+    if status == "done":
+        raise RuntimeError(f"任务 #{task_id} 已完成，不能取消。")
+    if status == "archived":
+        raise RuntimeError(f"任务 #{task_id} 已归档，不能取消。")
+    if status == "cancelled":
+        raise RuntimeError(f"任务 #{task_id} 已取消，无需重复操作。")
+
+    reason = (message or "手动取消").strip() or "手动取消"
+    updated = clear_task_runtime(
+        task_id,
+        status="cancelled",
+        completed_at=datetime.now().isoformat(timespec="seconds"),
+        error_message=reason,
+        stop_requested=0,
+        stop_reason=None,
+    )
+    if not updated:
+        raise RuntimeError(f"取消任务 #{task_id} 失败。")
+
+    wt = task.get("worktree_path")
+    project_path = task.get("project_path")
+    try:
+        if wt and wt != project_path:
+            stop_worktree_leftovers(wt, wait_seconds=3)
+    except Exception:
+        pass
+
+    _append_event(f"任务 #{task_id} 已取消。", level="warning", project=task["project"], task_id=task_id)
+    return {"ok": True, "message": f"任务 #{task_id} 已取消。", "task": _task_payload(updated)}
+
+
+def archive_task_action(task_id: int) -> dict:
+    """Archive a completed task so it disappears from active lists."""
+    db.init_db()
+    task = db.get_task(task_id)
+    if not task:
+        raise RuntimeError(f"任务 #{task_id} 不存在。")
+
+    status = str(task.get("status") or "")
+    if status != "done":
+        raise RuntimeError(f"任务 #{task_id} 当前状态为 {status}，只有已完成任务可以归档。")
+
+    updated = db.update_task(task_id, status="archived")
+    if not updated:
+        raise RuntimeError(f"归档任务 #{task_id} 失败。")
+    _append_event(f"任务 #{task_id} 已归档。", project=task["project"], task_id=task_id)
+    return {"ok": True, "message": f"任务 #{task_id} 已归档。", "task": _task_payload(updated)}
+
+
+def delete_task_action(task_id: int) -> dict:
+    """Hard-delete a task row and its logs."""
+    db.init_db()
+    task = db.get_task(task_id)
+    if not task:
+        raise RuntimeError(f"任务 #{task_id} 不存在。")
+
+    status = str(task.get("status") or "")
+    if status == "in_progress":
+        raise RuntimeError(f"任务 #{task_id} 正在执行中，不能删除；请先停止。")
+    if status not in {"backlog", "cancelled", "done", "archived"}:
+        raise RuntimeError(f"任务 #{task_id} 当前状态为 {status}，不允许直接删除。")
+
+    if not db.delete_task(task_id):
+        raise RuntimeError(f"删除任务 #{task_id} 失败。")
+    _append_event(f"任务 #{task_id} 已删除。", level="warning", project=task["project"], task_id=task_id)
+    return {"ok": True, "message": f"任务 #{task_id} 已删除。", "deleted_task_id": task_id}
 
 
 def create_task_action(

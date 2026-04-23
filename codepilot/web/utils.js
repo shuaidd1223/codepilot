@@ -5,7 +5,7 @@ window.CP = window.CP || { Components: {} };
 
 CP.STATUS_LABEL = {
   backlog: '待办', in_progress: '进行中', done: '已完成', failed: '失败',
-  cancelled: '已取消', queued: '排队', running: '执行中', succeeded: '成功',
+  cancelled: '已取消', archived: '已归档', queued: '排队', running: '执行中', succeeded: '成功',
   attention: '需关注', error: '错误', info: '信息', warning: '警告',
   question: '问题', requirement: '需求', task: '任务', command: '命令',
 };
@@ -19,6 +19,7 @@ CP.TONE_MAP = {
   in_progress: 'info', running: 'info', planning: 'info', queued: 'neutral',
   backlog: 'neutral', done: 'success', succeeded: 'success',
   failed: 'danger', error: 'danger', cancelled: 'danger',
+  archived: 'neutral',
   warning: 'warning', attention: 'warning',
   info: 'info', question: 'primary', requirement: 'primary', task: 'primary',
   command: 'neutral',

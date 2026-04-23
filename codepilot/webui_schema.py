@@ -33,6 +33,9 @@ class TaskActions(TypedDict):
     retry: bool
     stop: bool
     promote: bool
+    cancel: bool
+    archive: bool
+    delete: bool
 
 
 class TaskLogEntry(TypedDict):

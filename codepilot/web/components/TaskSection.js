@@ -12,6 +12,7 @@ CP.Components.TaskSection = Vue.defineComponent({
     return {
       pageSize: 10,
       visibleCount: 10,
+      inlineConfirm: { taskId: null, action: '' },
     };
   },
   computed: {
@@ -34,24 +35,62 @@ CP.Components.TaskSection = Vue.defineComponent({
   watch: {
     'cp.state.nav.project'() {
       this.visibleCount = this.pageSize;
+      this.clearInlineConfirm();
     },
     tasks(nextTasks) {
       if (!Array.isArray(nextTasks)) {
         this.visibleCount = this.pageSize;
+        this.clearInlineConfirm();
         return;
       }
       if (nextTasks.length <= this.pageSize) {
         this.visibleCount = this.pageSize;
-        return;
-      }
-      if (this.visibleCount > nextTasks.length) {
+      } else if (this.visibleCount > nextTasks.length) {
         this.visibleCount = Math.max(this.pageSize, nextTasks.length);
+      }
+      if (this.inlineConfirm.taskId != null && !nextTasks.some(t => t && t.id === this.inlineConfirm.taskId)) {
+        this.clearInlineConfirm();
       }
     },
   },
   methods: {
     pick(id) { this.cp.selectTask(this.cp.state.nav.project, id); },
-    action(id, act) { this.cp.taskAction(id, act); },
+    needsInlineConfirm(act) {
+      return ['cancel', 'archive', 'delete'].includes(act);
+    },
+    isInlineConfirm(task) {
+      return !!task && this.inlineConfirm.taskId === task.id;
+    },
+    clearInlineConfirm() {
+      this.inlineConfirm = { taskId: null, action: '' };
+    },
+    inlineConfirmMessage(task) {
+      if (!task || !task.id) return '';
+      if (this.inlineConfirm.action === 'cancel') return `取消任务 #${task.id}？`;
+      if (this.inlineConfirm.action === 'archive') return `归档任务 #${task.id}？`;
+      if (this.inlineConfirm.action === 'delete') return `删除任务 #${task.id}？`;
+      return '';
+    },
+    confirmInlineAction(task) {
+      if (!task || !task.id || !this.inlineConfirm.action) return;
+      const act = this.inlineConfirm.action;
+      this.clearInlineConfirm();
+      this.cp.taskAction(task.id, act);
+    },
+    action(task, act, ev) {
+      if (ev) ev.stopPropagation();
+      if (!task || !task.id) return;
+      if (!this.needsInlineConfirm(act)) {
+        this.clearInlineConfirm();
+        this.cp.taskAction(task.id, act);
+        return;
+      }
+      if (this.inlineConfirm.taskId === task.id && this.inlineConfirm.action === act) {
+        this.clearInlineConfirm();
+      } else {
+        this.inlineConfirm = { taskId: task.id, action: act };
+      }
+    },
     loadMore() {
       this.visibleCount += this.pageSize;
     },
@@ -90,21 +129,46 @@ CP.Components.TaskSection = Vue.defineComponent({
             </div>
           </div>
           <div class="task-item-actions" @click.stop>
-            <button v-if="x.actions.promote" class="btn btn-outline btn-sm" @click="action(x.id, 'promote')"
+            <button v-if="x.actions.promote" class="btn btn-outline btn-sm" @click="action(x, 'promote', $event)"
                     :disabled="cp.isTaskPending(x.id)">
               <span v-if="cp.taskPendingAction(x.id) === 'promote'" class="spinner"></span>
               插队
             </button>
-            <button v-if="x.actions.retry" class="btn btn-warning btn-sm" @click="action(x.id, 'retry')"
+            <button v-if="x.actions.retry" class="btn btn-warning btn-sm" @click="action(x, 'retry', $event)"
                     :disabled="cp.isTaskPending(x.id)">
               <span v-if="cp.taskPendingAction(x.id) === 'retry'" class="spinner"></span>
               重试
             </button>
-            <button v-if="x.actions.stop" class="btn btn-danger btn-sm" @click="action(x.id, 'stop')"
+            <button v-if="x.actions.cancel" class="btn btn-warning btn-sm" @click="action(x, 'cancel', $event)"
                     :disabled="cp.isTaskPending(x.id)">
-              <span v-if="cp.taskPendingAction(x.id) === 'stop'" class="spinner"></span>
-              停止
+              <span v-if="cp.taskPendingAction(x.id) === 'cancel'" class="spinner"></span>
+              取消
             </button>
+            <button v-if="x.actions.archive" class="btn btn-outline btn-sm" @click="action(x, 'archive', $event)"
+                    :disabled="cp.isTaskPending(x.id)">
+              <span v-if="cp.taskPendingAction(x.id) === 'archive'" class="spinner"></span>
+              归档
+            </button>
+            <button v-if="x.actions.delete" class="btn btn-danger btn-sm" @click="action(x, 'delete', $event)"
+                    :disabled="cp.isTaskPending(x.id)">
+              <span v-if="cp.taskPendingAction(x.id) === 'delete'" class="spinner"></span>
+              删除
+            </button>
+            <div v-if="isInlineConfirm(x)" class="inline-quick-confirm" @click.stop>
+              <div class="inline-quick-confirm-text">{{ inlineConfirmMessage(x) }}</div>
+              <div class="inline-quick-confirm-actions">
+                <button class="btn btn-primary btn-sm"
+                        :disabled="cp.isTaskPending(x.id)"
+                        @click.stop="confirmInlineAction(x)">
+                  确认
+                </button>
+                <button class="btn btn-outline btn-sm"
+                        :disabled="cp.isTaskPending(x.id)"
+                        @click.stop="clearInlineConfirm()">
+                  取消
+                </button>
+              </div>
+            </div>
           </div>
         </article>
         <div v-if="hasMore || canCollapse" class="list-load-more">

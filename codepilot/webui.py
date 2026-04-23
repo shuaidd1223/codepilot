@@ -43,12 +43,15 @@ from codepilot.webui_actions import (  # noqa: F401 (re-export)
     create_project_action,
     create_session_action,
     create_task_action,
+    delete_task_action,
     delete_project_action,
     delete_session_action,
     get_session_action,
     list_sessions_action,
     list_ui_events,
     list_ui_jobs,
+    archive_task_action,
+    cancel_task_action,
     promote_task_action,
     project_service_action,
     retry_task_action,
@@ -473,7 +476,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return handler(get_body())
 
     def _dispatch_post_task_action(self, path: str) -> dict | None:
-        match = re.fullmatch(r"/api/tasks/(\d+)/(retry|stop|promote|split)", path)
+        match = re.fullmatch(r"/api/tasks/(\d+)/(retry|stop|promote|split|cancel|archive|delete)", path)
         if not match:
             return None
         task_id = int(match.group(1))
@@ -483,6 +486,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "stop": stop_task_action,
             "promote": promote_task_action,
             "split": split_task_action,
+            "cancel": cancel_task_action,
+            "archive": archive_task_action,
+            "delete": delete_task_action,
         }
         return action_handlers[action](task_id)
 

@@ -44,7 +44,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       actionPending: {},
       projectSubmitting: false, deletingProject: '',
       servicePending: '',
-      /* Map of taskId → pending action name (retry / stop / promote / split).
+      /* Map of taskId → pending action name (retry / stop / promote / split /
+       * cancel / archive / delete).
        * Used by per-row buttons to show their own spinner without freezing
        * the rest of the page. */
       pendingTasks: {},

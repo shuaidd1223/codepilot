@@ -172,6 +172,36 @@ def test_webui_retry_and_promote_actions_update_task_state(tmp_path, monkeypatch
     assert current["priority"] == "P0"
 
 
+def test_webui_cancel_archive_delete_actions_follow_status_rules(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    backlog = db.create_task("demo", "待取消", agent="codex")
+    cancelled = webui_mod.cancel_task_action(backlog["id"])
+    assert cancelled["ok"] is True
+    assert db.get_task(backlog["id"])["status"] == "cancelled"
+
+    done = db.create_task("demo", "待归档", agent="codex")
+    db.update_task(done["id"], status="done", completed_at="2026-04-23T10:00:00")
+    archived = webui_mod.archive_task_action(done["id"])
+    assert archived["ok"] is True
+    assert db.get_task(done["id"])["status"] == "archived"
+
+    payload = webui_mod.dashboard_payload("demo")
+    assert done["id"] not in [task["id"] for task in payload["tasks"]]
+
+    removed = webui_mod.delete_task_action(backlog["id"])
+    assert removed["ok"] is True
+    assert db.get_task(backlog["id"]) is None
+
+    running = db.create_task("demo", "运行中", agent="codex")
+    db.update_task(running["id"], status="in_progress")
+    with pytest.raises(RuntimeError, match="不能删除"):
+        webui_mod.delete_task_action(running["id"])
+
+
 def test_webui_create_task_action_creates_task_for_project(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

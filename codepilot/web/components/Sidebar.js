@@ -7,6 +7,7 @@ CP.Components.Sidebar = Vue.defineComponent({
     return {
       pageSize: 10,
       visibleLeafCount: {},
+      leafConfirm: { taskId: null, action: '' },
     };
   },
   computed: {
@@ -90,6 +91,43 @@ CP.Components.Sidebar = Vue.defineComponent({
     collapseLeaf(project, category) {
       const key = this.leafKey(project, category);
       this.visibleLeafCount[key] = this.pageSize;
+    },
+    taskActionNeedsConfirm(act) {
+      return ['cancel', 'archive', 'delete'].includes(act);
+    },
+    isTaskQuickConfirm(task) {
+      return !!task && this.leafConfirm.taskId === task.id;
+    },
+    clearTaskQuickConfirm() {
+      this.leafConfirm = { taskId: null, action: '' };
+    },
+    taskQuickConfirmMessage(task) {
+      if (!task || !task.id) return '';
+      if (this.leafConfirm.action === 'cancel') return `取消 #${task.id}？`;
+      if (this.leafConfirm.action === 'archive') return `归档 #${task.id}？`;
+      if (this.leafConfirm.action === 'delete') return `删除 #${task.id}？`;
+      return '';
+    },
+    requestTaskQuickAction(task, act, ev) {
+      if (ev) ev.stopPropagation();
+      if (!task || !task.id) return;
+      if (!this.taskActionNeedsConfirm(act)) {
+        this.clearTaskQuickConfirm();
+        this.cp.taskAction(task.id, act);
+        return;
+      }
+      if (this.leafConfirm.taskId === task.id && this.leafConfirm.action === act) {
+        this.clearTaskQuickConfirm();
+      } else {
+        this.leafConfirm = { taskId: task.id, action: act };
+      }
+    },
+    confirmTaskQuickAction(task, ev) {
+      if (ev) ev.stopPropagation();
+      if (!task || !task.id || !this.leafConfirm.action) return;
+      const act = this.leafConfirm.action;
+      this.clearTaskQuickConfirm();
+      this.cp.taskAction(task.id, act);
     },
   },
   template: `
@@ -228,6 +266,39 @@ CP.Components.Sidebar = Vue.defineComponent({
                   <span class="tree-label">
                     <span class="muted tiny">#{{ t.id }}</span> {{ t.title }}
                   </span>
+                  <span class="tree-leaf-actions" @click.stop>
+                    <button v-if="t.actions.cancel" class="tree-action" title="取消任务"
+                            :disabled="cp.isTaskPending(t.id)"
+                            @click.stop="requestTaskQuickAction(t, 'cancel', $event)">
+                      <span v-if="cp.taskPendingAction(t.id) === 'cancel'" class="spinner tiny-spinner"></span>
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                    <button v-if="t.actions.archive" class="tree-action" title="归档任务"
+                            :disabled="cp.isTaskPending(t.id)"
+                            @click.stop="requestTaskQuickAction(t, 'archive', $event)">
+                      <span v-if="cp.taskPendingAction(t.id) === 'archive'" class="spinner tiny-spinner"></span>
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
+                    </button>
+                    <button v-if="t.actions.delete" class="tree-action" title="删除任务"
+                            :disabled="cp.isTaskPending(t.id)"
+                            @click.stop="requestTaskQuickAction(t, 'delete', $event)">
+                      <span v-if="cp.taskPendingAction(t.id) === 'delete'" class="spinner tiny-spinner"></span>
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                    </button>
+                  </span>
+                  <div v-if="isTaskQuickConfirm(t)" class="tree-inline-confirm" @click.stop>
+                    <span class="tree-inline-confirm-text">{{ taskQuickConfirmMessage(t) }}</span>
+                    <button class="btn btn-primary btn-sm"
+                            :disabled="cp.isTaskPending(t.id)"
+                            @click.stop="confirmTaskQuickAction(t, $event)">
+                      确认
+                    </button>
+                    <button class="btn btn-outline btn-sm"
+                            :disabled="cp.isTaskPending(t.id)"
+                            @click.stop="clearTaskQuickConfirm()">
+                      取消
+                    </button>
+                  </div>
                 </div>
                 <button v-if="leafHasMore(projectTasks(p.name), p.name, 'tasks')"
                         class="tree-row tree-more"

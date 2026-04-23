@@ -639,6 +639,17 @@ def update_task(task_id: int, **fields) -> Optional[dict]:
     return get_task(task_id)
 
 
+def delete_task(task_id: int) -> bool:
+    """Delete one task row and its logs."""
+    with get_write_conn() as conn:
+        conn.execute("DELETE FROM task_logs WHERE task_id = ?", (task_id,))
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        removed = cur.rowcount > 0
+    if removed:
+        _cache_invalidate("tasks", "task_by_id", "task_stats")
+    return removed
+
+
 def increment_task_retry(task_id: int, error_message: str) -> dict:
     """Increment retry counter and move the task to backlog or failed."""
     task = get_task(task_id)

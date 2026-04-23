@@ -292,6 +292,66 @@ def test_stop_task_via_api(ui_server):
     assert updated["status"] in ("cancelled", "in_progress")  # stop may just flag
 
 
+# ─── POST /api/tasks/:id/cancel ─────────────────────────────────────────────
+
+def test_cancel_backlog_task_via_api(ui_server):
+    task = db.create_task("demo", "pending task", agent="codex")
+
+    status, body = _post(f"{ui_server}/api/tasks/{task['id']}/cancel", {})
+    assert status == 200
+    assert body["ok"] is True
+
+    updated = db.get_task(task["id"])
+    assert updated["status"] == "cancelled"
+
+
+def test_cancel_running_task_rejected_via_api(ui_server):
+    task = db.create_task("demo", "running task", agent="codex")
+    db.update_task(task["id"], status="in_progress")
+
+    status, body = _post(f"{ui_server}/api/tasks/{task['id']}/cancel", {})
+    assert status == 400
+    assert "不能取消" in body["error"]
+
+
+# ─── POST /api/tasks/:id/archive ────────────────────────────────────────────
+
+def test_archive_done_task_via_api(ui_server):
+    task = db.create_task("demo", "done task", agent="codex")
+    db.update_task(task["id"], status="done", completed_at="2026-04-23T10:00:00")
+
+    status, body = _post(f"{ui_server}/api/tasks/{task['id']}/archive", {})
+    assert status == 200
+    assert body["ok"] is True
+
+    updated = db.get_task(task["id"])
+    assert updated["status"] == "archived"
+
+    status, dashboard = _get(f"{ui_server}/api/projects/demo")
+    assert status == 200
+    assert task["id"] not in [item["id"] for item in dashboard["tasks"]]
+
+
+# ─── POST /api/tasks/:id/delete ─────────────────────────────────────────────
+
+def test_delete_task_via_api(ui_server):
+    task = db.create_task("demo", "delete me", agent="codex")
+
+    status, body = _post(f"{ui_server}/api/tasks/{task['id']}/delete", {})
+    assert status == 200
+    assert body["ok"] is True
+    assert db.get_task(task["id"]) is None
+
+
+def test_delete_running_task_rejected_via_api(ui_server):
+    task = db.create_task("demo", "running task", agent="codex")
+    db.update_task(task["id"], status="in_progress")
+
+    status, body = _post(f"{ui_server}/api/tasks/{task['id']}/delete", {})
+    assert status == 400
+    assert "不能删除" in body["error"]
+
+
 # ─── HTML page ──────────────────────────────────────────────────────────────
 
 def test_root_serves_html(ui_server):

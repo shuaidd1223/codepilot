@@ -35,6 +35,21 @@ def test_sidebar_category_toggle_uses_project_scoped_accordion():
     assert "function _openProjectCategory(project, view)" in app_state
 
 
+def test_sidebar_task_leaf_includes_quick_actions():
+    sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
+
+    assert "requestTaskQuickAction(task, act, ev)" in sidebar
+    assert "confirmTaskQuickAction(task, ev)" in sidebar
+    assert "taskQuickConfirmMessage(task)" in sidebar
+    assert "t.actions.cancel" in sidebar
+    assert "t.actions.archive" in sidebar
+    assert "t.actions.delete" in sidebar
+    assert "requestTaskQuickAction(t, 'cancel', $event)" in sidebar
+    assert "requestTaskQuickAction(t, 'archive', $event)" in sidebar
+    assert "requestTaskQuickAction(t, 'delete', $event)" in sidebar
+    assert "class=\"tree-inline-confirm\"" in sidebar
+
+
 def test_web_ui_bootstrap_wires_app_state_boundary_before_mount():
     index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
     app = Path("codepilot/web/app.js").read_text(encoding="utf-8")
