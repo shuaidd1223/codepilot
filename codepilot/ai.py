@@ -737,41 +737,84 @@ def _run_codex_schema_prompt(
 
 
 def build_task_markdown_from_plan(task: dict) -> str:
-    """Convert a structured task plan item into task markdown."""
-    acceptance = "\n".join(f"- {item}" for item in task.get("acceptance_criteria", []))
-    builder_notes = "\n".join(f"- {item}" for item in task.get("builder_notes", []))
-    reviewer_notes = "\n".join(f"- {item}" for item in task.get("reviewer_notes", []))
-    files = "\n".join(f"- {item}" for item in task.get("files", [])) or "- （待确认）"
-    notes = "\n".join(f"- {item}" for item in task.get("notes", [])) or "- 无"
+    """Convert a structured plan item into task markdown using task templates."""
 
-    return "\n".join(
-        [
-            f"# {task['title']}",
-            "",
-            "## 任务目标",
-            "",
-            task.get("goal", "").strip(),
-            "",
-            "## 验收标准",
-            "",
-            acceptance or "- 待补充",
-            "",
-            "## Builder 职责",
-            "",
-            builder_notes or "- 待补充",
-            "",
-            "## Reviewer 职责",
-            "",
-            reviewer_notes or "- 待补充",
-            "",
-            "## 涉及文件",
-            "",
-            files,
-            "",
-            "## 备注",
-            "",
-            notes,
-        ]
+    class _SafeFormat(dict):
+        def __missing__(self, key: str) -> str:  # type: ignore[override]
+            return ""
+
+    def _bullet(items: list[str], fallback: str) -> str:
+        rows = [str(item).strip() for item in (items or []) if str(item).strip()]
+        return "\n".join(f"- {row}" for row in rows) if rows else f"- {fallback}"
+
+    def _coerce_list(value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return []
+
+    def _ac_matrix(criteria_items: list[str]) -> str:
+        rows = [str(item).strip() for item in (criteria_items or []) if str(item).strip()]
+        if not rows:
+            rows = ["待补充"]
+        header = (
+            "| AC # | Criterion | Verification Command / Action | Expected Result | Evidence Location |\n"
+            "| :--- | :--- | :--- | :--- | :--- |"
+        )
+        body_lines = []
+        for i, row in enumerate(rows):
+            safe = row.replace("|", "\\|")
+            body_lines.append(f"| AC-{i + 1} | {safe} |  |  |  |")
+        return header + "\n" + "\n".join(body_lines)
+
+    title = str(task.get("title") or "").strip() or "未命名任务"
+    goal = str(task.get("goal") or "").strip() or "待补充"
+    acceptance_items = _coerce_list(task.get("acceptance_criteria"))
+    acceptance = _bullet(acceptance_items, "待补充")
+    ac_matrix = _ac_matrix(acceptance_items)
+    builder_notes = _bullet(_coerce_list(task.get("builder_notes")), "待补充")
+    reviewer_notes = _bullet(_coerce_list(task.get("reviewer_notes")), "待补充")
+    files = _bullet(_coerce_list(task.get("files")), "待确认")
+    notes = _bullet(_coerce_list(task.get("notes")), "无")
+    forbidden = _bullet(_coerce_list(task.get("forbidden")), "不改动任务声明范围外的生产代码；不做无关重构。")
+    not_in_scope = _bullet(_coerce_list(task.get("not_in_scope")), "与本任务目标无关的模块、文档、部署流程。")
+    priority = str(task.get("priority") or "").strip() or "P2"
+    risk_level = str(task.get("risk_level") or "").strip() or "待评估"
+    scope_budget = str(task.get("scope_budget") or "").strip() or "未设定"
+    owner = str(task.get("owner") or "").strip() or "未指派"
+    dep_indices_raw = task.get("depends_on_indices")
+    dep_indices = (
+        [i for i in dep_indices_raw if isinstance(i, int) and i >= 0]
+        if isinstance(dep_indices_raw, list)
+        else []
+    )
+    depends_on = "无" if not dep_indices else ", ".join(f"T{idx + 1}" for idx in dep_indices)
+
+    normalized_agent = normalize_agent_name(str(task.get("agent") or "dual"))
+
+    template_path = Path(__file__).resolve().parent / "templates" / "task-template.md"
+    template_text = template_path.read_text(encoding="utf-8", errors="replace")
+    return template_text.format_map(
+        _SafeFormat(
+            {
+                "title": title,
+                "agent": normalized_agent,
+                "priority": priority,
+                "depends_on": depends_on,
+                "risk_level": risk_level,
+                "scope_budget": scope_budget,
+                "owner": owner,
+                "goal": goal,
+                "criteria": acceptance,
+                "ac_matrix": ac_matrix,
+                "requirements": builder_notes,
+                "builder_responsibilities": builder_notes,
+                "reviewer_responsibilities": reviewer_notes,
+                "files": files,
+                "forbidden": forbidden,
+                "not_in_scope": not_in_scope,
+                "notes": notes,
+            }
+        )
     )
 
 
@@ -796,7 +839,7 @@ def _run_recon_stage(
 
     prompt = RECON_PROMPT_TEMPLATE.format(
         title=title,
-        project_context=project_context or "（无项目上下文，自己用工具探索）",
+        project_context=project_context or "(No project context; inspect via tools.)",
     )
 
     cb = _planner_progress_callback
@@ -860,30 +903,30 @@ def _run_recon_stage(
 def _format_recon_block(recon: dict) -> str:
     """Render recon payload as a readable block for the planner prompt."""
     if not recon:
-        return "（本次未生成侦察结论；请基于项目上下文自行判断。）"
+        return "(No recon conclusions were produced; plan based on project context.)"
     lines: list[str] = []
     current = (recon.get("current_state") or "").strip()
     if current:
-        lines.append(f"现状：{current}")
+        lines.append(f"Current state: {current}")
     files = [f for f in (recon.get("relevant_files") or []) if isinstance(f, str) and f.strip()]
     if files:
-        lines.append("相关文件：")
+        lines.append("Relevant files:")
         for f in files[:12]:
             lines.append(f"  - {f}")
     findings = [x for x in (recon.get("key_findings") or []) if isinstance(x, str) and x.strip()]
     if findings:
-        lines.append("关键发现：")
+        lines.append("Key findings:")
         for x in findings[:8]:
             lines.append(f"  - {x}")
     risks = [x for x in (recon.get("risks") or []) if isinstance(x, str) and x.strip()]
     if risks:
-        lines.append("风险：")
+        lines.append("Risks:")
         for x in risks[:6]:
             lines.append(f"  - {x}")
     approach = (recon.get("suggested_approach") or "").strip()
     if approach:
-        lines.append(f"建议路径：{approach}")
-    return "\n".join(lines) if lines else "（侦察返回为空。）"
+        lines.append(f"Suggested approach: {approach}")
+    return "\n".join(lines) if lines else "(Recon output is empty.)"
 
 
 def parse_automation_planner_result(
@@ -949,7 +992,7 @@ def generate_task_breakdown(
     existing_block = format_existing_block(existing_tasks)
     prompt = TASK_BREAKDOWN_PROMPT_TEMPLATE.format(
         title=title,
-        project_context=context or "（上下文收集失败，按用户需求尽力拆分）",
+        project_context=context or "(Context collection failed; plan from requirement only.)",
         recon_block=recon_block,
         existing_tasks_block=existing_block,
         max_tasks=max_tasks,

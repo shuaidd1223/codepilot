@@ -15,21 +15,21 @@ from codepilot.prompts import load_prompt as _load_prompt
 
 
 class AgentConfig:
-    """Agent 运行配置."""
-    builder: str = "codex"  # CLI name 或 API provider key
+    """Agent runtime configuration."""
+    builder: str = "codex"  # CLI name or API provider key
     reviewer: str = "codex"
     mode: str = "dual"  # "cli" | "api" | "dual"
-    # API 密钥（可以从环境变量覆盖）
+    # API keys (can be overridden from environment variables)
     api_keys: dict[str, str] = field(default_factory=dict)
 
     def resolve_builder(self) -> tuple[str, str]:
-        """解析 builder，返回 (type, name)."""
+        """Resolve builder and return (type, name)."""
         if self.builder in API_PROVIDERS:
             return "api", self.builder
         return "cli", self.builder
 
     def resolve_reviewer(self) -> tuple[str, str]:
-        """解析 reviewer，返回 (type, name)."""
+        """Resolve reviewer and return (type, name)."""
         if self.reviewer in API_PROVIDERS:
             return "api", self.reviewer
         return "cli", self.reviewer
@@ -82,7 +82,16 @@ TASK_BREAKDOWN_SCHEMA = {
                     "depends_on_indices": {
                         "type": "array",
                         "items": {"type": "integer", "minimum": 0},
-                        "description": "依赖哪些子任务，按 tasks 数组下标；留空表示可以和其它无依赖任务并行",
+                        "description": "Indices of prerequisite tasks in the tasks array; empty means no dependency.",
+                    },
+                    "risk_level": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high"],
+                        "description": "Planner's risk estimate. 'high' if task touches auth/db/core dirs or introduces cross-module breakage risk.",
+                    },
+                    "scope_budget": {
+                        "type": "string",
+                        "description": "Rough scope envelope, e.g. '2 files / ~80 LOC' or 'single module'. Free-form but concise (English or numbers only).",
                     },
                 },
                 "required": [
@@ -95,6 +104,8 @@ TASK_BREAKDOWN_SCHEMA = {
                     "files",
                     "notes",
                     "depends_on_indices",
+                    "risk_level",
+                    "scope_budget",
                 ],
                 "additionalProperties": False,
             },
@@ -110,26 +121,26 @@ RECON_SCHEMA = {
     "properties": {
         "current_state": {
             "type": "string",
-            "description": "一句话描述当前项目与这个需求相关的现状。",
+            "description": "One-sentence summary of the current project state relevant to the requirement.",
         },
         "relevant_files": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "已经读过或判断需要改的文件路径，相对项目根目录。不要凭空造文件。",
+            "description": "Paths (relative to project root) that were read or are likely to change. Do not invent files.",
         },
         "key_findings": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "读代码之后的关键发现：现有实现、相关模块、可能的阻塞点。",
+            "description": "Key findings from code reading: existing implementation, related modules, likely blockers.",
         },
         "risks": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "风险点：可能打破的地方、测试薄弱区、向后兼容问题。",
+            "description": "Risk points: breakage risks, weak test areas, or backward-compatibility concerns.",
         },
         "suggested_approach": {
             "type": "string",
-            "description": "高层实现路径：一段话讲清楚打算怎么做。",
+            "description": "High-level implementation approach in one concise paragraph.",
         },
     },
     "required": ["current_state", "relevant_files", "key_findings", "suggested_approach"],
