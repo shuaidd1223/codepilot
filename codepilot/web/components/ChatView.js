@@ -51,12 +51,31 @@ CP.Components.ChatView = Vue.defineComponent({
     <div class="view chat-view">
       <div v-if="!session" class="big-empty">会话加载中…</div>
       <template v-else>
-        <div class="chat-header">
-          <div class="min-w">
+        <div class="chat-header chat-header-compact">
+          <div class="min-w grow">
             <div class="chat-title">#{{ session.id }} {{ session.title }}</div>
-            <div class="muted tiny">项目: {{ session.project }} · 创建 {{ $cp.fmtTime(session.created_at) }}</div>
+            <div class="chip-row mt-xs">
+              <cp-chip :tone="session.status === 'active' ? 'success' : $cp.toneClass(session.status)">
+                {{ session.status === 'active' ? '会话中' : ($cp.statusLabel(session.status) || session.status || '-') }}
+              </cp-chip>
+              <cp-chip>消息 {{ messages.length }}</cp-chip>
+            </div>
+            <div class="task-kv-grid chat-kv-grid">
+              <div class="task-kv-item">
+                <span class="task-kv-key">项目</span>
+                <span class="task-kv-value">{{ session.project || '-' }}</span>
+              </div>
+              <div class="task-kv-item">
+                <span class="task-kv-key">创建时间</span>
+                <span class="task-kv-value">{{ $cp.fmtTime(session.created_at) }}</span>
+              </div>
+              <div class="task-kv-item">
+                <span class="task-kv-key">更新时间</span>
+                <span class="task-kv-value">{{ $cp.fmtTime(session.updated_at) }}</span>
+              </div>
+            </div>
           </div>
-          <button class="btn btn-danger-outline" @click="del" :disabled="deletePending">
+          <button class="btn btn-danger-outline btn-sm" @click="del" :disabled="deletePending">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
             删除
           </button>

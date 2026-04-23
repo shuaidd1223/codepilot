@@ -8,9 +8,56 @@ CP.Components.TaskSection = Vue.defineComponent({
     tasks: { type: Array, required: true },
     empty: { type: String, default: '暂无任务' },
   },
+  data() {
+    return {
+      pageSize: 10,
+      visibleCount: 10,
+    };
+  },
+  computed: {
+    visibleTasks() {
+      return this.tasks.slice(0, this.visibleCount);
+    },
+    hasMore() {
+      return this.tasks.length > this.visibleCount;
+    },
+    canCollapse() {
+      return this.tasks.length > this.pageSize && this.visibleCount > this.pageSize;
+    },
+    remainingCount() {
+      return Math.max(this.tasks.length - this.visibleCount, 0);
+    },
+    nextChunkCount() {
+      return Math.min(this.pageSize, this.remainingCount);
+    },
+  },
+  watch: {
+    'cp.state.nav.project'() {
+      this.visibleCount = this.pageSize;
+    },
+    tasks(nextTasks) {
+      if (!Array.isArray(nextTasks)) {
+        this.visibleCount = this.pageSize;
+        return;
+      }
+      if (nextTasks.length <= this.pageSize) {
+        this.visibleCount = this.pageSize;
+        return;
+      }
+      if (this.visibleCount > nextTasks.length) {
+        this.visibleCount = Math.max(this.pageSize, nextTasks.length);
+      }
+    },
+  },
   methods: {
     pick(id) { this.cp.selectTask(this.cp.state.nav.project, id); },
     action(id, act) { this.cp.taskAction(id, act); },
+    loadMore() {
+      this.visibleCount += this.pageSize;
+    },
+    collapseList() {
+      this.visibleCount = this.pageSize;
+    },
   },
   template: `
     <section class="card">
@@ -20,7 +67,7 @@ CP.Components.TaskSection = Vue.defineComponent({
       </div>
       <div v-if="!tasks.length" class="empty pad">{{ empty }}</div>
       <div v-else class="task-list">
-        <article v-for="x in tasks" :key="x.id" class="task-item" @click="pick(x.id)">
+        <article v-for="x in visibleTasks" :key="x.id" class="task-item" @click="pick(x.id)">
           <div class="task-item-body">
             <div class="task-item-title">#{{ x.id }} {{ x.title }}</div>
             <div class="chip-row">
@@ -33,6 +80,7 @@ CP.Components.TaskSection = Vue.defineComponent({
             </div>
             <div class="task-item-meta">
               <span>阶段: {{ x.phase || '-' }}</span>
+              <span v-if="x.created_at">创建: {{ $cp.fmtTime(x.created_at) }}</span>
               <span v-if="x.started_at">开始: {{ $cp.fmtTime(x.started_at) }}</span>
               <span v-if="x.completed_at">完成: {{ $cp.fmtTime(x.completed_at) }}</span>
             </div>
@@ -59,6 +107,14 @@ CP.Components.TaskSection = Vue.defineComponent({
             </button>
           </div>
         </article>
+        <div v-if="hasMore || canCollapse" class="list-load-more">
+          <button v-if="hasMore" class="btn btn-outline btn-sm" @click.stop="loadMore">
+            再展开 {{ nextChunkCount }} 条（剩余 {{ remainingCount }}）
+          </button>
+          <button v-if="canCollapse" class="btn btn-outline btn-sm" @click.stop="collapseList">
+            收起到 {{ pageSize }} 条
+          </button>
+        </div>
       </div>
     </section>
   `,

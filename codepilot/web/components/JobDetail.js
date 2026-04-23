@@ -18,25 +18,45 @@ CP.Components.JobDetail = Vue.defineComponent({
     <div class="view">
       <div v-if="!job" class="big-empty">需求不存在或已过期</div>
       <section v-else class="card">
-        <div class="card-head">
-          <h3>
-            <span v-if="$cp.isJobActive(job)" class="spinner"></span>
+        <div class="card-head task-detail-head">
+          <h3 class="detail-title">
+            <span v-if="$cp.isJobActive(job)" class="spinner" style="margin-right:6px"></span>
             #{{ job.id }} {{ job.title }}
           </h3>
-          <p class="muted">planner: {{ job.planner || '-' }} · agent: {{ job.agent || 'auto' }}</p>
-        </div>
-        <div class="card-body" style="display:flex;flex-direction:column;gap:12px">
-          <div class="chip-row">
+          <div class="chip-row mt-xs">
             <cp-chip :tone="$cp.toneClass(job.status)">{{ $cp.statusLabel(job.status) }}</cp-chip>
             <cp-chip :tone="$cp.toneClass(job.phase)">{{ $cp.phaseLabel(job.phase) || job.phase }}</cp-chip>
+            <cp-chip>{{ job.priority || '-' }}</cp-chip>
+            <cp-chip>{{ job.agent || 'auto' }}</cp-chip>
+            <cp-chip>{{ job.planner || '-' }}</cp-chip>
           </div>
-          <div class="kv-grid">
-            <div><b>创建:</b> {{ $cp.fmtTime(job.created_at) }}</div>
-            <div><b>更新:</b> {{ $cp.fmtTime(job.updated_at) }}</div>
-            <div><b>结束:</b> {{ $cp.fmtTime(job.finished_at) }}</div>
-            <div v-if="job.task_ids && job.task_ids.length" class="full">
-              <b>关联任务:</b>
-              <button v-for="id in job.task_ids" :key="id" class="chip primary" @click="cp.selectTask(s.nav.project, id)">#{{ id }}</button>
+        </div>
+        <div class="card-body task-detail task-detail-body">
+          <div class="task-kv-grid job-kv-grid">
+            <div class="task-kv-item">
+              <span class="task-kv-key">项目</span>
+              <span class="task-kv-value">{{ job.project || s.nav.project || '-' }}</span>
+            </div>
+            <div class="task-kv-item">
+              <span class="task-kv-key">创建时间</span>
+              <span class="task-kv-value">{{ $cp.fmtTime(job.created_at) }}</span>
+            </div>
+            <div class="task-kv-item">
+              <span class="task-kv-key">更新时间</span>
+              <span class="task-kv-value">{{ $cp.fmtTime(job.updated_at) }}</span>
+            </div>
+            <div class="task-kv-item">
+              <span class="task-kv-key">结束时间</span>
+              <span class="task-kv-value">{{ $cp.fmtTime(job.finished_at) }}</span>
+            </div>
+            <div class="task-kv-item span-2">
+              <span class="task-kv-key">关联任务</span>
+              <span class="task-kv-value task-kv-value-wrap">
+                <template v-if="job.task_ids && job.task_ids.length">
+                  <button v-for="id in job.task_ids" :key="id" class="chip primary" @click="cp.selectTask(s.nav.project, id)">#{{ id }}</button>
+                </template>
+                <span v-else class="muted">无</span>
+              </span>
             </div>
           </div>
           <div v-if="job.summary" class="block">

@@ -88,6 +88,9 @@ CP.Components.ProjectView = Vue.defineComponent({
                 <cp-chip>{{ x.priority }}</cp-chip>
                 <cp-chip>{{ x.agent || '-' }}</cp-chip>
               </div>
+              <div class="task-item-meta">
+                <span v-if="x.created_at">创建: {{ $cp.fmtTime(x.created_at) }}</span>
+              </div>
               <div class="task-item-preview">{{ x.runtime || x.latest || '暂无详细信息' }}</div>
             </div>
           </article>

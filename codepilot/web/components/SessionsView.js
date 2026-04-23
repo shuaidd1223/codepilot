@@ -3,10 +3,57 @@
 CP.Components.SessionsView = Vue.defineComponent({
   name: 'CpSessionsView',
   inject: ['cp'],
+  data() {
+    return {
+      pageSize: 10,
+      visibleCount: 10,
+    };
+  },
   computed: {
     s() { return this.cp.state; },
     sessions() {
       return this.s.sessions.filter(x => !this.s.nav.project || x.project === this.s.nav.project);
+    },
+    visibleSessions() {
+      return this.sessions.slice(0, this.visibleCount);
+    },
+    hasMore() {
+      return this.sessions.length > this.visibleCount;
+    },
+    canCollapse() {
+      return this.sessions.length > this.pageSize && this.visibleCount > this.pageSize;
+    },
+    remainingCount() {
+      return Math.max(this.sessions.length - this.visibleCount, 0);
+    },
+    nextChunkCount() {
+      return Math.min(this.pageSize, this.remainingCount);
+    },
+  },
+  watch: {
+    'cp.state.nav.project'() {
+      this.visibleCount = this.pageSize;
+    },
+    sessions(nextSessions) {
+      if (!Array.isArray(nextSessions)) {
+        this.visibleCount = this.pageSize;
+        return;
+      }
+      if (nextSessions.length <= this.pageSize) {
+        this.visibleCount = this.pageSize;
+        return;
+      }
+      if (this.visibleCount > nextSessions.length) {
+        this.visibleCount = Math.max(this.pageSize, nextSessions.length);
+      }
+    },
+  },
+  methods: {
+    loadMore() {
+      this.visibleCount += this.pageSize;
+    },
+    collapseList() {
+      this.visibleCount = this.pageSize;
     },
   },
   template: `
@@ -25,13 +72,21 @@ CP.Components.SessionsView = Vue.defineComponent({
 
       <div v-if="!sessions.length" class="empty pad">还没有会话，点击右上角「新建会话」开始</div>
       <div v-else class="cards-grid">
-        <button v-for="se in sessions" :key="se.id" class="item-card" @click="cp.selectSession(se.project, se.id)">
+        <button v-for="se in visibleSessions" :key="se.id" class="item-card" @click="cp.selectSession(se.project, se.id)">
           <div class="row between">
             <strong class="truncate">{{ se.title }}</strong>
             <span class="muted tiny">#{{ se.id }}</span>
           </div>
           <div class="muted tiny">{{ se.message_count || 0 }} 条消息 · 更新 {{ $cp.fmtTime(se.updated_at) }}</div>
           <div v-if="se.project !== s.nav.project" class="chip neutral tiny">{{ se.project }}</div>
+        </button>
+      </div>
+      <div v-if="hasMore || canCollapse" class="list-load-more">
+        <button v-if="hasMore" class="btn btn-outline btn-sm" @click="loadMore">
+          再展开 {{ nextChunkCount }} 条（剩余 {{ remainingCount }}）
+        </button>
+        <button v-if="canCollapse" class="btn btn-outline btn-sm" @click="collapseList">
+          收起到 {{ pageSize }} 条
         </button>
       </div>
     </div>

@@ -3,6 +3,12 @@
 CP.Components.Sidebar = Vue.defineComponent({
   name: 'CpSidebar',
   inject: ['cp'],
+  data() {
+    return {
+      pageSize: 10,
+      visibleLeafCount: {},
+    };
+  },
   computed: {
     s() { return this.cp.state; },
     allSessions() { return this.s.sessions || []; },
@@ -54,6 +60,36 @@ CP.Components.Sidebar = Vue.defineComponent({
     jobCount(p) {
       if (p && typeof p.job_count === 'number') return p.job_count;
       return this.projectJobs(p.name).length;
+    },
+    leafKey(project, category) {
+      return `${project}/${category}`;
+    },
+    leafLimit(project, category) {
+      const key = this.leafKey(project, category);
+      return this.visibleLeafCount[key] || this.pageSize;
+    },
+    visibleLeafItems(items, project, category) {
+      return (items || []).slice(0, this.leafLimit(project, category));
+    },
+    leafRemaining(items, project, category) {
+      return Math.max((items || []).length - this.leafLimit(project, category), 0);
+    },
+    leafHasMore(items, project, category) {
+      return this.leafRemaining(items, project, category) > 0;
+    },
+    leafCanCollapse(items, project, category) {
+      return (items || []).length > this.pageSize && this.leafLimit(project, category) > this.pageSize;
+    },
+    leafNextChunk(items, project, category) {
+      return Math.min(this.pageSize, this.leafRemaining(items, project, category));
+    },
+    expandLeaf(project, category) {
+      const key = this.leafKey(project, category);
+      this.visibleLeafCount[key] = this.leafLimit(project, category) + this.pageSize;
+    },
+    collapseLeaf(project, category) {
+      const key = this.leafKey(project, category);
+      this.visibleLeafCount[key] = this.pageSize;
     },
   },
   template: `
@@ -140,7 +176,7 @@ CP.Components.Sidebar = Vue.defineComponent({
               </div>
               <div v-show="isExpanded(p.name + '/sessions')" class="tree-leaf-wrap">
                 <div v-if="!projectSessions(p.name).length" class="tree-empty">暂无会话</div>
-                <div v-for="se in projectSessions(p.name)" :key="se.id"
+                <div v-for="se in visibleLeafItems(projectSessions(p.name), p.name, 'sessions')" :key="se.id"
                      class="tree-row tree-leaf-row"
                      :class="{active: isActive({view: 'session', id: se.id})}"
                      @click="cp.selectSession(p.name, se.id)">
@@ -149,6 +185,16 @@ CP.Components.Sidebar = Vue.defineComponent({
                   </span>
                   <span class="muted tiny">{{ se.message_count || 0 }}</span>
                 </div>
+                <button v-if="leafHasMore(projectSessions(p.name), p.name, 'sessions')"
+                        class="tree-row tree-more"
+                        @click.stop="expandLeaf(p.name, 'sessions')">
+                  再展开 {{ leafNextChunk(projectSessions(p.name), p.name, 'sessions') }} 条（剩余 {{ leafRemaining(projectSessions(p.name), p.name, 'sessions') }}）
+                </button>
+                <button v-if="leafCanCollapse(projectSessions(p.name), p.name, 'sessions')"
+                        class="tree-row tree-more"
+                        @click.stop="collapseLeaf(p.name, 'sessions')">
+                  收起到 {{ pageSize }} 条
+                </button>
                 <button class="tree-row tree-add" @click="cp.newSession()">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
                   新建会话
@@ -169,7 +215,7 @@ CP.Components.Sidebar = Vue.defineComponent({
               </div>
               <div v-show="isExpanded(p.name + '/tasks')" class="tree-leaf-wrap">
                 <div v-if="!projectTasks(p.name).length" class="tree-empty">暂无任务</div>
-                <div v-for="t in projectTasks(p.name)" :key="t.id"
+                <div v-for="t in visibleLeafItems(projectTasks(p.name), p.name, 'tasks')" :key="t.id"
                      class="tree-row tree-leaf-row"
                      :class="{active: isActive({view: 'task', id: t.id})}"
                      @click="cp.selectTask(p.name, t.id)">
@@ -183,6 +229,16 @@ CP.Components.Sidebar = Vue.defineComponent({
                     <span class="muted tiny">#{{ t.id }}</span> {{ t.title }}
                   </span>
                 </div>
+                <button v-if="leafHasMore(projectTasks(p.name), p.name, 'tasks')"
+                        class="tree-row tree-more"
+                        @click.stop="expandLeaf(p.name, 'tasks')">
+                  再展开 {{ leafNextChunk(projectTasks(p.name), p.name, 'tasks') }} 条（剩余 {{ leafRemaining(projectTasks(p.name), p.name, 'tasks') }}）
+                </button>
+                <button v-if="leafCanCollapse(projectTasks(p.name), p.name, 'tasks')"
+                        class="tree-row tree-more"
+                        @click.stop="collapseLeaf(p.name, 'tasks')">
+                  收起到 {{ pageSize }} 条
+                </button>
               </div>
 
               <!-- Requirements / jobs category -->
@@ -199,7 +255,7 @@ CP.Components.Sidebar = Vue.defineComponent({
               </div>
               <div v-show="isExpanded(p.name + '/jobs')" class="tree-leaf-wrap">
                 <div v-if="!projectJobs(p.name).length" class="tree-empty">暂无需求</div>
-                <div v-for="j in projectJobs(p.name)" :key="j.id"
+                <div v-for="j in visibleLeafItems(projectJobs(p.name), p.name, 'jobs')" :key="j.id"
                      class="tree-row tree-leaf-row"
                      :class="{active: isActive({view: 'job', id: j.id})}"
                      @click="cp.selectJob(p.name, j.id)">
@@ -209,6 +265,16 @@ CP.Components.Sidebar = Vue.defineComponent({
                     <span class="muted tiny">#{{ j.id }}</span> {{ j.title }}
                   </span>
                 </div>
+                <button v-if="leafHasMore(projectJobs(p.name), p.name, 'jobs')"
+                        class="tree-row tree-more"
+                        @click.stop="expandLeaf(p.name, 'jobs')">
+                  再展开 {{ leafNextChunk(projectJobs(p.name), p.name, 'jobs') }} 条（剩余 {{ leafRemaining(projectJobs(p.name), p.name, 'jobs') }}）
+                </button>
+                <button v-if="leafCanCollapse(projectJobs(p.name), p.name, 'jobs')"
+                        class="tree-row tree-more"
+                        @click.stop="collapseLeaf(p.name, 'jobs')">
+                  收起到 {{ pageSize }} 条
+                </button>
               </div>
             </div>
           </div>

@@ -82,7 +82,7 @@ CP.Components.TaskDetail = Vue.defineComponent({
       <div v-if="s.taskDetailLoading && !task" class="big-empty">任务加载中…</div>
       <div v-else-if="!task" class="big-empty">{{ s.taskDetailError || '暂无任务详情' }}</div>
       <section v-else class="card">
-        <div class="card-head">
+        <div class="card-head task-detail-head">
           <div class="row between gap-sm">
             <div class="min-w grow">
               <h3 class="detail-title">#{{ task.id }} {{ task.title }}</h3>
@@ -118,7 +118,7 @@ CP.Components.TaskDetail = Vue.defineComponent({
             </div>
           </div>
         </div>
-        <div class="card-body task-detail">
+        <div class="card-body task-detail task-detail-body">
           <div class="task-kv-grid">
             <div class="task-kv-item">
               <span class="task-kv-key">项目</span>
@@ -129,6 +129,10 @@ CP.Components.TaskDetail = Vue.defineComponent({
               <span class="task-kv-value">{{ task.phase || '-' }}</span>
             </div>
             <div class="task-kv-item">
+              <span class="task-kv-key">创建时间</span>
+              <span class="task-kv-value">{{ $cp.fmtTime(task.created_at) }}</span>
+            </div>
+            <div class="task-kv-item">
               <span class="task-kv-key">开始时间</span>
               <span class="task-kv-value">{{ $cp.fmtTime(task.started_at) }}</span>
             </div>
@@ -136,22 +140,22 @@ CP.Components.TaskDetail = Vue.defineComponent({
               <span class="task-kv-key">完成时间</span>
               <span class="task-kv-value">{{ $cp.fmtTime(task.completed_at) }}</span>
             </div>
-            <div class="task-kv-item full">
+            <div class="task-kv-item span-2">
               <span class="task-kv-key">依赖任务</span>
-              <span class="task-kv-value">
+              <span class="task-kv-value task-kv-value-wrap">
               <template v-if="task.depends_on && task.depends_on.length">
                 <cp-chip v-for="id in task.depends_on" :key="id">#{{ id }}</cp-chip>
               </template>
               <span v-else class="muted">无</span>
               </span>
             </div>
-            <div class="task-kv-item full">
+            <div class="task-kv-item span-2">
               <span class="task-kv-key">工作目录</span>
-              <code class="task-inline-code">{{ task.project_path || '-' }}</code>
+              <code class="task-inline-code" :title="task.project_path || '-'">{{ task.project_path || '-' }}</code>
             </div>
-            <div class="task-kv-item full">
+            <div class="task-kv-item span-2">
               <span class="task-kv-key">日志文件</span>
-              <code class="task-inline-code">{{ task.current_log_path || '-' }}</code>
+              <code class="task-inline-code" :title="task.current_log_path || '-'">{{ task.current_log_path || '-' }}</code>
             </div>
           </div>
           <div v-if="task.skip_reason" class="block warning">

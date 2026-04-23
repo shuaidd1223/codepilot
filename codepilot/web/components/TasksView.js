@@ -8,7 +8,7 @@ CP.Components.TasksView = Vue.defineComponent({
     running() { return this.s.tasks.filter(t => t.status === 'in_progress'); },
     backlog() { return this.s.tasks.filter(t => t.status === 'backlog'); },
     failed() { return this.s.tasks.filter(t => t.status === 'failed' || t.status === 'cancelled'); },
-    done() { return this.s.tasks.filter(t => t.status === 'done').slice(0, 20); },
+    done() { return this.s.tasks.filter(t => t.status === 'done'); },
   },
   template: `
     <div class="view">
