@@ -176,20 +176,30 @@ _SECTION_ALIASES: dict[str, str] = {
     "唯一目标": "任务目标",
     "任务目标": "任务目标",
     "目标": "任务目标",
+    "Task Goal": "任务目标",
+    "Goal": "任务目标",
     "验收标准": "验收标准",
     "验收": "验收标准",
     "验证": "验收标准",
     "验证命令": "验收标准",
+    "Acceptance Criteria": "验收标准",
     "Builder 职责": "Builder 职责",
     "实施提示": "Builder 职责",
+    "Builder Responsibilities": "Builder 职责",
     "Reviewer 职责": "Reviewer 职责",
+    "Reviewer Responsibilities": "Reviewer 职责",
     "涉及文件": "涉及文件",
     "要动的文件": "涉及文件",
     "文件": "涉及文件",
+    "Files In Scope": "涉及文件",
+    "Files": "涉及文件",
     "禁区": "禁区",
     "不要做": "禁区",
+    "Forbidden": "禁区",
     "依赖": "依赖",
+    "Dependencies": "依赖",
     "不涉及": "不涉及",
+    "Out of Scope": "不涉及",
 }
 
 
@@ -232,7 +242,7 @@ def _bullet_lines(body: str) -> list[str]:
     items: list[str] = []
     for raw in body.splitlines():
         line = raw.strip()
-        if not line or line in {"- 待补充", "- 无", "- （待确认）"}:
+        if not line or line in {"- 待补充", "- 无", "- （待确认）", "- TBD", "- None", "- (TBD)"}:
             continue
         if line.startswith(("- ", "* ")):
             items.append(line[2:].strip())

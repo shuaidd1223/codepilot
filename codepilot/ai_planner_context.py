@@ -138,8 +138,8 @@ def _readme_excerpt(project_path: Path, *, max_chars: int = 800) -> str:
         if not text:
             continue
         if len(text) > max_chars:
-            text = text[:max_chars].rstrip() + "\n…（已截断）"
-        return f"# {path.name} 摘录\n{text}"
+            text = text[:max_chars].rstrip() + "\n...(truncated)"
+        return f"# {path.name} excerpt\n{text}"
     return ""
 
 
@@ -283,7 +283,7 @@ def _read_project_conventions(
                 continue
             seen_resolved.add(resolved)
             if len(text) > max_chars_per_file:
-                text = text[:max_chars_per_file].rstrip() + "\n…（已截断）"
+                text = text[:max_chars_per_file].rstrip() + "\n...(truncated)"
             block = f"### {rel.as_posix()}\n{text}"
             projected = total + len(block) + 2
             if projected > total_cap:
@@ -291,7 +291,7 @@ def _read_project_conventions(
                 remaining = total_cap - total
                 if remaining < 200:
                     break
-                truncated = block[:remaining].rstrip() + "\n…（达到约定部分总上限）"
+                truncated = block[:remaining].rstrip() + "\n...(conventions cap reached)"
                 blocks.append(truncated)
                 total = total_cap
                 break
@@ -406,18 +406,18 @@ def collect_planner_context(
 
     tech = _tech_stack_hints(proj)
     if tech:
-        sections.append("## 技术栈\n" + "、".join(tech))
+        sections.append("## Tech Stack\n" + ", ".join(tech))
 
     conventions = _read_project_conventions(proj)
     if conventions:
         sections.append(
-            "## 项目约定（来自 AGENTS.md / CLAUDE.md / CONTRIBUTING.md 等，规划时必须遵守）\n"
+            "## Project Conventions (from AGENTS.md / CLAUDE.md / CONTRIBUTING.md; must be followed)\n"
             + conventions
         )
 
     tree = _directory_tree(proj)
     if tree:
-        sections.append("## 目录结构（两层，仅名称）\n" + tree)
+        sections.append("## Directory Layout (two levels, names only)\n" + tree)
 
     readme = _readme_excerpt(proj)
     if readme:
@@ -425,25 +425,25 @@ def collect_planner_context(
 
     commits = _recent_commits(proj)
     if commits:
-        sections.append("## 最近提交\n" + commits)
+        sections.append("## Recent Commits\n" + commits)
 
     if keywords:
         matches = _match_relevant_files(proj, keywords)
         if matches:
             sections.append(
-                "## 需求相关文件（按关键词匹配到的路径，未读内容）\n"
+                "## Requirement-Relevant Files (keyword-matched paths, content not read yet)\n"
                 + "\n".join(matches)
             )
-        sections.append("## 识别到的关键词\n" + ", ".join(keywords))
+        sections.append("## Detected Keywords\n" + ", ".join(keywords))
 
     if not sections:
         return ""
 
     header = (
-        "以下是当前项目的结构化概览，供你规划时参考。"
-        "请把它当成事实依据，不要凭空捏造不存在的文件或目录。"
+        "Below is a structured overview of the current project for planning."
+        "Treat it as factual context and do not invent nonexistent files or directories."
     )
     body = header + "\n\n" + "\n\n".join(sections)
     if len(body) > max_chars:
-        body = body[:max_chars].rstrip() + "\n…（上下文已截断）"
+        body = body[:max_chars].rstrip() + "\n...(context truncated)"
     return body

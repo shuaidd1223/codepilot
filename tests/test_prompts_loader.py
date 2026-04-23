@@ -56,7 +56,7 @@ def test_task_breakdown_template_renders_for_full_substitution():
         existing_tasks_block="(existing)",
         project_context="(ctx)",
     )
-    assert "最多 5 个" in out
+    assert "up to 5 tasks" in out
     # JSON example braces should now appear as single braces post-render.
     assert '"summary"' in out
     # Placeholders consumed.

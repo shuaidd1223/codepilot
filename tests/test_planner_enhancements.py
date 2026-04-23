@@ -85,8 +85,8 @@ def test_read_project_conventions_caps_per_file_and_total(tmp_path):
     (tmp_path / "CLAUDE.md").write_text(big_body, encoding="utf-8")
     (tmp_path / "CONTRIBUTING.md").write_text(big_body, encoding="utf-8")
     out = ctx_mod._read_project_conventions(tmp_path, max_chars_per_file=500, total_cap=1200)
-    assert len(out) <= 1200 + 40  # small slack for the "截断" suffix
-    assert "截断" in out or "上限" in out
+    assert len(out) <= 1200 + 40  # small slack for truncation suffix
+    assert "truncated" in out or "cap reached" in out
 
 
 def test_read_project_conventions_returns_empty_when_no_files(tmp_path):
@@ -100,7 +100,7 @@ def test_collect_planner_context_surfaces_conventions(tmp_path):
     )
     (tmp_path / "README.md").write_text("# Demo", encoding="utf-8")
     ctx = ctx_mod.collect_planner_context(str(tmp_path), "demo task")
-    assert "项目约定" in ctx
+    assert "Project Conventions" in ctx
     assert "pytest" in ctx
 
 
@@ -525,7 +525,10 @@ def test_generate_task_breakdown_tolerates_recon_failure(tmp_path, monkeypatch):
     )
     assert result["tasks"]
     # The planner ran and its prompt was built with an empty recon block.
-    assert "本次未生成侦察结论" in planner_prompt["text"] or "侦察返回为空" in planner_prompt["text"]
+    assert (
+        "No recon conclusions were produced" in planner_prompt["text"]
+        or "Recon output is empty" in planner_prompt["text"]
+    )
 
 
 # ─── ai_backlog_dedup ─────────────────────────────────────────────────────
@@ -546,9 +549,9 @@ def test_format_existing_block_filters_to_open_tasks():
 
 
 def test_format_existing_block_empty_when_no_open_tasks():
-    assert "暂无" in dedup_mod.format_existing_block([])
-    assert "暂无" in dedup_mod.format_existing_block(None)
-    assert "暂无" in dedup_mod.format_existing_block([
+    assert "No open tasks" in dedup_mod.format_existing_block([])
+    assert "No open tasks" in dedup_mod.format_existing_block(None)
+    assert "No open tasks" in dedup_mod.format_existing_block([
         {"id": 9, "title": "done thing", "status": "done"},
     ])
 

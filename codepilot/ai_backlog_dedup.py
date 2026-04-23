@@ -55,7 +55,7 @@ def format_existing_block(existing_tasks: Optional[Iterable[dict]]) -> str:
     failed are intentionally hidden — planner should not try to link to them).
     """
     if not existing_tasks:
-        return "（项目中暂无未完成任务）"
+        return "(No open tasks in this project.)"
 
     rows: list[str] = []
     for task in existing_tasks:
@@ -69,7 +69,7 @@ def format_existing_block(existing_tasks: Optional[Iterable[dict]]) -> str:
         rows.append(f"- #{tid} [{status}] {title}")
         if len(rows) >= 30:
             break
-    return "\n".join(rows) if rows else "（项目中暂无未完成任务）"
+    return "\n".join(rows) if rows else "(No open tasks in this project.)"
 
 
 def find_duplicate_match(
