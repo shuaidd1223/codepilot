@@ -126,12 +126,12 @@ POST /api/projects/<name>/inspect/status
 
 ### 5. Web UI 启动服务行为调整
 
-`codepilot webui start` 仍然可以一键启动 Web UI。
+`codepilot ui start` 仍然可以一键启动 Web UI。
 
 如果传入项目，会同时启动该项目任务执行服务：
 
 ```powershell
-codepilot webui start -p <项目名>
+codepilot ui start -p <项目名>
 ```
 
 如果不传项目，只启动 Web UI，并提示可在项目页单独启动任务执行服务。
@@ -179,7 +179,7 @@ codepilot inspect -p demo --stop
 ### 启动 Web UI 并同时启动某个项目任务轮询
 
 ```powershell
-codepilot webui start -p demo
+codepilot ui start -p demo
 ```
 
 也可以只启动 Web UI，然后在项目页点击对应按钮。
@@ -354,4 +354,3 @@ Web UI 目前只提供启动、停止、状态，不提供：
 3. Web UI 补巡检配置和日志查看。
 4. 增加全局并发/资源限制。
 5. 再做批量启动、批量停止、一键启动所有服务。
-

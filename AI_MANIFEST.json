@@ -5,11 +5,11 @@
   "description": "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。",
   "calling_principles": [
     "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
-    "需要结构化结果时，优先使用 `status --json`、`show --json`、`doctor --json`、`find --json`、`ai manifest`。",
+    "需要结构化结果时，优先使用 `status --json`、`task show --json`、`doctor --json`、`task find --json`、`ai manifest`。",
     "如果目标是提交一个自然语言需求，直接调用 `codepilot \"需求文本\"` 或 `codepilot go \"需求文本\"`。",
-    "如果目标是发布产物，优先调用 `codepilot release prepare --version <版本号>`。",
-    "如果任务处于运行中，先用 `codepilot status -p <项目名> -v` 查看阶段，再决定是否 `logs` 或 `stop`。",
-    "如果任务失败或被取消，且需要重新排队，使用 `codepilot retry <task_id>`。"
+    "如果目标是发布产物，优先调用 `codepilot binary prepare --version <版本号>`。",
+    "如果任务处于运行中，先用 `codepilot status -p <项目名> -v` 查看阶段，再决定是否 `task logs` 或 `task stop`。",
+    "如果任务失败或被取消，且需要重新排队，使用 `codepilot task retry <task_id>`。"
   ],
   "structured_outputs": [
     {
@@ -23,12 +23,12 @@
       "purpose": "获取项目任务状态和任务列表。"
     },
     {
-      "command": "codepilot find <关键词> -p <项目名> --json",
+      "command": "codepilot task find <关键词> -p <项目名> --json",
       "format": "json",
       "purpose": "搜索任务并获取结构化结果。"
     },
     {
-      "command": "codepilot show <task_id> --json",
+      "command": "codepilot task show <task_id> --json",
       "format": "json",
       "purpose": "精确获取单个任务的完整详情和历史日志记录。"
     },
@@ -70,22 +70,22 @@
     },
     {
       "name": "logs",
-      "syntax": "codepilot logs <task_id> [--tail N|--full]",
+      "syntax": "codepilot task logs <task_id> [--tail N|--full]",
       "purpose": "查看任务实时日志或历史日志。",
       "when_to_use": "需要了解任务执行细节或错误上下文。",
       "examples": [
-        "codepilot logs 7",
-        "codepilot logs 7 --tail 50"
+        "codepilot task logs 7",
+        "codepilot task logs 7 --tail 50"
       ]
     },
     {
       "name": "show",
-      "syntax": "codepilot show <task_id> [--logs|--json]",
+      "syntax": "codepilot task show <task_id> [--logs|--json]",
       "purpose": "精确查看单个任务的完整元数据、任务内容、错误信息、交付记录和日志记录摘要。",
       "when_to_use": "已经知道任务 ID，需要完整任务详情而不是状态列表摘要时。",
       "examples": [
-        "codepilot show 7",
-        "codepilot show 7 --json"
+        "codepilot task show 7",
+        "codepilot task show 7 --json"
       ]
     },
     {
@@ -100,21 +100,21 @@
     },
     {
       "name": "stop",
-      "syntax": "codepilot stop <task_id> [-m 原因]",
+      "syntax": "codepilot task stop <task_id> [-m 原因]",
       "purpose": "停止运行中的任务。",
       "when_to_use": "任务卡住、执行方向错误、需要强制终止时。",
       "examples": [
-        "codepilot stop 7",
-        "codepilot stop 7 -m \"方向错误，停止重跑\""
+        "codepilot task stop 7",
+        "codepilot task stop 7 -m \"方向错误，停止重跑\""
       ]
     },
     {
       "name": "retry",
-      "syntax": "codepilot retry <task_id>",
+      "syntax": "codepilot task retry <task_id>",
       "purpose": "手动重试指定任务，重置运行态并重新放回 backlog。",
       "when_to_use": "任务 failed/cancelled 后需要人工重新触发时。",
       "examples": [
-        "codepilot retry 7"
+        "codepilot task retry 7"
       ]
     },
     {
@@ -127,42 +127,75 @@
       ]
     },
     {
-      "name": "ui",
-      "syntax": "codepilot ui [--host 127.0.0.1] [--port 8766]",
-      "purpose": "启动本地 Web UI，图形化查看项目、任务和状态，并执行重试 / 停止 / 插队。",
-      "when_to_use": "需要图形化总览多个项目，或需要人工点击干预任务时。",
+      "name": "task_find",
+      "syntax": "codepilot task find <关键词> -p <项目名> [--json]",
+      "purpose": "按关键词、状态、优先级检索任务。",
+      "when_to_use": "需要快速定位任务或批量筛选目标任务时。",
       "examples": [
-        "codepilot ui",
-        "codepilot ui --no-open --port 8877"
+        "codepilot task find retry -p codepilot-dev",
+        "codepilot task find bug -p codepilot-dev --json"
       ]
     },
     {
-      "name": "release_prepare",
-      "syntax": "codepilot release prepare --version <版本号>",
+      "name": "ui",
+      "syntax": "codepilot ui [--host 127.0.0.1] [--port 8766] | codepilot ui <start|status|logs|stop|restart>",
+      "purpose": "统一 Web UI 入口：支持前台启动，也支持后台服务管理。",
+      "when_to_use": "需要图形化总览多个项目，或需要让 Web UI 后台持续运行与排障时。",
+      "examples": [
+        "codepilot ui",
+        "codepilot ui --no-open --port 8877",
+        "codepilot ui start",
+        "codepilot ui logs --tail 100"
+      ]
+    },
+    {
+      "name": "daemon",
+      "syntax": "codepilot daemon -p <项目名> [--status|--stop]",
+      "purpose": "按项目后台轮询 backlog 并持续执行任务。",
+      "when_to_use": "希望项目任务持续自动执行，而不是手动反复运行 run 时。",
+      "examples": [
+        "codepilot daemon -p codepilot-dev",
+        "codepilot daemon -p codepilot-dev --status",
+        "codepilot daemon -p codepilot-dev --stop"
+      ]
+    },
+    {
+      "name": "inspect",
+      "syntax": "codepilot inspect -p <项目名> [--once|--status|--stop|--json]",
+      "purpose": "巡检项目信号并产出候选任务。",
+      "when_to_use": "需要持续发现技术债、失败任务、待优化点时。",
+      "examples": [
+        "codepilot inspect -p codepilot-dev --once",
+        "codepilot inspect -p codepilot-dev --status"
+      ]
+    },
+    {
+      "name": "binary_prepare",
+      "syntax": "codepilot binary prepare --version <版本号>",
       "purpose": "更新版本号、构建当前平台、生成发布目录并自动校验。",
       "when_to_use": "准备一个可交付的本地发布包时。",
       "examples": [
-        "codepilot release prepare --version 0.1.1"
+        "codepilot binary prepare --version 0.1.1"
       ]
     },
     {
-      "name": "release_bundle",
-      "syntax": "codepilot release bundle [--build-current] [--artifact 平台=路径]",
+      "name": "binary_release",
+      "syntax": "codepilot binary release [--build-current] [--artifact 平台=路径]",
       "purpose": "把已有二进制整理成标准发布目录。",
       "when_to_use": "已有一个或多个平台二进制，准备打包发布时。",
       "examples": [
-        "codepilot release bundle --build-current",
-        "codepilot release bundle --artifact linux-x86_64=dist/binary/linux-x86_64/codepilot"
+        "codepilot binary release --build-current",
+        "codepilot binary release --artifact linux-x86_64=dist/binary/linux-x86_64/codepilot"
       ]
     },
     {
-      "name": "release_verify",
-      "syntax": "codepilot release verify [--release-dir 发布目录]",
+      "name": "binary_verify",
+      "syntax": "codepilot binary verify [--release-dir 发布目录]",
       "purpose": "校验发布目录、压缩包内容和校验值。",
       "when_to_use": "发布前自检或 CI 验证时。",
       "examples": [
-        "codepilot release verify",
-        "codepilot release verify --release-dir dist/release/codepilot-0.1.0-summary"
+        "codepilot binary verify",
+        "codepilot binary verify --release-dir dist/release/codepilot-0.1.0-summary"
       ]
     }
   ],
@@ -173,32 +206,32 @@
         "codepilot init .",
         "codepilot \"实现一个需求\"",
         "codepilot status -p <项目名> -v",
-        "codepilot show <task_id>",
-        "codepilot logs <task_id>"
+        "codepilot task show <task_id>",
+        "codepilot task logs <task_id>"
       ]
     },
     {
       "name": "排障运行中的任务",
       "steps": [
         "codepilot status -p <项目名> -v",
-        "codepilot show <task_id>",
-        "codepilot logs <task_id> --tail 80",
-        "codepilot stop <task_id>"
+        "codepilot task show <task_id>",
+        "codepilot task logs <task_id> --tail 80",
+        "codepilot task stop <task_id>"
       ]
     },
     {
       "name": "重试失败或取消的任务",
       "steps": [
-        "codepilot logs <task_id> --tail 80",
-        "codepilot retry <task_id>",
+        "codepilot task logs <task_id> --tail 80",
+        "codepilot task retry <task_id>",
         "codepilot run -p <项目名>"
       ]
     },
     {
       "name": "准备一个发布包",
       "steps": [
-        "codepilot release prepare --version <版本号>",
-        "codepilot release verify"
+        "codepilot binary prepare --version <版本号>",
+        "codepilot binary verify"
       ]
     }
   ]
