@@ -627,9 +627,41 @@ def _fallback_single_task_breakdown(*, title: str, priority: str, exc: Exception
                 "notes": [
                     f"本次为 Codex 规划失败后的降级执行。原始原因：{exc}",
                 ],
+                "depends_on_indices": [],
+                "risk_level": "medium",
+                "scope_budget": "unplanned / single-task fallback",
             }
         ],
     }
+
+
+_VALID_RISK_LEVELS = {"low", "medium", "high"}
+
+
+def _normalize_task_spec(item: dict) -> dict:
+    """Defensive normalization of one planner task entry.
+
+    Ensures risk_level / scope_budget / depends_on_indices are present with
+    sane defaults so downstream rendering doesn't fall all the way back to
+    the template's placeholder values (``待评估`` / ``未设定``) when an LLM
+    forgets a field. Mutates and returns the same dict for call-site brevity.
+    """
+    if not isinstance(item, dict):
+        return item
+
+    risk_raw = str(item.get("risk_level") or "").strip().lower()
+    item["risk_level"] = risk_raw if risk_raw in _VALID_RISK_LEVELS else "medium"
+
+    budget_raw = str(item.get("scope_budget") or "").strip()
+    item["scope_budget"] = budget_raw or "unspecified"
+
+    deps = item.get("depends_on_indices")
+    if not isinstance(deps, list):
+        item["depends_on_indices"] = []
+    else:
+        item["depends_on_indices"] = [i for i in deps if isinstance(i, int) and i >= 0]
+
+    return item
 
 
 def _resolve_planning_mode(project_info: dict) -> bool:
@@ -884,15 +916,15 @@ def _create_tasks_from_breakdown(
     previous_task_id: int | None = None
     created_ids_by_index: list[int] = []
     for item in breakdown["tasks"]:
-        dep_indices = item.get("depends_on_indices") or []
+        task_spec = _normalize_task_spec(dict(item))
+        dep_indices = task_spec.get("depends_on_indices") or []
         dep_ids = [
             created_ids_by_index[i]
             for i in dep_indices
             if isinstance(i, int) and 0 <= i < len(created_ids_by_index)
         ]
-        if not dep_ids and previous_task_id and not item.get("depends_on_indices"):
+        if not dep_ids and previous_task_id and not dep_indices:
             dep_ids = [previous_task_id]
-        task_spec = dict(item)
         task_spec["agent"] = task_agent
         task = db.create_task(
             project=project_name,
