@@ -718,6 +718,121 @@ p { margin: 0; }
 .block.warning { border-color: hsl(var(--warning) / .4); background: hsl(var(--warning) / .08); }
 .block.warning .block-label { color: hsl(38 92% 42%); }
 [data-theme="dark"] .block.warning .block-label { color: hsl(var(--warning)); }
+
+/* Structured reviewer verdict block: surfaces parse_reviewer_output fields
+ * (verdict, ac_checks[], blockers[], advisory[]) as a first-class UI element
+ * so users don't have to read the raw transcript to see what the reviewer
+ * decided. Tone follows verdict for at-a-glance scanning. */
+.block.reviewer-verdict.verdict-tone-pass {
+  border-color: hsl(var(--success) / .45);
+  background: hsl(var(--success) / .08);
+}
+.block.reviewer-verdict.verdict-tone-fail {
+  border-color: hsl(var(--destructive) / .45);
+  background: hsl(var(--destructive) / .08);
+}
+.block.reviewer-verdict.verdict-tone-unknown {
+  border-color: hsl(var(--muted-foreground) / .25);
+}
+.reviewer-verdict-meta {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 6px;
+  color: hsl(var(--muted-foreground));
+}
+.reviewer-verdict-source {
+  opacity: .7;
+  font-size: 10px;
+}
+.reviewer-verdict-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  margin: 4px 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  letter-spacing: .05em;
+}
+.reviewer-verdict-badge.verdict-pass {
+  background: hsl(var(--success) / .15);
+  border-color: hsl(var(--success) / .4);
+  color: hsl(var(--success));
+}
+.reviewer-verdict-badge.verdict-fail {
+  background: hsl(var(--destructive) / .15);
+  border-color: hsl(var(--destructive) / .4);
+  color: hsl(var(--destructive));
+}
+.reviewer-verdict-badge.verdict-unknown {
+  background: hsl(var(--muted) / .4);
+  border-color: hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+}
+table.ac-checks-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+table.ac-checks-table th,
+table.ac-checks-table td {
+  padding: 4px 8px;
+  text-align: left;
+  border-bottom: 1px solid hsl(var(--border));
+  vertical-align: top;
+}
+table.ac-checks-table th {
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.ac-status-chip {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid hsl(var(--border));
+}
+.ac-status-chip.ac-status-pass {
+  color: hsl(var(--success));
+  border-color: hsl(var(--success) / .4);
+  background: hsl(var(--success) / .1);
+}
+.ac-status-chip.ac-status-fail {
+  color: hsl(var(--destructive));
+  border-color: hsl(var(--destructive) / .4);
+  background: hsl(var(--destructive) / .1);
+}
+.ac-status-chip.ac-status-n\/a {
+  color: hsl(var(--muted-foreground));
+  border-color: hsl(var(--border));
+}
+.reviewer-block-section {
+  margin-top: 8px;
+}
+.reviewer-block-sublabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 4px;
+}
+.reviewer-block-section ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.reviewer-block-section li {
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 2px;
+}
 .block-label {
   font-size: 11px; font-weight: 600;
   color: hsl(var(--muted-foreground));

@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from codepilot import db
+from codepilot.commands.reviewer_output import parse_reviewer_output
 from codepilot.display_sort import TASK_STATUS_ORDER, sort_tasks_for_display
 from codepilot.runtime import runtime_summary
 
@@ -532,12 +533,60 @@ def dashboard_payload(selected_project: str | None = None) -> dict:
     }
 
 
+def _review_block_for_log(entry: dict) -> dict | None:
+    """If ``entry`` is a reviewer phase log, return its parsed verdict block.
+
+    Reviewer phases are detected by ``phase`` or ``agent`` containing the
+    substring ``review`` (matches builder=codex / agent="codex-review" /
+    phase="reviewer r2" etc.). Non-reviewer entries or empty transcripts
+    return ``None``, so the frontend can treat ``review is null`` as
+    "no structured verdict to show for this entry".
+    """
+    phase = str(entry.get("phase") or "").lower()
+    agent = str(entry.get("agent") or "").lower()
+    if "review" not in phase and "review" not in agent:
+        return None
+    raw = entry.get("output") or ""
+    if not raw.strip():
+        return None
+    parsed = parse_reviewer_output(raw)
+    if parsed.source == "empty":
+        return None
+    return {
+        "verdict": parsed.verdict,
+        "source": parsed.source,
+        "ac_checks": parsed.ac_checks,
+        "blockers": parsed.blockers,
+        "advisory": parsed.advisory,
+    }
+
+
 def task_detail_payload(task_id: int) -> dict:
     db.init_db()
     task = db.get_task(task_id)
     if not task:
         raise RuntimeError(f"任务 #{task_id} 不存在。")
     payload = _task_payload(task)
+    log_entries = list(db.list_task_logs(task_id))
+    logs: list[dict] = []
+    latest_review: dict | None = None
+    for entry in log_entries:
+        review_block = _review_block_for_log(entry)
+        logs.append(
+            {
+                "phase": entry.get("phase") or "",
+                "agent": entry.get("agent") or "",
+                "exit_code": entry.get("exit_code"),
+                "output_excerpt": _tail_text(entry.get("output") or "", max_lines=40, max_chars=5000),
+                "review": review_block,
+            }
+        )
+        if review_block is not None:
+            latest_review = {
+                **review_block,
+                "phase": entry.get("phase") or "",
+                "agent": entry.get("agent") or "",
+            }
     payload.update(
         {
             "content": task.get("content") or "",
@@ -545,15 +594,8 @@ def task_detail_payload(task_id: int) -> dict:
             "project_path": task.get("project_path") or "",
             "current_log_path": task.get("current_log_path") or "",
             "log_text": _compose_log_text(task),
-            "logs": [
-                {
-                    "phase": entry.get("phase") or "",
-                    "agent": entry.get("agent") or "",
-                    "exit_code": entry.get("exit_code"),
-                    "output_excerpt": _tail_text(entry.get("output") or "", max_lines=40, max_chars=5000),
-                }
-                for entry in db.list_task_logs(task_id)
-            ],
+            "logs": logs,
+            "latest_review": latest_review,
         }
     )
     return payload

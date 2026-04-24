@@ -38,6 +38,38 @@ class TaskActions(TypedDict):
     delete: bool
 
 
+class ReviewerAcCheck(TypedDict):
+    """One AC row from a parsed reviewer verdict."""
+
+    id: str
+    status: str  # "PASS" | "FAIL" | "N/A"
+    reason: str
+
+
+class ReviewerVerdictBlock(TypedDict):
+    """Structured reviewer decision extracted from a reviewer phase log.
+
+    Populated by ``codepilot.commands.reviewer_output.parse_reviewer_output``
+    and attached to each reviewer-phase :class:`TaskLogEntry` plus a
+    top-level ``latest_review`` field on :class:`TaskDetail`, so the
+    dashboard can render a first-class verdict panel instead of the raw
+    transcript dump.
+    """
+
+    verdict: str  # "pass" | "fail" | "unknown"
+    source: str  # "json" | "legacy" | "empty"
+    ac_checks: list[ReviewerAcCheck]
+    blockers: list[str]
+    advisory: list[str]
+
+
+class ReviewerVerdictSummary(ReviewerVerdictBlock, total=False):
+    """Verdict block augmented with the phase/agent that produced it."""
+
+    phase: str
+    agent: str
+
+
 class TaskLogEntry(TypedDict):
     """One row from ``task_logs`` rendered for the UI."""
 
@@ -45,6 +77,7 @@ class TaskLogEntry(TypedDict):
     agent: str
     exit_code: Optional[int]
     output_excerpt: str
+    review: Optional[ReviewerVerdictBlock]
 
 
 # ── List-view task payload (dashboard) ────────────────────────────────────
@@ -91,6 +124,7 @@ class TaskDetail(TaskListItem):
     current_log_path: str
     log_text: str
     logs: list[TaskLogEntry]
+    latest_review: Optional[ReviewerVerdictSummary]
 
 
 # ── Project-level payloads ────────────────────────────────────────────────

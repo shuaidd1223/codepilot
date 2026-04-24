@@ -53,6 +53,29 @@ CP.Components.TaskDetail = Vue.defineComponent({
        * likely regrets the scope. Not on in-progress / done. */
       return ['failed', 'cancelled', 'backlog'].includes(t.status);
     },
+    latestReview() {
+      /* The server attaches parsed reviewer verdict to each reviewer-phase
+       * log entry plus a top-level latest_review for convenience. Prefer the
+       * server's top-level field; fall back to scanning logs in reverse so
+       * older payloads keep working. */
+      const t = this.task;
+      if (!t) return null;
+      if (t.latest_review) return t.latest_review;
+      if (!Array.isArray(t.logs)) return null;
+      for (let i = t.logs.length - 1; i >= 0; i -= 1) {
+        const entry = t.logs[i];
+        if (entry && entry.review) {
+          return { ...entry.review, phase: entry.phase, agent: entry.agent };
+        }
+      }
+      return null;
+    },
+    verdictToneClass() {
+      const v = this.latestReview && this.latestReview.verdict;
+      if (v === 'pass') return 'verdict-tone-pass';
+      if (v === 'fail') return 'verdict-tone-fail';
+      return 'verdict-tone-unknown';
+    },
   },
   methods: {
     async action(id, act) {
@@ -192,6 +215,42 @@ CP.Components.TaskDetail = Vue.defineComponent({
           <div v-if="task.delivery_record" class="block">
             <div class="block-label">交付记录</div>
             <cp-markdown :text="task.delivery_record"></cp-markdown>
+          </div>
+          <div v-if="latestReview" class="block reviewer-verdict" :class="verdictToneClass">
+            <div class="block-label">
+              最新审查结论
+              <span class="reviewer-verdict-meta">
+                {{ latestReview.agent || 'reviewer' }}
+                <span v-if="latestReview.source" class="reviewer-verdict-source">· source={{ latestReview.source }}</span>
+              </span>
+            </div>
+            <div class="reviewer-verdict-badge" :class="`verdict-${latestReview.verdict}`">
+              VERDICT: {{ (latestReview.verdict || 'unknown').toUpperCase() }}
+            </div>
+            <table v-if="latestReview.ac_checks && latestReview.ac_checks.length" class="ac-checks-table">
+              <thead>
+                <tr><th>AC</th><th>状态</th><th>说明</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(ac, idx) in latestReview.ac_checks" :key="idx" :class="`ac-row ac-${(ac.status || '').toLowerCase()}`">
+                  <td>{{ ac.id || '-' }}</td>
+                  <td><span class="ac-status-chip" :class="`ac-status-${(ac.status || '').toLowerCase()}`">{{ ac.status || '-' }}</span></td>
+                  <td>{{ ac.reason || '-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-if="latestReview.blockers && latestReview.blockers.length" class="reviewer-block-section">
+              <div class="reviewer-block-sublabel">阻塞点</div>
+              <ul>
+                <li v-for="(item, idx) in latestReview.blockers" :key="'b'+idx">{{ item }}</li>
+              </ul>
+            </div>
+            <div v-if="latestReview.advisory && latestReview.advisory.length" class="reviewer-block-section">
+              <div class="reviewer-block-sublabel">非阻塞观察</div>
+              <ul>
+                <li v-for="(item, idx) in latestReview.advisory" :key="'a'+idx">{{ item }}</li>
+              </ul>
+            </div>
           </div>
           <div v-if="task.logs && task.logs.length" class="block">
             <div class="block-label">阶段日志摘要</div>

@@ -26,6 +26,31 @@ def test_task_detail_distinguishes_loading_and_empty_state():
     assert "暂无任务详情" in source
 
 
+def test_task_detail_renders_structured_reviewer_verdict():
+    source = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    # Computed helpers that hydrate the verdict panel from either the
+    # top-level latest_review payload or the per-log review blocks.
+    assert "latestReview()" in source
+    assert "verdictToneClass()" in source
+    assert "t.latest_review" in source
+
+    # Render blocks: badge, AC table, blockers, advisory.
+    assert '"block reviewer-verdict"' in source
+    assert "最新审查结论" in source
+    assert "reviewer-verdict-badge" in source
+    assert "ac-checks-table" in source
+    assert "阻塞点" in source
+    assert "非阻塞观察" in source
+
+    # CSS must carry the tone classes the template applies.
+    assert ".reviewer-verdict-badge.verdict-pass" in styles
+    assert ".reviewer-verdict-badge.verdict-fail" in styles
+    assert ".ac-status-chip.ac-status-pass" in styles
+    assert ".ac-status-chip.ac-status-fail" in styles
+
+
 def test_sidebar_category_toggle_uses_project_scoped_accordion():
     sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
     app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
