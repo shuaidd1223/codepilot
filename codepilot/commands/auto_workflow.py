@@ -676,18 +676,9 @@ def _list_existing_open_tasks(project_name: str) -> list[dict]:
     ]
 
 
-_QUALITY_GENERIC_KEYWORDS = (
-    "占位",
-    "待补充",
-    "placeholder",
-    "todo",
-    "pending",
-    "awaiting",
-    "misc",
-    "其它优化",
-    "其他优化",
-    "通用优化",
-    "泛化",
+from codepilot.commands.task_quality import (
+    PLANNER_FILLER_KEYWORDS as _QUALITY_GENERIC_KEYWORDS,
+    looks_generic as _looks_generic,
 )
 
 
@@ -733,8 +724,7 @@ def _evaluate_planning_quality(title: str, breakdown: dict) -> tuple[list[str], 
             goal_missing_count += 1
             advisory.append(f"Task {idx} is missing `goal`.")
 
-        merged_text = " ".join([task_title, goal]).lower()
-        if any(keyword in merged_text for keyword in _QUALITY_GENERIC_KEYWORDS):
+        if _looks_generic(" ".join([task_title, goal]), _QUALITY_GENERIC_KEYWORDS):
             placeholder_like_tasks += 1
             advisory.append(f"Task {idx} looks placeholder-like: `{task_title or 'unnamed task'}`.")
 

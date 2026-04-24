@@ -442,26 +442,10 @@ def _build_inspection_prompt(
     )
 
 
-# Phrases that a filler task tends to use. Deliberately omits bare "todo" /
-# "placeholder" / "pending" because inspect's signals legitimately reference
-# real TODO markers in code; only blanket filler phrases are listed here.
-_GENERIC_FILLER_KEYWORDS = (
-    "补一下文档",
-    "补充文档",
-    "加日志",
-    "加点日志",
-    "通用优化",
-    "泛化",
-    "占位任务",
-    "待补充",
-    "杂项优化",
-    "其它优化",
-    "其他优化",
-    "简单优化",
-    "小优化",
-    "随手优化",
-    "整体重构",
-    "全面梳理",
+from codepilot.commands.task_quality import (
+    INSPECT_FILLER_KEYWORDS as _GENERIC_FILLER_KEYWORDS,
+    evidence_grounded_in,
+    looks_generic,
 )
 
 
@@ -508,27 +492,15 @@ def _signal_evidence_tokens(signal_results: list[InspectSignalResult]) -> set[st
 
 
 def _candidate_looks_generic(title: str, goal: str) -> bool:
-    merged = f"{title} {goal}".lower()
-    return any(keyword.lower() in merged for keyword in _GENERIC_FILLER_KEYWORDS)
+    """Inspect-side filler check: delegates to shared ``looks_generic``."""
+    return looks_generic(f"{title} {goal}", _GENERIC_FILLER_KEYWORDS)
 
 
 def _evidence_references_signal(evidence: str, signal_tokens: set[str]) -> bool:
-    """Cheap containment check: does the evidence text overlap any known signal token?"""
-    if not evidence or not signal_tokens:
+    """Cheap containment check against known signal tokens (inspect-only concept)."""
+    if not signal_tokens:
         return False
-    ev = evidence.strip()
-    if not ev:
-        return False
-    ev_lower = ev.lower()
-    for token in signal_tokens:
-        token_stripped = token.strip()
-        if not token_stripped:
-            continue
-        if len(token_stripped) <= 3:
-            continue
-        if token_stripped.lower() in ev_lower or ev_lower in token_stripped.lower():
-            return True
-    return False
+    return evidence_grounded_in(evidence, signal_tokens)
 
 
 def _filter_candidates(
