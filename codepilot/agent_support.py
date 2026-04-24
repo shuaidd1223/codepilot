@@ -64,11 +64,11 @@ def command_manifest(
         "description": "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。",
             "calling_principles": [
                 "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
-                "需要结构化结果时，优先使用 `status --json`、`show --json`、`doctor --json`、`find --json`、`ai manifest`。",
+                "需要结构化结果时，优先使用 `status --json`、`task show --json`、`doctor --json`、`task find --json`、`ai manifest`。",
                 f"如果目标是提交一个自然语言需求，直接调用 `{command} \"需求文本\"` 或 `{command} go \"需求文本\"`。",
-                f"如果目标是发布产物，优先调用 `{_cmd(command, 'release prepare --version <版本号>')}`。",
-                f"如果任务处于运行中，先用 `{_cmd(command, 'status -p <项目名> -v')}` 查看阶段，再决定是否 `logs` 或 `stop`。",
-                f"如果任务失败或被取消，且需要重新排队，使用 `{_cmd(command, 'retry <task_id>')}`。",
+                f"如果目标是发布产物，优先调用 `{_cmd(command, 'binary prepare --version <版本号>')}`。",
+                f"如果任务处于运行中，先用 `{_cmd(command, 'status -p <项目名> -v')}` 查看阶段，再决定是否 `task logs` 或 `task stop`。",
+                f"如果任务失败或被取消，且需要重新排队，使用 `{_cmd(command, 'task retry <task_id>')}`。",
             ],
         "structured_outputs": [
             {
@@ -82,12 +82,12 @@ def command_manifest(
                 "purpose": "获取项目任务状态和任务列表。",
             },
             {
-                "command": _cmd(command, "find <关键词> -p <项目名> --json"),
+                "command": _cmd(command, "task find <关键词> -p <项目名> --json"),
                 "format": "json",
                 "purpose": "搜索任务并获取结构化结果。",
             },
             {
-                "command": _cmd(command, "show <task_id> --json"),
+                "command": _cmd(command, "task show <task_id> --json"),
                 "format": "json",
                 "purpose": "精确获取单个任务的完整详情和历史日志记录。",
             },
@@ -124,17 +124,17 @@ def command_manifest(
             },
             {
                 "name": "logs",
-                "syntax": _cmd(command, "logs <task_id> [--tail N|--full]"),
+                "syntax": _cmd(command, "task logs <task_id> [--tail N|--full]"),
                 "purpose": "查看任务实时日志或历史日志。",
                 "when_to_use": "需要了解任务执行细节或错误上下文。",
-                "examples": [_cmd(command, "logs 7"), _cmd(command, "logs 7 --tail 50")],
+                "examples": [_cmd(command, "task logs 7"), _cmd(command, "task logs 7 --tail 50")],
             },
             {
                 "name": "show",
-                "syntax": _cmd(command, "show <task_id> [--logs|--json]"),
+                "syntax": _cmd(command, "task show <task_id> [--logs|--json]"),
                 "purpose": "精确查看单个任务的完整元数据、任务内容、错误信息、交付记录和日志记录摘要。",
                 "when_to_use": "已经知道任务 ID，需要完整任务详情而不是状态列表摘要时。",
-                "examples": [_cmd(command, "show 7"), _cmd(command, "show 7 --json")],
+                "examples": [_cmd(command, "task show 7"), _cmd(command, "task show 7 --json")],
             },
             {
                 "name": "doctor",
@@ -145,17 +145,17 @@ def command_manifest(
             },
             {
                 "name": "stop",
-                "syntax": _cmd(command, "stop <task_id> [-m 原因]"),
+                "syntax": _cmd(command, "task stop <task_id> [-m 原因]"),
                 "purpose": "停止运行中的任务。",
                 "when_to_use": "任务卡住、执行方向错误、需要强制终止时。",
-                "examples": [_cmd(command, "stop 7"), _cmd(command, 'stop 7 -m "方向错误，停止重跑"')],
+                "examples": [_cmd(command, "task stop 7"), _cmd(command, 'task stop 7 -m "方向错误，停止重跑"')],
             },
             {
                 "name": "retry",
-                "syntax": _cmd(command, "retry <task_id>"),
+                "syntax": _cmd(command, "task retry <task_id>"),
                 "purpose": "手动重试指定任务，重置运行态并重新放回 backlog。",
                 "when_to_use": "任务 failed/cancelled 后需要人工重新触发时。",
-                "examples": [_cmd(command, "retry 7")],
+                "examples": [_cmd(command, "task retry 7")],
             },
             {
                 "name": "run",
@@ -165,37 +165,76 @@ def command_manifest(
                 "examples": [_cmd(command, "run -p codepilot-dev --executor builtin --no-auto-commit")],
             },
             {
-                "name": "ui",
-                "syntax": _cmd(command, "ui [--host 127.0.0.1] [--port 8766]"),
-                "purpose": "启动本地 Web UI，图形化查看项目、任务和状态，并执行重试 / 停止 / 插队。",
-                "when_to_use": "需要图形化总览多个项目，或需要人工点击干预任务时。",
-                "examples": [_cmd(command, "ui"), _cmd(command, "ui --no-open --port 8877")],
-            },
-            {
-                "name": "release_prepare",
-                "syntax": _cmd(command, "release prepare --version <版本号>"),
-                "purpose": "更新版本号、构建当前平台、生成发布目录并自动校验。",
-                "when_to_use": "准备一个可交付的本地发布包时。",
-                "examples": [_cmd(command, "release prepare --version 0.1.1")],
-            },
-            {
-                "name": "release_bundle",
-                "syntax": _cmd(command, "release bundle [--build-current] [--artifact 平台=路径]"),
-                "purpose": "把已有二进制整理成标准发布目录。",
-                "when_to_use": "已有一个或多个平台二进制，准备打包发布时。",
+                "name": "task_find",
+                "syntax": _cmd(command, "task find <关键词> -p <项目名> [--json]"),
+                "purpose": "按关键词、状态、优先级检索任务。",
+                "when_to_use": "需要快速定位任务或批量筛选目标任务时。",
                 "examples": [
-                    _cmd(command, "release bundle --build-current"),
-                    _cmd(command, f"release bundle --artifact linux-x86_64=dist/binary/linux-x86_64/{binary}"),
+                    _cmd(command, "task find retry -p codepilot-dev"),
+                    _cmd(command, "task find bug -p codepilot-dev --json"),
                 ],
             },
             {
-                "name": "release_verify",
-                "syntax": _cmd(command, "release verify [--release-dir 发布目录]"),
+                "name": "ui",
+                "syntax": (
+                    f"{_cmd(command, 'ui [--host 127.0.0.1] [--port 8766]')} | "
+                    f"{_cmd(command, 'ui <start|status|logs|stop|restart>')}"
+                ),
+                "purpose": "统一 Web UI 入口：支持前台启动，也支持后台服务管理。",
+                "when_to_use": "需要图形化总览多个项目，或需要让 Web UI 后台持续运行与排障时。",
+                "examples": [
+                    _cmd(command, "ui"),
+                    _cmd(command, "ui --no-open --port 8877"),
+                    _cmd(command, "ui start"),
+                    _cmd(command, "ui logs --tail 100"),
+                ],
+            },
+            {
+                "name": "daemon",
+                "syntax": _cmd(command, "daemon -p <项目名> [--status|--stop]"),
+                "purpose": "按项目后台轮询 backlog 并持续执行任务。",
+                "when_to_use": "希望项目任务持续自动执行，而不是手动反复运行 run 时。",
+                "examples": [
+                    _cmd(command, "daemon -p codepilot-dev"),
+                    _cmd(command, "daemon -p codepilot-dev --status"),
+                    _cmd(command, "daemon -p codepilot-dev --stop"),
+                ],
+            },
+            {
+                "name": "inspect",
+                "syntax": _cmd(command, "inspect -p <项目名> [--once|--status|--stop|--json]"),
+                "purpose": "巡检项目信号并产出候选任务。",
+                "when_to_use": "需要持续发现技术债、失败任务、待优化点时。",
+                "examples": [
+                    _cmd(command, "inspect -p codepilot-dev --once"),
+                    _cmd(command, "inspect -p codepilot-dev --status"),
+                ],
+            },
+            {
+                "name": "binary_prepare",
+                "syntax": _cmd(command, "binary prepare --version <版本号>"),
+                "purpose": "更新版本号、构建当前平台、生成发布目录并自动校验。",
+                "when_to_use": "准备一个可交付的本地发布包时。",
+                "examples": [_cmd(command, "binary prepare --version 0.1.1")],
+            },
+            {
+                "name": "binary_release",
+                "syntax": _cmd(command, "binary release [--build-current] [--artifact 平台=路径]"),
+                "purpose": "把已有二进制整理成标准发布目录。",
+                "when_to_use": "已有一个或多个平台二进制，准备打包发布时。",
+                "examples": [
+                    _cmd(command, "binary release --build-current"),
+                    _cmd(command, f"binary release --artifact linux-x86_64=dist/binary/linux-x86_64/{binary}"),
+                ],
+            },
+            {
+                "name": "binary_verify",
+                "syntax": _cmd(command, "binary verify [--release-dir 发布目录]"),
                 "purpose": "校验发布目录、压缩包内容和校验值。",
                 "when_to_use": "发布前自检或 CI 验证时。",
                 "examples": [
-                    _cmd(command, "release verify"),
-                    _cmd(command, "release verify --release-dir dist/release/codepilot-0.1.0-summary"),
+                    _cmd(command, "binary verify"),
+                    _cmd(command, "binary verify --release-dir dist/release/codepilot-0.1.0-summary"),
                 ],
             },
         ],
@@ -206,32 +245,32 @@ def command_manifest(
                     _cmd(command, "init ."),
                     f'{command} "实现一个需求"',
                     _cmd(command, "status -p <项目名> -v"),
-                    _cmd(command, "show <task_id>"),
-                    _cmd(command, "logs <task_id>"),
+                    _cmd(command, "task show <task_id>"),
+                    _cmd(command, "task logs <task_id>"),
                 ],
             },
             {
                 "name": "排障运行中的任务",
                 "steps": [
                     _cmd(command, "status -p <项目名> -v"),
-                    _cmd(command, "show <task_id>"),
-                    _cmd(command, "logs <task_id> --tail 80"),
-                    _cmd(command, "stop <task_id>"),
+                    _cmd(command, "task show <task_id>"),
+                    _cmd(command, "task logs <task_id> --tail 80"),
+                    _cmd(command, "task stop <task_id>"),
                 ],
             },
             {
                 "name": "重试失败或取消的任务",
                 "steps": [
-                    _cmd(command, "logs <task_id> --tail 80"),
-                    _cmd(command, "retry <task_id>"),
+                    _cmd(command, "task logs <task_id> --tail 80"),
+                    _cmd(command, "task retry <task_id>"),
                     _cmd(command, "run -p <项目名>"),
                 ],
             },
             {
                 "name": "准备一个发布包",
                 "steps": [
-                    _cmd(command, "release prepare --version <版本号>"),
-                    _cmd(command, "release verify"),
+                    _cmd(command, "binary prepare --version <版本号>"),
+                    _cmd(command, "binary verify"),
                 ],
             },
         ],
@@ -265,9 +304,9 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 1. 优先使用非交互命令。
 2. 需要结构化结果时，优先使用 JSON 输出命令。
 3. 需要提交高层需求时，直接调用自然语言入口，不要先自己拆任务，除非你明确要控制拆分策略。
-4. 看到任务处于 `in_progress` 时，先查 `status -v` 和 `logs`，不要盲目重复触发 `run`。
-5. 任务失败或取消后，如需人工重新排队，使用 `{_cmd(command, "retry <task_id>")}`。
-6. 准备发布包时，优先使用 `{_cmd(command, "release prepare --version <版本号>")}`。
+4. 看到任务处于 `in_progress` 时，先查 `status -v` 和 `task logs`，不要盲目重复触发 `run`。
+5. 任务失败或取消后，如需人工重新排队，使用 `{_cmd(command, "task retry <task_id>")}`。
+6. 准备发布包时，优先使用 `{_cmd(command, "binary prepare --version <版本号>")}`。
 
 ## 推荐命令
 
@@ -306,8 +345,8 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ### 4. 精确查看单个任务
 
 ```bash
-{_cmd(command, "show <task_id>")}
-{_cmd(command, "show <task_id> --json")}
+{_cmd(command, "task show <task_id>")}
+{_cmd(command, "task show <task_id> --json")}
 ```
 
 ### 5. 环境自检
@@ -320,20 +359,20 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ### 6. 查看日志
 
 ```bash
-{_cmd(command, "logs <task_id>")}
-{_cmd(command, "logs <task_id> --tail 80")}
+{_cmd(command, "task logs <task_id>")}
+{_cmd(command, "task logs <task_id> --tail 80")}
 ```
 
 ### 7. 停止任务
 
 ```bash
-{_cmd(command, "stop <task_id>")}
+{_cmd(command, "task stop <task_id>")}
 ```
 
 ### 8. 手动重试任务
 
 ```bash
-{_cmd(command, "retry <task_id>")}
+{_cmd(command, "task retry <task_id>")}
 ```
 
 ### 9. 发布
@@ -341,19 +380,19 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 最推荐：
 
 ```bash
-{_cmd(command, "release prepare --version 0.1.1")}
+{_cmd(command, "binary prepare --version 0.1.1")}
 ```
 
 只打包：
 
 ```bash
-{_cmd(command, "release bundle --build-current")}
+{_cmd(command, "binary release --build-current")}
 ```
 
 校验发布目录：
 
 ```bash
-{_cmd(command, "release verify")}
+{_cmd(command, "binary verify")}
 ```
 
 ### 10. 图形界面
@@ -391,11 +430,11 @@ def ai_prompt_text(*, command_name: str = "codepilot") -> str:
         "你正在调用 CodePilot 这个本地 CLI。优先使用非交互命令。"
         f"提交需求时直接用 `{command} \"需求文本\"`。"
         f"查看状态时优先用 `{_cmd(command, 'status -p <项目名> --json')}`，"
-        f"精确查看单个任务用 `{_cmd(command, 'show <task_id> --json')}`，"
+        f"精确查看单个任务用 `{_cmd(command, 'task show <task_id> --json')}`，"
         f"检查本机环境用 `{_cmd(command, 'doctor --json')}`，"
-        f"排障时用 `{_cmd(command, 'logs <task_id>')}`，停止任务用 `{_cmd(command, 'stop <task_id>')}`，"
-        f"重试失败任务用 `{_cmd(command, 'retry <task_id>')}`。"
+        f"排障时用 `{_cmd(command, 'task logs <task_id>')}`，停止任务用 `{_cmd(command, 'task stop <task_id>')}`，"
+        f"重试失败任务用 `{_cmd(command, 'task retry <task_id>')}`。"
         f"如果需要人工介入或图形化查看，启动 `{_cmd(command, 'ui')}`。"
-        f"准备发布包时优先用 `{_cmd(command, 'release prepare --version <版本号>')}`。"
+        f"准备发布包时优先用 `{_cmd(command, 'binary prepare --version <版本号>')}`。"
         f"如果需要完整命令清单，调用 `{_cmd(command, 'ai manifest')}`。"
     )

@@ -494,13 +494,13 @@ def command_intent_guidance(*, include_release: bool = False) -> str:
     lines = [
         "这看起来是在调用 codepilot 自身命令，请在终端直接执行：",
         "  状态总览:  codepilot status -p <项目> -v",
-        "  任务日志:  codepilot logs <task_id>",
-        "  重试任务:  codepilot retry <task_id>",
-        "  停止任务:  codepilot stop <task_id>",
+        "  任务日志:  codepilot task logs <task_id>",
+        "  重试任务:  codepilot task retry <task_id>",
+        "  停止任务:  codepilot task stop <task_id>",
         "  触发巡检:  codepilot inspect -p <项目>",
     ]
     if include_release:
-        lines.append("  发布打包:  codepilot release prepare --version <版本>")
+        lines.append("  发布打包:  codepilot binary prepare --version <版本>")
     return "\n".join(lines)
 
 

@@ -267,7 +267,7 @@ def test_chat_ui_starts_via_detached_webui_service(monkeypatch):
     assert handle["launcher_pid"] == 4242
     assert calls
     cmd, kwargs = calls[0]
-    assert cmd[:5] == [auto_chat_mod.sys.executable, "-m", "codepilot", "webui", "start"]
+    assert cmd[:5] == [auto_chat_mod.sys.executable, "-m", "codepilot", "ui", "start"]
     assert "--no-daemon" in cmd
     assert cmd[-2:] == ["--port", "9912"]
     assert kwargs["close_fds"] is True

@@ -252,7 +252,7 @@ def start_cmd(host: str, port: int, open_browser: bool, start_daemon: bool, proj
         meta = _read_meta()
         url = f"http://{meta.get('host', host)}:{meta.get('port', port)}/"
         echo(f"[yellow]Web UI 已在运行（PID={existing}） {url}[/yellow]")
-        echo("[dim]如果需要重启：codepilot webui restart[/dim]")
+        echo("[dim]如果需要重启：codepilot ui restart[/dim]")
         if start_daemon:
             _ensure_daemon_started(project)
         return
@@ -285,7 +285,7 @@ def start_cmd(host: str, port: int, open_browser: bool, start_daemon: bool, proj
     url = f"http://{host}:{port}/"
     echo(f"[green]Web UI 已启动[/green]  PID={proc.pid}  {url}")
     echo(f"[dim]日志: {LOG_FILE}[/dim]")
-    echo("[dim]停止: codepilot webui stop[/dim]")
+    echo("[dim]停止: codepilot ui stop[/dim]")
 
     if start_daemon:
         _ensure_daemon_started(project)

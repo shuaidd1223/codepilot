@@ -355,7 +355,7 @@ def _show_failure_feedback(
         echo("[dim]--- 摘要 ---[/dim]")
         for line in detail_lines[:5]:
             click.echo(f"  {line[:120]}")
-    click.echo(f"  查看完整日志: codepilot logs {task_id} --full")
+    click.echo(f"  查看完整日志: codepilot task logs {task_id} --full")
 
 
 def run_backlog(

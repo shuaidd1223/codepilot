@@ -549,7 +549,7 @@ def _planner_process_group_kwargs() -> dict:
     """Isolate planner child processes so timeouts/interrupts can be cleaned up safely.
 
     Also suppresses Windows console pop-ups when the parent process has no
-    console (e.g. when the planner runs inside the detached `codepilot webui`
+    console (e.g. when the planner runs inside the detached `codepilot ui start`
     service). Delegates to :func:`runtime.no_window_kwargs`.
     """
     from codepilot.runtime import no_window_kwargs

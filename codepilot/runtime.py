@@ -26,7 +26,7 @@ _CREATE_NO_WINDOW = 0x08000000
 def no_window_kwargs(*, new_process_group: bool = False) -> dict:
     """Subprocess kwargs that prevent console window pop-ups on Windows.
 
-    When the parent process has no console (e.g. the detached `codepilot webui`
+    When the parent process has no console (e.g. the detached `codepilot ui start`
     service), spawning a console-mode child like `claude.exe` or `git.exe` will
     pop a fresh console window unless we pass ``CREATE_NO_WINDOW``.
 

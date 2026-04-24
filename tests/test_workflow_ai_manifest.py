@@ -47,12 +47,12 @@ def test_ai_manifest_command_allows_version_and_command_override():
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    release_bundle = next(item for item in payload["commands"] if item["name"] == "release_bundle")
+    binary_release = next(item for item in payload["commands"] if item["name"] == "binary_release")
     assert payload["version"] == "9.9.9"
     assert payload["command_name"] == "mypilot"
     assert payload["structured_outputs"][0]["command"] == "mypilot ai manifest"
     assert payload["commands"][0]["syntax"] == "mypilot init <path>"
-    assert "dist/binary/linux-x86_64/mypilot" in release_bundle["examples"][1]
+    assert "dist/binary/linux-x86_64/mypilot" in binary_release["examples"][1]
 
 
 def test_repo_ai_manifest_file_stays_in_sync():
@@ -85,4 +85,4 @@ def test_ai_prompt_command_outputs_short_agent_prompt():
 
     assert result.exit_code == 0
     assert "codepilot \"需求文本\"" in result.output
-    assert "codepilot release prepare --version <版本号>" in result.output
+    assert "codepilot binary prepare --version <版本号>" in result.output

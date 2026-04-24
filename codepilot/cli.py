@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+
 import click
 
 from codepilot import __version__
@@ -19,7 +20,6 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "ai": ("codepilot.commands.ai", "ai"),
     "binary": ("codepilot.commands.binary", "binary"),
     "config": ("codepilot.commands.config_cmd", "config_group"),
-    "release": ("codepilot.commands.release", "release"),
     "status": ("codepilot.commands.status", "status"),
     "add": ("codepilot.commands.add", "add"),
     "auto": ("codepilot.commands.auto", "auto"),
@@ -27,7 +27,6 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "chat": ("codepilot.commands.auto", "chat"),
     "run": ("codepilot.commands.run", "run"),
     "ui": ("codepilot.commands.ui", "ui"),
-    "webui": ("codepilot.commands.webui_service", "webui"),
     "daemon": ("codepilot.commands.daemon", "daemon"),
     "inspect": ("codepilot.commands.inspect", "inspect"),
     "webhook": ("codepilot.commands.webhook", "webhook"),
@@ -35,18 +34,24 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "project": ("codepilot.commands.project", "project_group"),
     "cleanup": ("codepilot.commands.cleanup", "cleanup"),
     "doctor": ("codepilot.commands.doctor", "doctor"),
-    "show": ("codepilot.commands.tasks", "show"),
-    "done": ("codepilot.commands.tasks", "done"),
-    "retry": ("codepilot.commands.tasks", "retry"),
-    "archive": ("codepilot.commands.tasks", "archive"),
-    "cancel": ("codepilot.commands.tasks", "cancel"),
-    "resume": ("codepilot.commands.tasks", "resume"),
-    "edit": ("codepilot.commands.tasks", "edit"),
-    "rm": ("codepilot.commands.tasks", "rm"),
-    "find": ("codepilot.commands.tasks", "find"),
-    "stop": ("codepilot.commands.tasks", "stop"),
-    "sweep": ("codepilot.commands.tasks", "sweep"),
-    "logs": ("codepilot.commands.tasks", "logs"),
+    "task": ("codepilot.commands.task", "task_group"),
+}
+
+_REMOVED_COMMAND_HINTS: dict[str, str] = {
+    "release": "codepilot binary <subcommand>",
+    "show": "codepilot task show <task_id>",
+    "done": "codepilot task done <task_id>",
+    "retry": "codepilot task retry <task_id>",
+    "archive": "codepilot task archive <task_id...>",
+    "cancel": "codepilot task cancel <task_id...>",
+    "resume": "codepilot task resume <task_id...>",
+    "edit": "codepilot task edit <task_id> [options]",
+    "rm": "codepilot task rm <task_id...>",
+    "find": "codepilot task find <keyword>",
+    "stop": "codepilot task stop <task_id>",
+    "sweep": "codepilot task sweep <task_id>",
+    "logs": "codepilot task logs <task_id>",
+    "webui": "codepilot ui <start|status|logs|stop|restart>",
 }
 
 
@@ -81,9 +86,14 @@ class NaturalLanguageGroup(click.Group):
 
     def resolve_command(self, ctx, args):
         if args:
-            cmd = self.get_command(ctx, args[0])
+            first = args[0]
+            cmd = self.get_command(ctx, first)
             if cmd is not None:
-                return args[0], cmd, args[1:]
+                return first, cmd, args[1:]
+
+            replacement = _REMOVED_COMMAND_HINTS.get(first)
+            if replacement:
+                raise click.UsageError(f"命令 `{first}` 已移除，请使用 `{replacement}`。")
 
             go_cmd = self.get_command(ctx, "go")
             if go_cmd is not None:

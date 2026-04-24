@@ -167,7 +167,7 @@ def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
             if include_logs and entry.get("output"):
                 click.echo(entry["output"])
         if not include_logs:
-            click.echo(f"  完整日志: codepilot logs {task_id} --full")
+            click.echo(f"  完整日志: codepilot task logs {task_id} --full")
 
 
 # ── done ──────────────────────────────────────────────────────────────────────
@@ -236,7 +236,7 @@ def cancel(task_ids: tuple[int, ...], message: str):
             continue
         status = str(task.get("status") or "")
         if status == "in_progress":
-            echo(f"[yellow]任务 #{tid} 正在执行中，不能取消；请使用 stop[/yellow]")
+            echo(f"[yellow]任务 #{tid} 正在执行中，不能取消；请使用 task stop[/yellow]")
             continue
         if status == "done":
             echo(f"[yellow]任务 #{tid} 已完成，无法取消[/yellow]")

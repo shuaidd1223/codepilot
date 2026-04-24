@@ -300,14 +300,14 @@ def test_create_release_bundle_ai_manifest_matches_release_version_and_name(tmp_
     )
 
     payload = json.loads(result.ai_manifest_path.read_text(encoding="utf-8"))
-    release_prepare = next(item for item in payload["commands"] if item["name"] == "release_prepare")
-    release_bundle = next(item for item in payload["commands"] if item["name"] == "release_bundle")
+    binary_prepare = next(item for item in payload["commands"] if item["name"] == "binary_prepare")
+    binary_release = next(item for item in payload["commands"] if item["name"] == "binary_release")
 
     assert payload["version"] == "1.2.3"
     assert payload["command_name"] == "mypilot"
     assert payload["structured_outputs"][0]["command"] == "mypilot ai manifest"
-    assert release_prepare["syntax"] == "mypilot release prepare --version <版本号>"
-    assert "dist/binary/linux-x86_64/mypilot" in release_bundle["examples"][1]
+    assert binary_prepare["syntax"] == "mypilot binary prepare --version <版本号>"
+    assert "dist/binary/linux-x86_64/mypilot" in binary_release["examples"][1]
 
 
 def test_binary_release_command_packages_existing_builds(tmp_path, monkeypatch):
@@ -540,48 +540,19 @@ def test_binary_prepare_rolls_back_version_when_build_fails(tmp_path, monkeypatc
     assert '__version__ = "0.1.0"' in init_file.read_text(encoding="utf-8")
 
 
-def test_release_prepare_alias_invokes_prepare(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    package_dir = tmp_path / "codepilot"
-    package_dir.mkdir()
-    (tmp_path / "pyproject.toml").write_text('[project]\nname = "codepilot"\nversion = "0.1.0"\n', encoding="utf-8")
-    (package_dir / "__init__.py").write_text('__version__ = "0.1.0"\n', encoding="utf-8")
-
-    built_dir = tmp_path / "dist" / "binary" / "windows-x86_64"
-    built_dir.mkdir(parents=True)
-    built_binary = built_dir / "codepilot.exe"
-    built_binary.write_text("fresh", encoding="utf-8")
-
-    monkeypatch.setattr(
-        "codepilot.commands.binary.build_binary",
-        lambda **kwargs: binary_mod.BuildResult(
-            binary_path=built_binary.resolve(),
-            dist_dir=built_dir.resolve(),
-            build_dir=(tmp_path / "build").resolve(),
-            platform_tag="windows-x86_64",
-        ),
-    )
-
+def test_release_command_removed_and_points_to_binary():
     runner = CliRunner()
     result = runner.invoke(main, ["release", "prepare", "--version", "1.3.0"])
 
-    assert result.exit_code == 0
-    assert (tmp_path / "dist" / "release" / "codepilot-1.3.0" / "release.json").exists()
+    assert result.exit_code != 0
+    assert "命令 `release` 已移除" in result.output
+    assert "codepilot binary <subcommand>" in result.output
 
 
-def test_release_verify_alias_invokes_verify(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    binary_path = tmp_path / "codepilot.exe"
-    binary_path.write_text("binary", encoding="utf-8")
-    release = binary_mod.create_release_bundle(
-        project_root=tmp_path,
-        artifacts=[("windows-x86_64", binary_path)],
-        output_dir=tmp_path / "dist" / "release" / "codepilot-1.0.0",
-        version="1.0.0",
-    )
-
+def test_webui_command_removed_and_points_to_ui():
     runner = CliRunner()
-    result = runner.invoke(main, ["release", "verify", "--release-dir", str(release.release_dir)])
+    result = runner.invoke(main, ["webui", "status"])
 
-    assert result.exit_code == 0
-    assert "发布目录校验通过" in result.output
+    assert result.exit_code != 0
+    assert "命令 `webui` 已移除" in result.output
+    assert "codepilot ui <start|status|logs|stop|restart>" in result.output

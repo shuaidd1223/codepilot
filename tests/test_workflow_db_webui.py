@@ -123,7 +123,7 @@ def test_retry_command_requeues_failed_task(tmp_path, monkeypatch):
     db.update_task(task["id"], status="failed", retry_count=2, error_message="boom")
 
     runner = CliRunner()
-    result = runner.invoke(main, ["retry", str(task["id"])])
+    result = runner.invoke(main, ["task", "retry", str(task["id"])])
 
     assert result.exit_code == 0
     current = db.get_task(task["id"])
@@ -322,7 +322,7 @@ def test_retry_command_rejects_running_task(tmp_path, monkeypatch):
     db.update_task(task["id"], status="in_progress", active_pid=12345)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["retry", str(task["id"])])
+    result = runner.invoke(main, ["task", "retry", str(task["id"])])
 
     assert result.exit_code == 0
     current = db.get_task(task["id"])

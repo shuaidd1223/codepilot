@@ -298,7 +298,7 @@ def test_stop_command_cancels_in_progress_task_without_live_process(tmp_path, mo
     monkeypatch.setattr("codepilot.commands.tasks.stop_process_tree", lambda pid: True)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["stop", str(task["id"])])
+    result = runner.invoke(main, ["task", "stop", str(task["id"])])
     current = db.get_task(task["id"])
 
     assert result.exit_code == 0
@@ -324,6 +324,7 @@ def test_cancel_command_rejects_in_progress_done_and_archived(tmp_path, monkeypa
     result = runner.invoke(
         main,
         [
+            "task",
             "cancel",
             str(backlog["id"]),
             str(running["id"]),
@@ -336,7 +337,7 @@ def test_cancel_command_rejects_in_progress_done_and_archived(tmp_path, monkeypa
 
     assert result.exit_code == 0
     assert "共取消 1 个任务" in result.output
-    assert "不能取消；请使用 stop" in result.output
+    assert "不能取消；请使用 task stop" in result.output
     assert "已完成，无法取消" in result.output
     assert "已归档，无法取消" in result.output
     assert db.get_task(backlog["id"])["status"] == "cancelled"
@@ -360,7 +361,7 @@ def test_archive_command_only_allows_done_tasks(tmp_path, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["archive", str(done["id"]), str(backlog["id"]), str(cancelled["id"])],
+        ["task", "archive", str(done["id"]), str(backlog["id"]), str(cancelled["id"])],
     )
 
     assert result.exit_code == 0
@@ -394,6 +395,7 @@ def test_rm_command_only_deletes_allowed_statuses(tmp_path, monkeypatch):
     result = runner.invoke(
         main,
         [
+            "task",
             "rm",
             str(backlog["id"]),
             str(cancelled["id"]),
@@ -425,8 +427,8 @@ def test_edit_and_find_support_archived_status(tmp_path, monkeypatch):
     task = db.create_task("demo", "archived status", agent="codex")
 
     runner = CliRunner()
-    edit_result = runner.invoke(main, ["edit", str(task["id"]), "--status", "archived"])
-    find_result = runner.invoke(main, ["find", "--status", "archived", "--json"])
+    edit_result = runner.invoke(main, ["task", "edit", str(task["id"]), "--status", "archived"])
+    find_result = runner.invoke(main, ["task", "find", "--status", "archived", "--json"])
 
     assert edit_result.exit_code == 0
     assert db.get_task(task["id"])["status"] == "archived"
@@ -448,7 +450,7 @@ def test_logs_command_reads_live_runtime_log(tmp_path, monkeypatch):
     db.update_task(task["id"], status="in_progress", current_log_path=str(log_path))
 
     runner = CliRunner()
-    result = runner.invoke(main, ["logs", str(task["id"]), "--tail", "2"])
+    result = runner.invoke(main, ["task", "logs", str(task["id"]), "--tail", "2"])
 
     assert result.exit_code == 0
     assert "line 2" in result.output
@@ -472,7 +474,7 @@ def test_show_command_prints_full_task_detail(tmp_path, monkeypatch):
     db.create_task_log(task["id"], "codex", "builder", output="log body", exit_code=1, duration=12)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["show", str(task["id"])])
+    result = runner.invoke(main, ["task", "show", str(task["id"])])
 
     assert result.exit_code == 0
     assert "任务详情" in result.output
@@ -483,7 +485,7 @@ def test_show_command_prints_full_task_detail(tmp_path, monkeypatch):
     assert "delivery notes" in result.output
     assert "last output line" in result.output
     assert "执行日志" in result.output
-    assert "完整日志: codepilot logs" in result.output
+    assert "完整日志: codepilot task logs" in result.output
     assert "log body" not in result.output
 
 
@@ -496,7 +498,7 @@ def test_show_json_outputs_full_task_and_logs(tmp_path, monkeypatch):
     db.create_task_log(task["id"], "codex", "builder", output="full log output", exit_code=0)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["show", str(task["id"]), "--json"])
+    result = runner.invoke(main, ["task", "show", str(task["id"]), "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -517,7 +519,7 @@ def test_show_global_json_outputs_full_task_payload(tmp_path, monkeypatch):
     task = db.create_task("demo", "global json detail", content="global json content", agent="codex")
 
     runner = CliRunner()
-    result = runner.invoke(main, ["--json", "show", str(task["id"])])
+    result = runner.invoke(main, ["--json", "task", "show", str(task["id"])])
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -538,14 +540,14 @@ def test_show_logs_flag_prints_full_log_output(tmp_path, monkeypatch):
     db.create_task_log(task["id"], "codex", "builder", output="full\nlog\nbody", exit_code=None, duration=None)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["show", str(task["id"]), "--logs"])
+    result = runner.invoke(main, ["task", "show", str(task["id"]), "--logs"])
 
     assert result.exit_code == 0
     assert "执行日志" in result.output
     assert "exit=-" in result.output
     assert "duration=-" in result.output
     assert "full\nlog\nbody" in result.output
-    assert "完整日志: codepilot logs" not in result.output
+    assert "完整日志: codepilot task logs" not in result.output
 
 
 def test_show_handles_malformed_depends_on_without_crashing(tmp_path, monkeypatch):
@@ -560,7 +562,7 @@ def test_show_handles_malformed_depends_on_without_crashing(tmp_path, monkeypatc
     db._cache_invalidate("task_by_id")
 
     runner = CliRunner()
-    result = runner.invoke(main, ["show", str(task["id"])])
+    result = runner.invoke(main, ["task", "show", str(task["id"])])
 
     assert result.exit_code == 0
     assert "bad depends" in result.output
@@ -585,7 +587,7 @@ def test_show_json_depends_on_ids_ignore_invalid_entries(tmp_path, monkeypatch):
     db._cache_invalidate("task_by_id")
 
     runner = CliRunner()
-    result = runner.invoke(main, ["show", str(task["id"]), "--json"])
+    result = runner.invoke(main, ["task", "show", str(task["id"]), "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -599,12 +601,12 @@ def test_show_missing_task_exits_nonzero_in_text_and_json(tmp_path, monkeypatch)
     _init_test_db(tmp_path, monkeypatch)
 
     runner = CliRunner()
-    text_result = runner.invoke(main, ["show", "99999"])
+    text_result = runner.invoke(main, ["task", "show", "99999"])
 
     assert text_result.exit_code != 0
     assert "任务 #99999 不存在" in text_result.output
 
-    for args in (["show", "99999", "--json"], ["--json", "show", "99999"]):
+    for args in (["task", "show", "99999", "--json"], ["--json", "task", "show", "99999"]):
         json_result = runner.invoke(main, args)
 
         assert json_result.exit_code != 0

@@ -132,7 +132,7 @@ def test_daemon_foreground_ui_starts_detached_webui_process(tmp_path, monkeypatc
     assert result.exit_code == 0, result.output
     assert calls, "expected daemon foreground mode to invoke webui service"
     cmd = calls[0][0]
-    assert cmd[:5] == [daemon_cmd.sys.executable, "-m", "codepilot", "webui", "start"]
+    assert cmd[:5] == [daemon_cmd.sys.executable, "-m", "codepilot", "ui", "start"]
     assert "--no-daemon" in cmd
     assert "--no-open" in cmd
     assert cmd[-2:] == ["--port", "9911"]

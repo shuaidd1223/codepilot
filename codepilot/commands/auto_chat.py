@@ -123,7 +123,7 @@ def _start_chat_ui(port: int = 8766):
         sys.executable,
         "-m",
         "codepilot",
-        "webui",
+        "ui",
         "start",
         "--no-open",
         "--no-daemon",

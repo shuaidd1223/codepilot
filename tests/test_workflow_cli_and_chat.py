@@ -366,7 +366,7 @@ def test_find_json_accepts_options_after_keyword(tmp_path, monkeypatch):
     db.create_task("demo", "needle task", content="contains needle")
 
     runner = CliRunner()
-    result = runner.invoke(main, ["find", "needle", "-p", "demo", "--json"])
+    result = runner.invoke(main, ["task", "find", "needle", "-p", "demo", "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.output)

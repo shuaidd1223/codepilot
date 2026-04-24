@@ -285,13 +285,13 @@ def _ensure_ui_service_process(port: int = 8766) -> bool:
 
     Historically foreground daemon started Web UI as an in-process thread.
     That coupled lifecycles and made isolation harder. We now shell out to
-    `codepilot webui start --no-daemon` so UI and workflow stay decoupled.
+    `codepilot ui start --no-daemon` so UI and workflow stay decoupled.
     """
     cmd = [
         sys.executable,
         "-m",
         "codepilot",
-        "webui",
+        "ui",
         "start",
         "--no-open",
         "--no-daemon",
