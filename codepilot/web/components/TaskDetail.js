@@ -76,6 +76,18 @@ CP.Components.TaskDetail = Vue.defineComponent({
       if (v === 'fail') return 'verdict-tone-fail';
       return 'verdict-tone-unknown';
     },
+    taskContentText() {
+      const task = this.task;
+      const text = String((task && task.content) || '').trim();
+      if (text) return task.content;
+      return [
+        '## 任务正文为空',
+        '',
+        '- 这个任务只有标题，没有保存正文。',
+        '- 常见原因：使用 `codepilot add -f tasks.json --no-ai` 导入了占位任务。',
+        '- 处理方式：补齐符合 `codepilot ai template --format json` 的 `content`，或删除后重新导入。',
+      ].join('\n');
+    },
   },
   methods: {
     async action(id, act) {
@@ -191,7 +203,7 @@ CP.Components.TaskDetail = Vue.defineComponent({
           </div>
           <div class="block">
             <div class="block-label">任务说明</div>
-            <cp-markdown :text="task.content || '暂无任务内容'"></cp-markdown>
+            <cp-markdown :text="taskContentText"></cp-markdown>
           </div>
           <div class="block block-log-stream">
             <div class="task-log-head">
@@ -224,7 +236,7 @@ CP.Components.TaskDetail = Vue.defineComponent({
                 <span v-if="latestReview.source" class="reviewer-verdict-source">· source={{ latestReview.source }}</span>
               </span>
             </div>
-            <div class="reviewer-verdict-badge" :class="`verdict-${latestReview.verdict}`">
+            <div class="reviewer-verdict-badge" :class="'verdict-' + (latestReview.verdict || 'unknown')">
               VERDICT: {{ (latestReview.verdict || 'unknown').toUpperCase() }}
             </div>
             <table v-if="latestReview.ac_checks && latestReview.ac_checks.length" class="ac-checks-table">
@@ -232,9 +244,9 @@ CP.Components.TaskDetail = Vue.defineComponent({
                 <tr><th>AC</th><th>状态</th><th>说明</th></tr>
               </thead>
               <tbody>
-                <tr v-for="(ac, idx) in latestReview.ac_checks" :key="idx" :class="`ac-row ac-${(ac.status || '').toLowerCase()}`">
+                <tr v-for="(ac, idx) in latestReview.ac_checks" :key="idx" :class="'ac-row ac-' + ((ac.status || '').toLowerCase())">
                   <td>{{ ac.id || '-' }}</td>
-                  <td><span class="ac-status-chip" :class="`ac-status-${(ac.status || '').toLowerCase()}`">{{ ac.status || '-' }}</span></td>
+                  <td><span class="ac-status-chip" :class="'ac-status-' + ((ac.status || '').toLowerCase())">{{ ac.status || '-' }}</span></td>
                   <td>{{ ac.reason || '-' }}</td>
                 </tr>
               </tbody>

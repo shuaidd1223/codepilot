@@ -1,0 +1,17 @@
+[
+  {
+    "title": "外部 add -f 批量导入校验任务 content 符合任务模板规范，缺关键章节即拒绝或强降级",
+    "priority": "P1",
+    "agent": "dual"
+  },
+  {
+    "title": "add -f 支持 markdown 文件批量导入，多个任务用 --- 分隔，每个任务必须符合 task-template 章节",
+    "priority": "P2",
+    "agent": "dual"
+  },
+  {
+    "title": "Web UI 批量添加任务接入任务模板校验，前端提供模板 schema 实时校验提示",
+    "priority": "P1",
+    "agent": "dual"
+  }
+]

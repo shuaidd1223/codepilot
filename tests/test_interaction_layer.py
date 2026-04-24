@@ -97,6 +97,31 @@ def test_progress_bus_subscribe_with_backlog_replays_tail_since_event_id():
         progress_bus.unsubscribe(token)
 
 
+def test_progress_bus_llm_context_scopes_and_restores_metadata():
+    progress_bus.clear_subscribers_for_tests()
+
+    assert progress_bus.current_llm_context() == {}
+    assert progress_bus.has_subscribers() is False
+
+    with progress_bus.subscription(lambda _event: None):
+        assert progress_bus.has_subscribers() is True
+        with progress_bus.llm_context(task_id=9, stage="planner", label="意图分类"):
+            assert progress_bus.current_llm_context() == {
+                "task_id": 9,
+                "stage": "planner",
+                "label": "意图分类",
+            }
+            with progress_bus.llm_context(stage="clarify"):
+                assert progress_bus.current_llm_context() == {
+                    "task_id": 9,
+                    "stage": "clarify",
+                    "label": "意图分类",
+                }
+
+    assert progress_bus.has_subscribers() is False
+    assert progress_bus.current_llm_context() == {}
+
+
 # ─── executor emits events on the bus ─────────────────────────────────────
 
 

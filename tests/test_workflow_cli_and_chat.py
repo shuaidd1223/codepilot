@@ -184,6 +184,114 @@ def test_batch_add_with_default_agent_does_not_require_click_context(tmp_path, m
     assert all(task["agent"] == "codex" for task in tasks)
 
 
+def test_batch_add_json_no_ai_rejects_title_only_items(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    tasks_file = tmp_path / "tasks.json"
+    tasks_file.write_text(
+        json.dumps([{"title": "只有标题"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file), "--no-ai"])
+
+    assert result.exit_code != 0
+    assert "缺少 content" in result.output
+    assert "只有标题的空任务" in result.output
+    assert db.list_tasks(project="demo") == []
+
+
+def test_batch_add_json_generation_failure_does_not_create_empty_tasks(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    tasks_file = tmp_path / "tasks.json"
+    tasks_file.write_text(
+        json.dumps([{"title": "生成失败任务"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+
+    def _raise_runtime_error(*args, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(add_cmd, "generate_task_content", _raise_runtime_error)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file)])
+
+    assert result.exit_code != 0
+    assert "AI 生成任务内容失败" in result.output
+    assert db.list_tasks(project="demo") == []
+
+
+def test_batch_add_json_with_valid_content_allows_no_ai(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    tasks_file = tmp_path / "tasks.json"
+    valid_content = """# 示例任务
+
+## Task Goal
+
+让任务详情拥有完整正文。
+
+## In Scope
+
+- 补齐任务模板正文
+
+## Out of Scope
+
+- 不改执行器
+
+## Forbidden (Hard Boundary)
+
+- 不改数据库结构
+
+## Files In Scope
+
+- `codepilot/commands/add.py`
+
+## Planning Evidence
+
+来自批量导入场景复盘。
+
+## Acceptance Criteria
+
+- [ ] 导入后任务正文非空
+
+## Verification Matrix
+
+| AC | Command | Expected | Evidence |
+| :--- | :--- | :--- | :--- |
+| AC1 | `codepilot task show <id>` | 可见正文 | 任务详情 |
+
+## Reviewer Checkpoints
+
+- 检查任务正文完整
+"""
+    tasks_file.write_text(
+        json.dumps([{"title": "有正文任务", "content": valid_content}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file), "--no-ai"])
+
+    assert result.exit_code == 0
+    tasks = db.list_tasks(project="demo")
+    assert len(tasks) == 1
+    assert tasks[0]["title"] == "有正文任务"
+    assert tasks[0]["content"] == valid_content
+
+
 def test_add_command_preserves_utf8_title_and_content_round_trip(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

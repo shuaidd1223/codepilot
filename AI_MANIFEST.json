@@ -36,6 +36,11 @@
       "command": "codepilot doctor --json",
       "format": "json",
       "purpose": "检查本机运行环境、CLI 工具、配置和数据库可用性。"
+    },
+    {
+      "command": "codepilot ai template --format json",
+      "format": "json",
+      "purpose": "获取任务模板字段 schema 与批量导入格式，用于外部 AI 规划后投递任务。"
     }
   ],
   "commands": [
@@ -197,6 +202,17 @@
         "codepilot binary verify",
         "codepilot binary verify --release-dir dist/release/codepilot-0.1.0-summary"
       ]
+    },
+    {
+      "name": "ai_template",
+      "syntax": "codepilot ai template [--format md|json|guide]",
+      "purpose": "输出任务模板：md=原始模板，json=字段 schema，guide=中文填充指南。外部 AI / Web 批量添加任务时必须遵循本模板。",
+      "when_to_use": "外部 AI 自己规划了任务，想直接 `add -f tasks.json` 投递，先读取本命令了解字段规范与批量 JSON 格式。",
+      "examples": [
+        "codepilot ai template",
+        "codepilot ai template --format json",
+        "codepilot ai template --format guide"
+      ]
     }
   ],
   "workflows": [
@@ -232,6 +248,15 @@
       "steps": [
         "codepilot binary prepare --version <版本号>",
         "codepilot binary verify"
+      ]
+    },
+    {
+      "name": "外部 AI 自行规划后投递任务（不走 CodePilot 规划器）",
+      "steps": [
+        "codepilot ai template --format json",
+        "# 按 schema 渲染出 tasks.json，每项 content 字段填写符合模板的中文正文",
+        "codepilot add -p <项目名> -f tasks.json",
+        "codepilot status -p <项目名> -v"
       ]
     }
   ]

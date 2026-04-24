@@ -86,8 +86,13 @@ def _show_value(value: Any) -> str:
     return str(value)
 
 
-def _show_block(title: str, text: Any) -> None:
-    if text is None or text == "":
+def _show_block(title: str, text: Any, *, empty_hint: str | None = None) -> None:
+    if text is None or not str(text).strip():
+        if empty_hint is None:
+            return
+        echo(f"[cyan]{title}[/cyan]")
+        click.echo(empty_hint)
+        click.echo()
         return
     echo(f"[cyan]{title}[/cyan]")
     click.echo(str(text))
@@ -148,7 +153,14 @@ def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
         click.echo(f"{field}: {_show_value(task.get(field))}")
     click.echo()
 
-    _show_block("任务内容", task.get("content"))
+    _show_block(
+        "任务内容",
+        task.get("content"),
+        empty_hint=(
+            "（空正文：这个任务只有标题，没有保存正文。常见原因是使用 "
+            "`codepilot add -f tasks.json --no-ai` 导入了占位任务。）"
+        ),
+    )
     _show_block("错误信息", task.get("error_message"))
     _show_block("交付记录", task.get("delivery_record"))
     _show_block("最近输出", task.get("last_output"))

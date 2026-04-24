@@ -158,18 +158,39 @@ def test_webui_retry_and_promote_actions_update_task_state(tmp_path, monkeypatch
     db.register_project("demo", str(project_path))
     task = db.create_task("demo", "task A", agent="codex", priority="P2", max_retries=3)
     db.update_task(task["id"], status="failed", retry_count=2, error_message="boom")
+    run_calls: list[dict] = []
+
+    class _ImmediateThread:
+        def __init__(self, *, target, name=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(
+        "codepilot.webui_actions.threading.Thread",
+        _ImmediateThread,
+    )
+    monkeypatch.setattr(
+        "codepilot.commands.run.run_backlog",
+        lambda project, **kwargs: run_calls.append({"project": project, **kwargs}) or {"processed": 1},
+    )
 
     retried = webui_mod.retry_task_action(task["id"])
     current = db.get_task(task["id"])
     assert retried["ok"] is True
     assert current["status"] == "backlog"
     assert current["retry_count"] == 0
+    assert run_calls[0]["project"] == "demo"
+    assert run_calls[0]["auto_commit"] is False
 
     promoted = webui_mod.promote_task_action(task["id"])
     current = db.get_task(task["id"])
     assert promoted["ok"] is True
     assert current["status"] == "backlog"
     assert current["priority"] == "P0"
+    assert run_calls[1]["project"] == "demo"
+    assert run_calls[1]["auto_commit"] is False
 
 
 def test_webui_cancel_archive_delete_actions_follow_status_rules(tmp_path, monkeypatch):

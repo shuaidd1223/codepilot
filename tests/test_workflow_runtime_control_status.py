@@ -489,6 +489,22 @@ def test_show_command_prints_full_task_detail(tmp_path, monkeypatch):
     assert "log body" not in result.output
 
 
+def test_show_command_explains_empty_task_content(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "empty content task", content="", agent="codex")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["task", "show", str(task["id"])])
+
+    assert result.exit_code == 0
+    assert "任务内容" in result.output
+    assert "空正文" in result.output
+    assert "tasks.json --no-ai" in result.output
+
+
 def test_show_json_outputs_full_task_and_logs(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

@@ -30,9 +30,11 @@ view-specific buffers.
 from __future__ import annotations
 
 from collections import deque
+import contextlib
+import contextvars
 import threading
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 
 # ``Event`` is documented as a dict rather than a dataclass so JSON
@@ -47,6 +49,11 @@ _NEXT_TOKEN = 1
 _NEXT_EVENT_ID = 1
 _EVENT_HISTORY_LIMIT = 4096
 _EVENT_HISTORY: "deque[Event]" = deque(maxlen=_EVENT_HISTORY_LIMIT)
+_UNSET = object()
+_LLM_CONTEXT: "contextvars.ContextVar[dict[str, Any] | None]" = contextvars.ContextVar(
+    "codepilot_progress_bus_llm_context",
+    default=None,
+)
 
 
 def _now_iso() -> str:
@@ -97,6 +104,39 @@ def subscribe(callback: Subscriber) -> int:
         _NEXT_TOKEN += 1
         _SUBSCRIBERS[token] = callback
     return token
+
+
+def has_subscribers() -> bool:
+    """Return whether there are any active subscribers."""
+    with _LOCK:
+        return bool(_SUBSCRIBERS)
+
+
+def current_llm_context() -> dict[str, Any]:
+    """Return the current LLM heartbeat context snapshot."""
+    return dict(_LLM_CONTEXT.get() or {})
+
+
+@contextlib.contextmanager
+def llm_context(
+    *,
+    task_id: object = _UNSET,
+    stage: object = _UNSET,
+    label: object = _UNSET,
+) -> Iterator[dict[str, Any]]:
+    """Bind progress metadata for nested API-provider heartbeat emission."""
+    merged = current_llm_context()
+    if task_id is not _UNSET:
+        merged["task_id"] = task_id
+    if stage is not _UNSET:
+        merged["stage"] = stage
+    if label is not _UNSET:
+        merged["label"] = label
+    token = _LLM_CONTEXT.set(merged)
+    try:
+        yield dict(merged)
+    finally:
+        _LLM_CONTEXT.reset(token)
 
 
 def subscribe_with_backlog(callback: Subscriber, *, after_id: int = 0) -> tuple[int, list[Event]]:
@@ -159,3 +199,4 @@ def clear_subscribers_for_tests() -> None:
         _EVENT_HISTORY.clear()
         _NEXT_TOKEN = 1
         _NEXT_EVENT_ID = 1
+    _LLM_CONTEXT.set(None)

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import click
@@ -106,6 +107,38 @@ def _parse_batch_file(file_path: Path) -> list[dict]:
     return tasks
 
 
+_REQUIRED_TEMPLATE_HEADINGS: tuple[tuple[str, str], ...] = (
+    ("标题", r"(?mi)^\s*#\s+\S.*$"),
+    ("Task Goal", r"(?mi)^\s*##\s+Task Goal\s*$"),
+    ("In Scope", r"(?mi)^\s*##\s+In Scope\s*$"),
+    ("Out of Scope", r"(?mi)^\s*##\s+Out of Scope\s*$"),
+    ("Forbidden", r"(?mi)^\s*##\s+Forbidden(?:\s+\(Hard Boundary\))?\s*$"),
+    ("Planning Evidence", r"(?mi)^\s*##\s+Planning Evidence\s*$"),
+    ("Acceptance Criteria", r"(?mi)^\s*##\s+Acceptance Criteria\s*$"),
+    ("Verification Matrix", r"(?mi)^\s*##\s+Verification Matrix\s*$"),
+    ("Reviewer Checkpoints", r"(?mi)^\s*##\s+Reviewer Checkpoints\s*$"),
+)
+
+
+def _missing_task_template_sections(content: str) -> list[str]:
+    """Return required task-template headings missing from markdown content."""
+    text = str(content or "").strip()
+    if not text:
+        return [label for label, _pattern in _REQUIRED_TEMPLATE_HEADINGS]
+    missing: list[str] = []
+    for label, pattern in _REQUIRED_TEMPLATE_HEADINGS:
+        if re.search(pattern, text) is None:
+            missing.append(label)
+    return missing
+
+
+def _json_batch_error(item_index: int, item_title: str, reason: str) -> click.ClickException:
+    return click.ClickException(
+        f"JSON 批量导入第 {item_index} 项《{item_title}》无效：{reason}。"
+        " 请先用 `codepilot ai template --format json` / `--format guide` 生成合规 content。"
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI 命令
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -144,7 +177,8 @@ AGENT_CHOICES = [
 )
 @click.option("--priority", type=click.Choice(["P0", "P1", "P2", "P3"]), default="P2",
               help="优先级")
-@click.option("--no-ai", is_flag=True, default=False, help="跳过 AI 生成，使用空白内容")
+@click.option("--no-ai", is_flag=True, default=False,
+              help="跳过 AI 生成；单条/纯文本批量可留空，JSON 批量缺 content 会拒绝")
 @click.option("--depends", "depends_on", default="", help="依赖的任务 ID，多个用逗号分隔")
 @click.option("--file", "-f", "batch_file", type=click.Path(exists=True, path_type=Path),
               help="从文件批量导入任务（每行一个标题，或 .json 格式）")
@@ -304,6 +338,7 @@ def _batch_add(
     """批量添加任务."""
     echo(f"[cyan]批量导入: {batch_file}[/cyan]")
     items = _parse_batch_file(batch_file)
+    is_json_batch = batch_file.suffix.lower() == ".json"
 
     if not items:
         echo("[yellow]文件中没有找到有效任务[/yellow]")
@@ -343,7 +378,21 @@ def _batch_add(
         echo(f"[dim]{i}/{len(items)}[/dim] {item_title} ", nl=False)
         if isinstance(user_content, str) and user_content.strip():
             content = user_content
+            if is_json_batch:
+                missing = _missing_task_template_sections(content)
+                if missing:
+                    raise _json_batch_error(
+                        i,
+                        item_title,
+                        f"content 缺少关键章节: {', '.join(missing)}",
+                    )
         elif no_ai:
+            if is_json_batch:
+                raise _json_batch_error(
+                    i,
+                    item_title,
+                    "缺少 content，且当前使用了 --no-ai，导入会产生只有标题的空任务",
+                )
             content = ""
         else:
             try:
@@ -353,8 +402,23 @@ def _batch_add(
                     agent=item_agent,
                     config_ref=config_ref,
                 )
-            except RuntimeError:
+            except RuntimeError as exc:
+                if is_json_batch:
+                    raise _json_batch_error(
+                        i,
+                        item_title,
+                        f"AI 生成任务内容失败: {exc}",
+                    ) from exc
                 content = ""
+
+            if is_json_batch:
+                missing = _missing_task_template_sections(content)
+                if missing:
+                    raise _json_batch_error(
+                        i,
+                        item_title,
+                        f"AI 生成的 content 缺少关键章节: {', '.join(missing)}",
+                    )
 
         task = db.create_task(
             project=project,

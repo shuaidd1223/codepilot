@@ -86,3 +86,66 @@ def test_ai_prompt_command_outputs_short_agent_prompt():
     assert result.exit_code == 0
     assert "codepilot \"需求文本\"" in result.output
     assert "codepilot binary prepare --version <版本号>" in result.output
+
+
+def test_ai_template_default_outputs_raw_markdown():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "template"])
+
+    assert result.exit_code == 0
+    assert "{title}" in result.output
+    assert "{goal}" in result.output
+    assert "{evidence}" in result.output
+    assert "Planning Evidence" in result.output
+
+
+def test_ai_template_json_returns_structured_schema():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "template", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert "template_markdown" in payload
+    assert payload["language"]["scaffolding"] == "English"
+    assert payload["language"]["placeholders"] == "Chinese"
+
+    placeholder_names = {item["name"] for item in payload["placeholders"]}
+    for required in ("title", "goal", "evidence", "criteria", "ac_matrix"):
+        assert required in placeholder_names
+
+    batch = payload["batch_import"]
+    assert "fields" in batch and len(batch["fields"]) >= 3
+    assert any(f["name"] == "content" for f in batch["fields"])
+    assert isinstance(batch["example"], list) and batch["example"]
+
+
+def test_ai_template_guide_renders_chinese_markdown():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "template", "--format", "guide"])
+
+    assert result.exit_code == 0
+    assert "# CodePilot 任务模板填充指南" in result.output
+    assert "模板占位符" in result.output
+    assert "批量导入 JSON 格式" in result.output
+
+
+def test_ai_template_command_name_override_propagates():
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["ai", "template", "--format", "json", "--command-name", "mypilot"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["batch_import"]["command"].startswith("mypilot add")
+    assert any(cmd.startswith("mypilot ") for cmd in payload["see_also"])
+
+
+def test_manifest_advertises_ai_template_command():
+    payload = command_manifest()
+    names = {c["name"] for c in payload["commands"]}
+    assert "ai_template" in names
+
+    outputs = [o["command"] for o in payload["structured_outputs"]]
+    assert any("ai template --format json" in cmd for cmd in outputs)

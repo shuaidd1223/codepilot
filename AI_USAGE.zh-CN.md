@@ -123,3 +123,19 @@ codepilot ai guide
 ```bash
 codepilot ai prompt
 ```
+
+### 任务模板（外部规划专用）
+
+如果你**不**走 CodePilot 的规划器，而是自己在外部规划好任务并通过 `add -f tasks.json` 投递，
+必须按任务模板格式准备内容。三种输出：
+
+```bash
+codepilot ai template               # 原始 task-template.md（含 {title} 等占位符）
+codepilot ai template --format json  # 机器可读字段 schema + 批量导入格式
+codepilot ai template --format guide # 中文填充指南（含示例）
+```
+
+**重要原则**：
+- 人工只通过 `codepilot "需求文本"` 走规划器，不直接 add；
+- 外部 AI 或 Web 批量添加时，content 必须符合上述模板，不能只填标题；
+- 骨架保持英文，占位符内容用中文。

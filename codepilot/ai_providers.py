@@ -10,11 +10,12 @@ import os
 import platform
 import shutil
 import subprocess
+import time
 import importlib.util
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from codepilot.ai_planner_context import collect_planner_context
 from codepilot.config import load_project_config
@@ -686,27 +687,183 @@ def _run_api_provider(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
+    def _should_stream() -> bool:
+        try:
+            from codepilot import progress_bus
+
+            return progress_bus.has_subscribers()
+        except Exception:
+            return False
+
+    def _estimate_tokens(text: str) -> int:
+        content = str(text or "")
+        if not content:
+            return 0
+        return max(1, (len(content.encode("utf-8")) + 3) // 4)
+
+    def _emit_heartbeat(text: str, *, final: bool = False) -> None:
+        try:
+            from codepilot import progress_bus
+
+            ctx = progress_bus.current_llm_context()
+            elapsed = round(max(0.0, time.monotonic() - started_at), 1)
+            estimated_tokens = _estimate_tokens(text)
+            label = str(ctx.get("label") or provider.name)
+            if final:
+                message = f"{label} 完成：{elapsed}s，约 {estimated_tokens} tokens"
+                level = "info"
+            elif estimated_tokens <= 0:
+                message = f"{label} 请求已发出：{elapsed}s，等待首个 token"
+                level = "heartbeat"
+            else:
+                message = f"{label} 生成中：{elapsed}s，约 {estimated_tokens} tokens"
+                level = "heartbeat"
+            progress_bus.emit(
+                task_id=ctx.get("task_id"),
+                stage=str(ctx.get("stage") or "system"),
+                level=level,
+                message=message,
+                extra={
+                    "llm_heartbeat": True,
+                    "provider": provider.name,
+                    "model": provider.model,
+                    "elapsed_seconds": elapsed,
+                    "estimated_tokens": estimated_tokens,
+                    "text_chars": len(text or ""),
+                    "final": final,
+                },
+            )
+        except Exception:
+            pass
+
+    def _extract_openai_chunk_text(chunk: Any) -> str:
+        pieces: list[str] = []
+        for choice in getattr(chunk, "choices", []) or []:
+            delta = getattr(choice, "delta", None)
+            content = getattr(delta, "content", None)
+            if isinstance(content, str):
+                pieces.append(content)
+                continue
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, str):
+                        pieces.append(item)
+                        continue
+                    text = ""
+                    if isinstance(item, dict):
+                        text = str(item.get("text") or "")
+                    else:
+                        text = str(getattr(item, "text", "") or "")
+                    if text:
+                        pieces.append(text)
+        return "".join(pieces)
+
+    def _run_openai_sync() -> str:
+        response = client.chat.completions.create(
+            model=provider.model,
+            messages=messages,
+            max_tokens=provider.max_tokens,
+            temperature=provider.temperature,
+        )
+        return (response.choices[0].message.content or "").strip()
+
+    def _run_openai_stream() -> str:
+        parts: list[str] = []
+        last_emit_at = 0.0
+        _emit_heartbeat("", final=False)
+        stream = client.chat.completions.create(
+            model=provider.model,
+            messages=messages,
+            max_tokens=provider.max_tokens,
+            temperature=provider.temperature,
+            stream=True,
+        )
+        for chunk in stream:
+            piece = _extract_openai_chunk_text(chunk)
+            if piece:
+                parts.append(piece)
+            now = time.monotonic()
+            if piece and (last_emit_at <= 0 or now - last_emit_at >= 1.0):
+                _emit_heartbeat("".join(parts), final=False)
+                last_emit_at = now
+        output = "".join(parts).strip()
+        if output:
+            _emit_heartbeat(output, final=True)
+        return output
+
+    def _run_anthropic_sync() -> str:
+        kwargs: dict[str, Any] = {
+            "model": provider.model,
+            "max_tokens": provider.max_tokens,
+            "temperature": provider.temperature,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system_prompt:
+            kwargs["system"] = system_prompt
+        response = client.messages.create(**kwargs)
+        return "".join(
+            str(getattr(block, "text", "") or "")
+            for block in (getattr(response, "content", None) or [])
+        ).strip()
+
+    def _run_anthropic_stream() -> str:
+        kwargs: dict[str, Any] = {
+            "model": provider.model,
+            "max_tokens": provider.max_tokens,
+            "temperature": provider.temperature,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+        }
+        if system_prompt:
+            kwargs["system"] = system_prompt
+        parts: list[str] = []
+        last_emit_at = 0.0
+        _emit_heartbeat("", final=False)
+        stream = client.messages.create(**kwargs)
+        for event in stream:
+            piece = ""
+            event_type = str(getattr(event, "type", "") or "")
+            if event_type == "content_block_delta":
+                piece = str(getattr(getattr(event, "delta", None), "text", "") or "")
+            elif event_type == "content_block_start":
+                piece = str(getattr(getattr(event, "content_block", None), "text", "") or "")
+            if piece:
+                parts.append(piece)
+            now = time.monotonic()
+            if piece and (last_emit_at <= 0 or now - last_emit_at >= 1.0):
+                _emit_heartbeat("".join(parts), final=False)
+                last_emit_at = now
+        output = "".join(parts).strip()
+        if output:
+            _emit_heartbeat(output, final=True)
+        return output
+
+    started_at = time.monotonic()
+
     try:
         if endpoint == "chat.completions":
-            # OpenAI 兼容格式
-            response = client.chat.completions.create(
-                model=provider.model,
-                messages=messages,
-                max_tokens=provider.max_tokens,
-                temperature=provider.temperature,
-            )
-            return response.choices[0].message.content.strip()
+            should_stream = _should_stream()
+            try:
+                output = _run_openai_stream() if should_stream else _run_openai_sync()
+            except Exception:
+                if not should_stream:
+                    raise
+                output = _run_openai_sync()
+            if not output:
+                raise RuntimeError(f"{provider.name} 返回了空内容")
+            return output
 
         elif endpoint == "messages":
-            # Anthropic 格式
-            response = client.messages.create(
-                model=provider.model,
-                max_tokens=provider.max_tokens,
-                temperature=provider.temperature,
-                system=system_prompt,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return response.content[0].text.strip()
+            should_stream = _should_stream()
+            try:
+                output = _run_anthropic_stream() if should_stream else _run_anthropic_sync()
+            except Exception:
+                if not should_stream:
+                    raise
+                output = _run_anthropic_sync()
+            if not output:
+                raise RuntimeError(f"{provider.name} 返回了空内容")
+            return output
 
         else:
             raise ValueError(f"未知端点类型: {endpoint}")

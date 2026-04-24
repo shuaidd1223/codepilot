@@ -85,15 +85,15 @@ def _task_recent(task: dict, *, verbose: bool = False) -> str:
 
 def _task_table(tasks: list[dict], *, verbose: bool = False) -> Table:
     table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
-    table.add_column("ID", style="dim", width=4, justify="right")
-    table.add_column("P", width=3, justify="center")
-    table.add_column("Agent", width=8)
-    table.add_column("标题", min_width=24, ratio=3)
-    table.add_column("阶段", width=10)
-    table.add_column("最近信息", min_width=30, ratio=4)
+    table.add_column("ID", style="dim", width=4, justify="right", no_wrap=True)
+    table.add_column("P", width=3, justify="center", no_wrap=True)
+    table.add_column("Agent", width=8, no_wrap=True, overflow="ellipsis")
+    table.add_column("标题", min_width=24, ratio=3, no_wrap=True, overflow="ellipsis")
+    table.add_column("阶段", width=10, no_wrap=True, overflow="ellipsis")
+    table.add_column("最近信息", min_width=30, ratio=4, no_wrap=True, overflow="ellipsis")
     if verbose:
-        table.add_column("创建时间", style="dim", width=19)
-        table.add_column("最后输出", style="dim", min_width=24, ratio=3)
+        table.add_column("创建时间", style="dim", width=19, no_wrap=True)
+        table.add_column("最后输出", style="dim", min_width=24, ratio=3, no_wrap=True, overflow="ellipsis")
 
     for task in tasks:
         row = [

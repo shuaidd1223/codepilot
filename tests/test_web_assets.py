@@ -24,6 +24,8 @@ def test_task_detail_distinguishes_loading_and_empty_state():
 
     assert 'v-if="s.taskDetailLoading && !task"' in source
     assert "暂无任务详情" in source
+    assert "taskContentText()" in source
+    assert "任务正文为空" in source
 
 
 def test_task_detail_renders_structured_reviewer_verdict():
@@ -49,6 +51,12 @@ def test_task_detail_renders_structured_reviewer_verdict():
     assert ".reviewer-verdict-badge.verdict-fail" in styles
     assert ".ac-status-chip.ac-status-pass" in styles
     assert ".ac-status-chip.ac-status-fail" in styles
+
+
+def test_task_detail_template_avoids_nested_backticks_in_vue_bindings():
+    source = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")
+
+    assert ':class="`' not in source
 
 
 def test_sidebar_category_toggle_uses_project_scoped_accordion():

@@ -435,7 +435,7 @@ def retry_task_action(task_id: int) -> dict:
     def _run_worker() -> None:
         try:
             from codepilot.commands.run import run_backlog
-            run_backlog(project_name, once=True, limit=1, quiet=True)
+            run_backlog(project_name, once=True, limit=1, quiet=True, auto_commit=False)
         except Exception as exc:
             _append_event(
                 f"任务 #{task_id} 后台执行失败：{exc}",
@@ -482,7 +482,7 @@ def promote_task_action(task_id: int) -> dict:
     def _run_worker() -> None:
         try:
             from codepilot.commands.run import run_backlog
-            run_backlog(project_name, once=True, limit=1, quiet=True)
+            run_backlog(project_name, once=True, limit=1, quiet=True, auto_commit=False)
         except Exception as exc:
             _append_event(
                 f"任务 #{task_id} 后台执行失败：{exc}",

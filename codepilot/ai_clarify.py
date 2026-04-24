@@ -242,17 +242,20 @@ def assess_requirement(
     )
 
     try:
-        payload = _invoke_clarifier_ai(
-            prompt,
-            classifier_provider=classifier_provider,
-            classifier_model=classifier_model,
-            api_key=api_key,
-            base_url=base_url,
-            project_path=project_path,
-            config_ref=config_ref,
-            planner=planner,
-            timeout=timeout,
-        )
+        from codepilot import progress_bus
+
+        with progress_bus.llm_context(stage="clarify", label="需求澄清"):
+            payload = _invoke_clarifier_ai(
+                prompt,
+                classifier_provider=classifier_provider,
+                classifier_model=classifier_model,
+                api_key=api_key,
+                base_url=base_url,
+                project_path=project_path,
+                config_ref=config_ref,
+                planner=planner,
+                timeout=timeout,
+            )
     except Exception as exc:
         # On AI failure we fall back to "ready" so the user isn't stuck.
         from codepilot.logger import get_logger

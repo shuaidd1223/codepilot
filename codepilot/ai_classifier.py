@@ -177,12 +177,15 @@ def classify_intent(
         planner="claude",
         timeout=timeout,
     )
-    response = call_structured_prompt(
-        prompt=INTENT_PROMPT.format(text=text),
-        schema=INTENT_SCHEMA,
-        # Classification is latency-sensitive; keep claude as CLI fallback family.
-        options=shared_options,
-    )
+    from codepilot import progress_bus
+
+    with progress_bus.llm_context(stage="planner", label="意图分类"):
+        response = call_structured_prompt(
+            prompt=INTENT_PROMPT.format(text=text),
+            schema=INTENT_SCHEMA,
+            # Classification is latency-sensitive; keep claude as CLI fallback family.
+            options=shared_options,
+        )
 
     if response.ok and response.payload:
         intent = response.payload.get("intent")
@@ -251,8 +254,11 @@ def answer_question_via_api(
         planner="claude",
         timeout=120,
     )
-    response = call_text_prompt(
-        prompt=prompt,
-        options=shared_options,
-    )
+    from codepilot import progress_bus
+
+    with progress_bus.llm_context(stage="system", label="问题回答"):
+        response = call_text_prompt(
+            prompt=prompt,
+            options=shared_options,
+        )
     return response.text if response.ok else ""

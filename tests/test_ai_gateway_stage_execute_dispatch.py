@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from codepilot import ai_gateway
+from codepilot import progress_bus
 from codepilot.ai_gateway import GatewayRequest
 from codepilot.ai_gateway_execute import (
     execute_api_prompt,
@@ -37,6 +40,47 @@ def test_execute_api_prompt_delegates_to_provider_runner(monkeypatch):
     assert raw == "ok"
     assert captured["provider"] is provider
     assert captured["prompt"] == "hello"
+
+
+def test_run_api_provider_streams_heartbeat_events_when_subscribed():
+    from codepilot.ai_providers import _run_api_provider
+
+    class _FakeChatCompletions:
+        def create(self, **kwargs):
+            assert kwargs["stream"] is True
+            return [
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="hello"))]
+                ),
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content=" world"))]
+                ),
+            ]
+
+    provider = SimpleNamespace(
+        name="fake-provider",
+        model="fake-model",
+        max_tokens=128,
+        temperature=0.1,
+        build_client=lambda: (
+            SimpleNamespace(chat=SimpleNamespace(completions=_FakeChatCompletions())),
+            "chat.completions",
+        ),
+    )
+
+    progress_bus.clear_subscribers_for_tests()
+    events: list[dict] = []
+    with progress_bus.subscription(events.append):
+        with progress_bus.llm_context(task_id=42, stage="planner", label="意图分类"):
+            text = _run_api_provider(provider, "hello")
+
+    assert text == "hello world"
+    heartbeat_events = [event for event in events if event["extra"].get("llm_heartbeat")]
+    assert heartbeat_events
+    assert heartbeat_events[0]["task_id"] == 42
+    assert heartbeat_events[0]["stage"] == "planner"
+    assert any(event["level"] == "heartbeat" for event in heartbeat_events)
+    assert any(event["extra"].get("final") is True for event in heartbeat_events)
 
 
 def test_execute_structured_cli_call_dispatches_claude_variant(monkeypatch):
