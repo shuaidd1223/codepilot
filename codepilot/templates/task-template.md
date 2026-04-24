@@ -41,6 +41,10 @@ MUST be written in Chinese per task_breakdown.md language rules.
 
 {files}
 
+## Planning Evidence
+
+{evidence}
+
 ---
 
 ## Risk Assessment

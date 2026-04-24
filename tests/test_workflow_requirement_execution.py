@@ -519,6 +519,7 @@ def test_run_requirement_workflow_retries_claude_then_falls_back_to_codex(tmp_pa
                     "reviewer_notes": ["检查充值流程和余额一致性"],
                     "files": ["src/billing/page.tsx"],
                     "notes": [],
+                    "evidence": "recon: src/billing 目录存在但无入口页面",
                 }
             ],
         }

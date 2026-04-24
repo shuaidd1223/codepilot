@@ -34,8 +34,22 @@ def test_fallback_single_task_breakdown_populates_required_schema_fields():
     assert task["depends_on_indices"] == []
     assert task["risk_level"] == "medium"
     assert task["scope_budget"] == "unplanned / single-task fallback"
+    assert "fallback mode" in task["evidence"]
     # Fallback reason surfaced in notes.
     assert any("codex 超时" in note for note in task["notes"])
+
+
+def test_normalize_task_spec_preserves_and_strips_evidence():
+    item = {"evidence": "  recon: status.py 没有 --json 分支  "}
+    aw._normalize_task_spec(item)
+    assert item["evidence"] == "recon: status.py 没有 --json 分支"
+
+
+def test_normalize_task_spec_empty_evidence_stays_empty_for_gate_detection():
+    """Quality gate relies on empty-string detection; don't auto-fill evidence."""
+    item = {}
+    aw._normalize_task_spec(item)
+    assert item["evidence"] == ""
 
 
 def test_normalize_task_spec_fills_missing_risk_and_budget_with_defaults():
@@ -100,6 +114,11 @@ def test_build_task_markdown_fallback_renders_without_placeholder_defaults():
     assert "Scope Budget | unplanned / single-task fallback" in md
     # Owner has no fallback-side source; template default still kicks in.
     assert "Owner | 未指派" in md
+    # Evidence is populated by fallback — template default for unpopulated
+    # evidence should NOT appear.
+    assert "Planning Evidence" in md
+    assert "fallback mode" in md
+    assert "未提供规划依据" not in md
 
 
 def test_create_tasks_from_breakdown_normalizes_planner_output(monkeypatch):
@@ -145,6 +164,9 @@ def test_create_tasks_from_breakdown_normalizes_planner_output(monkeypatch):
     # Normalizer defaults made their way into the rendered template.
     assert "Risk Level | medium" in rendered
     assert "Scope Budget | unspecified" in rendered
+    # Missing evidence falls back to the template-level "未提供规划依据" notice
+    # so a human reader can see the task needs human review.
+    assert "未提供规划依据" in rendered
     # Sanity: smoke build_task_markdown_from_plan is still live alongside.
     assert "第一个任务" in rendered
     assert build_task_markdown_from_plan is not None

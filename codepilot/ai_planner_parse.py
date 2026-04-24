@@ -220,6 +220,12 @@ def _normalize_task_item(task_item: object) -> Optional[dict]:
         "files": _coerce_string_list(task_item.get("files")),
         "notes": _coerce_string_list(task_item.get("notes")),
         "depends_on_indices": _normalize_depends_on_indices(task_item.get("depends_on_indices")),
+        # Preserve planner-supplied metadata (risk_level, scope_budget, evidence).
+        # Values are re-sanitized later by ``auto_workflow._normalize_task_spec``
+        # before rendering; here we just keep them from being silently stripped.
+        "risk_level": _normalize_text(task_item.get("risk_level")),
+        "scope_budget": _normalize_text(task_item.get("scope_budget")),
+        "evidence": _normalize_text(task_item.get("evidence")),
     }
     return normalized
 

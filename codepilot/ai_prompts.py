@@ -93,6 +93,10 @@ TASK_BREAKDOWN_SCHEMA = {
                         "type": "string",
                         "description": "Rough scope envelope, e.g. '2 files / ~80 LOC' or 'single module'. Free-form but concise (English or numbers only).",
                     },
+                    "evidence": {
+                        "type": "string",
+                        "description": "Short citation of the recon finding / existing file / open task / commit that justifies this task. Empty strings signal fabricated planning and will be flagged downstream.",
+                    },
                 },
                 "required": [
                     "title",
@@ -106,6 +110,7 @@ TASK_BREAKDOWN_SCHEMA = {
                     "depends_on_indices",
                     "risk_level",
                     "scope_budget",
+                    "evidence",
                 ],
                 "additionalProperties": False,
             },

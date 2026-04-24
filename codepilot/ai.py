@@ -781,6 +781,7 @@ def build_task_markdown_from_plan(task: dict) -> str:
     risk_level = str(task.get("risk_level") or "").strip() or "待评估"
     scope_budget = str(task.get("scope_budget") or "").strip() or "未设定"
     owner = str(task.get("owner") or "").strip() or "未指派"
+    evidence = str(task.get("evidence") or "").strip() or "（未提供规划依据，建议人工复核）"
     dep_indices_raw = task.get("depends_on_indices")
     dep_indices = (
         [i for i in dep_indices_raw if isinstance(i, int) and i >= 0]
@@ -803,6 +804,7 @@ def build_task_markdown_from_plan(task: dict) -> str:
                 "risk_level": risk_level,
                 "scope_budget": scope_budget,
                 "owner": owner,
+                "evidence": evidence,
                 "goal": goal,
                 "criteria": acceptance,
                 "ac_matrix": ac_matrix,

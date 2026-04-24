@@ -94,6 +94,7 @@ def test_planner_quality_gate_flags_shared_filler_keywords():
                 "goal": "待补充",
                 "acceptance_criteria": ["x"],
                 "files": ["foo.py"],
+                "evidence": "recon: 占位示例",
             }
         ]
     }
@@ -104,6 +105,30 @@ def test_planner_quality_gate_flags_shared_filler_keywords():
     assert blocking, "all-placeholder breakdown should escalate to blocking"
 
 
+def test_planner_quality_gate_flags_all_tasks_without_evidence_as_fabrication():
+    breakdown = {
+        "tasks": [
+            {
+                "title": "给 status 加 --json 参数",
+                "goal": "输出合法 JSON",
+                "acceptance_criteria": ["pytest 通过"],
+                "files": ["codepilot/commands/status.py"],
+                "evidence": "",
+            },
+            {
+                "title": "给 history 清理接口",
+                "goal": "支持清空",
+                "acceptance_criteria": ["有 /clear 接口"],
+                "files": ["codepilot/commands/history.py"],
+                # evidence missing entirely
+            },
+        ]
+    }
+    blocking, advisory = aw._evaluate_planning_quality("demo", breakdown)
+    assert any("fabricating" in msg for msg in blocking)
+    assert sum(1 for msg in advisory if "empty `evidence`" in msg) == 2
+
+
 def test_planner_quality_gate_accepts_concrete_task():
     breakdown = {
         "tasks": [
@@ -112,12 +137,14 @@ def test_planner_quality_gate_accepts_concrete_task():
                 "goal": "输出合法 JSON",
                 "acceptance_criteria": ["pytest -q tests/test_status.py 通过"],
                 "files": ["codepilot/commands/status.py"],
+                "evidence": "recon: status.py 当前没有 --json 分支",
             }
         ]
     }
     blocking, advisory = aw._evaluate_planning_quality("demo", breakdown)
     assert blocking == []
     assert not any("placeholder-like" in msg for msg in advisory)
+    assert not any("evidence" in msg for msg in advisory)
 
 
 # ─── inspect still uses the inspect-specific list ───────────────────────────

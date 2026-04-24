@@ -20,6 +20,7 @@ Each task object must include all required fields in schema:
 - `depends_on_indices`
 - `risk_level` — one of `low` / `medium` / `high`. Use `high` when the task touches auth, database migrations, core directory structure, or has cross-module regression risk. Use `low` only for additive, isolated changes.
 - `scope_budget` — short English descriptor of the expected blast radius (e.g. `1 file / ~30 LOC`, `2 modules / tests only`, `single command`). Keep it tight — no prose.
+- `evidence` — citation of WHERE this task comes from: a line from the recon findings, a specific file path in the repo, a commit hash, or the id/title of an existing backlog task you are extending. One short sentence, may be Chinese or English. Empty string means the task is fabricated; downstream will flag it.
 
 [Output requirements]
 - Output strict JSON only, no Markdown.
@@ -67,7 +68,8 @@ User requirement: "Add --json output format to /status command"
       "notes": ["不涉及 webui 改动。"],
       "depends_on_indices": [],
       "risk_level": "low",
-      "scope_budget": "1 command + 1 test file / ~40 LOC"
+      "scope_budget": "1 command + 1 test file / ~40 LOC",
+      "evidence": "recon findings: 当前 codepilot/commands/status.py 没有 --json 分支；用户需求中点名 status 命令"
     }}]
   }}
 

@@ -630,6 +630,10 @@ def _fallback_single_task_breakdown(*, title: str, priority: str, exc: Exception
                 "depends_on_indices": [],
                 "risk_level": "medium",
                 "scope_budget": "unplanned / single-task fallback",
+                "evidence": (
+                    "fallback mode — no recon evidence collected; "
+                    "task derived directly from the raw user requirement"
+                ),
             }
         ],
     }
@@ -654,6 +658,9 @@ def _normalize_task_spec(item: dict) -> dict:
 
     budget_raw = str(item.get("scope_budget") or "").strip()
     item["scope_budget"] = budget_raw or "unspecified"
+
+    evidence_raw = str(item.get("evidence") or "").strip()
+    item["evidence"] = evidence_raw  # keep empty as empty — quality gate flags it explicitly
 
     deps = item.get("depends_on_indices")
     if not isinstance(deps, list):
@@ -695,6 +702,7 @@ def _evaluate_planning_quality(title: str, breakdown: dict) -> tuple[list[str], 
     goal_missing_count = 0
     ac_missing_count = 0
     files_missing_count = 0
+    evidence_missing_count = 0
 
     for idx, task in enumerate(tasks, 1):
         if not isinstance(task, dict):
@@ -736,6 +744,14 @@ def _evaluate_planning_quality(title: str, breakdown: dict) -> tuple[list[str], 
             files_missing_count += 1
             advisory.append(f"Task {idx} is missing `files` entries.")
 
+        evidence = str(task.get("evidence") or "").strip()
+        if not evidence:
+            evidence_missing_count += 1
+            advisory.append(
+                f"Task {idx} has empty `evidence` — planner should cite a recon "
+                "finding / file / existing task."
+            )
+
     should_split = breakdown.get("should_split")
     if isinstance(should_split, bool):
         if should_split and len(tasks) <= 1:
@@ -754,6 +770,10 @@ def _evaluate_planning_quality(title: str, breakdown: dict) -> tuple[list[str], 
         repair_signals.append("All tasks are missing `acceptance_criteria` entries.")
     if files_missing_count == len(tasks):
         repair_signals.append("All tasks are missing `files` entries.")
+    if evidence_missing_count == len(tasks):
+        repair_signals.append(
+            "All tasks have empty `evidence` — planner appears to be fabricating tasks."
+        )
     return repair_signals, advisory
 
 
