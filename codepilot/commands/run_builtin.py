@@ -26,6 +26,11 @@ from codepilot.config import load_project_config
 from codepilot.output import echo
 from codepilot.paths import project_storage_root
 from codepilot.prompts import load_prompt as _load_prompt
+from codepilot.commands.reviewer_output import (
+    ReviewerVerdict,
+    format_findings_for_builder,
+    parse_reviewer_output,
+)
 from codepilot.commands.run_shell import PreflightSkipError
 from codepilot.commands.run_git import (
     _git_has_changes,
@@ -450,51 +455,31 @@ def _build_review_prompt(
     lines.append("")
     lines.append(_load_prompt("reviewer_rules").rstrip())
 
-    # 硬性收尾指令：强制 reviewer 产出 VERDICT 行，避免回退逻辑误判。
+    # 硬性收尾指令：强制 reviewer 同时产出 VERDICT 行和结构化 JSON 围栏，
+    # parser 优先吃 JSON；丢了 JSON 时用 VERDICT 兜底，避免回退逻辑误判。
     lines.append("")
     lines.append("【输出硬性要求】")
     lines.append(
-        "你的回复最后一行必须是 `VERDICT: PASS` 或 `VERDICT: FAIL`，单独一行，"
-        "不要写任何其它字符，否则调度器会把本轮当成无效审查。"
+        "1. 保留 `VERDICT: PASS` 或 `VERDICT: FAIL` 单独一行，供兼容回退。\n"
+        "2. 在 VERDICT 行之后追加一个 ```json 围栏块，字段包括 verdict / ac_checks / blockers / advisory，"
+        "   blockers 只在 verdict=fail 时填写可直接交给 builder 的动作。"
     )
     return "\n".join(lines)
 
 
+def parse_review_output(review_output: str) -> ReviewerVerdict:
+    """Expose the shared parser as a thin module-level symbol for consumers."""
+    return parse_reviewer_output(review_output)
+
+
 def _extract_review_verdict(review_output: str, reviewer_agent: str = "") -> str:
-    """Parse reviewer output into pass/fail/unknown.
+    """Legacy string-return wrapper; new code should call ``parse_review_output``.
 
-    Precedence:
-    1. Explicit ``VERDICT: PASS|FAIL`` line (required by reviewer_rules.md).
-    2. Strong FAIL anchors: a ``需要修复的点``/``需要修复``/``需要处理`` section,
-       or any bullet under it. These match the structured output template.
-    3. If none of the above match, default to PASS on non-empty output.
-
-    The previous fallback treated any ``- [PX]`` bullet as FAIL, which mis-
-    fired on non-blocking observations (allowed by reviewer_rules) and led
-    to spurious retries. We no longer do that.
+    Kept for existing callers and tests. Internally routed through the shared
+    parser so both JSON fence and the legacy ``VERDICT:`` heuristic stay in
+    one place.
     """
-    verdict_pattern = re.compile(r"VERDICT\s*:\s*(PASS|FAIL)\b", re.IGNORECASE)
-    for line in reversed(review_output.splitlines()):
-        match = verdict_pattern.search(line)
-        if match:
-            return match.group(1).lower()
-
-    if not review_output.strip():
-        return "unknown"
-
-    # Strong FAIL anchor: the reviewer explicitly opens a "needs fix" section.
-    if re.search(r"(?mi)^\s*(需要修复的点|需要修复|需要处理|修复建议)\s*[:：]?\s*$", review_output):
-        return "fail"
-
-    # Strong PASS anchor: every AC line is marked PASS / N/A, no explicit
-    # blocker section was opened. Matches the shape from reviewer_rules.md.
-    ac_lines = re.findall(r"(?m)^\s*AC\s*#\d+\s*[:：]\s*(PASS|FAIL|N/A)", review_output, re.IGNORECASE)
-    if ac_lines and all(v.lower() in {"pass", "n/a"} for v in ac_lines):
-        return "pass"
-
-    # Default: non-empty output without an explicit FAIL marker is treated as
-    # PASS, aligning with reviewer_rules' "测试通过是强 PASS 信号" spirit.
-    return "pass"
+    return parse_reviewer_output(review_output).verdict
 
 
 def _resolve_builtin_single_agent(agent_mode: str) -> tuple[str, Optional[str]]:
@@ -652,37 +637,19 @@ def _run_builtin_phase(
 
 
 def _extract_reviewer_findings(review_output: str) -> str:
-    """Pull the actionable failure summary out of a reviewer transcript.
+    """Return the actionable failure summary for the builder's next round.
 
-    We want only the "what's wrong" part handed to the builder as its next
-    round of input — not the entire reviewer chain-of-thought (which could
-    include prose, verdict line, etc.). Strategy:
-
-    1. Prefer content between "需要修复的点" and "VERDICT:" if the reviewer
-       followed the prompt.
-    2. Otherwise drop the final VERDICT line and pass the rest.
+    Now backed by the shared reviewer-output parser:
+    - If the transcript carries a JSON fence with ``blockers``, stringify them
+      as a bullet list.
+    - Otherwise fall back to the legacy ``需要修复的点`` / strip-VERDICT path.
     """
-    if not review_output:
-        return ""
-    text = review_output.strip()
-
-    # Strategy 1: section between a "needs fix" header and the VERDICT line.
-    pattern = re.compile(
-        r"(?:需要修复的点|需要修复|需要处理|修复建议)\s*[:：]?\s*\n(.*?)(?:\n\s*VERDICT\s*:|$)",
-        re.DOTALL | re.IGNORECASE,
-    )
-    m = pattern.search(text)
-    if m:
-        block = m.group(1).strip()
-        if block:
-            return block
-
-    # Strategy 2: drop the VERDICT line and return the rest, capped.
-    lines = [ln for ln in text.splitlines() if not re.match(r"\s*VERDICT\s*:", ln, re.I)]
-    stripped = "\n".join(lines).strip()
-    if len(stripped) > 2000:
-        stripped = stripped[-2000:]
-    return stripped
+    verdict_model = parse_reviewer_output(review_output or "")
+    if verdict_model.blockers:
+        formatted = format_findings_for_builder(verdict_model)
+        if formatted:
+            return formatted
+    return ""
 
 
 @dataclass
