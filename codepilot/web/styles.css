@@ -935,7 +935,96 @@ pre.code.live-log { max-height: 280px; }
 .ansi-underline { text-decoration: underline; }
 
 /* ── Live log (SSE progress stream) ── */
-pre.code.live-log { padding: 6px 10px; }
+.live-log-panel {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px;
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted) / .35);
+  border-radius: var(--radius-sm);
+  contain: content;
+}
+.live-log-panel.tall { max-height: 420px; }
+.live-log-empty {
+  padding: 10px 8px;
+  color: hsl(var(--muted-foreground));
+}
+.live-log-group {
+  margin: 0;
+  border: 1px solid hsl(var(--border) / .72);
+  border-radius: 10px;
+  background: hsl(var(--background) / .72);
+  overflow: hidden;
+}
+.live-log-group + .live-log-group { margin-top: 8px; }
+.live-log-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  background: hsl(var(--background) / .8);
+}
+.live-log-summary::-webkit-details-marker { display: none; }
+.live-log-summary::before {
+  content: '▸';
+  color: hsl(var(--muted-foreground));
+  transition: transform .16s ease;
+}
+.live-log-group[open] .live-log-summary::before { transform: rotate(90deg); }
+.live-log-stage {
+  font-weight: 700;
+  letter-spacing: .01em;
+}
+.live-log-badge,
+.live-log-meta {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: hsl(var(--muted-foreground));
+}
+.live-log-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / .32);
+}
+.live-log-preview {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: hsl(var(--muted-foreground));
+}
+.live-log-body {
+  padding: 6px 10px 8px;
+}
+.live-log-group.stage-planner .live-log-stage { color: hsl(262 83% 58%); }
+.live-log-group.stage-recon .live-log-stage { color: hsl(186 72% 45%); }
+.live-log-group.stage-clarify .live-log-stage { color: hsl(292 76% 55%); }
+.live-log-group.stage-builder .live-log-stage { color: hsl(221 83% 53%); }
+.live-log-group.stage-reviewer .live-log-stage { color: hsl(38 92% 50%); }
+.live-log-group.stage-commit .live-log-stage,
+.live-log-group.stage-merge .live-log-stage { color: hsl(142 71% 38%); }
+.live-log-group.status-error {
+  border-color: hsl(var(--destructive) / .42);
+  background: hsl(var(--destructive) / .05);
+}
+.live-log-group.status-error .live-log-summary {
+  background: hsl(var(--destructive) / .08);
+}
+.live-log-group.status-error .live-log-badge {
+  color: hsl(var(--destructive));
+  border-color: hsl(var(--destructive) / .3);
+}
+.live-log-group.status-phase_end .live-log-badge {
+  color: hsl(var(--success));
+}
 .live-row {
   display: block;
   /* No per-row top/bottom padding — default markdown-style spacing would

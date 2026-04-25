@@ -81,6 +81,16 @@ def test_progress_bus_assigns_monotonic_event_ids():
     assert [event["id"] for event in events] == [1, 2]
 
 
+def test_progress_bus_preserves_explicit_event_type_and_infers_error_type():
+    progress_bus.clear_subscribers_for_tests()
+    progress_bus.emit(stage="planner", message="start", event_type="phase_start")
+    progress_bus.emit(stage="planner", message="boom", level="error")
+
+    events = progress_bus.events_since(0)
+    assert events[0]["type"] == "phase_start"
+    assert events[1]["type"] == "error"
+
+
 def test_progress_bus_subscribe_with_backlog_replays_tail_since_event_id():
     progress_bus.clear_subscribers_for_tests()
     progress_bus.emit(stage="planner", message="first")
@@ -161,8 +171,13 @@ def test_builtin_executor_emits_round_events(tmp_path, monkeypatch):
     stages = [e["stage"] for e in events]
     assert "builder" in stages
     assert "reviewer" in stages
+    start_events = [e for e in events if e.get("type") == "phase_start"]
+    assert any(e["stage"] == "builder" for e in start_events)
+    assert any(e["stage"] == "reviewer" for e in start_events)
+    assert any(e["stage"] == "builder" and e.get("type") == "phase_end" for e in events)
     pass_events = [e for e in events if e["stage"] == "reviewer" and "PASS" in (e["message"] or "")]
     assert pass_events
+    assert pass_events[0]["type"] == "phase_end"
     assert pass_events[0]["extra"].get("review_verdict") is True
     assert pass_events[0]["extra"].get("verdict") == "pass"
     assert pass_events[0]["extra"].get("blockers") == []
@@ -216,6 +231,7 @@ def test_builtin_executor_emits_structured_reviewer_blockers(tmp_path, monkeypat
         and (e.get("extra") or {}).get("verdict") == "fail"
     ]
     assert fail_events
+    assert fail_events[0]["type"] == "phase_end"
     extra = fail_events[0]["extra"]
     assert extra["blockers"] == ["补上 --json 分支", "修复超时处理"]
     assert extra["blocker_count"] == 2

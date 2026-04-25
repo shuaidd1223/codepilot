@@ -80,6 +80,9 @@ def test_run_api_provider_streams_heartbeat_events_when_subscribed():
     assert heartbeat_events[0]["task_id"] == 42
     assert heartbeat_events[0]["stage"] == "planner"
     assert any(event["level"] == "heartbeat" for event in heartbeat_events)
+    assert heartbeat_events[0]["type"] == "phase_start"
+    assert any(event["type"] == "heartbeat" for event in heartbeat_events)
+    assert any(event["type"] == "phase_end" for event in heartbeat_events)
     assert any(event["extra"].get("final") is True for event in heartbeat_events)
 
 

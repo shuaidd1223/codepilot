@@ -667,6 +667,12 @@ def _review_verdict_event_extra(verdict_model: ReviewerVerdict, *, round_num: in
     }
 
 
+def _display_phase_name(kind: str, *, round_num: int, round_total: int) -> str:
+    """Return the phase label used by live progress / Web UI."""
+    base = str(kind or "").strip() or "phase"
+    return base if round_num <= 1 else f"{base} r{round_num}/{round_total}"
+
+
 @dataclass
 class _PhaseOutcome:
     """Normalized result of one builder or reviewer invocation."""
@@ -674,6 +680,7 @@ class _PhaseOutcome:
     agent: str
     exit_code: int
     output: str
+    display_phase: str = ""
 
 
 @dataclass
@@ -733,12 +740,14 @@ def _run_builder_round(
 
     output_path = _make_phase_output_path(ctx.output_dir, ctx.task["id"], round_num, "builder")
     label = "builder" if round_num == 1 else f"builder (round {round_num}/{ctx.max_rounds})"
+    display_phase = _display_phase_name("builder", round_num=round_num, round_total=ctx.max_rounds)
     echo(f"[dim]  阶段: {label}[/dim]")
     progress_bus.emit(
         task_id=ctx.task_id_for_events,
-        stage="builder",
+        stage=display_phase,
+        event_type="phase_start",
         message=f"启动 {label}",
-        extra={"round": round_num, "round_total": ctx.max_rounds},
+        extra={"round": round_num, "round_total": ctx.max_rounds, "phase_kind": "builder"},
     )
 
     started = datetime.now()
@@ -749,25 +758,45 @@ def _run_builder_round(
         review_round=round_num,
         previous_review_feedback=previous_findings,
     )
-    display_phase = (
-        "builder"
-        if round_num == 1
-        else f"builder r{round_num}/{ctx.max_rounds}"
-    )
-    agent, exit_code, output = _runner_module()._run_builtin_phase(
-        task=ctx.task,
-        project_path=ctx.project_path,
-        phase="builder",
-        prompt=prompt,
-        output_path=output_path,
-        timeout=3600,
-        config_ref=ctx.config_ref,
-        display_phase=display_phase,
-        silence_timeout_seconds=ctx.silence_timeout,
-    )
+    try:
+        agent, exit_code, output = _runner_module()._run_builtin_phase(
+            task=ctx.task,
+            project_path=ctx.project_path,
+            phase="builder",
+            prompt=prompt,
+            output_path=output_path,
+            timeout=3600,
+            config_ref=ctx.config_ref,
+            display_phase=display_phase,
+            silence_timeout_seconds=ctx.silence_timeout,
+        )
+    except Exception as exc:
+        progress_bus.emit(
+            task_id=ctx.task_id_for_events,
+            stage=display_phase,
+            level="error",
+            event_type="error",
+            message=f"{label} 异常终止：{exc}",
+            extra={"round": round_num, "round_total": ctx.max_rounds, "phase_kind": "builder"},
+        )
+        raise
     phase_name = "builder" if round_num == 1 else f"builder-r{round_num}"
     _runner_module()._write_task_log(ctx.task["id"], agent, phase_name, output, exit_code, started)
-    return _PhaseOutcome(agent=agent, exit_code=exit_code, output=output)
+    progress_bus.emit(
+        task_id=ctx.task_id_for_events,
+        stage=display_phase,
+        level="info" if exit_code == 0 else "error",
+        event_type="phase_end" if exit_code == 0 else "error",
+        message=(f"{label} 完成" if exit_code == 0 else f"{label} 失败（exit={exit_code}）"),
+        extra={
+            "round": round_num,
+            "round_total": ctx.max_rounds,
+            "phase_kind": "builder",
+            "agent": agent,
+            "exit_code": exit_code,
+        },
+    )
+    return _PhaseOutcome(agent=agent, exit_code=exit_code, output=output, display_phase=display_phase)
 
 
 def _run_reviewer_round(
@@ -781,12 +810,14 @@ def _run_reviewer_round(
 
     output_path = _make_phase_output_path(ctx.output_dir, ctx.task["id"], round_num, "review")
     label = "reviewer" if round_num == 1 else f"reviewer (round {round_num}/{ctx.max_rounds})"
+    display_phase = _display_phase_name("reviewer", round_num=round_num, round_total=ctx.max_rounds)
     echo(f"[dim]  阶段: {label}[/dim]")
     progress_bus.emit(
         task_id=ctx.task_id_for_events,
-        stage="reviewer",
+        stage=display_phase,
+        event_type="phase_start",
         message=f"启动 {label}",
-        extra={"round": round_num, "round_total": ctx.max_rounds},
+        extra={"round": round_num, "round_total": ctx.max_rounds, "phase_kind": "reviewer"},
     )
 
     started = datetime.now()
@@ -801,25 +832,46 @@ def _run_reviewer_round(
         previous_findings=previous_findings,
         changed_files=changed_files,
     )
-    display_phase = (
-        "reviewer"
-        if round_num == 1
-        else f"reviewer r{round_num}/{ctx.max_rounds}"
-    )
-    agent, exit_code, output = _runner_module()._run_builtin_phase(
-        task=ctx.task,
-        project_path=ctx.project_path,
-        phase="reviewer",
-        prompt=prompt,
-        output_path=output_path,
-        timeout=1800,
-        config_ref=ctx.config_ref,
-        display_phase=display_phase,
-        silence_timeout_seconds=ctx.silence_timeout,
-    )
+    try:
+        agent, exit_code, output = _runner_module()._run_builtin_phase(
+            task=ctx.task,
+            project_path=ctx.project_path,
+            phase="reviewer",
+            prompt=prompt,
+            output_path=output_path,
+            timeout=1800,
+            config_ref=ctx.config_ref,
+            display_phase=display_phase,
+            silence_timeout_seconds=ctx.silence_timeout,
+        )
+    except Exception as exc:
+        progress_bus.emit(
+            task_id=ctx.task_id_for_events,
+            stage=display_phase,
+            level="error",
+            event_type="error",
+            message=f"{label} 异常终止：{exc}",
+            extra={"round": round_num, "round_total": ctx.max_rounds, "phase_kind": "reviewer"},
+        )
+        raise
     phase_name = "reviewer" if round_num == 1 else f"reviewer-r{round_num}"
     _runner_module()._write_task_log(ctx.task["id"], agent, phase_name, output, exit_code, started)
-    return _PhaseOutcome(agent=agent, exit_code=exit_code, output=output)
+    if exit_code != 0:
+        progress_bus.emit(
+            task_id=ctx.task_id_for_events,
+            stage=display_phase,
+            level="error",
+            event_type="error",
+            message=f"{label} 失败（exit={exit_code}）",
+            extra={
+                "round": round_num,
+                "round_total": ctx.max_rounds,
+                "phase_kind": "reviewer",
+                "agent": agent,
+                "exit_code": exit_code,
+            },
+        )
+    return _PhaseOutcome(agent=agent, exit_code=exit_code, output=output, display_phase=display_phase)
 
 
 def _finalize_executor_success(
@@ -856,8 +908,8 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
     from codepilot import progress_bus
 
     previous_findings = ""
-    builder = _PhaseOutcome(agent="", exit_code=0, output="")
-    reviewer = _PhaseOutcome(agent="", exit_code=0, output="")
+    builder = _PhaseOutcome(agent="", exit_code=0, output="", display_phase="")
+    reviewer = _PhaseOutcome(agent="", exit_code=0, output="", display_phase="")
 
     for round_num in range(1, ctx.max_rounds + 1):
         builder = _run_builder_round(ctx, round_num=round_num, previous_findings=previous_findings)
@@ -888,9 +940,10 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
         if verdict == "pass":
             progress_bus.emit(
                 task_id=ctx.task_id_for_events,
-                stage="reviewer",
+                stage=reviewer.display_phase or _display_phase_name("reviewer", round_num=round_num, round_total=ctx.max_rounds),
+                event_type="phase_end",
                 message="reviewer 判定 PASS",
-                extra=review_event_extra,
+                extra={**review_event_extra, "phase_kind": "reviewer", "round_total": ctx.max_rounds},
             )
             return _BuiltinLoopOutcome(
                 status="pass",
@@ -909,10 +962,11 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
             )
             progress_bus.emit(
                 task_id=ctx.task_id_for_events,
-                stage="reviewer",
+                stage=reviewer.display_phase or _display_phase_name("reviewer", round_num=round_num, round_total=ctx.max_rounds),
                 level="error",
+                event_type="error",
                 message=summary,
-                extra=review_event_extra,
+                extra={**review_event_extra, "phase_kind": "reviewer", "round_total": ctx.max_rounds},
             )
             return _BuiltinLoopOutcome(
                 status="exhausted",
@@ -926,10 +980,11 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
 
         progress_bus.emit(
             task_id=ctx.task_id_for_events,
-            stage="reviewer",
+            stage=reviewer.display_phase or _display_phase_name("reviewer", round_num=round_num, round_total=ctx.max_rounds),
             level="warning",
+            event_type="phase_end",
             message=f"reviewer 判定 {verdict.upper()}，准备第 {round_num + 1} 轮重做",
-            extra=review_event_extra,
+            extra={**review_event_extra, "phase_kind": "reviewer", "round_total": ctx.max_rounds},
         )
         echo(
             f"[yellow]  reviewer 判定 {verdict.upper()}，准备第 {round_num + 1} 轮重做，"

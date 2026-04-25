@@ -712,16 +712,20 @@ def _run_api_provider(
             if final:
                 message = f"{label} 完成：{elapsed}s，约 {estimated_tokens} tokens"
                 level = "info"
+                event_type = "phase_end"
             elif estimated_tokens <= 0:
                 message = f"{label} 请求已发出：{elapsed}s，等待首个 token"
                 level = "heartbeat"
+                event_type = "phase_start"
             else:
                 message = f"{label} 生成中：{elapsed}s，约 {estimated_tokens} tokens"
                 level = "heartbeat"
+                event_type = "heartbeat"
             progress_bus.emit(
                 task_id=ctx.get("task_id"),
                 stage=str(ctx.get("stage") or "system"),
                 level=level,
+                event_type=event_type,
                 message=message,
                 extra={
                     "llm_heartbeat": True,

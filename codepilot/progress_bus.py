@@ -16,6 +16,7 @@ Event shape (``dict``):
 * ``task_id`` (int or None — None for pre-task signals like planner progress)
 * ``stage`` (``planner`` | ``recon`` | ``clarify`` | ``builder`` | ``reviewer``
   | ``commit`` | ``merge`` | ``system``)
+* ``type`` (optional ``phase_start`` | ``heartbeat`` | ``phase_end`` | ``error``)
 * ``level`` (``info`` | ``warning`` | ``error`` | ``heartbeat``)
 * ``message`` (str — short human-readable line)
 * ``extra`` (dict — optional structured payload: ``round``, ``round_total``,
@@ -66,6 +67,7 @@ def emit(
     message: str,
     task_id: Optional[int] = None,
     level: str = "info",
+    event_type: Optional[str] = None,
     extra: Optional[dict[str, Any]] = None,
 ) -> None:
     """Publish one event to every current subscriber.
@@ -74,10 +76,17 @@ def emit(
     consumer never stalls the terminal.
     """
     global _NEXT_EVENT_ID
+    resolved_type = str(event_type or "").strip()
+    if not resolved_type:
+        if level == "heartbeat":
+            resolved_type = "heartbeat"
+        elif level == "error":
+            resolved_type = "error"
     base: Event = {
         "timestamp": _now_iso(),
         "task_id": task_id,
         "stage": stage,
+        "type": resolved_type,
         "level": level,
         "message": message,
         "extra": dict(extra or {}),
