@@ -518,7 +518,15 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         }
         try {
           let out;
-          if (state.composerMode === 'task') {
+          if (state.composerMode === 'task' || state.composerMode === 'task_ai') {
+            // task → mode=full（用户自己写完整 content）
+            // task_ai → mode=ai_complete（后端调 AI 补 content）
+            payload.mode = state.composerMode === 'task_ai' ? 'ai_complete' : 'full';
+            if (state.composerMode === 'task_ai') {
+              // mode=ai_complete 不需要前端传 content；服务端会拒空 content
+              // 时同样要求模板合规，所以这里清空避免误传脏数据。
+              payload.content = '';
+            }
             out = await CP.api.post('/api/tasks', payload);
             if (out.task) selectTask(state.nav.project, out.task.id);
             state.composer.content = '';

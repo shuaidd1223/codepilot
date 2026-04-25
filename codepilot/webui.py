@@ -442,6 +442,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             priority=body.get("priority") or "P2",
             agent=body.get("agent") or None,
             max_retries=int(body.get("max_retries") or 3),
+            mode=body.get("mode") or "full",
         )
 
     def _handle_post_tasks_batch(self, body: dict) -> dict:

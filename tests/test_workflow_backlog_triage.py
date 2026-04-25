@@ -202,7 +202,6 @@ def test_run_backlog_review_failure_retry_with_hint_requeues_and_appends_hint(tm
             review_output="请先修复遗漏校验\nVERDICT: FAIL",
             summary="review 未通过",
             executor="builtin",
-            deterministic_failure=True,
         ),
     )
 
@@ -259,8 +258,19 @@ def test_run_backlog_review_failure_replans_into_new_backlog_task(tmp_path, monk
             review_output="当前任务范围太大\nVERDICT: FAIL",
             summary="review 未通过",
             executor="builtin",
-            deterministic_failure=True,
         ),
+    )
+    compliant_replan_content = (
+        "# 补齐 reviewer 指出的输入校验缺口\n\n"
+        "## Task Goal\n只修输入校验，不处理其它重构。\n\n"
+        "## In Scope\n- 补齐 reviewer 指出的校验缺口\n\n"
+        "## Out of Scope\n- 不重构 handler\n\n"
+        "## Forbidden (Hard Boundary)\n- 不要新增依赖\n\n"
+        "## Files In Scope\n- service/handler.py\n\n"
+        "## Planning Evidence\n- reviewer 在上一轮明确点出 B1 / B2 校验缺失\n\n"
+        "## Acceptance Criteria\n- [ ] reviewer 不再指出遗漏校验\n\n"
+        "## Verification Matrix\n| AC | 命令 | 期望 | 证据 |\n| --- | --- | --- | --- |\n\n"
+        "## Reviewer Checkpoints\n- 检查所有入参分支都有校验\n"
     )
     monkeypatch.setattr(
         run_cmd,
@@ -275,7 +285,7 @@ def test_run_backlog_review_failure_replans_into_new_backlog_task(tmp_path, monk
                 "merged_note": "",
                 "retry_hint": "",
                 "replan_title": "补齐 reviewer 指出的输入校验缺口",
-                "replan_content": "## 任务目标\n\n只修输入校验，不处理其它重构。\n\n## 验收标准\n\n- reviewer 不再指出遗漏校验",
+                "replan_content": compliant_replan_content,
             },
         ),
     )
@@ -314,7 +324,6 @@ def test_run_backlog_review_failure_can_merge_partial_into_existing_task(tmp_pat
             review_output="VERDICT: FAIL",
             summary="review 未通过",
             executor="builtin",
-            deterministic_failure=True,
         ),
     )
     monkeypatch.setattr(
@@ -634,3 +643,60 @@ def test_review_failure_evidence_parses_review_output_for_prompt(tmp_path, monke
     # The legacy parser collapses bullets into a single multiline blocker
     # entry; what matters is at least one blocker reaches the prompt.
     assert any("回归" in str(item) or "HEAD" in str(item) for item in verdict.blockers)
+
+
+def test_run_backlog_review_failure_replan_downgrades_when_content_violates_template(tmp_path, monkeypatch):
+    """AI 给出的 replan_content 不满足 task-template 时必须降级为 discard。
+
+    否则会把不合规的占位任务塞回 backlog，后续 add 校验起不到作用，与
+    "每个任务都必须模板合规" 的全局不变量冲突。
+    """
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "broken task", content="原始任务内容", max_retries=3)
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(
+            exit_code=2,
+            output="builder failed",
+            review_output="范围太大\nVERDICT: FAIL",
+            summary="review 未通过",
+            executor="builtin",
+        ),
+    )
+
+    monkeypatch.setattr(
+        run_cmd,
+        "call_structured",
+        lambda request: GatewayResponse(
+            ok=True,
+            source="cli:codex",
+            payload={
+                "action": "replan",
+                "matched_task_id": None,
+                "rationale": "需要拆分但 AI 没给出完整模板",
+                "merged_note": "",
+                "retry_hint": "",
+                "replan_title": "拆分任务",
+                "replan_content": "## 任务目标\n\n仅几个要点，缺多个章节",
+            },
+        ),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+    tasks = db.list_tasks(project="demo")
+    followups = [item for item in tasks if item["id"] != task["id"]]
+
+    assert stats["failed"] == 1
+    assert stats["requeued"] == 0
+    assert current["status"] == "failed"
+    assert followups == [], "non-compliant replan_content must NOT create a follow-up task"
+    err = current["error_message"] or ""
+    assert "已降级为 discard" in err
+    assert "缺章节" in err

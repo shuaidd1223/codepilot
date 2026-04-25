@@ -464,21 +464,30 @@ def _handle_execution_result(
             task_branch=workspace.task_branch,
             base_branch=context.base_branch,
         )
-        # AI triage decides discard / retry_with_hint / replan / merge_partial.
-        # When the gateway is unavailable triage_fn returns None and the helper
-        # falls back to the legacy retry-vs-mark-failed path so non-AI runs
-        # behave exactly like before.
-        triage_result = runner._apply_review_failure_triage(
-            task,
-            error_message,
-            review_output=result.review_output,
-            output=result.output,
-            retry_on_failure=retry_on_failure and not result.deterministic_failure,
-            stop_on_failure=context.executor == "builtin",
-        )
-        updated = triage_result["updated"]
-        error_message = triage_result["error_message"]
-        should_stop = bool(triage_result.get("should_stop", True))
+        if result.deterministic_failure:
+            # Deterministic failures (compile errors, AC obviously broken,
+            # duplicate-of-existing-bug 等) 的语义和 review-fail 不同：不允许
+            # 重试也不需要 replan，只能 merge 到已有任务或 discard。继续走
+            # 专用的 deterministic triage，避免被 review-fail 的 5 个 action
+            # 错误覆盖。
+            error_message = runner._apply_deterministic_failure_triage(task, error_message)
+            updated = runner._mark_task_failed(task, error_message)
+            should_stop = context.executor == "builtin"
+        else:
+            # 非 deterministic 走 review triage：可能 retry_with_hint /
+            # replan / merge_partial / discard。AI 不可用（gateway 返回 None）
+            # 时 fallback 到 legacy retry-vs-mark-failed 路径，非 AI 环境无回归。
+            triage_result = runner._apply_review_failure_triage(
+                task,
+                error_message,
+                review_output=result.review_output,
+                output=result.output,
+                retry_on_failure=retry_on_failure,
+                stop_on_failure=context.executor == "builtin",
+            )
+            updated = triage_result["updated"]
+            error_message = triage_result["error_message"]
+            should_stop = bool(triage_result.get("should_stop", True))
         if updated["status"] == "failed":
             stats["failed"] += 1
             runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_message)

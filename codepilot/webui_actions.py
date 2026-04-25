@@ -868,7 +868,21 @@ def create_task_action(
     priority: str = "P2",
     agent: str | None = None,
     max_retries: int = 3,
+    mode: str = "full",
 ) -> dict:
+    """Web 上人工添加单条任务的入口，按 ``mode`` 分三条路径：
+
+    - ``full``（默认）：用户已经写好完整 content，按 task-template 校验，
+      缺章节直接拒。前端"完整任务"模式走这里。
+    - ``ai_complete``：用户只写了 title，由 ``--agent`` 指定的 AI 生成
+      content，再做模板合规校验；生成失败 / 合规失败都拒。前端"只写标题"
+      模式走这里。
+    - ``requirement``：当前函数不接收，前端应改投 ``/api/requirements``
+      让规划器拆分；这里只是个守卫，命中说明前端没正确路由。
+
+    Web 界面只有人工添加任务，所以三条路径都强制 content 模板合规，
+    与 ``codepilot add`` 的硬规则保持一致；没有空 content 占位通道。
+    """
     db.init_db()
     project_info = db.get_project(project)
     if not project_info:
@@ -879,11 +893,23 @@ def create_task_action(
     normalized_priority = (priority or "P2").upper()
     if normalized_priority not in {"P0", "P1", "P2", "P3"}:
         raise RuntimeError("优先级只支持 P0 / P1 / P2 / P3。")
+
+    normalized_mode = (mode or "full").strip().lower()
+    if normalized_mode == "requirement":
+        raise RuntimeError(
+            "mode=requirement 应该投递到 /api/requirements，让规划器拆分需求；"
+            "/api/tasks 仅用于 mode=full（完整任务）或 mode=ai_complete（仅标题，AI 补全）。"
+        )
+    if normalized_mode not in {"full", "ai_complete"}:
+        raise RuntimeError(
+            f"未知的添加模式 '{mode}'，只支持 full / ai_complete / requirement。"
+        )
+
     resolved_agent = (agent or project_info.get("default_mode") or "dual").lower()
     if resolved_agent == "auto":
         resolved_agent = project_info.get("default_mode") or "dual"
 
-    from codepilot.ai import resolve_agent_with_fallback
+    from codepilot.ai import resolve_agent_with_fallback, generate_task_content
     default_mode = project_info.get("default_mode") or "dual"
     resolved_agent, fallback_reason = resolve_agent_with_fallback(
         resolved_agent,
@@ -891,10 +917,34 @@ def create_task_action(
         default_mode=default_mode,
     )
 
+    if normalized_mode == "ai_complete":
+        try:
+            content = generate_task_content(
+                normalized_title,
+                project_path=project_info["path"],
+                agent=resolved_agent,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(f"AI 生成任务内容失败: {exc}") from exc
+
+    final_content = (content or "").strip()
+    if not final_content:
+        raise RuntimeError(
+            "任务内容为空：mode=full 必须提供完整 content；mode=ai_complete 由 AI 生成，"
+            "若仍为空说明 agent 未给出内容。"
+        )
+    missing = missing_task_template_sections(final_content)
+    if missing:
+        source = "AI 生成的" if normalized_mode == "ai_complete" else "提交的"
+        raise RuntimeError(
+            f"{source} content 缺少模板必需章节: {', '.join(missing)}。"
+            " 字段规范见 /api/tasks/template 或 `codepilot ai template --format json`。"
+        )
+
     task = db.create_task(
         project=project,
         title=normalized_title,
-        content=content,
+        content=final_content,
         agent=resolved_agent,
         priority=normalized_priority,
         project_path=project_info["path"],
@@ -905,7 +955,7 @@ def create_task_action(
     if fallback_reason:
         msg += f" （{fallback_reason}）"
     _append_event(f"已新建任务 #{task['id']}：{normalized_title}", project=project, task_id=task["id"])
-    return {"ok": True, "message": msg, "task": _task_payload(task)}
+    return {"ok": True, "message": msg, "task": _task_payload(task), "mode": normalized_mode}
 
 
 def _job_result_summary(result: dict, execute: bool) -> str:

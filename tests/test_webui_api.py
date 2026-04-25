@@ -215,19 +215,81 @@ def test_unknown_path_returns_404(ui_server):
 
 # ─── POST /api/tasks ────────────────────────────────────────────────────────
 
-def test_create_task_via_api(ui_server):
+_COMPLIANT_TASK_CONTENT = (
+    "# API 创建的测试任务\n\n"
+    "## Task Goal\n通过 Web API 创建一条带模板合规 content 的任务。\n\n"
+    "## In Scope\n- 写入 backlog\n\n"
+    "## Out of Scope\n- 不执行任务\n\n"
+    "## Forbidden (Hard Boundary)\n- 不要污染其他项目\n\n"
+    "## Files In Scope\n- N/A（仅写库）\n\n"
+    "## Planning Evidence\n- 来自 e2e API 测试\n\n"
+    "## Acceptance Criteria\n- [ ] 任务出现在 backlog\n\n"
+    "## Verification Matrix\n| AC | 命令 | 期望 | 证据 |\n| --- | --- | --- | --- |\n\n"
+    "## Reviewer Checkpoints\n- 检查任务模板章节齐全\n"
+)
+
+
+def test_create_task_full_mode_with_compliant_content(ui_server):
+    """mode=full：人工自己写完整 task-template content。"""
     status, body = _post(f"{ui_server}/api/tasks", {
         "project": "demo",
         "title": "API 创建的测试任务",
         "priority": "P1",
+        "content": _COMPLIANT_TASK_CONTENT,
+        "mode": "full",
     })
     assert status == 200
     assert body.get("ok") is True
     assert body.get("task", {}).get("id")
+    assert body.get("mode") == "full"
 
-    # Verify in DB
     tasks = db.list_tasks(project="demo")
     assert any("API 创建" in (t.get("title") or "") for t in tasks)
+
+
+def test_create_task_full_mode_rejects_missing_template_sections(ui_server):
+    """mode=full + 缺章节 → 拒绝，不写 backlog。"""
+    status, body = _post(f"{ui_server}/api/tasks", {
+        "project": "demo",
+        "title": "缺章节任务",
+        "content": "# 缺章节任务\n\n只有标题和散文，没有 Task Goal 等章节。",
+        "mode": "full",
+    })
+    assert status in (400, 500) or (status == 200 and not body.get("ok", True))
+    err = body.get("error") or body
+    text = str(err)
+    assert "缺少模板必需章节" in text
+
+
+def test_create_task_ai_complete_mode_invokes_generation(ui_server, monkeypatch):
+    """mode=ai_complete：只传 title，由后端调 AI 生成 content。"""
+    from codepilot import ai as ai_mod
+    monkeypatch.setattr(ai_mod, "generate_task_content", lambda *a, **kw: _COMPLIANT_TASK_CONTENT)
+
+    status, body = _post(f"{ui_server}/api/tasks", {
+        "project": "demo",
+        "title": "AI 补全测试任务",
+        "mode": "ai_complete",
+    })
+    assert status == 200
+    assert body.get("ok") is True
+    assert body.get("mode") == "ai_complete"
+    task_id = body.get("task", {}).get("id")
+    assert task_id
+    saved = db.get_task(task_id)
+    assert "Task Goal" in (saved.get("content") or "")
+
+
+def test_create_task_requirement_mode_redirects_with_error(ui_server):
+    """mode=requirement 不应走 /api/tasks，应转 /api/requirements。守卫报错引导。"""
+    status, body = _post(f"{ui_server}/api/tasks", {
+        "project": "demo",
+        "title": "应该走需求规划",
+        "mode": "requirement",
+    })
+    assert status in (400, 500) or (status == 200 and not body.get("ok", True))
+    text = str(body.get("error") or body)
+    assert "/api/requirements" in text
 
 
 def test_create_task_empty_title_returns_error(ui_server):

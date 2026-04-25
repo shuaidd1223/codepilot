@@ -229,19 +229,34 @@ def test_webui_create_task_action_creates_task_for_project(tmp_path, monkeypatch
     project_path.mkdir()
     db.register_project("demo", str(project_path), default_mode="codex")
 
+    compliant_content = (
+        "# 从 Web UI 新建任务\n\n"
+        "## Task Goal\n演示通过 Web UI 创建任务。\n\n"
+        "## In Scope\n- 写入数据库\n\n"
+        "## Out of Scope\n- 不执行任务\n\n"
+        "## Forbidden (Hard Boundary)\n- 不要污染其他项目\n\n"
+        "## Files In Scope\n- N/A\n\n"
+        "## Planning Evidence\n- 测试驱动\n\n"
+        "## Acceptance Criteria\n- [ ] 任务出现在 backlog\n\n"
+        "## Verification Matrix\n| AC | 命令 | 期望 | 证据 |\n| --- | --- | --- | --- |\n\n"
+        "## Reviewer Checkpoints\n- 检查模板章节齐全\n"
+    )
     created = webui_mod.create_task_action(
         "demo",
         "从 Web UI 新建任务",
-        content="补一段说明",
+        content=compliant_content,
         priority="P1",
         agent="auto",
         max_retries=4,
+        mode="full",
     )
 
     assert created["ok"] is True
+    assert created["mode"] == "full"
     task = db.get_task(created["task"]["id"])
     assert task["title"] == "从 Web UI 新建任务"
-    assert task["content"] == "补一段说明"
+    # create_task_action strips trailing whitespace before saving.
+    assert task["content"] == compliant_content.strip()
     assert task["priority"] == "P1"
     assert task["agent"] == "codex"
     assert task["max_retries"] == 4

@@ -6,6 +6,12 @@ CP.Components.Composer = Vue.defineComponent({
   computed: {
     s() { return this.cp.state; },
     composerPending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.COMPOSER_SUBMIT); },
+    modeHint() {
+      const m = this.s.composerMode;
+      if (m === 'requirement') return '推荐：写一段自然语言需求，由规划器拆成符合模板的任务。';
+      if (m === 'task_ai') return '只写标题，后端调 AI 按 task-template 9 章节生成 content（生成失败 / 缺章节会被拒）。';
+      return '完整任务：自己写标题 + 符合 task-template 9 章节的 content（缺章节会被拒）。';
+    },
   },
   methods: {
     submit() { this.cp.submitComposer(); },
@@ -14,7 +20,7 @@ CP.Components.Composer = Vue.defineComponent({
     <section class="card">
       <div class="card-head">
         <h3>发起工作</h3>
-        <p class="muted">提交自然语言需求，或直接建任务</p>
+        <p class="muted">3 选 1：自然语言需求 / 完整任务 / 仅标题（AI 补全）</p>
       </div>
       <form class="form" @submit.prevent="submit">
         <div v-if="s.composerClarify && s.composerMode === 'requirement'" class="clarify-panel">
@@ -27,9 +33,11 @@ CP.Components.Composer = Vue.defineComponent({
           <div class="field">
             <label>模式</label>
             <select v-model="s.composerMode">
-              <option value="requirement">自然语言需求</option>
-              <option value="task">直接建任务</option>
+              <option value="requirement">自然语言需求（走规划器）</option>
+              <option value="task">完整任务（自己提供 content）</option>
+              <option value="task_ai">仅标题，AI 补全 content</option>
             </select>
+            <div class="field-hint tiny muted">{{ modeHint }}</div>
           </div>
           <div class="field">
             <label>优先级</label>
@@ -41,9 +49,9 @@ CP.Components.Composer = Vue.defineComponent({
             <label>{{ s.composerClarify && s.composerMode === 'requirement' ? '补充回答' : '标题' }}</label>
             <textarea v-model="s.composer.title" rows="2" :placeholder="s.composerClarify && s.composerMode === 'requirement' ? '回答上面的问题，可以一次性写完' : '例如：把失败任务的原因直接显示在 UI 里，并一键重试'"></textarea>
           </div>
-          <div class="field full">
-            <label>补充说明</label>
-            <textarea v-model="s.composer.content" rows="3" placeholder="可选：范围、约束、验收标准"></textarea>
+          <div class="field full" v-if="s.composerMode !== 'task_ai'">
+            <label>{{ s.composerMode === 'task' ? 'content（必须符合 task-template 9 章节）' : '补充说明' }}</label>
+            <textarea v-model="s.composer.content" rows="6" :placeholder="s.composerMode === 'task' ? '## Task Goal\\n...\\n\\n## In Scope\\n- ...\\n\\n## Acceptance Criteria\\n...（参见 ai template --format md）' : '可选：范围、约束、验收标准'"></textarea>
           </div>
           <div class="field">
             <label>任务智能体</label>
@@ -64,7 +72,7 @@ CP.Components.Composer = Vue.defineComponent({
         </div>
         <div class="row between">
           <label class="checkbox">
-            <input type="checkbox" v-model="s.composer.execute" :disabled="s.composerMode === 'task'">
+            <input type="checkbox" v-model="s.composer.execute" :disabled="s.composerMode !== 'requirement'">
             提交后立即执行
           </label>
           <button type="submit" class="btn btn-primary" :disabled="composerPending">

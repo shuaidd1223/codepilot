@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from codepilot.commands.reviewer_output import ReviewerVerdict, parse_reviewer_output
+from codepilot.task_template import missing_task_template_sections
 
 
 _DETERMINISTIC_FAILURE_TRIAGE_SCHEMA = {
@@ -832,10 +833,36 @@ def apply_review_failure_triage(
         }
 
     if action == "replan":
+        replan_title = str(decision.get("replan_title") or "").strip()
+        replan_content = str(decision.get("replan_content") or "").strip()
+        # Replan creates a brand-new backlog task, which means the result must
+        # itself satisfy task-template compliance — the same rule the `add`
+        # command enforces for external submissions. AI triage occasionally
+        # returns abbreviated replan_content (a few bullet points). Without
+        # this guard those abbreviations would bypass the modal "every task
+        # has a compliant content" invariant the rest of the system relies on.
+        missing_sections = missing_task_template_sections(replan_content) if replan_content else ["（replan_content 为空）"]
+        if not replan_title or missing_sections:
+            triage_line = (
+                "AI triage: 建议 replan，但 replan_content 不符合 task-template "
+                f"（缺章节: {', '.join(missing_sections) if missing_sections else '无标题'}），"
+                f"已降级为 discard（{rationale or '当前任务需要重新规划'}）"
+            )
+            final_error = f"{error_message}\n{triage_line}".strip()
+            updated = mark_task_failed_fn(task, final_error)
+            decision["downgraded_to"] = "discard"
+            decision["downgrade_reason"] = "replan_content 模板不合规"
+            return {
+                "updated": updated,
+                "error_message": final_error,
+                "decision": decision,
+                "should_stop": True,
+            }
+
         followup = db_module.create_task(
             task["project"],
-            decision["replan_title"],
-            content=decision["replan_content"],
+            replan_title,
+            content=replan_content,
             agent=task.get("agent") or "dual",
             priority=task.get("priority") or "P2",
             project_path=task.get("project_path") or None,
