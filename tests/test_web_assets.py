@@ -105,6 +105,22 @@ def test_web_ui_bootstrap_wires_app_state_boundary_before_mount():
     assert "setup: CP.AppStateBoundary.setup," in app
 
 
+def test_web_ui_daemon_banner_points_to_ui_start_command():
+    app = Path("codepilot/web/app.js").read_text(encoding="utf-8")
+
+    assert "codepilot ui start" in app
+    assert "codepilot webui start" not in app
+
+
+def test_app_state_rebinds_daemon_health_when_project_changes():
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+
+    assert "watch(() => state.nav.project" in app_state
+    assert "loadDaemonHealth();" in app_state
+    assert "closeEventStream();" in app_state
+    assert "openEventStream();" in app_state
+
+
 def test_web_ui_uses_in_app_confirm_dialog_instead_of_browser_dialogs():
     app = Path("codepilot/web/app.js").read_text(encoding="utf-8")
     task_detail = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")

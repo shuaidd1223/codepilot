@@ -338,19 +338,24 @@ def daemon_health_payload(project: str | None = None, *, stale_after_seconds: in
     """
     from codepilot.runtime import is_process_alive
 
-    out = {
-        "alive": False,
-        "running": False,
-        "pid": 0,
-        "last_heartbeat": "",
-        "stale_seconds": 0,
-        "stale_after_seconds": int(stale_after_seconds),
-        "reason": "daemon 未运行",
-    }
+    def _base_payload() -> dict:
+        return {
+            "alive": False,
+            "running": False,
+            "pid": 0,
+            "project": "",
+            "last_heartbeat": "",
+            "stale_seconds": 0,
+            "stale_after_seconds": int(stale_after_seconds),
+            "reason": "daemon 未运行",
+        }
 
-    scope = (project or "").strip()
-    state = db.get_service_state("daemon", scope)
-    if state:
+    def _payload_from_state(state: dict | None) -> dict:
+        out = _base_payload()
+        if not state:
+            return out
+        meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
+        out["project"] = str(meta.get("project") or state.get("scope") or "")
         try:
             db_pid = int(state.get("pid") or 0)
         except Exception:
@@ -372,7 +377,37 @@ def daemon_health_payload(project: str | None = None, *, stale_after_seconds: in
                     return out
                 out["reason"] = f"daemon 心跳 {int(delta)}s 未更新（>{stale_after_seconds}s 阈值），可能已假死"
                 return out
-    return out
+        return out
+
+    out = _base_payload()
+    scope = (project or "").strip()
+    if scope:
+        state = db.get_service_state("daemon", scope)
+        return _payload_from_state(state)
+
+    candidates = []
+    for state in db.list_service_states("daemon"):
+        payload = _payload_from_state(state)
+        payload["_updated_at"] = str(state.get("updated_at") or state.get("heartbeat_at") or "")
+        candidates.append(payload)
+
+    if not candidates:
+        return out
+
+    def _rank(item: dict) -> tuple[int, str]:
+        if item.get("alive"):
+            return (0, str(item.get("_updated_at") or ""))
+        if item.get("running"):
+            return (1, str(item.get("_updated_at") or ""))
+        if item.get("last_heartbeat"):
+            return (2, str(item.get("_updated_at") or ""))
+        return (3, str(item.get("_updated_at") or ""))
+
+    best = max(candidates, key=lambda item: (-_rank(item)[0], _rank(item)[1]))
+    best.pop("_updated_at", None)
+    if not best.get("alive") and best.get("project") and best.get("reason"):
+        best["reason"] = f"项目 {best['project']}: {best['reason']}"
+    return best
 
 
 def _compose_log_text(task: dict) -> str:

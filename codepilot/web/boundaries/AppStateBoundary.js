@@ -749,6 +749,15 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       if (sseHandle) { sseHandle.close(); sseHandle = null; }
     }
 
+    let _mounted = false;
+    watch(() => state.nav.project, (nextProject, prevProject) => {
+      if (nextProject === prevProject) return;
+      loadDaemonHealth();
+      if (!_mounted) return;
+      closeEventStream();
+      openEventStream();
+    });
+
     /* ── Keyboard shortcuts ──────────────────────────── */
     function installKeyboardShortcuts() {
       document.addEventListener('keydown', (e) => {
@@ -785,6 +794,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
     }
 
     onMounted(() => {
+      _mounted = true;
       try { state.dark = localStorage.getItem('cp-dark') === '1'; } catch (e) { /* ignore */ }
       document.documentElement.dataset.theme = state.dark ? 'dark' : 'light';
       /* Restore sidebar expanded state BEFORE the first render so the
@@ -848,6 +858,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       window.addEventListener('hashchange', _onHashChange);
     });
     onUnmounted(() => {
+      _mounted = false;
       clearInterval(state.timer);
       closeEventStream();
       window.removeEventListener('hashchange', _onHashChange);

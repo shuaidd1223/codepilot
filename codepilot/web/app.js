@@ -24,7 +24,7 @@ const RootApp = {
               </span>
             </div>
             <div class="hint tiny">
-              启动：<code>codepilot daemon -p &lt;project&gt;</code> 或 <code>codepilot webui start</code>
+              启动：<code>codepilot daemon -p &lt;project&gt;</code> 或 <code>codepilot ui start</code>
             </div>
           </div>
           <cp-content-pane></cp-content-pane>

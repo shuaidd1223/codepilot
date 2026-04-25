@@ -111,6 +111,29 @@ def test_daemon_health_reads_project_service_state_from_db(tmp_path, monkeypatch
     assert payload["reason"] == ""
 
 
+def test_daemon_health_without_project_aggregates_project_scoped_service_states(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: int(pid) == 2222)
+
+    db.upsert_service_state(
+        "daemon",
+        "demo",
+        pid=2222,
+        status="running",
+        log_path="D:/tmp/demo-daemon.log",
+        meta={"project": "demo", "started_at": "2026-01-01T00:00:00"},
+    )
+    db.touch_service_state("daemon", "demo", pid=2222, status="running")
+
+    payload = daemon_health_payload(None, stale_after_seconds=120)
+
+    assert payload["project"] == "demo"
+    assert payload["pid"] == 2222
+    assert payload["alive"] is True
+    assert payload["reason"] == ""
+
+
 def test_projects_endpoint_lists_registered_project(ui_server):
     status, body = _get(f"{ui_server}/api/projects")
     assert status == 200
