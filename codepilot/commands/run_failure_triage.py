@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Optional
+
+from codepilot.commands.reviewer_output import ReviewerVerdict, parse_reviewer_output
 
 
 _DETERMINISTIC_FAILURE_TRIAGE_SCHEMA = {
@@ -109,6 +111,51 @@ def _build_deterministic_failure_triage_prompt(
     )
 
 
+def _format_reviewer_verdict_block(
+    reviewer_verdict: Optional[ReviewerVerdict],
+    *,
+    item_limit: int = 6,
+    item_char_limit: int = 160,
+) -> str:
+    """Render structured reviewer verdict items for the triage prompt.
+
+    Returns an empty string when the verdict is missing / parse failed /
+    has no actionable items. Caller stays compatible with reviewers that
+    only emitted free-form text.
+    """
+    if reviewer_verdict is None or reviewer_verdict.source == "empty":
+        return ""
+
+    blockers = [str(item).strip() for item in (reviewer_verdict.blockers or []) if str(item).strip()]
+    advisory = [str(item).strip() for item in (reviewer_verdict.advisory or []) if str(item).strip()]
+    failed_acs = [
+        item for item in (reviewer_verdict.ac_checks or [])
+        if str((item or {}).get("status") or "").strip().lower() == "fail"
+    ]
+    if not blockers and not advisory and not failed_acs:
+        return ""
+
+    lines: list[str] = ["reviewer 结构化反馈:"]
+    lines.append(f"- verdict: {reviewer_verdict.verdict} (source={reviewer_verdict.source})")
+    if blockers:
+        lines.append("- 阻塞项 blockers (必须在 replan_content / retry_hint 中明确引用):")
+        for idx, item in enumerate(blockers[:item_limit], start=1):
+            lines.append(f"  B{idx}. {_trim_triage_text(item, limit=item_char_limit)}")
+        if len(blockers) > item_limit:
+            lines.append(f"  ... 还有 {len(blockers) - item_limit} 条 blocker 未列出。")
+    if failed_acs:
+        lines.append("- 验收失败项 ac_checks(status=fail):")
+        for idx, item in enumerate(failed_acs[:item_limit], start=1):
+            ac_id = str((item or {}).get("id") or f"AC{idx}")
+            reason = _trim_triage_text(str((item or {}).get("reason") or ""), limit=item_char_limit) or "（无说明）"
+            lines.append(f"  - {ac_id}: {reason}")
+    if advisory:
+        lines.append("- 提醒项 advisory (非阻塞):")
+        for idx, item in enumerate(advisory[:item_limit], start=1):
+            lines.append(f"  A{idx}. {_trim_triage_text(item, limit=item_char_limit)}")
+    return "\n".join(lines)
+
+
 def _build_review_failure_triage_prompt(
     task: dict,
     *,
@@ -117,11 +164,13 @@ def _build_review_failure_triage_prompt(
     builder_output: str,
     candidates: list[dict],
     candidate_limit: int = _DETERMINISTIC_FAILURE_TRIAGE_CANDIDATE_LIMIT,
+    reviewer_verdict: Optional[ReviewerVerdict] = None,
 ) -> str:
     current_content = _trim_triage_text(task.get("content") or "", limit=500) or "（无）"
     current_error = _trim_triage_text(error_message, limit=500) or "（无）"
     review_summary = _trim_triage_text(review_output, limit=500) or "（无）"
     builder_summary = _trim_triage_text(builder_output, limit=400) or "（无）"
+    reviewer_block = _format_reviewer_verdict_block(reviewer_verdict)
     candidate_lines: list[str] = []
     for candidate in candidates[:candidate_limit]:
         candidate_lines.append(
@@ -135,6 +184,12 @@ def _build_review_failure_triage_prompt(
         )
 
     candidate_block = "\n".join(candidate_lines) if candidate_lines else "（无开放候选任务）"
+    reviewer_section = f"\n{reviewer_block}\n" if reviewer_block else ""
+    grounded_rule = (
+        "- replan 与 retry_with_hint 时，replan_content / retry_hint 必须**明确引用** reviewer "
+        "结构化反馈中的至少一条 blocker（用 B1/B2 编号或原文片段），不能凭空规划；"
+        "如果上面没有结构化 blockers，再退化到引用 review_output 中的具体片段。\n"
+    ) if reviewer_block else ""
     return (
         "你在做 review failure 的 AI triage。\n"
         "当前任务已经跑完 builder/reviewer 闭环，但 reviewer 最终仍未通过。"
@@ -151,6 +206,7 @@ def _build_review_failure_triage_prompt(
         "- retry_with_hint 时 retry_hint 必须是可直接追加到任务里的中文修复提示；其他动作的 retry_hint 置空。\n"
         "- replan 时必须给出 replan_title 和 replan_content；其他动作这两个字段置空。\n"
         "- merge_partial 时 merged_note 必须写成会追加到目标任务里的中文简述；discard 时可写一句简短处置说明；retry/replan 时可留空。\n"
+        f"{grounded_rule}"
         "- 不要输出 JSON 以外的内容。\n\n"
         f"当前失败任务:\n"
         f"- id: {task.get('id')}\n"
@@ -159,7 +215,8 @@ def _build_review_failure_triage_prompt(
         f"- content: {current_content}\n"
         f"- failure: {current_error}\n"
         f"- review_output: {review_summary}\n"
-        f"- builder_output: {builder_summary}\n\n"
+        f"- builder_output: {builder_summary}\n"
+        f"{reviewer_section}\n"
         "现有开放任务候选:\n"
         f"{candidate_block}\n\n"
         '输出 JSON: {"action":"discard|retry_with_hint|replan|merge_partial","matched_task_id":123|null,"rationale":"...","merged_note":"...","retry_hint":"...","replan_title":"...","replan_content":"..."}'
@@ -387,6 +444,13 @@ def _collect_review_failure_evidence(
     provider_cfg = config.providers.get(provider_key) if config and provider_key else None
     base_url = provider_cfg.base_url if provider_cfg else None
     planner = resolve_planner_fn(config, "automation")
+    # Parse the reviewer transcript so blockers / advisory / failed AC items
+    # become first-class signals in the triage prompt — replan_content can
+    # reference specific reviewer findings instead of guessing from prose.
+    try:
+        reviewer_verdict = parse_reviewer_output(review_output or "")
+    except Exception:
+        reviewer_verdict = None
     prompt = _build_review_failure_triage_prompt(
         task,
         error_message=error_message,
@@ -394,6 +458,7 @@ def _collect_review_failure_evidence(
         builder_output=builder_output,
         candidates=visible_candidates,
         candidate_limit=candidate_limit,
+        reviewer_verdict=reviewer_verdict,
     )
 
     return _TriageEvidence(

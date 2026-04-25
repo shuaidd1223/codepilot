@@ -510,3 +510,127 @@ def test_triage_deterministic_failure_skips_ai_without_resolved_project_path(tmp
 
     assert decision is None
     assert called["value"] is False
+
+
+def test_review_failure_prompt_injects_structured_reviewer_blockers():
+    """Triage prompt must surface parsed blockers + grounded-citation rule.
+
+    Without this, replan_content drifts to generic recommendations because
+    the AI only sees the trimmed reviewer prose; with structured blockers
+    in the prompt the AI can (and is required to) cite specific items.
+    """
+    from codepilot.commands.run_failure_triage import _build_review_failure_triage_prompt
+    from codepilot.commands.reviewer_output import ReviewerVerdict
+
+    verdict = ReviewerVerdict(
+        verdict="fail",
+        blockers=[
+            "缺少对空字符串输入的校验",
+            "异常路径里没有写日志",
+            "重复请求会重复落库",
+        ],
+        advisory=["函数命名建议改成 validate_payload"],
+        ac_checks=[
+            {"id": "AC2", "status": "fail", "reason": "空 body 直接 200"},
+            {"id": "AC1", "status": "pass", "reason": ""},
+        ],
+        source="json",
+    )
+    prompt = _build_review_failure_triage_prompt(
+        {"id": 7, "title": "校验输入", "priority": "P1", "content": "原始任务"},
+        error_message="reviewer FAIL",
+        review_output="...",
+        builder_output="...",
+        candidates=[],
+        reviewer_verdict=verdict,
+    )
+
+    assert "reviewer 结构化反馈" in prompt
+    assert "B1. 缺少对空字符串输入的校验" in prompt
+    assert "B2. 异常路径里没有写日志" in prompt
+    assert "B3. 重复请求会重复落库" in prompt
+    assert "AC2" in prompt and "空 body 直接 200" in prompt
+    # Passing AC must NOT show up in the failed-AC block.
+    assert "AC1" not in prompt.split("ac_checks(status=fail):", 1)[1].split("提醒项")[0] \
+        if "ac_checks(status=fail):" in prompt else True
+    assert "A1. 函数命名建议改成 validate_payload" in prompt
+    assert "明确引用" in prompt and "B1/B2" in prompt
+
+
+def test_review_failure_prompt_omits_block_when_verdict_empty():
+    """Empty / unparseable verdict must keep the legacy prompt shape.
+
+    Reviewers that haven't adopted the JSON fence still emit free-form
+    text; the triage flow must not regress for them.
+    """
+    from codepilot.commands.run_failure_triage import _build_review_failure_triage_prompt
+    from codepilot.commands.reviewer_output import ReviewerVerdict
+
+    verdict = ReviewerVerdict(verdict="unknown", source="empty")
+    prompt = _build_review_failure_triage_prompt(
+        {"id": 7, "title": "demo", "priority": "P2", "content": ""},
+        error_message="boom",
+        review_output="some prose without json fence",
+        builder_output="",
+        candidates=[],
+        reviewer_verdict=verdict,
+    )
+
+    assert "reviewer 结构化反馈" not in prompt
+    assert "B1." not in prompt
+    # The grounded-citation rule is only added when blockers exist.
+    assert "明确引用" not in prompt
+
+
+def test_review_failure_evidence_parses_review_output_for_prompt(tmp_path, monkeypatch):
+    """End-to-end: _collect_review_failure_evidence must parse review_output
+    and feed structured blockers into the prompt builder."""
+    from codepilot.commands import run_failure_triage as triage_mod
+
+    fake_config = types.SimpleNamespace(
+        classifier=types.SimpleNamespace(provider="codex", model="gpt-x", timeout=10),
+        providers={"codex": types.SimpleNamespace(base_url=None)},
+        get_provider_api_key=lambda key: "fake-key",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_build(task, **kwargs):
+        captured["reviewer_verdict"] = kwargs.get("reviewer_verdict")
+        return "<<prompt>>"
+
+    monkeypatch.setattr(triage_mod, "_build_review_failure_triage_prompt", fake_build)
+
+    review_output = (
+        "需要修复的点：\n- 缺少 200 行回归用例\n- HEAD 校验未覆盖\nVERDICT: FAIL"
+    )
+    project_path = tmp_path / "proj"
+    project_path.mkdir()
+
+    class FakeDB:
+        def list_tasks(self, project=None):
+            return []
+        def get_task(self, task_id):
+            return None
+        def get_project(self, name):
+            return {"name": name, "path": str(project_path), "config_file": ""}
+
+    evidence = triage_mod._collect_review_failure_evidence(
+        {"id": 9, "project": "demo", "title": "x", "content": "", "priority": "P2", "path": str(project_path)},
+        error_message="boom",
+        review_output=review_output,
+        builder_output="builder",
+        db_module=FakeDB(),
+        resolve_project_config_reference_fn=lambda task: str(project_path),
+        load_project_config_fn=lambda task: fake_config,
+        resolve_planner_fn=lambda config, kind: "codex",
+        candidate_limit=10,
+    )
+
+    assert evidence is not None
+    verdict = captured.get("reviewer_verdict")
+    assert verdict is not None
+    assert verdict.verdict == "fail"
+    assert verdict.source in {"legacy", "json"}
+    # The legacy parser collapses bullets into a single multiline blocker
+    # entry; what matters is at least one blocker reaches the prompt.
+    assert any("回归" in str(item) or "HEAD" in str(item) for item in verdict.blockers)
