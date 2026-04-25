@@ -835,12 +835,16 @@ def import_tasks_action(project: str, items: list[dict]) -> dict:
 
     created: list[dict] = []
     for item in normalized_items:
+        # 显式 mode=full：每条已经在上面做了完整 task-template 校验，落库时
+        # create_task_action 会重复一次校验作为兜底守卫，避免任何"未来谁
+        # 改了 import_tasks_action 校验"的回归把不合规 content 写进 backlog。
         task = create_task_action(
             project,
             item["title"],
             content=item["content"],
             priority=item["priority"],
             agent=item["agent"] or None,
+            mode="full",
         )["task"]
         if item["depends_on"]:
             updated = db.update_task(task["id"], depends_on=item["depends_on"])

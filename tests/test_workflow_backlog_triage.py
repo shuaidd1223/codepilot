@@ -784,3 +784,49 @@ def test_retry_with_hint_appends_structured_reviewer_blockers_to_task_content(tm
     assert "AC2: 空 body 直接 200" in content
     # advisory 也要带（非阻塞但提示 builder）
     assert "A1. 命名建议改成 validate_payload" in content
+
+
+def test_run_backlog_review_failure_falls_back_when_ai_triage_unavailable(tmp_path, monkeypatch):
+    """AI gateway 不可用时（triage_fn 返回 None）必须保留 legacy retry 行为。
+
+    没有这条 fallback，把 review-fail 路径接入 AI triage 后离线 / 限流场景
+    就会变成"无 AI = 直接 fail"——用户在 codex review 里专门提醒过这一点，
+    专项测试守住这条退化路径。
+    """
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "no ai available", max_retries=2)
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(
+            exit_code=2,
+            output="builder failed",
+            review_output="VERDICT: FAIL",
+            summary="review 未通过",
+            executor="builtin",
+        ),
+    )
+    # AI gateway 完全不可用：triage_fn 返回 None。
+    monkeypatch.setattr(run_cmd, "_triage_review_failure", lambda *a, **kw: None)
+
+    # 第 1 次：retry 预算还剩，应回退 backlog。
+    first = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+    assert first["requeued"] == 1
+    assert first["failed"] == 0
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 1
+
+    # 第 2 次：耗尽预算，应直接 mark failed，没有 AI triage 干预。
+    second = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+    assert second["failed"] == 1
+    assert current["status"] == "failed"
+    assert current["retry_count"] == 2
+    # 关键：error_message 不应包含 AI triage 标记，证明确实走了 legacy 路径。
+    assert "AI triage" not in (current["error_message"] or "")

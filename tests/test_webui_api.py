@@ -562,6 +562,24 @@ def test_import_tasks_via_api_rejects_invalid_template_content(ui_server):
     assert "缺少关键章节" in body["error"]
 
 
+def test_import_tasks_via_api_rejects_missing_content_field(ui_server):
+    """批量导入必须每条都有非空 content；占位通道已废除。"""
+    status, body = _post(
+        f"{ui_server}/api/tasks/import",
+        {
+            "project": "demo",
+            "items": [
+                {"title": "只有标题"},
+                {"title": "也只有标题", "content": ""},
+            ],
+        },
+    )
+
+    assert status == 400
+    err = str(body.get("error") or "")
+    assert "缺少 content" in err
+
+
 # ─── HTML page ──────────────────────────────────────────────────────────────
 
 def test_root_serves_html(ui_server):
