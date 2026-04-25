@@ -119,6 +119,7 @@ from codepilot.commands.run_builtin import (  # noqa: F401
 from codepilot.commands.run_failure_triage import (  # noqa: F401
     _DETERMINISTIC_FAILURE_TRIAGE_CANDIDATE_LIMIT,
     _DETERMINISTIC_FAILURE_TRIAGE_SCHEMA,
+    _REVIEW_FAILURE_TRIAGE_SCHEMA,
     _append_task_content,
     _build_deterministic_failure_triage_prompt,
     _format_triage_merge_note,
@@ -126,7 +127,9 @@ from codepilot.commands.run_failure_triage import (  # noqa: F401
     _iter_triage_candidates as _iter_triage_candidates_impl,
     _resolve_triage_project_context as _resolve_triage_project_context_impl,
     apply_deterministic_failure_triage as _apply_deterministic_failure_triage_impl,
+    apply_review_failure_triage as _apply_review_failure_triage_impl,
     triage_deterministic_failure as _triage_deterministic_failure_impl,
+    triage_review_failure as _triage_review_failure_impl,
 )
 from codepilot.commands.run_orchestrator import run_backlog as _run_backlog_orchestrated
 
@@ -289,6 +292,47 @@ def _apply_deterministic_failure_triage(task: dict, error_message: str) -> str:
     )
 
 
+def _triage_review_failure(
+    task: dict,
+    error_message: str,
+    *,
+    review_output: str = "",
+    output: str = "",
+) -> dict | None:
+    return _triage_review_failure_impl(
+        task,
+        error_message,
+        review_output=review_output,
+        builder_output=output,
+        db_module=db,
+        resolve_project_config_reference_fn=resolve_project_config_reference,
+        load_project_config_fn=load_project_config,
+        resolve_planner_fn=resolve_planner,
+        call_structured_fn=call_structured,
+        gateway_request_cls=GatewayRequest,
+        candidate_limit=_DETERMINISTIC_FAILURE_TRIAGE_CANDIDATE_LIMIT,
+    )
+
+
+def _apply_review_failure_triage(
+    task: dict,
+    error_message: str,
+    *,
+    review_output: str = "",
+    output: str = "",
+) -> dict:
+    return _apply_review_failure_triage_impl(
+        task,
+        error_message,
+        review_output=review_output,
+        builder_output=output,
+        triage_fn=_triage_review_failure,
+        mark_task_failed_fn=_mark_task_failed,
+        handle_failure_fn=_handle_failure,
+        db_module=db,
+    )
+
+
 def _mark_task_failed(task: dict, error_message: str) -> dict:
     current_retry = int(task.get("retry_count") or 0) + 1
     return clear_task_runtime(
@@ -330,6 +374,79 @@ def _cleanup_worktree_leftovers(
         return
     if killed:
         echo(f"[dim]任务 #{task_id} worktree 遗留进程已清理（PID={','.join(str(p) for p in killed)}）[/dim]")
+
+
+def _finalize_failed_task_workspace(
+    *,
+    task_id: int,
+    project_path: Path | str | None,
+    worktree_path: Path | str | None,
+    task_branch: str | None,
+    base_branch: str | None,
+) -> None:
+    """End-of-task housekeeping for failure / cancellation paths.
+
+    Goal: leave the repo in a state where the next ``run`` is unblocked even
+    when no human is around. Performs three best-effort steps:
+
+    1. Kill long-lived processes still running inside the worktree
+       (delegates to :func:`_cleanup_worktree_leftovers`).
+    2. Remove the worktree directory and delete the task branch so retries
+       and replans start from a clean slate; main repo never accumulates
+       orphaned task branches the way it used to.
+    3. Pull the main repo back to ``base_branch`` if a previous step left
+       HEAD elsewhere — autonomous loops assume the dashboard view is on
+       the configured base branch between tasks.
+
+    Every step swallows its own exceptions and surfaces a yellow warning
+    so a cleanup hiccup can never mask the real failure cause.
+    """
+    _cleanup_worktree_leftovers(worktree_path, project_path, task_id=task_id)
+
+    if not project_path:
+        return
+    try:
+        pp = Path(project_path)
+    except Exception:
+        return
+    if not _git_is_repo(pp):
+        return
+
+    branch = (task_branch or "").strip()
+    wt = None
+    try:
+        if worktree_path:
+            wt = Path(worktree_path).resolve()
+    except Exception:
+        wt = None
+
+    same_as_main = wt is not None and wt == pp.resolve()
+    if branch and not same_as_main and worktree_path:
+        try:
+            _git_cleanup_task_worktree(
+                pp,
+                worktree_path=worktree_path,
+                task_branch=branch,
+                keep_branch=False,
+            )
+            echo(f"[dim]任务 #{task_id} worktree 与分支 {branch} 已自动清理[/dim]")
+        except Exception as exc:
+            echo(
+                f"[yellow]任务 #{task_id} worktree/分支自动清理失败: {safe(exc)}[/yellow]"
+            )
+
+    base = (base_branch or "").strip()
+    if not base:
+        return
+    try:
+        if not _git_local_branch_exists(pp, base):
+            return
+        current = _git_current_branch(pp) or ""
+        if current and current != base and not _git_has_changes(pp):
+            _git_checkout(pp, base)
+            echo(f"[dim]主仓库已切回 {base}[/dim]")
+    except Exception as exc:
+        echo(f"[yellow]切回 base_branch={base} 失败: {safe(exc)}[/yellow]")
 
 
 def _tail_lines(text: str, max_lines: int = 12) -> list[str]:

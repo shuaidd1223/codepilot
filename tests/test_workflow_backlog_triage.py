@@ -181,6 +181,169 @@ def test_run_backlog_deterministic_failure_can_discard_triage_followup(tmp_path,
     assert untouched_target["content"] == "保持不变"
 
 
+def test_run_backlog_review_failure_retry_with_hint_requeues_and_appends_hint(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "broken task", content="原始任务内容", max_retries=3)
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(
+            exit_code=2,
+            output="builder failed",
+            review_output="请先修复遗漏校验\nVERDICT: FAIL",
+            summary="review 未通过",
+            executor="builtin",
+            deterministic_failure=True,
+        ),
+    )
+
+    call_order: list[str] = []
+
+    def fake_cleanup(**kwargs):
+        call_order.append("cleanup")
+
+    def fake_call_structured(request):
+        assert call_order == ["cleanup"]
+        return GatewayResponse(
+            ok=True,
+            source="cli:codex",
+            payload={
+                "action": "retry_with_hint",
+                "matched_task_id": None,
+                "rationale": "任务目标没问题，但需要把 reviewer 的阻塞点明确灌回去",
+                "merged_note": "",
+                "retry_hint": "先补上遗漏校验，再重新跑 review，不要改其它文件。",
+                "replan_title": "",
+                "replan_content": "",
+            },
+        )
+
+    monkeypatch.setattr(run_cmd, "_finalize_failed_task_workspace", fake_cleanup)
+    monkeypatch.setattr(run_cmd, "call_structured", fake_call_structured)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+
+    assert stats["failed"] == 0
+    assert stats["requeued"] == 1
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 1
+    assert "AI triage: 已追加重试提示并回退 backlog" in (current["error_message"] or "")
+    assert "AI triage 重试提示" in (current["content"] or "")
+    assert "先补上遗漏校验" in (current["content"] or "")
+
+
+def test_run_backlog_review_failure_replans_into_new_backlog_task(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "broken task", content="原始任务内容", max_retries=3)
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(
+            exit_code=2,
+            output="builder failed",
+            review_output="当前任务范围太大\nVERDICT: FAIL",
+            summary="review 未通过",
+            executor="builtin",
+            deterministic_failure=True,
+        ),
+    )
+    monkeypatch.setattr(
+        run_cmd,
+        "call_structured",
+        lambda request: GatewayResponse(
+            ok=True,
+            source="cli:codex",
+            payload={
+                "action": "replan",
+                "matched_task_id": None,
+                "rationale": "当前任务范围过大，应该拆成更聚焦的后续任务",
+                "merged_note": "",
+                "retry_hint": "",
+                "replan_title": "补齐 reviewer 指出的输入校验缺口",
+                "replan_content": "## 任务目标\n\n只修输入校验，不处理其它重构。\n\n## 验收标准\n\n- reviewer 不再指出遗漏校验",
+            },
+        ),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+    tasks = db.list_tasks(project="demo")
+    followups = [item for item in tasks if item["id"] != task["id"]]
+
+    assert stats["failed"] == 1
+    assert stats["requeued"] == 0
+    assert current["status"] == "failed"
+    assert current["retry_count"] == 1
+    assert len(followups) == 1
+    assert followups[0]["status"] == "backlog"
+    assert followups[0]["title"] == "补齐 reviewer 指出的输入校验缺口"
+    assert "AI triage 来源" in (followups[0]["content"] or "")
+    assert f"AI triage: 已转成新任务 #{followups[0]['id']}" in (current["error_message"] or "")
+
+
+def test_run_backlog_review_failure_can_merge_partial_into_existing_task(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "broken task", max_retries=3)
+    target = db.create_task("demo", "统一处理 reviewer 遗留项", content="已有 backlog 内容")
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(
+            exit_code=2,
+            output="builder failed",
+            review_output="VERDICT: FAIL",
+            summary="review 未通过",
+            executor="builtin",
+            deterministic_failure=True,
+        ),
+    )
+    monkeypatch.setattr(
+        run_cmd,
+        "call_structured",
+        lambda request: GatewayResponse(
+            ok=True,
+            source="cli:codex",
+            payload={
+                "action": "merge_partial",
+                "matched_task_id": target["id"],
+                "rationale": "已有 backlog 任务覆盖这类 reviewer 修复",
+                "merged_note": "补充这次 reviewer 失败的上下文，统一处理。",
+                "retry_hint": "",
+                "replan_title": "",
+                "replan_content": "",
+            },
+        ),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+    merged_target = db.get_task(target["id"])
+
+    assert stats["failed"] == 1
+    assert stats["requeued"] == 0
+    assert current["status"] == "failed"
+    assert current["retry_count"] == 1
+    assert f"AI triage: 已归并到 #{target['id']}" in (current["error_message"] or "")
+    assert "AI triage 归并记录" in (merged_target["content"] or "")
+    assert f"来源任务: #{task['id']} {task['title']}" in (merged_target["content"] or "")
+
+
 def test_apply_deterministic_failure_triage_rejects_merge_to_unsurfaced_candidate(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

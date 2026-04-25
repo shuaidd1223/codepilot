@@ -340,7 +340,13 @@ def _handle_executor_cancelled(
         stop_requested=0,
         stop_reason=None,
     )
-    runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
+    runner._finalize_failed_task_workspace(
+        task_id=task_id,
+        project_path=context.project_path,
+        worktree_path=workspace.execution_path,
+        task_branch=workspace.task_branch,
+        base_branch=context.base_branch,
+    )
     runner.echo(f"[yellow]任务 #{task_id} 已停止[/yellow]")
     runner.notify_task_status(str(context.project_path), task_id, task["title"], "cancelled", str(exc))
     stats["cancelled"] += 1
@@ -376,6 +382,7 @@ def _handle_executor_exception(
     context: _RunContext,
     task: dict,
     task_id: int,
+    workspace: _TaskWorkspacePlan | None,
     error_text: str,
     retry_on_failure: bool,
     project: str,
@@ -399,6 +406,14 @@ def _handle_executor_exception(
         runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_text)
     else:
         stats["requeued"] += 1
+    if workspace is not None:
+        runner._finalize_failed_task_workspace(
+            task_id=task_id,
+            project_path=context.project_path,
+            worktree_path=workspace.execution_path,
+            task_branch=workspace.task_branch,
+            base_branch=context.base_branch,
+        )
     runner._show_failure_feedback(
         task_id,
         title=task["title"],
@@ -443,15 +458,35 @@ def _handle_execution_result(
     else:
         error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
         if result.deterministic_failure:
-            error_message = runner._apply_deterministic_failure_triage(task, error_message)
-            updated = runner._mark_task_failed(task, error_message)
-            should_stop = context.executor == "builtin"
-        elif retry_on_failure:
-            updated, should_stop = runner._handle_failure(task, error_message, stop_on_failure=(context.executor == "builtin"))
-        else:
-            updated = runner._mark_task_failed(task, error_message)
+            runner._finalize_failed_task_workspace(
+                task_id=task_id,
+                project_path=context.project_path,
+                worktree_path=workspace.execution_path,
+                task_branch=workspace.task_branch,
+                base_branch=context.base_branch,
+            )
+            triage_result = runner._apply_review_failure_triage(
+                task,
+                error_message,
+                review_output=result.review_output,
+                output=result.output,
+            )
+            updated = triage_result["updated"]
+            error_message = triage_result["error_message"]
             should_stop = True
-        runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
+        else:
+            if retry_on_failure:
+                updated, should_stop = runner._handle_failure(task, error_message, stop_on_failure=(context.executor == "builtin"))
+            else:
+                updated = runner._mark_task_failed(task, error_message)
+                should_stop = True
+            runner._finalize_failed_task_workspace(
+                task_id=task_id,
+                project_path=context.project_path,
+                worktree_path=workspace.execution_path,
+                task_branch=workspace.task_branch,
+                base_branch=context.base_branch,
+            )
         if updated["status"] == "failed":
             stats["failed"] += 1
             runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_message)
@@ -600,6 +635,7 @@ def run_backlog(
                 context=context,
                 task=task,
                 task_id=task_id,
+                workspace=workspace,
                 error_text=str(exc),
                 retry_on_failure=retry_on_failure,
                 project=project,
