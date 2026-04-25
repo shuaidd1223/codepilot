@@ -252,9 +252,21 @@ def test_split_phase_helpers_preserve_runtime_phase_log_phase_and_review_bounds(
     assert "fix the failed AC" in calls[1]["prompt"]
 
     assert [entry["phase"] for entry in logs] == ["builder-r2", "reviewer-r2"]
-    assert [event["stage"] for event in events[:2]] == ["builder", "reviewer"]
-    assert events[0]["extra"] == {"round": 2, "round_total": 3}
-    assert events[1]["extra"] == {"round": 2, "round_total": 3}
+    # ``stage`` carries the per-round display label (e.g. "builder r2/3") so
+    # the Web UI can fold each round independently; the canonical phase
+    # identity lives in ``extra.phase_kind``. Each round emits at least
+    # ``phase_start`` and ``phase_end`` events, so filter to phase_start to
+    # assert builder/reviewer ordering.
+    starts = [
+        event for event in events
+        if (event.get("extra") or {}).get("phase_kind") in {"builder", "reviewer"}
+        and event.get("type") == "phase_start"
+    ]
+    assert [event["extra"]["phase_kind"] for event in starts[:2]] == ["builder", "reviewer"]
+    assert [event["stage"] for event in starts[:2]] == ["builder r2/3", "reviewer r2/3"]
+    for event in starts[:2]:
+        assert event["extra"]["round"] == 2
+        assert event["extra"]["round_total"] == 3
 
 
 def test_reviewer_round_continues_when_changed_file_detection_fails(
