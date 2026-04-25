@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import re
 
 from codepilot import logger as logger_mod
 
@@ -79,3 +81,39 @@ def test_caplog_captures_warning_without_enabling_propagation(monkeypatch, tmp_p
 
     assert [rec.getMessage() for rec in caplog.records] == ["inline secret warning"]
     assert logger_mod.get_logger().propagate is False
+
+
+def test_warning_is_rendered_to_stderr_with_time_and_level(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(logger_mod, "_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(logger_mod, "_LOG_FILE", tmp_path / "logs" / "codepilot.log")
+
+    logger = logger_mod.get_logger("config")
+    logger.warning("console warning")
+
+    captured = capsys.readouterr()
+    assert "console warning" in captured.err
+    assert "WARNING" in captured.err
+    assert "codepilot.config" in captured.err
+    assert re.search(r"\d{2}:\d{2}:\d{2}", captured.err)
+
+
+def test_logger_rebinds_stderr_when_capture_stream_changes(monkeypatch, tmp_path):
+    monkeypatch.setattr(logger_mod, "_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(logger_mod, "_LOG_FILE", tmp_path / "logs" / "codepilot.log")
+
+    first = io.StringIO()
+    second = io.StringIO()
+    monkeypatch.setattr(logger_mod.sys, "stderr", first)
+
+    logger = logger_mod.get_logger("config")
+    logger.warning("first warning")
+
+    first.close()
+    monkeypatch.setattr(logger_mod.sys, "stderr", second)
+
+    logger = logger_mod.get_logger("config")
+    logger.warning("second warning")
+
+    rendered = second.getvalue()
+    assert "second warning" in rendered
+    assert "WARNING" in rendered

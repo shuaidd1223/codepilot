@@ -28,20 +28,28 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
+
+from rich.console import Console
+from rich.logging import RichHandler
 
 _LOG_DIR: Optional[Path] = None
 _LOG_FILE: Optional[Path] = None
 _LOGGER_NAME = "codepilot"
 _CONFIGURED = False
 _PYTEST_CAPTURE_HANDLER = ("_pytest.logging", "LogCaptureHandler")
+_STDERR_HANDLER_MARKER = "_codepilot_stderr_handler"
 
 
 def _resolve_log_level() -> int:
     raw = os.environ.get("CODEPILOT_LOG_LEVEL", "INFO").strip().upper()
-    return logging.getLevelName(raw) if raw else logging.INFO
+    if not raw:
+        return logging.INFO
+    resolved = logging.getLevelName(raw)
+    return resolved if isinstance(resolved, int) else logging.INFO
 
 
 def _infer_project_log_file() -> Path | None:
@@ -108,6 +116,7 @@ def _ensure_configured() -> logging.Logger:
     global _CONFIGURED
     logger = logging.getLogger(_LOGGER_NAME)
     if _CONFIGURED:
+        _sync_stderr_handler(logger)
         _sync_pytest_capture_handler(logger)
         return logger
 
@@ -137,16 +146,49 @@ def _ensure_configured() -> logging.Logger:
         pass
 
     # Stderr so it doesn't pollute stdout (important for --json commands).
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(fmt)
-    # Console mirrors at WARNING to avoid spamming the terminal with INFO;
-    # the file handler keeps the full trail.
-    stream_handler.setLevel(logging.WARNING)
-    logger.addHandler(stream_handler)
+    logger.addHandler(_create_stderr_handler())
 
     _CONFIGURED = True
     _sync_pytest_capture_handler(logger)
     return logger
+
+
+def _create_stderr_handler() -> RichHandler:
+    handler = RichHandler(
+        console=Console(file=sys.stderr, stderr=True, highlight=False),
+        show_time=True,
+        omit_repeated_times=False,
+        show_level=True,
+        show_path=False,
+        markup=False,
+        rich_tracebacks=False,
+        log_time_format="%H:%M:%S",
+    )
+    handler.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
+    # Console mirrors at WARNING to avoid spamming the terminal with INFO;
+    # the file handler keeps the full trail.
+    handler.setLevel(logging.WARNING)
+    setattr(handler, _STDERR_HANDLER_MARKER, True)
+    return handler
+
+
+def _sync_stderr_handler(logger: logging.Logger) -> None:
+    handler = next(
+        (item for item in logger.handlers if getattr(item, _STDERR_HANDLER_MARKER, False)),
+        None,
+    )
+    current = sys.stderr
+    if handler is not None:
+        bound = getattr(getattr(handler, "console", None), "file", None)
+        if bound is current and not getattr(bound, "closed", False):
+            return
+        logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    logger.addHandler(_create_stderr_handler())
 
 
 def _is_pytest_capture_handler(handler: logging.Handler) -> bool:

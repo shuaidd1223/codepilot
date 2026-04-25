@@ -486,18 +486,16 @@ def _run_loop(
                 echo(f"[yellow]已回收卡住任务 #{task['id']}：{task['title']}[/yellow]")
 
             stats = _get_combined_stats(project)
-            timestamp = time.strftime("%H:%M:%S")
-
             if stats["backlog"] == 0:
                 if verbose:
-                    echo(f"[dim][{timestamp}] 空闲，backlog: 0[/dim]")
+                    echo("[dim]空闲，backlog: 0[/dim]")
                 if _sleep_or_stop(project, interval):
                     echo("[yellow]收到停止轮询请求，退出 daemon。[/yellow]")
                     break
                 continue
 
             echo(
-                f"[bold][{timestamp}][/bold] [green]backlog: {stats['backlog']}[/green]  "
+                f"[green]backlog: {stats['backlog']}[/green]  "
                 f"[blue]in-progress: {stats['in_progress']}[/blue]"
             )
 
@@ -523,7 +521,7 @@ def _run_loop(
             if verbose:
                 for name, result in zip(targets, results):
                     echo(
-                        f"[dim][{timestamp}] {name}: processed={result['processed']} "
+                        f"[dim]{name}: processed={result['processed']} "
                         f"done={result['done']} failed={result['failed']} "
                         f"requeued={result['requeued']}[/dim]"
                     )
