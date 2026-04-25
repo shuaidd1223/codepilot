@@ -460,11 +460,17 @@ def _finalize_failed_task_workspace(
 
     # 切回 base 必须先于删任务分支，否则 HEAD 还指着任务分支，git branch -D
     # 会被 git 拒绝。只有在工作区干净时才切，避免 builder 半提交的代码被
-    # 静默丢弃。
+    # 静默丢弃。current_after_checkout 用来下面的删分支守卫看 HEAD 是否
+    # 真的回到了 base —— 如果没回到（脏工作区 / checkout 抛异常），删分支
+    # 必须跳过，否则会撞上"git refused to delete the currently checked-out
+    # branch" 留一堆 yellow warning + 分支照样残留。
+    current_after_checkout = ""
     try:
         current = _git_current_branch(pp) or ""
+        current_after_checkout = current
         if current and current != base and not _git_has_changes(pp):
             _git_checkout(pp, base)
+            current_after_checkout = base
             echo(f"[dim]主仓库已切回 {base}[/dim]")
     except Exception as exc:
         echo(f"[yellow]切回 base_branch={base} 失败: {safe(exc)}[/yellow]")
@@ -475,6 +481,16 @@ def _finalize_failed_task_workspace(
     # exists / used by worktree" 卡住。worktree 模式上面已经 -D 过了，这里
     # 保险性二次检查；不会重复删。
     if branch and branch != base and same_as_main:
+        # 关键守卫：HEAD 必须真的已经在 base 才能 -D。否则（脏工作区跳过了
+        # checkout / checkout 失败）当前分支就是任务分支，git 会拒删 + 警告
+        # 噪音，自愈语义假阳。这种情况下显式留下分支，告诉用户人工处理。
+        if current_after_checkout != base:
+            echo(
+                f"[yellow]任务 #{task_id} 分支 {branch} 暂未清理：HEAD 仍在 "
+                f"{current_after_checkout or '(未知)'}（工作区可能有未提交改动），"
+                "请手工 `git switch <base> && git branch -D <branch>`。[/yellow]"
+            )
+            return
         try:
             if _git_local_branch_exists(pp, branch):
                 code, output = _run_command(

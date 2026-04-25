@@ -280,6 +280,50 @@ def test_create_task_ai_complete_mode_invokes_generation(ui_server, monkeypatch)
     assert "Task Goal" in (saved.get("content") or "")
 
 
+def test_create_task_ai_complete_mode_rejects_when_generation_returns_incomplete(ui_server, monkeypatch):
+    """mode=ai_complete + AI 给出缺章节内容 → 必须拒绝，不写 backlog。"""
+    from codepilot import ai as ai_mod
+    monkeypatch.setattr(
+        ai_mod,
+        "generate_task_content",
+        lambda *a, **kw: "# 标题\n\n只有几行散文，没有 task-template 9 章节。",
+    )
+
+    before = len(db.list_tasks(project="demo"))
+    status, body = _post(f"{ui_server}/api/tasks", {
+        "project": "demo",
+        "title": "AI 输出残缺",
+        "mode": "ai_complete",
+    })
+    assert status in (400, 500) or (status == 200 and not body.get("ok", True))
+    text = str(body.get("error") or body)
+    assert "缺少模板必需章节" in text
+    after = len(db.list_tasks(project="demo"))
+    assert before == after, "AI 输出残缺时不能写入 backlog"
+
+
+def test_create_task_ai_complete_mode_rejects_when_generation_raises(ui_server, monkeypatch):
+    """mode=ai_complete + AI 抛 RuntimeError → 必须拒绝并保留可读错误。"""
+    from codepilot import ai as ai_mod
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(ai_mod, "generate_task_content", _raise)
+
+    before = len(db.list_tasks(project="demo"))
+    status, body = _post(f"{ui_server}/api/tasks", {
+        "project": "demo",
+        "title": "provider down",
+        "mode": "ai_complete",
+    })
+    assert status in (400, 500) or (status == 200 and not body.get("ok", True))
+    text = str(body.get("error") or body)
+    assert "AI 生成任务内容失败" in text
+    after = len(db.list_tasks(project="demo"))
+    assert before == after
+
+
 def test_create_task_requirement_mode_redirects_with_error(ui_server):
     """mode=requirement 不应走 /api/tasks，应转 /api/requirements。守卫报错引导。"""
     status, body = _post(f"{ui_server}/api/tasks", {

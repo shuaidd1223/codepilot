@@ -909,6 +909,13 @@ def apply_review_failure_triage(
             "should_stop": retry_should_stop or updated["status"] == "failed",
         }
 
+    # 所有终态分支（replan / merge_partial / discard / replan-downgrade）的
+    # ``should_stop`` 都跟随 stop_on_failure：
+    # - builtin 执行器传 True → 单任务失败立即停 run loop（符合既有语义）
+    # - dispatch 执行器传 False → 单任务失败但 run loop 继续跑下一条
+    # 之前硬编码 True 会让 dispatch 模式被 AI triage 意外放大成"整轮停止"。
+    terminal_should_stop = bool(stop_on_failure)
+
     if action == "replan":
         replan_title = str(decision.get("replan_title") or "").strip()
         replan_content = str(decision.get("replan_content") or "").strip()
@@ -933,7 +940,7 @@ def apply_review_failure_triage(
                 "updated": updated,
                 "error_message": final_error,
                 "decision": decision,
-                "should_stop": True,
+                "should_stop": terminal_should_stop,
             }
 
         followup = db_module.create_task(
@@ -959,7 +966,7 @@ def apply_review_failure_triage(
             "updated": updated,
             "error_message": final_error,
             "decision": decision,
-            "should_stop": True,
+            "should_stop": terminal_should_stop,
         }
 
     if action == "merge_partial":
@@ -975,5 +982,5 @@ def apply_review_failure_triage(
         "updated": updated,
         "error_message": final_error,
         "decision": decision,
-        "should_stop": True,
+        "should_stop": terminal_should_stop,
     }

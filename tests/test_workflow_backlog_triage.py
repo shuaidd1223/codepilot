@@ -830,3 +830,75 @@ def test_run_backlog_review_failure_falls_back_when_ai_triage_unavailable(tmp_pa
     assert current["retry_count"] == 2
     # 关键：error_message 不应包含 AI triage 标记，证明确实走了 legacy 路径。
     assert "AI triage" not in (current["error_message"] or "")
+
+
+def test_replan_downgrade_respects_stop_on_failure_for_dispatch_mode(tmp_path, monkeypatch):
+    """replan_content 不合规降级 discard 时，should_stop 必须复用 stop_on_failure。
+
+    硬编码 True 会让 dispatch 模式（stop_on_failure=False）的"单任务失败"
+    被错误放大成"整轮 run 停止"。codex 第二次 review 抓到的语义回归。
+    """
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "needs replan but ai gives garbage", max_retries=3)
+
+    captured: dict[str, object] = {}
+
+    def fake_mark_failed(t, err):
+        captured["mark_failed_called"] = True
+        return db.update_task(t["id"], status="failed", error_message=err[:4000])
+
+    def fake_handle_failure(*a, **kw):
+        captured["handle_failure_called"] = True
+        return db.get_task(task["id"]), True
+
+    def fake_triage(task_arg, error_message, **kwargs):
+        return {
+            "action": "replan",
+            "matched_task_id": None,
+            "rationale": "AI 想拆分但内容残缺",
+            "merged_note": "",
+            "retry_hint": "",
+            "replan_title": "",            # 缺标题 → 降级
+            "replan_content": "## 任务目标\n仅一段散文",  # 缺章节 → 降级
+        }
+
+    from codepilot.commands.run_failure_triage import apply_review_failure_triage
+
+    # dispatch 模式：stop_on_failure=False
+    result_dispatch = apply_review_failure_triage(
+        {"id": task["id"], "project": "demo", "title": "x", "content": "原始", "agent": "dual",
+         "priority": "P2", "max_retries": 3},
+        "review failed",
+        review_output="VERDICT: FAIL",
+        builder_output="",
+        triage_fn=fake_triage,
+        mark_task_failed_fn=fake_mark_failed,
+        handle_failure_fn=fake_handle_failure,
+        db_module=db,
+        retry_on_failure=True,
+        stop_on_failure=False,
+    )
+
+    assert result_dispatch["decision"]["downgraded_to"] == "discard"
+    assert result_dispatch["should_stop"] is False, (
+        "stop_on_failure=False 必须不被降级路径硬编码 True 覆盖"
+    )
+
+    # builtin 模式：stop_on_failure=True 仍然保留 True
+    result_builtin = apply_review_failure_triage(
+        {"id": task["id"], "project": "demo", "title": "x", "content": "原始", "agent": "dual",
+         "priority": "P2", "max_retries": 3},
+        "review failed",
+        review_output="VERDICT: FAIL",
+        builder_output="",
+        triage_fn=fake_triage,
+        mark_task_failed_fn=fake_mark_failed,
+        handle_failure_fn=fake_handle_failure,
+        db_module=db,
+        retry_on_failure=True,
+        stop_on_failure=True,
+    )
+    assert result_builtin["should_stop"] is True

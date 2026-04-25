@@ -1137,3 +1137,57 @@ def test_finalize_failed_task_workspace_keeps_branch_when_worktree_dirty(tmp_pat
     assert run_cmd._git_current_branch(project_path) == branch
     # And the branch must NOT be deleted (would lose history).
     assert run_cmd._git_local_branch_exists(project_path, branch) is True
+
+
+def test_finalize_failed_task_workspace_skips_branch_delete_when_head_not_on_base(tmp_path):
+    """脏工作区跳过 checkout base 后，必须同时跳过 git branch -D。
+
+    没有这条守卫，``git branch -D <current_branch>`` 会被拒，留下一堆
+    "branch 删除失败" 的 yellow warning，分支照样残留。codex 第二次
+    review 抓到的真实回归。
+    """
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    base_branch = _git_init_repo(project_path)
+
+    branch = run_cmd._git_prepare_task_branch(
+        project_path,
+        task_id=99,
+        title="head still on dirty branch",
+        base_branch=base_branch,
+    )
+    assert branch
+    # builder 半提交：工作区脏
+    (project_path / "scratch.txt").write_text("half-baked\n", encoding="utf-8")
+
+    # 给 _run_command 加 spy，确认从未被调来执行 git branch -D 当前分支
+    original_run = run_cmd._run_command
+    branch_delete_attempts: list[list[str]] = []
+
+    def _tracking_run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 3 and cmd[:2] == ["git", "branch"] and "-D" in cmd:
+            branch_delete_attempts.append(list(cmd))
+        return original_run(cmd, **kwargs)
+
+    import codepilot.commands.run as run_module
+    original_attr = run_module._run_command
+    run_module._run_command = _tracking_run
+    try:
+        run_cmd._finalize_failed_task_workspace(
+            task_id=99,
+            project_path=project_path,
+            worktree_path=project_path,
+            task_branch=branch,
+            base_branch=base_branch,
+        )
+    finally:
+        run_module._run_command = original_attr
+
+    # HEAD 仍在脏分支（守卫生效）
+    assert run_cmd._git_current_branch(project_path) == branch
+    # 分支必须仍在（没尝试删 = 没失败）
+    assert run_cmd._git_local_branch_exists(project_path, branch) is True
+    # 关键断言：从未对当前分支执行 git branch -D（不是"试了但失败了"，是"从一开始就跳过"）
+    assert branch_delete_attempts == [], (
+        f"expected zero branch-delete attempts when HEAD stays on task branch, got {branch_delete_attempts}"
+    )
