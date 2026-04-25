@@ -129,4 +129,22 @@ def maybe_cli_renderer(*, enabled: bool = True) -> Iterator[None]:
         with cli_renderer():
             yield
     finally:
+        # ``reset`` is critical: if an exception elsewhere skipped this we'd
+        # leak the True flag into the next ``maybe_cli_renderer`` call (in
+        # the same thread / async context), making it silently no-op. The
+        # ``finally`` already guards the happy path; ``clear_for_tests()``
+        # below covers the rare path where pytest reuses the worker thread
+        # across tests and the previous test crashed before reaching here.
         _CLI_RENDERER_ACTIVE.reset(token)
+
+
+def clear_for_tests() -> None:
+    """Reset the active-renderer flag. Safe to call from test fixtures.
+
+    pytest reuses the worker thread across tests, so a ContextVar set by an
+    earlier test that crashed before its ``finally`` could swallow the next
+    test's ``maybe_cli_renderer`` attach (it would think a renderer is
+    already active and yield without subscribing). Tests should call this
+    in setup/teardown together with ``progress_bus.clear_subscribers_for_tests()``.
+    """
+    _CLI_RENDERER_ACTIVE.set(False)

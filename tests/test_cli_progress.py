@@ -19,6 +19,7 @@ from codepilot import cli_progress, output as output_mod, progress_bus
 @pytest.fixture(autouse=True)
 def _reset_state(monkeypatch):
     progress_bus.clear_subscribers_for_tests()
+    cli_progress.clear_for_tests()
     buf = io.StringIO()
     monkeypatch.setattr(output_mod, "_CONSOLE", None)
     monkeypatch.setattr(output_mod, "_CONSOLE_STREAM", None)
@@ -31,6 +32,7 @@ def _reset_state(monkeypatch):
     monkeypatch.setattr(output_mod, "_now_text", lambda: "12:00:00")
     yield buf
     progress_bus.clear_subscribers_for_tests()
+    cli_progress.clear_for_tests()
 
 
 def test_renderer_prints_info_events_with_stage_prefix(_reset_state):
@@ -131,3 +133,49 @@ def test_maybe_cli_renderer_is_noop_when_nested(_reset_state, monkeypatch):
             pass
 
     assert calls == ["enter", "exit"]
+
+
+def test_maybe_cli_renderer_resets_active_flag_when_inner_block_raises(_reset_state):
+    """maybe_cli_renderer 内部抛异常后必须保证 ContextVar 复位。
+
+    没有这条守卫，下一次 maybe_cli_renderer 会以为已经有 active renderer
+    直接 yield 不订阅，CLI 就再也看不到 heartbeat 了。
+    """
+    buf = _reset_state
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with cli_progress.maybe_cli_renderer():
+            progress_bus.emit(stage="planner", message="before")
+            raise RuntimeError("boom")
+
+    # 内层异常已经抛出 → ContextVar 必须自动复位。第二次 attach 应当
+    # 重新订阅并真正渲染事件。
+    with cli_progress.maybe_cli_renderer():
+        progress_bus.emit(stage="planner", message="after")
+
+    rendered = buf.getvalue()
+    assert "before" in rendered, "first attach should still publish before raising"
+    assert "after" in rendered, "second attach must subscribe again after exception"
+
+
+def test_clear_for_tests_recovers_from_leaked_active_flag(_reset_state):
+    """如果上一个测试 crash 没走到 finally，ContextVar 残留 True；
+    clear_for_tests 必须把它清掉，否则后续 maybe_cli_renderer 会被静默跳过。
+    """
+    buf = _reset_state
+
+    # 模拟前一个测试 leak 的状态：ContextVar 设成 True 但没 reset。
+    cli_progress._CLI_RENDERER_ACTIVE.set(True)
+
+    # 不调 clear_for_tests 直接 attach 会被认为已 active → 不订阅。
+    with cli_progress.maybe_cli_renderer():
+        progress_bus.emit(stage="planner", message="leaked-state")
+    assert "leaked-state" not in buf.getvalue(), (
+        "sanity check: leaked True flag suppresses subscription"
+    )
+
+    # 调 clear_for_tests 之后 attach 应当恢复正常。
+    cli_progress.clear_for_tests()
+    with cli_progress.maybe_cli_renderer():
+        progress_bus.emit(stage="planner", message="recovered")
+    assert "recovered" in buf.getvalue()
