@@ -281,7 +281,9 @@ AGENT_CHOICES = [
 @click.option("--priority", type=click.Choice(["P0", "P1", "P2", "P3"]), default="P2",
               help="优先级")
 @click.option("--no-ai", is_flag=True, default=False,
-              help="跳过 AI 生成；单条/纯文本批量可留空，JSON 批量缺 content 会拒绝")
+              help="跳过 AI 生成。单条/纯文本批量需配合 --allow-empty 才能留空；JSON 批量缺 content 直接拒绝。")
+@click.option("--allow-empty", is_flag=True, default=False,
+              help="显式允许产生只有标题、无正文的任务（违反模板规范，仅特殊场景使用）。")
 @click.option("--depends", "depends_on", default="", help="依赖的任务 ID，多个用逗号分隔")
 @click.option("--file", "-f", "batch_file", type=click.Path(exists=True, path_type=Path),
               help="从文件批量导入任务（每行一个标题，或 .json / .md 格式）")
@@ -294,6 +296,7 @@ def add(
     agent: str,
     priority: str,
     no_ai: bool,
+    allow_empty: bool,
     depends_on: str,
     batch_file: Path | None,
     json_mode: bool,
@@ -364,6 +367,7 @@ def add(
     _single_add(
         project, title, effective_agent, priority, no_ai, dep_list, proj_path,
         json_mode, fallback_reason=fallback_reason, config_ref=config_ref,
+        allow_empty=allow_empty,
     )
 
 
@@ -378,14 +382,25 @@ def _single_add(
     json_mode: bool,
     fallback_reason: str | None = None,
     config_ref: str | Path | None = None,
+    allow_empty: bool = False,
 ):
     """添加单个任务."""
     if fallback_reason:
         echo(f"[yellow]⚠ {fallback_reason}[/yellow]")
 
     if no_ai:
+        if not allow_empty:
+            raise click.ClickException(
+                f"--no-ai 单条添加会产生只有标题《{title}》、无正文的任务，"
+                "违反任务模板规范（外部添加的任务必须含 Task Goal / Acceptance Criteria 等关键章节）。\n"
+                "正确做法：\n"
+                "  - 让 CodePilot 自己规划：python -m codepilot \"需求描述\"\n"
+                "  - 让 AI 生成 content：去掉 --no-ai\n"
+                "  - 仅在确实需要占位时显式加 --allow-empty\n"
+                "字段规范见：python -m codepilot ai template --format guide"
+            )
         content = ""
-        echo("[yellow]跳过 AI 生成，内容为空[/yellow]")
+        echo("[yellow]跳过 AI 生成，内容为空（--allow-empty 已显式允许，违反模板规范）[/yellow]")
     else:
         echo(f"[cyan]调用 {agent} 生成任务内容...[/cyan]")
         content = generate_task_content(
@@ -394,6 +409,16 @@ def _single_add(
             agent=agent,
             config_ref=config_ref,
         )
+        if not allow_empty:
+            missing = missing_task_template_sections(content)
+            if missing:
+                raise click.ClickException(
+                    f"AI 生成的任务《{title}》正文缺少模板必需章节: {', '.join(missing)}。\n"
+                    "可能原因：generate_task_content 的提示模板还没对齐 task-template.md，"
+                    "或当前 agent 未按提示渲染章节。\n"
+                    "处理建议：换一个 agent 重试；或先用 ai template --format guide 自查章节，"
+                    "手工补全后再投递；确认占位场景可加 --allow-empty 跳过校验。"
+                )
         echo("[green][OK] AI 生成完成[/green]")
 
     task = db.create_task(

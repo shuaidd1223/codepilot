@@ -461,7 +461,20 @@ def test_add_command_preserves_utf8_title_and_content_round_trip(tmp_path, monke
     db.register_project("demo", str(project_path))
 
     title = "修复任务标题/内容在 Windows 控制台显示乱码"
-    content = "# 任务说明\n\n1. 标题需要原样保留\n2. 内容也要原样保留"
+    # The single-add path now enforces task-template compliance, so the
+    # mocked AI output must include the same required sections that
+    # ai template --format json advertises.
+    content = (
+        "# 修复任务标题/内容在 Windows 控制台显示乱码\n\n"
+        "## Task Goal\n保留中文 UTF-8 在 cmd / PowerShell 下原样可读。\n\n"
+        "## In Scope\n- 控制台编码探测\n- 输出 fallback\n\n"
+        "## Out of Scope\n- 修改终端字体\n\n"
+        "## Forbidden (Hard Boundary)\n- 不要触碰 logger 模块\n\n"
+        "## Planning Evidence\n- 用户复现报告 + 现有 console_encoding 模块。\n\n"
+        "## Acceptance Criteria\n- 输出标题与正文逐字符等于输入。\n\n"
+        "## Verification Matrix\n| AC | 命令 | 预期 | 证据 |\n| --- | --- | --- | --- |\n\n"
+        "## Reviewer Checkpoints\n- 检查 echo 链路上是否有 mojibake。\n"
+    )
 
     monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
     monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
@@ -475,6 +488,69 @@ def test_add_command_preserves_utf8_title_and_content_round_trip(tmp_path, monke
     assert len(created) == 1
     assert created[0]["title"] == title
     assert created[0]["content"] == content
+
+
+def test_add_command_rejects_no_ai_single_add_without_allow_empty(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["add", "-p", "demo", "-t", "占位任务", "--no-ai"],
+    )
+
+    assert result.exit_code != 0
+    assert "违反任务模板规范" in result.output
+    assert "ai template --format guide" in result.output
+    assert db.list_tasks(project="demo") == []
+
+
+def test_add_command_allows_no_ai_single_add_with_allow_empty(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["add", "-p", "demo", "-t", "占位任务", "--no-ai", "--allow-empty"],
+    )
+
+    assert result.exit_code == 0
+    created = db.list_tasks(project="demo")
+    assert len(created) == 1
+    assert created[0]["title"] == "占位任务"
+    assert created[0]["content"] == ""
+
+
+def test_add_command_rejects_ai_content_missing_template_sections(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+    # AI returns content that's free-form but lacks the required sections.
+    monkeypatch.setattr(
+        add_cmd,
+        "generate_task_content",
+        lambda *args, **kwargs: "# 标题\n\n仅有一段散文，没有 Task Goal / AC / Reviewer 等章节。",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["add", "-p", "demo", "-t", "缺章节任务", "-a", "codex"],
+    )
+
+    assert result.exit_code != 0
+    assert "缺少模板必需章节" in result.output
+    assert db.list_tasks(project="demo") == []
 
 
 def test_chat_command_accepts_plain_text_and_exit(tmp_path, monkeypatch):
