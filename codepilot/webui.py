@@ -49,6 +49,8 @@ from codepilot.webui_actions import (  # noqa: F401 (re-export)
     delete_session_action,
     get_session_action,
     list_sessions_action,
+    get_task_template_schema_action,
+    import_tasks_action,
     list_ui_events,
     list_ui_jobs,
     archive_task_action,
@@ -369,6 +371,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/projects":
             self._send_json(dashboard_payload())
             return
+        if path == "/api/task-template":
+            self._send_json(get_task_template_schema_action())
+            return
         match = re.fullmatch(r"/api/projects/([^/]+)", path)
         if match:
             self._send_json(dashboard_payload(unquote(match.group(1))))
@@ -446,6 +451,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             message=body.get("message") or "",
         )
 
+    def _handle_post_tasks_import(self, body: dict) -> dict:
+        return import_tasks_action(
+            body.get("project") or "",
+            body.get("items") if isinstance(body.get("items"), list) else [],
+        )
+
     def _handle_post_requirements(self, body: dict) -> dict:
         return submit_requirement_action(
             body.get("project") or "",
@@ -476,6 +487,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/projects": self._handle_post_projects,
             "/api/tasks": self._handle_post_tasks,
             "/api/tasks/batch": self._handle_post_tasks_batch,
+            "/api/tasks/import": self._handle_post_tasks_import,
             "/api/requirements": self._handle_post_requirements,
             "/api/sessions": self._handle_post_sessions,
         }

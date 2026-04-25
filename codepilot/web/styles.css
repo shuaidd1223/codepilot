@@ -2496,6 +2496,90 @@ input::placeholder, textarea::placeholder { color: hsl(var(--muted-foreground));
   cursor: pointer;
 }
 .checkbox input { width: auto; height: auto; accent-color: hsl(var(--primary)); }
+.field-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+.field-hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: hsl(var(--muted) / .5);
+  border: 1px solid hsl(var(--border));
+}
+.batch-import-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.batch-import-panel {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--muted) / .2);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.batch-import-panel-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+.batch-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.batch-import-row {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--card));
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.batch-import-row.success {
+  border-color: hsl(var(--success) / .35);
+  background: hsl(var(--success) / .06);
+}
+.batch-import-row.warning {
+  border-color: hsl(var(--warning) / .35);
+  background: hsl(var(--warning) / .08);
+}
+.batch-import-row.danger {
+  border-color: hsl(var(--destructive) / .35);
+  background: hsl(var(--destructive) / .06);
+  color: hsl(var(--destructive));
+}
+.batch-import-row-title {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  word-break: break-word;
+}
+.batch-import-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: hsl(var(--foreground) / .82);
+}
+.batch-import-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.batch-import-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+}
 
 /* Buttons */
 .btn {
@@ -2848,6 +2932,7 @@ input::placeholder, textarea::placeholder { color: hsl(var(--muted-foreground));
 @media (max-width: 960px) {
   .grid-2 { grid-template-columns: 1fr; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
+  .batch-import-grid { grid-template-columns: 1fr; }
   .task-kv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .task-kv-item.span-2 { grid-column: 1 / -1; }
   .chat-header.chat-header-compact { flex-wrap: wrap; }

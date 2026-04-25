@@ -75,6 +75,10 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       composerMode: 'requirement',
       composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
       composerClarify: null,
+      taskTemplateSchema: null,
+      taskTemplateLoading: false,
+      taskTemplateError: '',
+      batchComposer: { raw: '' },
       chatText: '', chatCategory: 'auto',
       /* active clarification (intent=clarify) state per session. Map
        * sessionId -> {questions: [...], answerDraft: ''} */
@@ -94,6 +98,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
     const ACTION_KEYS = Object.freeze({
       GOAL_SUBMIT: 'goal.submit',
       COMPOSER_SUBMIT: 'composer.submit',
+      TASK_BATCH_IMPORT: 'tasks.import',
       SESSION_SEND: 'session.send',
       SESSION_DELETE: 'session.delete',
       SESSION_CLARIFY_REPLY: 'session.clarify.reply',
@@ -101,6 +106,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
     const _REFRESH_BLOCKING_ACTIONS = new Set([
       ACTION_KEYS.GOAL_SUBMIT,
       ACTION_KEYS.COMPOSER_SUBMIT,
+      ACTION_KEYS.TASK_BATCH_IMPORT,
       ACTION_KEYS.SESSION_SEND,
       ACTION_KEYS.SESSION_DELETE,
       ACTION_KEYS.SESSION_CLARIFY_REPLY,
@@ -541,6 +547,55 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       });
     }
 
+    async function loadTaskTemplateSchema({ force = false } = {}) {
+      if (state.taskTemplateLoading) return state.taskTemplateSchema;
+      if (!force && state.taskTemplateSchema) return state.taskTemplateSchema;
+      state.taskTemplateLoading = true;
+      state.taskTemplateError = '';
+      try {
+        const out = await CP.api.get('/api/task-template');
+        state.taskTemplateSchema = out.schema || null;
+        return state.taskTemplateSchema;
+      } catch (err) {
+        state.taskTemplateError = err.message || '模板 schema 加载失败';
+        return null;
+      } finally {
+        state.taskTemplateLoading = false;
+      }
+    }
+
+    async function submitTaskBatch(validation = null) {
+      if (!state.nav.project) { pushToast('先选择一个项目', 'error'); return; }
+      const raw = String((state.batchComposer && state.batchComposer.raw) || '').trim();
+      if (!raw) { pushToast('先粘贴批量任务 JSON', 'error'); return; }
+
+      const resolvedValidation = validation || CP.validateTaskBatchImport(raw, state.taskTemplateSchema);
+      if (!resolvedValidation.valid) {
+        const firstInvalidItem = (resolvedValidation.items || []).find(item => !item.ok && item.errors && item.errors.length);
+        const firstError = resolvedValidation.parseError
+          || (resolvedValidation.globalErrors && resolvedValidation.globalErrors[0])
+          || (firstInvalidItem && firstInvalidItem.errors && firstInvalidItem.errors[0])
+          || '当前批量任务不符合模板 schema。';
+        pushToast(firstError, 'error');
+        return;
+      }
+
+      await _runScopedAction(ACTION_KEYS.TASK_BATCH_IMPORT, async () => {
+        try {
+          const out = await CP.api.post('/api/tasks/import', {
+            project: state.nav.project,
+            items: resolvedValidation.items.map(item => item.raw),
+          });
+          state.batchComposer.raw = '';
+          pushToast(out.message || '批量导入成功', 'success');
+          await loadDashboard();
+          if (out.tasks && out.tasks.length) selectTask(state.nav.project, out.tasks[0].id);
+        } catch (err) {
+          pushToast(err.message, 'error');
+        }
+      });
+    }
+
     async function newSession() {
       if (!state.nav.project) { pushToast('先选择一个项目', 'error'); return; }
       state.newSessionLoading = true;
@@ -913,8 +968,9 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       toggleAuto, toggleDark,
       /* data */
       loadDashboard, loadTaskDetail, loadTaskLog, loadSessions, loadSessionChat, loadDaemonHealth,
+      loadTaskTemplateSchema,
       /* actions */
-      taskAction, submitGoal, submitComposer,
+      taskAction, submitGoal, submitComposer, submitTaskBatch,
       taskBatchAction,
       toggleProjectForm, submitProject, deleteProject,
       projectService,

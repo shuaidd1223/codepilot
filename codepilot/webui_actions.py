@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from codepilot import db
+from codepilot.agent_support import task_template_schema
 from codepilot.display_sort import sort_jobs_for_display, sort_sessions_for_display
 from codepilot.commands.auto import (  # noqa: F401 — patched in tests
     assess_requirement_for_planning,
@@ -37,6 +38,10 @@ from codepilot.interaction_controller import (
     resolve_turn_intent,
 )
 from codepilot.runtime import clear_task_runtime, stop_worktree_leftovers
+from codepilot.task_template import (
+    missing_task_template_sections,
+    unreplaced_task_template_placeholders,
+)
 from codepilot.webui_payloads import _now_iso, _task_payload
 
 
@@ -713,6 +718,145 @@ def batch_task_action(task_ids: list[int], action: str, *, message: str = "") ->
         "succeeded": succeeded,
         "failed": failed,
         "message": summary,
+    }
+
+
+def get_task_template_schema_action(*, command_name: str = "codepilot") -> dict:
+    """Return the canonical task-template schema for frontend validation."""
+
+    return {"ok": True, "schema": task_template_schema(command_name=command_name)}
+
+
+def _extract_batch_task_content(item: dict) -> str:
+    raw = item.get("content")
+    if raw in {"", None}:
+        raw = item.get("body")
+    if raw in {"", None}:
+        raw = item.get("description")
+    return str(raw or "")
+
+
+def _normalize_batch_depends(raw_value) -> list[int] | None:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, (list, tuple)):
+        raw_items = list(raw_value)
+    elif isinstance(raw_value, str):
+        raw_items = [part.strip() for part in raw_value.split(",")]
+    else:
+        raw_items = [raw_value]
+
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for item in raw_items:
+        try:
+            task_id = int(str(item).strip())
+        except (TypeError, ValueError):
+            continue
+        if task_id <= 0 or task_id in seen:
+            continue
+        seen.add(task_id)
+        normalized.append(task_id)
+    return normalized or None
+
+
+def import_tasks_action(project: str, items: list[dict]) -> dict:
+    """Import pre-rendered tasks from a Web UI JSON array."""
+
+    db.init_db()
+    project_info = db.get_project(project)
+    if not project_info:
+        raise RuntimeError(f"项目 '{project}' 不存在。")
+    if not isinstance(items, list) or not items:
+        raise RuntimeError("items 必须是非空 JSON 数组。")
+
+    schema = task_template_schema()
+    validation = schema.get("validation") or {}
+    placeholder_names = [
+        str(item.get("name") or "").strip()
+        for item in (schema.get("placeholders") or [])
+        if isinstance(item, dict)
+    ]
+    allowed_priorities = {
+        str(item).upper()
+        for item in (validation.get("priority_values") or ["P0", "P1", "P2", "P3"])
+    }
+
+    normalized_items: list[dict] = []
+    validation_errors: list[str] = []
+    for index, raw in enumerate(items, 1):
+        if not isinstance(raw, dict):
+            validation_errors.append(f"第 {index} 项必须是对象。")
+            continue
+        title = " ".join(str(raw.get("title") or raw.get("name") or "").split())
+        if not title:
+            validation_errors.append(f"第 {index} 项缺少 title。")
+            continue
+        content = _extract_batch_task_content(raw)
+        if not content.strip():
+            validation_errors.append(f"第 {index} 项《{title}》缺少 content。")
+            continue
+        missing = missing_task_template_sections(content)
+        if missing:
+            validation_errors.append(
+                f"第 {index} 项《{title}》缺少关键章节：{', '.join(missing)}。"
+            )
+        leftovers = unreplaced_task_template_placeholders(
+            content,
+            placeholder_names=placeholder_names,
+        )
+        if leftovers:
+            validation_errors.append(
+                f"第 {index} 项《{title}》仍包含未替换占位符：{', '.join(leftovers)}。"
+            )
+        normalized_priority = str(raw.get("priority") or "P2").upper()
+        if normalized_priority not in allowed_priorities:
+            validation_errors.append(
+                f"第 {index} 项《{title}》优先级无效：{normalized_priority}。"
+            )
+        normalized_items.append(
+            {
+                "title": title,
+                "content": content,
+                "priority": normalized_priority,
+                "agent": raw.get("agent"),
+                "depends_on": _normalize_batch_depends(
+                    raw.get("depends")
+                    if "depends" in raw
+                    else raw.get("depends_on")
+                    if "depends_on" in raw
+                    else raw.get("dependsOn")
+                ),
+            }
+        )
+
+    if validation_errors:
+        raise RuntimeError(" ".join(validation_errors))
+
+    created: list[dict] = []
+    for item in normalized_items:
+        task = create_task_action(
+            project,
+            item["title"],
+            content=item["content"],
+            priority=item["priority"],
+            agent=item["agent"] or None,
+        )["task"]
+        if item["depends_on"]:
+            updated = db.update_task(task["id"], depends_on=item["depends_on"])
+            task = _task_payload(updated or db.get_task(task["id"]))
+        created.append(task)
+
+    _append_event(
+        f"批量导入 {len(created)} 个任务。",
+        project=project,
+        task_id=created[0]["id"] if created else None,
+    )
+    return {
+        "ok": True,
+        "count": len(created),
+        "tasks": created,
+        "message": f"批量导入完成：共 {len(created)} 个任务。",
     }
 
 

@@ -65,6 +65,49 @@ def _delete(url: str) -> tuple[int, dict]:
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
+def _valid_task_content(title: str) -> str:
+    return f"""# {title}
+
+## Task Goal
+
+让 Web UI 批量导入的任务正文完整落库。
+
+## In Scope
+
+- 补齐批量导入任务正文
+
+## Out of Scope
+
+- 不修改执行器
+
+## Forbidden (Hard Boundary)
+
+- 不改数据库结构
+
+## Files In Scope
+
+- `codepilot/webui.py`
+
+## Planning Evidence
+
+来自 Web UI 批量导入场景。
+
+## Acceptance Criteria
+
+- [ ] 批量导入后任务正文完整
+
+## Verification Matrix
+
+| AC | Command | Expected | Evidence |
+| :--- | :--- | :--- | :--- |
+| AC1 | `codepilot task show <id>` | 可见完整正文 | task detail |
+
+## Reviewer Checkpoints
+
+- 检查模板章节完整
+"""
+
+
 # ─── GET endpoints ──────────────────────────────────────────────────────────
 
 def test_health_endpoint(ui_server):
@@ -140,6 +183,17 @@ def test_projects_endpoint_lists_registered_project(ui_server):
     assert "projects" in body
     names = [p["name"] for p in body["projects"]]
     assert "demo" in names
+
+
+def test_task_template_endpoint_exposes_validation_schema(ui_server):
+    status, body = _get(f"{ui_server}/api/task-template")
+
+    assert status == 200
+    assert body["ok"] is True
+    schema = body["schema"]
+    assert schema["validation"]["required_headings"]
+    assert "{goal}" in schema["validation"]["placeholder_tokens"]
+    assert "content" in schema["validation"]["batch_required_fields"]
 
 
 def test_project_detail_endpoint(ui_server):
@@ -409,6 +463,41 @@ def test_batch_delete_tasks_via_api_reports_partial_failures(ui_server):
     assert body["failed_count"] == 1
     assert db.get_task(done["id"]) is None
     assert db.get_task(running["id"])["status"] == "in_progress"
+
+
+def test_import_tasks_via_api_with_valid_template_content(ui_server):
+    status, body = _post(
+        f"{ui_server}/api/tasks/import",
+        {
+            "project": "demo",
+            "items": [
+                {"title": "批量导入任务 1", "content": _valid_task_content("批量导入任务 1")},
+                {"title": "批量导入任务 2", "content": _valid_task_content("批量导入任务 2"), "priority": "P1"},
+            ],
+        },
+    )
+
+    assert status == 200
+    assert body["ok"] is True
+    assert body["count"] == 2
+    tasks = db.list_tasks(project="demo")
+    assert any(task["title"] == "批量导入任务 1" for task in tasks)
+    assert any(task["title"] == "批量导入任务 2" and task["priority"] == "P1" for task in tasks)
+
+
+def test_import_tasks_via_api_rejects_invalid_template_content(ui_server):
+    status, body = _post(
+        f"{ui_server}/api/tasks/import",
+        {
+            "project": "demo",
+            "items": [
+                {"title": "缺章节任务", "content": "# 缺章节任务\n\n## Task Goal\n\n只有目标，没有剩余章节。"},
+            ],
+        },
+    )
+
+    assert status == 400
+    assert "缺少关键章节" in body["error"]
 
 
 # ─── HTML page ──────────────────────────────────────────────────────────────

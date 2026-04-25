@@ -74,6 +74,8 @@ CP.Components.ProjectView = Vue.defineComponent({
         <cp-metrics-panel></cp-metrics-panel>
       </div>
 
+      <cp-task-batch-import></cp-task-batch-import>
+
       <section v-if="runningTasks.length" class="card">
         <div class="card-head">
           <h3>当前运行中</h3>

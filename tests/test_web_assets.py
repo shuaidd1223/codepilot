@@ -177,6 +177,20 @@ def test_form_components_use_scoped_action_pending_instead_of_global_sending():
     assert "s.sending" not in chat
 
 
+def test_project_view_wires_batch_task_import_panel():
+    index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
+    project_view = Path("codepilot/web/components/ProjectView.js").read_text(encoding="utf-8")
+    batch_component = Path("codepilot/web/components/TaskBatchImport.js").read_text(encoding="utf-8")
+    utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
+
+    assert "<script src=\"/static/components/TaskBatchImport.js\"></script>" in index_html
+    assert "<cp-task-batch-import></cp-task-batch-import>" in project_view
+    assert "CP.Components.TaskBatchImport" in batch_component
+    assert "loadTaskTemplateSchema();" in batch_component
+    assert "submitTaskBatch(this.validation);" in batch_component
+    assert "CP.validateTaskBatchImport" in utils
+
+
 def test_agent_log_splits_rendering_and_interaction_state_into_boundaries():
     index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
     agent_log = Path("codepilot/web/components/AgentLog.js").read_text(encoding="utf-8")

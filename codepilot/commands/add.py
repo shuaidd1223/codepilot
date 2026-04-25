@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import click
@@ -22,6 +21,7 @@ from codepilot.ai import (
 from codepilot.commands.status import _resolve_project
 from codepilot.config import resolve_project_config_reference
 from codepilot.output import echo
+from codepilot.task_template import missing_task_template_sections
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -105,31 +105,6 @@ def _parse_batch_file(file_path: Path) -> list[dict]:
             continue
         tasks.append({"title": line})
     return tasks
-
-
-_REQUIRED_TEMPLATE_HEADINGS: tuple[tuple[str, str], ...] = (
-    ("标题", r"(?mi)^\s*#\s+\S.*$"),
-    ("Task Goal", r"(?mi)^\s*##\s+Task Goal\s*$"),
-    ("In Scope", r"(?mi)^\s*##\s+In Scope\s*$"),
-    ("Out of Scope", r"(?mi)^\s*##\s+Out of Scope\s*$"),
-    ("Forbidden", r"(?mi)^\s*##\s+Forbidden(?:\s+\(Hard Boundary\))?\s*$"),
-    ("Planning Evidence", r"(?mi)^\s*##\s+Planning Evidence\s*$"),
-    ("Acceptance Criteria", r"(?mi)^\s*##\s+Acceptance Criteria\s*$"),
-    ("Verification Matrix", r"(?mi)^\s*##\s+Verification Matrix\s*$"),
-    ("Reviewer Checkpoints", r"(?mi)^\s*##\s+Reviewer Checkpoints\s*$"),
-)
-
-
-def _missing_task_template_sections(content: str) -> list[str]:
-    """Return required task-template headings missing from markdown content."""
-    text = str(content or "").strip()
-    if not text:
-        return [label for label, _pattern in _REQUIRED_TEMPLATE_HEADINGS]
-    missing: list[str] = []
-    for label, pattern in _REQUIRED_TEMPLATE_HEADINGS:
-        if re.search(pattern, text) is None:
-            missing.append(label)
-    return missing
 
 
 def _json_batch_error(item_index: int, item_title: str, reason: str) -> click.ClickException:
@@ -379,7 +354,7 @@ def _batch_add(
         if isinstance(user_content, str) and user_content.strip():
             content = user_content
             if is_json_batch:
-                missing = _missing_task_template_sections(content)
+                missing = missing_task_template_sections(content)
                 if missing:
                     raise _json_batch_error(
                         i,
@@ -412,7 +387,7 @@ def _batch_add(
                 content = ""
 
             if is_json_batch:
-                missing = _missing_task_template_sections(content)
+                missing = missing_task_template_sections(content)
                 if missing:
                     raise _json_batch_error(
                         i,

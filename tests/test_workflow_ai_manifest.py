@@ -117,6 +117,8 @@ def test_ai_template_json_returns_structured_schema():
     assert "fields" in batch and len(batch["fields"]) >= 3
     assert any(f["name"] == "content" for f in batch["fields"])
     assert isinstance(batch["example"], list) and batch["example"]
+    assert payload["validation"]["required_headings"]
+    assert "{goal}" in payload["validation"]["placeholder_tokens"]
 
 
 def test_ai_template_guide_renders_chinese_markdown():

@@ -211,6 +211,120 @@ CP.renderOutput = (text) => {
   return CP.renderMarkdown(raw);
 };
 
+CP._taskTemplateContent = (item) => {
+  if (!item || typeof item !== 'object') return '';
+  if (item.content !== undefined && item.content !== null && item.content !== '') return String(item.content);
+  if (item.body !== undefined && item.body !== null && item.body !== '') return String(item.body);
+  if (item.description !== undefined && item.description !== null && item.description !== '') return String(item.description);
+  return '';
+};
+
+CP._safeRegExp = (pattern, flags) => {
+  try {
+    return new RegExp(String(pattern || ''), String(flags || ''));
+  } catch (_e) {
+    return null;
+  }
+};
+
+CP.validateTaskBatchImport = (raw, schema) => {
+  const result = {
+    valid: false,
+    parseError: '',
+    globalErrors: [],
+    items: [],
+    total: 0,
+    validCount: 0,
+    invalidCount: 0,
+  };
+  const text = String(raw == null ? '' : raw).trim();
+  if (!text) return result;
+  if (!schema || typeof schema !== 'object') {
+    result.globalErrors.push('模板 schema 尚未就绪，暂时无法校验。');
+    return result;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    result.parseError = `JSON 解析失败：${err.message || err}`;
+    return result;
+  }
+  if (!Array.isArray(parsed)) {
+    result.globalErrors.push('顶层必须是 JSON 数组。');
+    return result;
+  }
+  if (!parsed.length) {
+    result.globalErrors.push('至少需要 1 条任务。');
+    return result;
+  }
+
+  const validation = (schema && schema.validation) || {};
+  const requiredHeadings = Array.isArray(validation.required_headings) ? validation.required_headings : [];
+  const placeholderTokens = Array.isArray(validation.placeholder_tokens) ? validation.placeholder_tokens : [];
+  const priorityValues = new Set(
+    (Array.isArray(validation.priority_values) ? validation.priority_values : ['P0', 'P1', 'P2', 'P3'])
+      .map(item => String(item || '').toUpperCase())
+      .filter(Boolean),
+  );
+
+  result.items = parsed.map((item, idx) => {
+    const entry = {
+      index: idx + 1,
+      raw: item,
+      title: '',
+      ok: false,
+      errors: [],
+      missingSections: [],
+      leftoverPlaceholders: [],
+    };
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      entry.errors.push('必须是对象。');
+      return entry;
+    }
+
+    entry.title = String(item.title || item.name || '').trim();
+    if (!entry.title) {
+      entry.errors.push('缺少 title。');
+    }
+
+    const content = CP._taskTemplateContent(item);
+    if (!content.trim()) {
+      entry.errors.push('缺少 content。');
+    } else {
+      for (const section of requiredHeadings) {
+        const rx = CP._safeRegExp(section && section.pattern, section && section.flags);
+        if (!rx) continue;
+        if (!rx.test(content)) {
+          entry.missingSections.push(String((section && section.label) || '未知章节'));
+        }
+      }
+      if (entry.missingSections.length) {
+        entry.errors.push(`缺少章节：${entry.missingSections.join('、')}。`);
+      }
+      entry.leftoverPlaceholders = placeholderTokens.filter(token => token && content.includes(token));
+      if (entry.leftoverPlaceholders.length) {
+        entry.errors.push(`仍包含未替换占位符：${entry.leftoverPlaceholders.join('、')}。`);
+      }
+    }
+
+    const priority = String(item.priority || 'P2').toUpperCase();
+    if (priority && !priorityValues.has(priority)) {
+      entry.errors.push(`priority 无效：${priority}。`);
+    }
+
+    entry.ok = entry.errors.length === 0;
+    return entry;
+  });
+
+  result.total = result.items.length;
+  result.invalidCount = result.items.filter(item => !item.ok).length;
+  result.validCount = result.total - result.invalidCount;
+  result.valid = !result.parseError && result.globalErrors.length === 0 && result.invalidCount === 0;
+  return result;
+};
+
 CP.fmtTime = (v) => v ? String(v).replace('T', ' ').slice(0, 19) : '-';
 CP.statusLabel = (s) => CP.STATUS_LABEL[s] || s || '-';
 CP.phaseLabel = (p) => CP.PHASE_LABEL[p] || p;
