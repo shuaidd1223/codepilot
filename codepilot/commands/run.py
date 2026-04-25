@@ -420,17 +420,20 @@ def run(
         echo("[red]错误: 必须指定 --project[/red]")
         return
 
+    from codepilot.cli_progress import cli_renderer
+
     try:
-        stats = run_backlog(
-            project,
-            once=once,
-            limit=limit,
-            dry_run=dry_run,
-            cleanup=cleanup,
-            shell=shell,
-            executor=executor,
-            auto_commit=auto_commit,
-        )
+        with cli_renderer():
+            stats = run_backlog(
+                project,
+                once=once,
+                limit=limit,
+                dry_run=dry_run,
+                cleanup=cleanup,
+                shell=shell,
+                executor=executor,
+                auto_commit=auto_commit,
+            )
     except RuntimeError as exc:
         echo(f"[red]{safe(exc)}[/red]")
         return
