@@ -417,6 +417,9 @@ def test_run_backlog_cleans_worktree_leftovers_after_builtin_failure(tmp_path, m
             }
         ),
     )
+    # Skip AI review triage so this regression test exercises the cleanup
+    # path under the legacy retry semantics it was written for.
+    monkeypatch.setattr(run_cmd, "_triage_review_failure", lambda *a, **kw: None)
 
     stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
     current = db.get_task(task["id"])

@@ -320,6 +320,8 @@ def _apply_review_failure_triage(
     *,
     review_output: str = "",
     output: str = "",
+    retry_on_failure: bool = False,
+    stop_on_failure: bool = True,
 ) -> dict:
     return _apply_review_failure_triage_impl(
         task,
@@ -330,6 +332,8 @@ def _apply_review_failure_triage(
         mark_task_failed_fn=_mark_task_failed,
         handle_failure_fn=_handle_failure,
         db_module=db,
+        retry_on_failure=retry_on_failure,
+        stop_on_failure=stop_on_failure,
     )
 
 

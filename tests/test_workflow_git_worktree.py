@@ -986,3 +986,85 @@ per_task_branch = false
     code, output = run_cmd._run_command(["git", "branch", "--show-current"], cwd=project_path, timeout=30)
     assert code == 0
     assert output.strip() == "topic"
+
+
+def _git_init_repo(project_path: Path) -> str:
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+    return run_cmd._git_current_branch(project_path)
+
+
+def test_finalize_failed_task_workspace_removes_worktree_branch_and_returns_to_base(tmp_path):
+    """Failure path must leave repo in autonomous-loop friendly state.
+
+    Without this helper a review-fail run leaves the task branch + worktree
+    behind, the next ``run`` blocks on "uncommitted changes" preflight, and
+    the user has to reset things by hand. The helper deletes both and pulls
+    the main repo back to base_branch.
+    """
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+    base_branch = _git_init_repo(project_path)
+
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    expected = run_cmd._task_worktree_path(project_info, task_id=42, title="Cleanup demo")
+    branch, worktree = run_cmd._git_prepare_task_worktree(
+        project_path,
+        task_id=42,
+        title="Cleanup demo",
+        base_branch=base_branch,
+        worktree_path=expected,
+    )
+
+    # Sanity: prepared worktree+branch are alive before cleanup.
+    assert worktree.exists()
+    assert run_cmd._git_local_branch_exists(project_path, branch)
+
+    run_cmd._finalize_failed_task_workspace(
+        task_id=42,
+        project_path=project_path,
+        worktree_path=worktree,
+        task_branch=branch,
+        base_branch=base_branch,
+    )
+
+    assert worktree.exists() is False
+    assert run_cmd._git_worktree_exists(project_path, worktree) is False
+    assert run_cmd._git_local_branch_exists(project_path, branch) is False
+    assert run_cmd._git_current_branch(project_path) == base_branch
+
+
+def test_finalize_failed_task_workspace_swallows_cleanup_errors(tmp_path):
+    """A worktree that already disappeared on disk must not crash cleanup.
+
+    Autonomous loops cannot afford to bail out on cleanup hiccups — the
+    helper logs a warning and moves on, otherwise a transient git error
+    would freeze the entire run pipeline.
+    """
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    base_branch = _git_init_repo(project_path)
+
+    # Pass a worktree path that was never registered with git; the helper
+    # must complete without raising and leave the main repo untouched.
+    bogus = tmp_path / "ghost"
+    run_cmd._finalize_failed_task_workspace(
+        task_id=99,
+        project_path=project_path,
+        worktree_path=bogus,
+        task_branch="feat/task-99-ghost",
+        base_branch=base_branch,
+    )
+
+    assert run_cmd._git_current_branch(project_path) == base_branch

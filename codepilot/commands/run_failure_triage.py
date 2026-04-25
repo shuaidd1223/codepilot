@@ -711,20 +711,44 @@ def apply_review_failure_triage(
     mark_task_failed_fn,
     handle_failure_fn,
     db_module,
+    retry_on_failure: bool = False,
+    stop_on_failure: bool = True,
 ) -> dict:
+    """Run AI triage on a review-stage failure and apply the decision.
+
+    When the AI gateway is unavailable (returns None) the helper falls back
+    to the legacy behaviour controlled by ``retry_on_failure`` so existing
+    runs keep retrying / failing exactly as before. Returned dict shape:
+
+    ``{"updated": <task row>, "error_message": <annotated text>,
+       "decision": <triage decision dict or None>,
+       "should_stop": <bool>}``
+
+    ``should_stop`` lets the orchestrator decide whether to break the run
+    loop without re-deriving the retry state.
+    """
     decision = triage_fn(task, error_message, review_output=review_output, output=builder_output)
     if not decision:
-        updated = mark_task_failed_fn(task, error_message)
+        if retry_on_failure:
+            updated, should_stop = handle_failure_fn(
+                task,
+                error_message,
+                stop_on_failure=stop_on_failure,
+            )
+        else:
+            updated = mark_task_failed_fn(task, error_message)
+            should_stop = True
         return {
             "updated": updated,
             "error_message": error_message,
             "decision": None,
+            "should_stop": should_stop,
         }
 
     action = decision["action"]
     rationale = decision.get("rationale") or ""
     if action == "retry_with_hint":
-        updated, _ = handle_failure_fn(task, error_message, stop_on_failure=False)
+        updated, retry_should_stop = handle_failure_fn(task, error_message, stop_on_failure=stop_on_failure)
         if updated["status"] == "failed":
             triage_line = f"AI triage: 建议自动重试，但已达到重试上限（{rationale or 'review 反馈可继续修复'}）"
         else:
@@ -739,6 +763,7 @@ def apply_review_failure_triage(
             "updated": updated,
             "error_message": final_error,
             "decision": decision,
+            "should_stop": retry_should_stop or updated["status"] == "failed",
         }
 
     if action == "replan":
@@ -765,6 +790,7 @@ def apply_review_failure_triage(
             "updated": updated,
             "error_message": final_error,
             "decision": decision,
+            "should_stop": True,
         }
 
     if action == "merge_partial":
@@ -780,4 +806,5 @@ def apply_review_failure_triage(
         "updated": updated,
         "error_message": final_error,
         "decision": decision,
+        "should_stop": True,
     }

@@ -40,6 +40,10 @@ def test_run_backlog_builtin_stops_after_retry_limit(tmp_path, monkeypatch):
         "_run_builtin_executor",
         lambda *args, **kwargs: run_cmd.ExecutionResult(exit_code=1, output="builder failed", executor="builtin"),
     )
+    # Disable AI review triage so the test stays focused on the legacy retry
+    # budget logic. apply_review_failure_triage falls back to handle_failure
+    # when triage_fn returns None.
+    monkeypatch.setattr(run_cmd, "_triage_review_failure", lambda *a, **kw: None)
 
     first = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
     current = db.get_task(task["id"])

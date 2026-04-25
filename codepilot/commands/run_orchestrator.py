@@ -457,36 +457,28 @@ def _handle_execution_result(
         stats["done"] += 1
     else:
         error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
-        if result.deterministic_failure:
-            runner._finalize_failed_task_workspace(
-                task_id=task_id,
-                project_path=context.project_path,
-                worktree_path=workspace.execution_path,
-                task_branch=workspace.task_branch,
-                base_branch=context.base_branch,
-            )
-            triage_result = runner._apply_review_failure_triage(
-                task,
-                error_message,
-                review_output=result.review_output,
-                output=result.output,
-            )
-            updated = triage_result["updated"]
-            error_message = triage_result["error_message"]
-            should_stop = True
-        else:
-            if retry_on_failure:
-                updated, should_stop = runner._handle_failure(task, error_message, stop_on_failure=(context.executor == "builtin"))
-            else:
-                updated = runner._mark_task_failed(task, error_message)
-                should_stop = True
-            runner._finalize_failed_task_workspace(
-                task_id=task_id,
-                project_path=context.project_path,
-                worktree_path=workspace.execution_path,
-                task_branch=workspace.task_branch,
-                base_branch=context.base_branch,
-            )
+        runner._finalize_failed_task_workspace(
+            task_id=task_id,
+            project_path=context.project_path,
+            worktree_path=workspace.execution_path,
+            task_branch=workspace.task_branch,
+            base_branch=context.base_branch,
+        )
+        # AI triage decides discard / retry_with_hint / replan / merge_partial.
+        # When the gateway is unavailable triage_fn returns None and the helper
+        # falls back to the legacy retry-vs-mark-failed path so non-AI runs
+        # behave exactly like before.
+        triage_result = runner._apply_review_failure_triage(
+            task,
+            error_message,
+            review_output=result.review_output,
+            output=result.output,
+            retry_on_failure=retry_on_failure and not result.deterministic_failure,
+            stop_on_failure=context.executor == "builtin",
+        )
+        updated = triage_result["updated"]
+        error_message = triage_result["error_message"]
+        should_stop = bool(triage_result.get("should_stop", True))
         if updated["status"] == "failed":
             stats["failed"] += 1
             runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_message)
