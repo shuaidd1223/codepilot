@@ -163,7 +163,65 @@ def test_builtin_executor_emits_round_events(tmp_path, monkeypatch):
     assert "reviewer" in stages
     pass_events = [e for e in events if e["stage"] == "reviewer" and "PASS" in (e["message"] or "")]
     assert pass_events
+    assert pass_events[0]["extra"].get("review_verdict") is True
     assert pass_events[0]["extra"].get("verdict") == "pass"
+    assert pass_events[0]["extra"].get("blockers") == []
+    assert pass_events[0]["extra"].get("blocker_count") == 0
+
+
+def test_builtin_executor_emits_structured_reviewer_blockers(tmp_path, monkeypatch):
+    """FAIL verdict events should carry structured blockers on the progress bus."""
+    from codepilot.commands import run as run_mod
+
+    proj_root = tmp_path / "proj"
+    proj_root.mkdir()
+    (proj_root / "README.md").write_text("# x", encoding="utf-8")
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+
+    monkeypatch.setattr(run_mod, "_builtin_preflight_error", lambda *a, **kw: "")
+    monkeypatch.setattr(run_mod, "_git_auto_commit", lambda *a, **kw: "deadbee")
+    monkeypatch.setattr(run_mod, "_write_task_log", lambda *a, **kw: None)
+    monkeypatch.setattr(run_mod, "_builtin_runtime_dir", lambda project: runtime_dir)
+
+    fail_review = (
+        "发现问题\n"
+        "VERDICT: FAIL\n"
+        "```json\n"
+        '{"verdict":"fail","blockers":["补上 --json 分支","修复超时处理"],"advisory":["文案再压缩"]}\n'
+        "```"
+    )
+    phases = iter([
+        ("codex", 0, "built"),
+        ("codex-review", 0, fail_review),
+        ("codex", 0, "rebuilt"),
+        ("codex-review", 0, "ok\nVERDICT: PASS"),
+    ])
+    monkeypatch.setattr(run_mod, "_run_builtin_phase", lambda **kw: next(phases))
+
+    progress_bus.clear_subscribers_for_tests()
+    events: list[dict] = []
+    with progress_bus.subscription(events.append):
+        run_mod._run_builtin_executor(
+            {"id": 102, "title": "demo", "agent": "dual", "content": ""},
+            {"name": "demo", "path": str(proj_root), "config_file": None},
+            tmp_path / "task.md",
+            auto_commit=False,
+            max_review_rounds=2,
+        )
+
+    fail_events = [
+        e for e in events
+        if e["stage"] == "reviewer" and (e.get("extra") or {}).get("review_verdict") is True
+        and (e.get("extra") or {}).get("verdict") == "fail"
+    ]
+    assert fail_events
+    extra = fail_events[0]["extra"]
+    assert extra["blockers"] == ["补上 --json 分支", "修复超时处理"]
+    assert extra["blocker_count"] == 2
+    assert extra["advisory"] == ["文案再压缩"]
+    assert extra["advisory_count"] == 1
+    assert extra["source"] == "json"
 
 
 # ─── DB ETA ────────────────────────────────────────────────────────────────

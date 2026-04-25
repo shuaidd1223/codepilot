@@ -652,6 +652,21 @@ def _extract_reviewer_findings(review_output: str) -> str:
     return ""
 
 
+def _review_verdict_event_extra(verdict_model: ReviewerVerdict, *, round_num: int) -> dict:
+    """Build a structured progress payload for reviewer verdict events."""
+    return {
+        "round": round_num,
+        "review_verdict": True,
+        "verdict": verdict_model.verdict,
+        "source": verdict_model.source,
+        "blockers": list(verdict_model.blockers),
+        "blocker_count": len(verdict_model.blockers),
+        "advisory": list(verdict_model.advisory),
+        "advisory_count": len(verdict_model.advisory),
+        "ac_checks": [dict(item) for item in verdict_model.ac_checks],
+    }
+
+
 @dataclass
 class _PhaseOutcome:
     """Normalized result of one builder or reviewer invocation."""
@@ -867,13 +882,15 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
                 summary="review 命令执行失败",
             )
 
-        verdict = _runner_module()._extract_review_verdict(reviewer.output, reviewer.agent)
+        verdict_model = parse_reviewer_output(reviewer.output or "")
+        verdict = verdict_model.verdict
+        review_event_extra = _review_verdict_event_extra(verdict_model, round_num=round_num)
         if verdict == "pass":
             progress_bus.emit(
                 task_id=ctx.task_id_for_events,
                 stage="reviewer",
                 message="reviewer 判定 PASS",
-                extra={"round": round_num, "verdict": "pass"},
+                extra=review_event_extra,
             )
             return _BuiltinLoopOutcome(
                 status="pass",
@@ -883,7 +900,7 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
                 verdict=verdict,
             )
 
-        previous_findings = _runner_module()._extract_reviewer_findings(reviewer.output)
+        previous_findings = format_findings_for_builder(verdict_model)
         if round_num >= ctx.max_rounds:
             summary = (
                 "review 未通过（已用完重做轮次）"
@@ -895,7 +912,7 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
                 stage="reviewer",
                 level="error",
                 message=summary,
-                extra={"round": round_num, "verdict": verdict},
+                extra=review_event_extra,
             )
             return _BuiltinLoopOutcome(
                 status="exhausted",
@@ -912,7 +929,7 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
             stage="reviewer",
             level="warning",
             message=f"reviewer 判定 {verdict.upper()}，准备第 {round_num + 1} 轮重做",
-            extra={"round": round_num, "verdict": verdict},
+            extra=review_event_extra,
         )
         echo(
             f"[yellow]  reviewer 判定 {verdict.upper()}，准备第 {round_num + 1} 轮重做，"
