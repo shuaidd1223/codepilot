@@ -219,7 +219,12 @@ two_stage_planning = false
     assert tasks[0]["max_retries"] == 7
 
 
-def test_batch_add_with_default_agent_does_not_require_click_context(tmp_path, monkeypatch):
+def test_batch_add_plain_text_invokes_ai_for_each_title(tmp_path, monkeypatch):
+    """纯文本批量（每行一个标题）现在每行都走 AI 生成 + 模板合规校验。
+
+    --no-ai / --allow-empty 已被移除，没有占位通道；mock generate_task_content
+    返回模板合规内容确保走通。
+    """
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
@@ -227,16 +232,33 @@ def test_batch_add_with_default_agent_does_not_require_click_context(tmp_path, m
     tasks_file = tmp_path / "tasks.txt"
     tasks_file.write_text("任务一\n任务二\n", encoding="utf-8")
 
-    runner = CliRunner()
-    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file), "--no-ai"])
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
 
-    assert result.exit_code == 0
+    def _fake_generate(title, **kwargs):
+        return (
+            f"# {title}\n\n## Task Goal\n演示\n\n## In Scope\n- 做一件事\n\n"
+            "## Out of Scope\n- 不改无关\n\n## Forbidden (Hard Boundary)\n- 不破坏\n\n"
+            "## Files In Scope\n- demo.py\n\n## Planning Evidence\n- 标题猜测\n\n"
+            "## Acceptance Criteria\n- [ ] 任务被导入\n\n"
+            "## Verification Matrix\n| AC | 命令 | 期望 | 证据 |\n| --- | --- | --- | --- |\n\n"
+            "## Reviewer Checkpoints\n- 检查正文非空\n"
+        )
+
+    monkeypatch.setattr(add_cmd, "generate_task_content", _fake_generate)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file)])
+
+    assert result.exit_code == 0, result.output
     tasks = db.list_tasks(project="demo")
     assert len(tasks) == 2
     assert all(task["agent"] == "codex" for task in tasks)
+    assert all("Task Goal" in (t.get("content") or "") for t in tasks)
 
 
-def test_batch_add_json_no_ai_rejects_title_only_items(tmp_path, monkeypatch):
+def test_batch_add_json_rejects_title_only_items(tmp_path, monkeypatch):
+    """JSON 批量必须每条带 content。没有 content 直接拒，不再有占位通道。"""
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
@@ -248,24 +270,26 @@ def test_batch_add_json_no_ai_rejects_title_only_items(tmp_path, monkeypatch):
     )
 
     runner = CliRunner()
-    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file), "--no-ai"])
+    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file)])
 
     assert result.exit_code != 0
     assert "缺少 content" in result.output
-    assert "只有标题的空任务" in result.output
+    assert "ai template --format json" in result.output
     assert db.list_tasks(project="demo") == []
 
 
-def test_batch_add_json_generation_failure_does_not_create_empty_tasks(tmp_path, monkeypatch):
+def test_batch_add_plain_text_generation_failure_does_not_create_empty_tasks(tmp_path, monkeypatch):
+    """纯文本批量遇到 AI 生成失败时必须 fail-fast，绝不静默写入空任务。
+
+    新语义下 JSON 批量永远不触发 AI（必须自带 content），所以这里覆盖
+    plain-text 路径。AI gen 抛异常 → 整批拒绝 → backlog 仍为空。
+    """
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
     db.register_project("demo", str(project_path))
-    tasks_file = tmp_path / "tasks.json"
-    tasks_file.write_text(
-        json.dumps([{"title": "生成失败任务"}], ensure_ascii=False),
-        encoding="utf-8",
-    )
+    tasks_file = tmp_path / "tasks.txt"
+    tasks_file.write_text("生成失败任务\n", encoding="utf-8")
 
     monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
     monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
@@ -279,11 +303,11 @@ def test_batch_add_json_generation_failure_does_not_create_empty_tasks(tmp_path,
     result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file)])
 
     assert result.exit_code != 0
-    assert "AI 生成任务内容失败" in result.output
+    assert "AI 生成失败" in result.output
     assert db.list_tasks(project="demo") == []
 
 
-def test_batch_add_json_with_valid_content_allows_no_ai(tmp_path, monkeypatch):
+def test_batch_add_json_with_valid_content_imports_directly(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
@@ -335,7 +359,7 @@ def test_batch_add_json_with_valid_content_allows_no_ai(tmp_path, monkeypatch):
     )
 
     runner = CliRunner()
-    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file), "--no-ai"])
+    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file)])
 
     assert result.exit_code == 0
     tasks = db.list_tasks(project="demo")
@@ -388,7 +412,7 @@ def test_batch_add_markdown_imports_multiple_full_tasks(tmp_path, monkeypatch):
     tasks_file.write_text(f"{task_one}\n\n---\n\n{task_two}\n", encoding="utf-8")
 
     runner = CliRunner()
-    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file), "--no-ai"])
+    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file)])
 
     assert result.exit_code == 0, result.output
     tasks = db.list_tasks(project="demo")
@@ -446,7 +470,7 @@ def test_batch_add_markdown_rejects_tasks_missing_required_sections(tmp_path, mo
     tasks_file.write_text(f"{valid_task}\n\n---\n\n{invalid_task}\n", encoding="utf-8")
 
     runner = CliRunner()
-    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file), "--no-ai"])
+    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file)])
 
     assert result.exit_code != 0
     assert "Markdown 批量导入第 2 项" in result.output
@@ -490,41 +514,23 @@ def test_add_command_preserves_utf8_title_and_content_round_trip(tmp_path, monke
     assert created[0]["content"] == content
 
 
-def test_add_command_rejects_no_ai_single_add_without_allow_empty(tmp_path, monkeypatch):
+def test_add_command_rejects_removed_no_ai_flag(tmp_path, monkeypatch):
+    """`--no-ai` 已经被废弃：单条 add 必须由 AI 生成模板合规 content。
+
+    保留这个守卫测试是为了在有人误以为这条偷懒通道还在时，能在 CI 上立刻
+    暴露出来。``--allow-empty`` 同样不应再被接受。
+    """
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
     db.register_project("demo", str(project_path))
 
     runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["add", "-p", "demo", "-t", "占位任务", "--no-ai"],
-    )
-
-    assert result.exit_code != 0
-    assert "违反任务模板规范" in result.output
-    assert "ai template --format guide" in result.output
+    for bad_flag in ("--no-ai", "--allow-empty"):
+        result = runner.invoke(main, ["add", "-p", "demo", "-t", "占位任务", bad_flag])
+        assert result.exit_code != 0, f"{bad_flag} should be rejected"
+        assert "No such option" in result.output, f"{bad_flag} should not be a known option"
     assert db.list_tasks(project="demo") == []
-
-
-def test_add_command_allows_no_ai_single_add_with_allow_empty(tmp_path, monkeypatch):
-    _init_test_db(tmp_path, monkeypatch)
-    project_path = tmp_path / "project"
-    project_path.mkdir()
-    db.register_project("demo", str(project_path))
-
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["add", "-p", "demo", "-t", "占位任务", "--no-ai", "--allow-empty"],
-    )
-
-    assert result.exit_code == 0
-    created = db.list_tasks(project="demo")
-    assert len(created) == 1
-    assert created[0]["title"] == "占位任务"
-    assert created[0]["content"] == ""
 
 
 def test_add_command_rejects_ai_content_missing_template_sections(tmp_path, monkeypatch):

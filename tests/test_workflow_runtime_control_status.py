@@ -502,7 +502,7 @@ def test_show_command_explains_empty_task_content(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "任务内容" in result.output
     assert "空正文" in result.output
-    assert "tasks.json --no-ai" in result.output
+    assert "ai template --format json" in result.output
 
 
 def test_show_json_outputs_full_task_and_logs(tmp_path, monkeypatch):

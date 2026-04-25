@@ -280,10 +280,6 @@ AGENT_CHOICES = [
 )
 @click.option("--priority", type=click.Choice(["P0", "P1", "P2", "P3"]), default="P2",
               help="优先级")
-@click.option("--no-ai", is_flag=True, default=False,
-              help="跳过 AI 生成。单条/纯文本批量需配合 --allow-empty 才能留空；JSON 批量缺 content 直接拒绝。")
-@click.option("--allow-empty", is_flag=True, default=False,
-              help="显式允许产生只有标题、无正文的任务（违反模板规范，仅特殊场景使用）。")
 @click.option("--depends", "depends_on", default="", help="依赖的任务 ID，多个用逗号分隔")
 @click.option("--file", "-f", "batch_file", type=click.Path(exists=True, path_type=Path),
               help="从文件批量导入任务（每行一个标题，或 .json / .md 格式）")
@@ -295,44 +291,29 @@ def add(
     title: str | None,
     agent: str,
     priority: str,
-    no_ai: bool,
-    allow_empty: bool,
     depends_on: str,
     batch_file: Path | None,
     json_mode: bool,
 ):
     """
-    添加任务到 backlog（单条或批量），支持 AI 自动生成任务内容。
+    添加任务到 backlog（单条或批量）。
 
-    支持的 AI Provider：
+    使用规则（强制，没有占位通道）：
+      - 单条 add -t "标题"：必须由 --agent 指定的 AI 生成模板合规 content；
+        校验失败直接拒绝，不允许空正文。
+      - 批量 add -f tasks.txt（每行一个标题）：与单条同流程，每行都走 AI 生成。
+      - 批量 add -f tasks.json：每条必须自带模板合规 content（按
+        ai template --format json 给出的 schema）；缺章节直接拒绝。
+      - 批量 add -f tasks.md：每个 --- 分隔的 section 必须模板合规。
 
-      CLI 模式:
-        claude       - Claude Code (官方 CLI)
-        claude-node  - Claude Code (via Node.js)
-        codex        - OpenAI Codex CLI
-        gemini       - Google Gemini CLI
-
-      API 模式 (需设置环境变量):
-        openai-gpt4     - OpenAI GPT-4 Turbo
-        openai-gpt4o    - OpenAI GPT-4o
-        openai-gpt35    - OpenAI GPT-3.5 Turbo
-        claude-opus     - Claude 3 Opus
-        claude-sonnet   - Claude 3.5 Sonnet
-        claude-haiku    - Claude 3 Haiku
-        hunyuan         - 腾讯云混元
-        zhipu-glm4      - 智谱 GLM-4
-        wenxin          - 百度文心一言
-        qwen            - 阿里通义千问
-        deepseek        - DeepSeek
-        ollama          - Ollama (本地)
-        groq            - Groq
+    人工只走自然语言入口（python -m codepilot "需求文本"），由规划器拆分；
+    人工不应直接调 add。AI / 智能体调 add 时必须满足上述合规要求。
 
     示例:
-      codepilot add -p myproj -t "优化日志输出"
+      codepilot add -p myproj -t "优化日志输出"            # AI 生成 content
       codepilot add -p myproj -t "新功能" -a openai-gpt4o
-      codepilot add -p myproj -t "代码审查" -a claude-sonnet --priority P1
-      codepilot add -p myproj -f tasks.txt
-      codepilot add -p myproj -f tasks.json
+      codepilot add -p myproj -f tasks.txt                 # 每行一个标题，逐行 AI 生成
+      codepilot add -p myproj -f tasks.json                # 每条带 content
       codepilot add -p myproj -f tasks.md
     """
     db.init_db()
@@ -352,7 +333,7 @@ def add(
     # 批量模式
     if batch_file:
         return _batch_add(
-            project, batch_file, agent, priority, no_ai, dep_list,
+            project, batch_file, agent, priority, dep_list,
             proj_path, json_mode, config_ref=config_ref,
         )
 
@@ -365,9 +346,8 @@ def add(
     effective_agent, fallback_reason, _ = _resolve_agent_info(ctx, agent)
 
     _single_add(
-        project, title, effective_agent, priority, no_ai, dep_list, proj_path,
+        project, title, effective_agent, priority, dep_list, proj_path,
         json_mode, fallback_reason=fallback_reason, config_ref=config_ref,
-        allow_empty=allow_empty,
     )
 
 
@@ -376,50 +356,39 @@ def _single_add(
     title: str,
     agent: str,
     priority: str,
-    no_ai: bool,
     dep_list: list[int] | None,
     proj_path: str,
     json_mode: bool,
     fallback_reason: str | None = None,
     config_ref: str | Path | None = None,
-    allow_empty: bool = False,
 ):
-    """添加单个任务."""
+    """添加单个任务，永远走 AI 生成 + 模板合规校验。
+
+    没有占位通道：人工要批量管理任务请走 ``codepilot "需求"`` 让规划器拆；
+    AI / 智能体调 add 必须接受 AI 生成或自带模板合规 content（后者走批量
+    JSON / Markdown 路径）。
+    """
     if fallback_reason:
         echo(f"[yellow]⚠ {fallback_reason}[/yellow]")
 
-    if no_ai:
-        if not allow_empty:
-            raise click.ClickException(
-                f"--no-ai 单条添加会产生只有标题《{title}》、无正文的任务，"
-                "违反任务模板规范（外部添加的任务必须含 Task Goal / Acceptance Criteria 等关键章节）。\n"
-                "正确做法：\n"
-                "  - 让 CodePilot 自己规划：python -m codepilot \"需求描述\"\n"
-                "  - 让 AI 生成 content：去掉 --no-ai\n"
-                "  - 仅在确实需要占位时显式加 --allow-empty\n"
-                "字段规范见：python -m codepilot ai template --format guide"
-            )
-        content = ""
-        echo("[yellow]跳过 AI 生成，内容为空（--allow-empty 已显式允许，违反模板规范）[/yellow]")
-    else:
-        echo(f"[cyan]调用 {agent} 生成任务内容...[/cyan]")
-        content = generate_task_content(
-            title,
-            project_path=proj_path,
-            agent=agent,
-            config_ref=config_ref,
+    echo(f"[cyan]调用 {agent} 生成任务内容...[/cyan]")
+    content = generate_task_content(
+        title,
+        project_path=proj_path,
+        agent=agent,
+        config_ref=config_ref,
+    )
+    missing = missing_task_template_sections(content)
+    if missing:
+        raise click.ClickException(
+            f"AI 生成的任务《{title}》正文缺少模板必需章节: {', '.join(missing)}。\n"
+            "可能原因：当前 agent 未按 task_single.md 提示渲染 task-template.md 9 章节，"
+            "或 agent 输出被截断。\n"
+            "处理建议：换一个 agent 重试；或人工走 `python -m codepilot \"需求文本\"` 让规划器规划；"
+            "如果你是 AI/智能体直接投递，请按 `python -m codepilot ai template --format json` "
+            "的 schema 准备 content，再用 `add -f tasks.json` 批量导入。"
         )
-        if not allow_empty:
-            missing = missing_task_template_sections(content)
-            if missing:
-                raise click.ClickException(
-                    f"AI 生成的任务《{title}》正文缺少模板必需章节: {', '.join(missing)}。\n"
-                    "可能原因：generate_task_content 的提示模板还没对齐 task-template.md，"
-                    "或当前 agent 未按提示渲染章节。\n"
-                    "处理建议：换一个 agent 重试；或先用 ai template --format guide 自查章节，"
-                    "手工补全后再投递；确认占位场景可加 --allow-empty 跳过校验。"
-                )
-        echo("[green][OK] AI 生成完成[/green]")
+    echo("[green][OK] AI 生成完成[/green]")
 
     task = db.create_task(
         project=project,
@@ -458,13 +427,12 @@ def _batch_add(
     batch_file: Path,
     agent: str,
     priority: str,
-    no_ai: bool,
     dep_list: list[int] | None,
     proj_path: str,
     json_mode: bool,
     config_ref: str | Path | None = None,
 ):
-    """批量添加任务."""
+    """批量添加任务，所有格式都强制模板合规、不允许空 content。"""
     echo(f"[cyan]批量导入: {batch_file}[/cyan]")
     items = _parse_batch_file(batch_file)
     batch_suffix = batch_file.suffix.lower()
@@ -502,8 +470,10 @@ def _batch_add(
         else:
             item_dep = dep_list  # 回退到批量命令行 --depends
 
-        # 用户若在 JSON 里直接给出 content / body / description，就优先采用，
-        # 不再触发 AI 生成或被 --no-ai 清空。
+        # 三种批量格式的合规策略（统一拒绝空 content）：
+        # - JSON / Markdown：每条都必须自带模板合规 content，缺章节立即拒绝。
+        # - 纯文本（每行一个标题）：每行走 AI 生成 + 模板合规校验，AI 生成
+        #   失败或缺章节同样拒绝；不再有「失败就静默放空」的回退。
         user_content = item.get("content") or item.get("body") or item.get("description")
 
         echo(f"[dim]{i}/{len(items)}[/dim] {item_title} ", nl=False)
@@ -518,12 +488,12 @@ def _batch_add(
                         item_title,
                         f"content 缺少关键章节: {', '.join(missing)}",
                     )
-        elif no_ai:
+        else:
             if is_json_batch:
                 raise _json_batch_error(
                     i,
                     item_title,
-                    "缺少 content，且当前使用了 --no-ai，导入会产生只有标题的空任务",
+                    "缺少 content，请按 `python -m codepilot ai template --format json` 给出的 schema 准备",
                 )
             if is_markdown_batch:
                 raise _markdown_batch_error(
@@ -531,14 +501,7 @@ def _batch_add(
                     item_title,
                     "缺少可导入的 markdown 任务正文",
                 )
-            content = ""
-        else:
-            if is_markdown_batch:
-                raise _markdown_batch_error(
-                    i,
-                    item_title,
-                    "缺少可导入的 markdown 任务正文",
-                )
+            # 纯文本批量：每行一个标题，逐条走 AI 生成 + 校验。
             try:
                 content = generate_task_content(
                     item_title,
@@ -547,22 +510,18 @@ def _batch_add(
                     config_ref=config_ref,
                 )
             except RuntimeError as exc:
-                if is_json_batch:
-                    raise _json_batch_error(
-                        i,
-                        item_title,
-                        f"AI 生成任务内容失败: {exc}",
-                    ) from exc
-                content = ""
+                raise click.ClickException(
+                    f"纯文本批量第 {i} 项《{item_title}》AI 生成失败: {exc}。"
+                    " 请改用 JSON / Markdown 自带 content 的批量格式，或单独排查 agent。"
+                ) from exc
 
-            if is_json_batch:
-                missing = missing_task_template_sections(content)
-                if missing:
-                    raise _json_batch_error(
-                        i,
-                        item_title,
-                        f"AI 生成的 content 缺少关键章节: {', '.join(missing)}",
-                    )
+            missing = missing_task_template_sections(content)
+            if missing:
+                raise click.ClickException(
+                    f"纯文本批量第 {i} 项《{item_title}》AI 生成的 content 缺少关键章节: "
+                    f"{', '.join(missing)}。建议换 agent 或改用 `add -f tasks.json` "
+                    "提供模板合规 content。"
+                )
 
         prepared_items.append(
             {

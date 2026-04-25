@@ -449,8 +449,8 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 
 ### 任务模板（外部规划专用）
 
-如果你**不**走 CodePilot 的规划器，而是自己在外部规划好任务并通过 `add -f tasks.json` 或 `add -f tasks.md` 投递，
-必须按任务模板格式准备内容。三种输出：
+如果你**不**走 CodePilot 的规划器，而是自己在外部规划好任务并通过 `add -f tasks.json` / `add -f tasks.md` 投递，
+**必须按 task-template 格式准备 content，没有占位通道**。三种输出：
 
 ```bash
 {_cmd(command, "ai template")}               # 原始 task-template.md（含 {{title}} 等占位符）
@@ -458,11 +458,15 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 {_cmd(command, "ai template --format guide")} # 中文填充指南（含示例）
 ```
 
-**重要原则**：
-- 人工只通过 `{command} "需求文本"` 走规划器，不直接 add；
-- 外部 AI 或 Web 批量添加时，content 必须符合上述模板，不能只填标题；
-- 如果走 `tasks.md`，每条任务都要是完整模板正文，多个任务之间用 `---` 分隔；
-- 骨架保持英文，占位符内容用中文。
+**强制规则（v0.2 起 add 命令的硬约束）**：
+
+1. **人工调用方** —— 不要直接 `add`。要新增任务请走 `{command} "需求文本"`，由规划器拆分；要单独排一条具体任务也只是 `add -t "标题"`，由 `--agent` 指定的模型自动生成模板合规 content。
+2. **AI / 智能体调用方** —— 必须满足下面之一：
+   - 用 `add -f tasks.json`，每条带模板合规 `content`（缺章节直接拒）；
+   - 用 `add -f tasks.md`，多个任务之间 `---` 分隔，每段都是完整 task-template；
+   - 用 `add -t "标题"`，让 CodePilot 调用 AI 生成 content（同样会做合规校验）。
+3. **`--no-ai` / `--allow-empty` 已废弃** —— 不再有空 content 的占位通道；老版本写入的占位任务 UI 上会提示按 `ai template --format json` schema 重新投递。
+4. **章节骨架保留英文，章节正文用中文**；不要写「待补充」「TBD」「无」之类占位词。
 """
 
 
@@ -472,6 +476,9 @@ def ai_prompt_text(*, command_name: str = "codepilot") -> str:
     return (
         "你正在调用 CodePilot 这个本地 CLI。优先使用非交互命令。"
         f"提交需求时直接用 `{command} \"需求文本\"`。"
+        "如果你必须自己写任务（不走规划器），必须按 task-template 提供完整 content，"
+        f"先用 `{_cmd(command, 'ai template --format json')}` 拿 schema 再投递；"
+        "没有 --no-ai / --allow-empty 这种占位通道，缺章节直接拒。"
         f"查看状态时优先用 `{_cmd(command, 'status -p <项目名> --json')}`，"
         f"精确查看单个任务用 `{_cmd(command, 'task show <task_id> --json')}`，"
         f"检查本机环境用 `{_cmd(command, 'doctor --json')}`，"
@@ -480,7 +487,6 @@ def ai_prompt_text(*, command_name: str = "codepilot") -> str:
         f"如果需要人工介入或图形化查看，启动 `{_cmd(command, 'ui')}`。"
         f"准备发布包时优先用 `{_cmd(command, 'binary prepare --version <版本号>')}`。"
         f"如果需要完整命令清单，调用 `{_cmd(command, 'ai manifest')}`。"
-        f"如果你想自己规划任务（不走 CodePilot 规划器）并直接投递，先读 `{_cmd(command, 'ai template --json')}` 拿模板字段 schema 与批量导入格式。"
     )
 
 
@@ -577,8 +583,8 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
             ],
         },
         "batch_import": {
-            "command": _cmd(command, "add -p <项目名> -f <tasks.json|tasks.md> [--no-ai]"),
-            "description": "可用 JSON 数组投递预先规划好的任务，或直接导入按 task-template 渲染好的 markdown 任务集。",
+            "command": _cmd(command, "add -p <项目名> -f <tasks.json|tasks.md|tasks.txt>"),
+            "description": "支持三种格式：JSON 数组（每条带 content）、Markdown 多任务串联、纯文本（每行一个标题，逐条 AI 生成）。所有路径都会做 task-template 合规校验，没有占位通道。",
             "fields": batch_fields,
             "example": [
                 {
@@ -590,10 +596,11 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
                 }
             ],
             "notes": [
-                "若只传 title，CodePilot 会调用 --agent 指定的模型生成 content。",
-                "单条任务或纯文本批量导入可配合 --no-ai 占坑；JSON tasks.json 中缺少 content 的条目若再配合 --no-ai，会被 CLI 直接拒绝，防止生成空任务。",
-                "Markdown 批量导入时，每个任务都必须是完整 task-template；多个任务之间用 `---` 串联，且分隔线后紧跟下一个一级标题。",
+                "JSON 批量：每条必须自带模板合规 content（按 ai template --format json 给出的 schema），缺章节直接拒绝。",
+                "Markdown 批量：每个任务都是完整 task-template；多个任务之间用 `---` 串联，且分隔线后紧跟下一个一级标题。",
+                "纯文本批量：每行一个标题，CodePilot 逐行调用 --agent 指定的模型生成 content；生成失败或缺章节同样会拒绝整批，绝不静默写入空任务。",
                 "content 中的语言应为中文；模板骨架（章节名）保持英文。",
+                "人工不应直接调 add；要批量管理任务请走 `python -m codepilot \"需求文本\"` 由规划器拆分。",
             ],
         },
         "filling_rules": [

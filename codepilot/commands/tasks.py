@@ -157,8 +157,9 @@ def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
         "任务内容",
         task.get("content"),
         empty_hint=(
-            "（空正文：这个任务只有标题，没有保存正文。常见原因是使用 "
-            "`codepilot add -f tasks.json --no-ai` 导入了占位任务。）"
+            "（空正文：这个任务只有标题，没有保存正文。常见原因：通过早期版本的 "
+            "`codepilot add` 占位通道导入；新版 add 已强制要求 content 模板合规，"
+            "请按 `codepilot ai template --format json` 的 schema 重新投递。）"
         ),
     )
     _show_block("错误信息", task.get("error_message"))

@@ -84,8 +84,8 @@ CP.Components.TaskDetail = Vue.defineComponent({
         '## 任务正文为空',
         '',
         '- 这个任务只有标题，没有保存正文。',
-        '- 常见原因：使用 `codepilot add -f tasks.json --no-ai` 导入了占位任务。',
-        '- 处理方式：补齐符合 `codepilot ai template --format json` 的 `content`，或删除后重新导入。',
+        '- 常见原因：早期版本的 `codepilot add` 占位通道遗留；新版已强制要求 content 模板合规。',
+        '- 处理方式：按 `codepilot ai template --format json` 的 schema 补齐 `content`，或删除后重新导入。',
       ].join('\n');
     },
   },

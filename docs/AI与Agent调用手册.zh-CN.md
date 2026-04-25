@@ -9,6 +9,8 @@
 3. 提交需求优先使用自然语言入口：`codepilot "需求文本"`。
 4. 任务运维统一使用 `codepilot task ...`。
 5. 发布统一使用 `codepilot binary ...`。
+6. **人工不应直接调 `add`**；要新增任务请用 `codepilot "需求文本"` 让规划器拆。`add` 命令主要为外部 AI / 智能体批量投递任务设计。
+7. **AI / 智能体调 `add` 必须带 task-template 合规 content**；没有空 content 占位通道，缺章节直接拒。先 `codepilot ai template --format json` 拿 schema。
 
 ## 2. 最小命令集合
 
@@ -65,7 +67,32 @@ codepilot binary prepare --version <版本号>
 codepilot ai manifest
 codepilot ai guide
 codepilot ai prompt
+codepilot ai template --format json    # 任务模板字段 schema + 批量导入格式
+codepilot ai template --format guide   # 中文填充指南
 ```
+
+### 2.7 直接投递任务（仅 AI / 智能体）
+
+预先按模板规划好任务后，三种批量格式：
+
+```bash
+# 单条：让 codepilot 用 --agent 指定的 AI 生成模板合规 content（推荐）
+codepilot add -p <项目名> -t "任务标题"
+
+# 批量 JSON：每条带 content
+codepilot add -p <项目名> -f tasks.json
+
+# 批量 Markdown：多个完整 task-template，用 `---` 分隔
+codepilot add -p <项目名> -f tasks.md
+
+# 批量纯文本：每行一个标题，逐条 AI 生成
+codepilot add -p <项目名> -f tasks.txt
+```
+
+**强制规则**：
+- 所有路径都做模板合规校验（必填 9 个章节）；缺章节立即整批拒绝。
+- 没有 `--no-ai` / `--allow-empty` 占位通道。
+- 章节骨架英文（`## Task Goal` / `## In Scope` ...），章节正文中文。
 
 ## 3. JSON 输出契约
 

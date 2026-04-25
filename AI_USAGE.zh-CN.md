@@ -126,8 +126,8 @@ codepilot ai prompt
 
 ### 任务模板（外部规划专用）
 
-如果你**不**走 CodePilot 的规划器，而是自己在外部规划好任务并通过 `add -f tasks.json` 或 `add -f tasks.md` 投递，
-必须按任务模板格式准备内容。三种输出：
+如果你**不**走 CodePilot 的规划器，而是自己在外部规划好任务并通过 `add -f tasks.json` / `add -f tasks.md` 投递，
+**必须按 task-template 格式准备 content，没有占位通道**。三种输出：
 
 ```bash
 codepilot ai template               # 原始 task-template.md（含 {title} 等占位符）
@@ -135,8 +135,12 @@ codepilot ai template --format json  # 机器可读字段 schema + 批量导入�
 codepilot ai template --format guide # 中文填充指南（含示例）
 ```
 
-**重要原则**：
-- 人工只通过 `codepilot "需求文本"` 走规划器，不直接 add；
-- 外部 AI 或 Web 批量添加时，content 必须符合上述模板，不能只填标题；
-- 如果走 `tasks.md`，每条任务都要是完整模板正文，多个任务之间用 `---` 分隔；
-- 骨架保持英文，占位符内容用中文。
+**强制规则（v0.2 起 add 命令的硬约束）**：
+
+1. **人工调用方** —— 不要直接 `add`。要新增任务请走 `codepilot "需求文本"`，由规划器拆分；要单独排一条具体任务也只是 `add -t "标题"`，由 `--agent` 指定的模型自动生成模板合规 content。
+2. **AI / 智能体调用方** —— 必须满足下面之一：
+   - 用 `add -f tasks.json`，每条带模板合规 `content`（缺章节直接拒）；
+   - 用 `add -f tasks.md`，多个任务之间 `---` 分隔，每段都是完整 task-template；
+   - 用 `add -t "标题"`，让 CodePilot 调用 AI 生成 content（同样会做合规校验）。
+3. **`--no-ai` / `--allow-empty` 已废弃** —— 不再有空 content 的占位通道；老版本写入的占位任务 UI 上会提示按 `ai template --format json` schema 重新投递。
+4. **章节骨架保留英文，章节正文用中文**；不要写「待补充」「TBD」「无」之类占位词。
