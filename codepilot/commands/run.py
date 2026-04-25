@@ -391,16 +391,20 @@ def _finalize_failed_task_workspace(
     """End-of-task housekeeping for failure / cancellation paths.
 
     Goal: leave the repo in a state where the next ``run`` is unblocked even
-    when no human is around. Performs three best-effort steps:
+    when no human is around. Performs four best-effort steps:
 
     1. Kill long-lived processes still running inside the worktree
        (delegates to :func:`_cleanup_worktree_leftovers`).
-    2. Remove the worktree directory and delete the task branch so retries
-       and replans start from a clean slate; main repo never accumulates
-       orphaned task branches the way it used to.
-    3. Pull the main repo back to ``base_branch`` if a previous step left
-       HEAD elsewhere — autonomous loops assume the dashboard view is on
-       the configured base branch between tasks.
+    2. **Worktree mode** (worktree_path != project_path): remove the task
+       worktree directory + delete the task branch via
+       ``_git_cleanup_task_worktree``.
+    3. Pull the main repo back to ``base_branch`` (only when the working
+       tree is clean) so the dashboard view is on base between tasks.
+    4. **Branch mode** (worktree_path == project_path): the previous run
+       just left a local task branch behind in the main repo. Now that
+       HEAD is back on base, force-delete that branch so the next
+       ``_git_prepare_task_branch`` call doesn't trip on "branch already
+       exists".
 
     Every step swallows its own exceptions and surfaces a yellow warning
     so a cleanup hiccup can never mask the real failure cause.
@@ -425,6 +429,9 @@ def _finalize_failed_task_workspace(
         wt = None
 
     same_as_main = wt is not None and wt == pp.resolve()
+    # worktree 模式：删独立 worktree（顺带删任务分支，git worktree remove
+    # 之后 -D branch）。branch 模式（任务直接在主仓里切分支）这一步不会
+    # 命中，留给下面"切回 base + 删孤儿分支"两步处理。
     if branch and not same_as_main and worktree_path:
         try:
             _git_cleanup_task_worktree(
@@ -442,15 +449,48 @@ def _finalize_failed_task_workspace(
     base = (base_branch or "").strip()
     if not base:
         return
+    base_exists = False
     try:
-        if not _git_local_branch_exists(pp, base):
-            return
+        base_exists = _git_local_branch_exists(pp, base)
+    except Exception as exc:
+        echo(f"[yellow]检查 base_branch={base} 是否存在失败: {safe(exc)}[/yellow]")
+        return
+    if not base_exists:
+        return
+
+    # 切回 base 必须先于删任务分支，否则 HEAD 还指着任务分支，git branch -D
+    # 会被 git 拒绝。只有在工作区干净时才切，避免 builder 半提交的代码被
+    # 静默丢弃。
+    try:
         current = _git_current_branch(pp) or ""
         if current and current != base and not _git_has_changes(pp):
             _git_checkout(pp, base)
             echo(f"[dim]主仓库已切回 {base}[/dim]")
     except Exception as exc:
         echo(f"[yellow]切回 base_branch={base} 失败: {safe(exc)}[/yellow]")
+        return
+
+    # branch 模式（同主仓 worktree）下，任务分支仍残留在本地分支列表里 —
+    # 必须显式删掉，否则下一轮 _git_prepare_task_branch 会因 "branch already
+    # exists / used by worktree" 卡住。worktree 模式上面已经 -D 过了，这里
+    # 保险性二次检查；不会重复删。
+    if branch and branch != base and same_as_main:
+        try:
+            if _git_local_branch_exists(pp, branch):
+                code, output = _run_command(
+                    ["git", "branch", "-D", branch],
+                    cwd=pp,
+                    timeout=60,
+                )
+                if code == 0:
+                    echo(f"[dim]任务分支 {branch} 已自动清理[/dim]")
+                else:
+                    echo(
+                        f"[yellow]删除任务分支 {branch} 失败 (exit={code}): "
+                        f"{safe(output[:200])}[/yellow]"
+                    )
+        except Exception as exc:
+            echo(f"[yellow]删除任务分支 {branch} 异常: {safe(exc)}[/yellow]")
 
 
 def _tail_lines(text: str, max_lines: int = 12) -> list[str]:

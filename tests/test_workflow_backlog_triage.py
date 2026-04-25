@@ -700,3 +700,87 @@ def test_run_backlog_review_failure_replan_downgrades_when_content_violates_temp
     err = current["error_message"] or ""
     assert "已降级为 discard" in err
     assert "缺章节" in err
+
+
+def test_retry_with_hint_appends_structured_reviewer_blockers_to_task_content(tmp_path, monkeypatch):
+    """retry_with_hint 落地时必须把 reviewer blocker / failed AC 写进 task content。
+
+    旧实现只 append decision["note"]（schema 里根本没有 note 字段，效果是
+    永远 append 空串），下一轮 builder 看到的还是原始任务，等于对相同输入
+    重跑。本测试守住"hint 块带 reviewer 结构化引用"这一关键不变量。
+    """
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task(
+        "demo",
+        "处理校验缺口",
+        content=(
+            "# 处理校验缺口\n\n## Task Goal\n补齐入参校验。\n\n"
+            "## In Scope\n- handler.py\n\n## Out of Scope\n- UI\n\n"
+            "## Forbidden (Hard Boundary)\n- 不重构\n\n## Files In Scope\n- handler.py\n\n"
+            "## Planning Evidence\n- 来自 spec\n\n## Acceptance Criteria\n- [ ] 全部分支可测\n\n"
+            "## Verification Matrix\n| AC | 命令 | 期望 | 证据 |\n| --- | --- | --- | --- |\n\n"
+            "## Reviewer Checkpoints\n- 检查所有入参\n"
+        ),
+        max_retries=3,
+    )
+
+    structured_review = (
+        "需要修复的点\n"
+        "- 见 JSON\n"
+        "VERDICT: FAIL\n"
+        "```json\n"
+        '{"verdict":"fail",'
+        '"blockers":["空字符串入参没拦","重复请求会重复落库"],'
+        '"advisory":["命名建议改成 validate_payload"],'
+        '"ac_checks":[{"id":"AC2","status":"fail","reason":"空 body 直接 200"}]}\n'
+        "```"
+    )
+
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(
+            exit_code=2,
+            output="builder failed",
+            review_output=structured_review,
+            summary="review 未通过",
+            executor="builtin",
+        ),
+    )
+    monkeypatch.setattr(
+        run_cmd,
+        "call_structured",
+        lambda request: GatewayResponse(
+            ok=True,
+            source="cli:codex",
+            payload={
+                "action": "retry_with_hint",
+                "matched_task_id": None,
+                "rationale": "任务目标没问题，按 reviewer 反馈定向修",
+                "merged_note": "",
+                "retry_hint": "先补 B1 的空入参分支，再处理 B2 的幂等。",
+                "replan_title": "",
+                "replan_content": "",
+            },
+        ),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+    content = current["content"] or ""
+
+    assert stats["requeued"] == 1
+    assert current["status"] == "backlog"
+    # AI 浓缩 hint 必须落地
+    assert "AI triage 重试提示" in content
+    assert "先补 B1 的空入参分支" in content
+    # reviewer 结构化 blockers 必须以 B1/B2 的形式逐条带入
+    assert "B1. 空字符串入参没拦" in content
+    assert "B2. 重复请求会重复落库" in content
+    # 失败的 AC 必须列出（含 reason）
+    assert "AC2: 空 body 直接 200" in content
+    # advisory 也要带（非阻塞但提示 builder）
+    assert "A1. 命名建议改成 validate_payload" in content

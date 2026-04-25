@@ -1068,3 +1068,72 @@ def test_finalize_failed_task_workspace_swallows_cleanup_errors(tmp_path):
     )
 
     assert run_cmd._git_current_branch(project_path) == base_branch
+
+
+def test_finalize_failed_task_workspace_cleans_branch_in_single_worktree_mode(tmp_path):
+    """Branch 模式下（task_workspace == project_path）任务分支必须自动清理。
+
+    codex review 指出原实现仅在 worktree_path != project_path 时清分支，
+    branch 模式失败后会留下孤儿分支，下一轮 ``_git_prepare_task_branch``
+    会因 "branch already exists" 直接卡住。本测试守住"自愈语义对所有
+    workspace 模式都成立"这个不变量。
+    """
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    base_branch = _git_init_repo(project_path)
+
+    branch = run_cmd._git_prepare_task_branch(
+        project_path,
+        task_id=77,
+        title="branch mode failure",
+        base_branch=base_branch,
+    )
+    assert branch
+    assert run_cmd._git_local_branch_exists(project_path, branch)
+    assert run_cmd._git_current_branch(project_path) == branch
+
+    run_cmd._finalize_failed_task_workspace(
+        task_id=77,
+        project_path=project_path,
+        worktree_path=project_path,  # branch mode: 同一棵 worktree
+        task_branch=branch,
+        base_branch=base_branch,
+    )
+
+    assert run_cmd._git_current_branch(project_path) == base_branch
+    assert run_cmd._git_local_branch_exists(project_path, branch) is False, (
+        "branch mode failure must auto-delete the task branch"
+    )
+
+
+def test_finalize_failed_task_workspace_keeps_branch_when_worktree_dirty(tmp_path):
+    """工作区脏（builder 半提交）时不要切 base、不要丢分支。
+
+    避免静默吞掉用户没 commit 的修改。
+    """
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    base_branch = _git_init_repo(project_path)
+
+    branch = run_cmd._git_prepare_task_branch(
+        project_path,
+        task_id=88,
+        title="dirty worktree",
+        base_branch=base_branch,
+    )
+    assert branch
+    # Simulate builder leaving uncommitted changes inside the task branch.
+    (project_path / "scratch.txt").write_text("half-baked\n", encoding="utf-8")
+
+    run_cmd._finalize_failed_task_workspace(
+        task_id=88,
+        project_path=project_path,
+        worktree_path=project_path,
+        task_branch=branch,
+        base_branch=base_branch,
+    )
+
+    # HEAD must NOT have left the dirty branch (would silently drop changes).
+    assert run_cmd._git_current_branch(project_path) == branch
+    # And the branch must NOT be deleted (would lose history).
+    assert run_cmd._git_local_branch_exists(project_path, branch) is True

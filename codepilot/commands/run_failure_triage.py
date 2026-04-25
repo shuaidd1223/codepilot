@@ -294,6 +294,66 @@ def _append_task_content(base: str, note: str) -> str:
     return f"{base}\n\n{note}"
 
 
+def _format_retry_hint_block(
+    retry_hint: str,
+    reviewer_verdict: Optional[ReviewerVerdict],
+    *,
+    item_limit: int = 6,
+    item_char_limit: int = 220,
+) -> str:
+    """Render the retry hint + reviewer's structured blockers as one block.
+
+    Builder sees this appended to its task content on the next round, so the
+    hint must (a) carry the AI-summarised guidance and (b) cite the reviewer's
+    actual blocker / failed-AC text — otherwise builder is rerun against the
+    same vague "fix it" instruction it already had.
+    """
+    hint_text = (retry_hint or "").strip()
+    lines: list[str] = ["## AI triage 重试提示", ""]
+    if hint_text:
+        lines.append(f"**整体修复提示**：{hint_text}")
+    else:
+        lines.append("**整体修复提示**：（reviewer 反馈见下方结构化条目）")
+
+    if reviewer_verdict is not None and reviewer_verdict.source != "empty":
+        blockers = [
+            str(item).strip()
+            for item in (reviewer_verdict.blockers or [])
+            if str(item).strip()
+        ]
+        advisory = [
+            str(item).strip()
+            for item in (reviewer_verdict.advisory or [])
+            if str(item).strip()
+        ]
+        failed_acs = [
+            item for item in (reviewer_verdict.ac_checks or [])
+            if str((item or {}).get("status") or "").strip().lower() == "fail"
+        ]
+        if blockers:
+            lines.append("")
+            lines.append("**必须解决的 blockers**（按 reviewer 上一轮的原文）：")
+            for idx, item in enumerate(blockers[:item_limit], start=1):
+                lines.append(f"- B{idx}. {_trim_triage_text(item, limit=item_char_limit)}")
+            if len(blockers) > item_limit:
+                lines.append(f"- ... 另有 {len(blockers) - item_limit} 条 blocker 未列出。")
+        if failed_acs:
+            lines.append("")
+            lines.append("**未通过的 AC 项**：")
+            for idx, item in enumerate(failed_acs[:item_limit], start=1):
+                ac_id = str((item or {}).get("id") or f"AC{idx}")
+                reason = _trim_triage_text(
+                    str((item or {}).get("reason") or ""), limit=item_char_limit
+                ) or "（无说明）"
+                lines.append(f"- {ac_id}: {reason}")
+        if advisory:
+            lines.append("")
+            lines.append("**advisory（参考，非阻塞）**：")
+            for idx, item in enumerate(advisory[:item_limit], start=1):
+                lines.append(f"- A{idx}. {_trim_triage_text(item, limit=item_char_limit)}")
+    return "\n".join(lines).rstrip()
+
+
 def _resolve_triage_project_context(
     task: dict,
     *,
@@ -811,6 +871,14 @@ def apply_review_failure_triage(
             "should_stop": should_stop,
         }
 
+    # Re-parse reviewer output once so retry_with_hint / replan paths can quote
+    # structured blockers; tolerated to be ``None`` for legacy reviewers that
+    # never emitted a JSON fence.
+    try:
+        reviewer_verdict = parse_reviewer_output(review_output or "")
+    except Exception:
+        reviewer_verdict = None
+
     action = decision["action"]
     rationale = decision.get("rationale") or ""
     if action == "retry_with_hint":
@@ -820,11 +888,20 @@ def apply_review_failure_triage(
         else:
             triage_line = f"AI triage: 已追加重试提示并回退 backlog（{rationale or '按 reviewer 反馈重试'}）"
         final_error = f"{error_message}\n{triage_line}".strip()
+        # Compose hint block from the schema-correct ``retry_hint`` field
+        # (the previous code read decision["note"] which doesn't exist in
+        # _REVIEW_FAILURE_TRIAGE_SCHEMA, so the hint was silently dropped),
+        # then enrich with reviewer's structured blockers / failed AC items
+        # so builder's next round sees the actual reviewer findings, not
+        # just the AI's compressed hint.
+        retry_hint = str(decision.get("retry_hint") or "").strip()
+        hint_block = _format_retry_hint_block(retry_hint, reviewer_verdict)
         updated = db_module.update_task(
             task["id"],
-            content=_append_task_content(task.get("content") or "", decision.get("note") or ""),
+            content=_append_task_content(task.get("content") or "", hint_block),
             error_message=final_error,
         )
+        decision["applied_hint_block"] = hint_block
         return {
             "updated": updated,
             "error_message": final_error,
