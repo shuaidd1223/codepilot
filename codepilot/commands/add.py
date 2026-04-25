@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import click
@@ -22,6 +23,9 @@ from codepilot.commands.status import _resolve_project
 from codepilot.config import resolve_project_config_reference
 from codepilot.output import echo
 from codepilot.task_template import missing_task_template_sections
+
+
+MARKDOWN_BATCH_SUFFIXES = {".md", ".markdown"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -82,7 +86,7 @@ def _resolve_agent(ctx, param, value):
 
 def _parse_batch_file(file_path: Path) -> list[dict]:
     """
-    解析批量导入文件，支持两种格式：
+    解析批量导入文件，支持三种格式：
 
     1. 每行一个标题（空行和 # 开头的行跳过）：
        优化日志输出
@@ -91,11 +95,18 @@ def _parse_batch_file(file_path: Path) -> list[dict]:
 
     2. JSON 文件（.json 扩展名）：
        [{"title": "...", "priority": "P1", "agent": "claude-sonnet"}, ...]
+
+    3. Markdown 文件（.md/.markdown）：
+       每个任务是一份完整的 task-template markdown，多个任务之间用
+       后面紧跟下一个一级标题 ``# ...`` 的 ``---`` 分隔。
     """
     content = file_path.read_text(encoding="utf-8").strip()
-    if file_path.suffix.lower() == ".json":
+    suffix = file_path.suffix.lower()
+    if suffix == ".json":
         items = json.loads(content)
         return items
+    if suffix in MARKDOWN_BATCH_SUFFIXES:
+        return _parse_markdown_batch(content)
 
     # 纯文本格式：每行一个标题
     tasks = []
@@ -112,6 +123,123 @@ def _json_batch_error(item_index: int, item_title: str, reason: str) -> click.Cl
         f"JSON 批量导入第 {item_index} 项《{item_title}》无效：{reason}。"
         " 请先用 `codepilot ai template --format json` / `--format guide` 生成合规 content。"
     )
+
+
+def _markdown_batch_error(item_index: int, item_title: str, reason: str) -> click.ClickException:
+    return click.ClickException(
+        f"Markdown 批量导入第 {item_index} 项《{item_title}》无效：{reason}。"
+        " 请确保每个任务都是完整的 task-template markdown，多个任务之间用 `---` 连接，"
+        "并让分隔线后紧跟下一个 `# 标题`。"
+    )
+
+
+def _parse_markdown_batch(content: str) -> list[dict]:
+    """Parse markdown batch content into task items."""
+
+    text = str(content or "").replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return []
+
+    lines = text.split("\n")
+    chunks: list[str] = []
+    current: list[str] = []
+    for index, line in enumerate(lines):
+        if _is_markdown_task_boundary(lines, index, current):
+            chunk = "\n".join(current).strip()
+            if chunk:
+                chunks.append(chunk)
+            current = []
+            continue
+        current.append(line)
+
+    tail = "\n".join(current).strip()
+    if tail:
+        chunks.append(tail)
+
+    items: list[dict] = []
+    for chunk in chunks:
+        title = _extract_markdown_task_title(chunk)
+        item: dict[str, object] = {"title": title, "content": chunk}
+        metadata = _extract_markdown_task_metadata(chunk)
+        if metadata.get("agent"):
+            item["agent"] = metadata["agent"]
+        if metadata.get("priority"):
+            item["priority"] = metadata["priority"]
+        if metadata.get("depends_on") is not None:
+            item["depends_on"] = metadata["depends_on"]
+        items.append(item)
+    return items
+
+
+def _is_markdown_task_boundary(lines: list[str], index: int, current: list[str]) -> bool:
+    """Return True when the current ``---`` line starts the next markdown task."""
+
+    if lines[index].strip() != "---":
+        return False
+    if not any(part.strip() for part in current):
+        return False
+
+    next_index = index + 1
+    while next_index < len(lines) and not lines[next_index].strip():
+        next_index += 1
+    if next_index >= len(lines):
+        return False
+
+    remaining = "\n".join(lines[next_index:])
+    return re.match(r"^\s*(?:<!--[\s\S]*?-->\s*)*#\s+\S", remaining) is not None
+
+
+def _extract_markdown_task_title(content: str) -> str:
+    match = re.search(r"^\s*#\s+(.+?)\s*$", content, flags=re.MULTILINE)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_markdown_task_metadata(content: str) -> dict[str, object]:
+    """Extract agent / priority / depends_on overrides from the Metadata table."""
+
+    match = re.search(
+        r"^\s*##\s+Metadata\s*$\n(?P<body>.*?)(?=^\s*---\s*$|^\s*##\s+\S.*$|\Z)",
+        content,
+        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        return {}
+
+    result: dict[str, object] = {}
+    for raw_line in match.group("body").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("|") or line.count("|") < 3:
+            continue
+        cells = [part.strip() for part in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        key = cells[0].lower()
+        value = cells[1]
+        if key in {"field", ":---"}:
+            continue
+        if key == "agent" and value:
+            result["agent"] = value
+        elif key == "priority" and value:
+            result["priority"] = value.upper()
+        elif key == "depends on":
+            result["depends_on"] = _parse_markdown_depends(value)
+    return result
+
+
+def _parse_markdown_depends(value: str) -> list[int] | None:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"-", "none", "n/a"} or text == "无":
+        return None
+
+    deps: list[int] = []
+    seen: set[int] = set()
+    for match in re.finditer(r"(?:^|[,，\s])#?(\d+)(?=$|[,，\s])", text):
+        task_id = int(match.group(1))
+        if task_id <= 0 or task_id in seen:
+            continue
+        seen.add(task_id)
+        deps.append(task_id)
+    return deps or None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -156,7 +284,7 @@ AGENT_CHOICES = [
               help="跳过 AI 生成；单条/纯文本批量可留空，JSON 批量缺 content 会拒绝")
 @click.option("--depends", "depends_on", default="", help="依赖的任务 ID，多个用逗号分隔")
 @click.option("--file", "-f", "batch_file", type=click.Path(exists=True, path_type=Path),
-              help="从文件批量导入任务（每行一个标题，或 .json 格式）")
+              help="从文件批量导入任务（每行一个标题，或 .json / .md 格式）")
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
 def add(
@@ -202,6 +330,7 @@ def add(
       codepilot add -p myproj -t "代码审查" -a claude-sonnet --priority P1
       codepilot add -p myproj -f tasks.txt
       codepilot add -p myproj -f tasks.json
+      codepilot add -p myproj -f tasks.md
     """
     db.init_db()
     # 优先用本地 --json，否则用全局
@@ -313,7 +442,9 @@ def _batch_add(
     """批量添加任务."""
     echo(f"[cyan]批量导入: {batch_file}[/cyan]")
     items = _parse_batch_file(batch_file)
-    is_json_batch = batch_file.suffix.lower() == ".json"
+    batch_suffix = batch_file.suffix.lower()
+    is_json_batch = batch_suffix == ".json"
+    is_markdown_batch = batch_suffix in MARKDOWN_BATCH_SUFFIXES
 
     if not items:
         echo("[yellow]文件中没有找到有效任务[/yellow]")
@@ -322,7 +453,7 @@ def _batch_add(
     echo(f"[cyan]将导入 {len(items)} 个任务...[/cyan]")
     click.echo()
 
-    results = []
+    prepared_items: list[dict[str, object]] = []
     for i, item in enumerate(items, 1):
         item_title = item.get("title") or item.get("name") or str(item)
         item_priority = item.get("priority", priority)
@@ -353,10 +484,11 @@ def _batch_add(
         echo(f"[dim]{i}/{len(items)}[/dim] {item_title} ", nl=False)
         if isinstance(user_content, str) and user_content.strip():
             content = user_content
-            if is_json_batch:
+            if is_json_batch or is_markdown_batch:
                 missing = missing_task_template_sections(content)
                 if missing:
-                    raise _json_batch_error(
+                    error_factory = _json_batch_error if is_json_batch else _markdown_batch_error
+                    raise error_factory(
                         i,
                         item_title,
                         f"content 缺少关键章节: {', '.join(missing)}",
@@ -368,8 +500,20 @@ def _batch_add(
                     item_title,
                     "缺少 content，且当前使用了 --no-ai，导入会产生只有标题的空任务",
                 )
+            if is_markdown_batch:
+                raise _markdown_batch_error(
+                    i,
+                    item_title,
+                    "缺少可导入的 markdown 任务正文",
+                )
             content = ""
         else:
+            if is_markdown_batch:
+                raise _markdown_batch_error(
+                    i,
+                    item_title,
+                    "缺少可导入的 markdown 任务正文",
+                )
             try:
                 content = generate_task_content(
                     item_title,
@@ -395,13 +539,26 @@ def _batch_add(
                         f"AI 生成的 content 缺少关键章节: {', '.join(missing)}",
                     )
 
+        prepared_items.append(
+            {
+                "title": item_title,
+                "content": content,
+                "agent": item_agent,
+                "priority": item_priority,
+                "depends_on": item_dep,
+            }
+        )
+        echo("[green]ok[/green]")
+
+    results = []
+    for item in prepared_items:
         task = db.create_task(
             project=project,
-            title=item_title,
-            content=content,
-            agent=item_agent,
-            priority=item_priority,
-            depends_on=item_dep,
+            title=str(item["title"]),
+            content=str(item["content"]),
+            agent=str(item["agent"]),
+            priority=str(item["priority"]),
+            depends_on=item.get("depends_on"),
         )
         results.append(task)
         echo(f"[green]+ #{task['id']}[/green]")

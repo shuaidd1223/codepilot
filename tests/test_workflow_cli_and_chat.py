@@ -292,6 +292,116 @@ def test_batch_add_json_with_valid_content_allows_no_ai(tmp_path, monkeypatch):
     assert tasks[0]["content"] == valid_content
 
 
+def test_batch_add_markdown_imports_multiple_full_tasks(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    tasks_file = tmp_path / "tasks.md"
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+
+    task_one = ai_mod.build_task_markdown_from_plan(
+        {
+            "title": "Markdown 任务一",
+            "agent": "codex",
+            "priority": "P1",
+            "goal": "验证 markdown 批量导入能识别第一个完整任务。",
+            "acceptance_criteria": ["任务一被导入"],
+            "builder_notes": ["保留模板结构"],
+            "reviewer_notes": ["检查第一条任务正文"],
+            "files": ["codepilot/commands/add.py"],
+            "notes": ["第一条任务用于验证分隔符不会切碎模板内部的 ---。"],
+            "forbidden": ["不要改动无关模块"],
+            "not_in_scope": ["不改 Web UI"],
+            "evidence": "来自 markdown 批量导入需求。",
+        }
+    )
+    task_two = ai_mod.build_task_markdown_from_plan(
+        {
+            "title": "Markdown 任务二",
+            "agent": "claude-sonnet",
+            "priority": "P3",
+            "goal": "验证 markdown 批量导入能识别第二个完整任务。",
+            "acceptance_criteria": ["任务二被导入"],
+            "builder_notes": ["保留模板结构"],
+            "reviewer_notes": ["检查第二条任务正文"],
+            "files": ["tests/test_workflow_cli_and_chat.py"],
+            "notes": ["第二条任务确保真正按任务边界分割。"],
+            "forbidden": ["不要改动数据库 schema"],
+            "not_in_scope": ["不改执行器"],
+            "evidence": "来自 markdown 批量导入需求。",
+        }
+    )
+    tasks_file.write_text(f"{task_one}\n\n---\n\n{task_two}\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file), "--no-ai"])
+
+    assert result.exit_code == 0, result.output
+    tasks = db.list_tasks(project="demo")
+    assert len(tasks) == 2
+    assert [task["title"] for task in tasks] == ["Markdown 任务一", "Markdown 任务二"]
+    assert tasks[0]["content"].rstrip() == task_one.rstrip()
+    assert tasks[1]["content"].rstrip() == task_two.rstrip()
+    assert tasks[0]["priority"] == "P1"
+    assert tasks[0]["agent"] == "codex"
+    assert tasks[1]["priority"] == "P3"
+    assert tasks[1]["agent"] == "claude-sonnet"
+
+
+def test_batch_add_markdown_rejects_tasks_missing_required_sections(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    tasks_file = tmp_path / "tasks.md"
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+
+    valid_task = ai_mod.build_task_markdown_from_plan(
+        {
+            "title": "合规任务",
+            "agent": "codex",
+            "priority": "P2",
+            "goal": "验证首条任务内容完整。",
+            "acceptance_criteria": ["首条任务完整"],
+            "builder_notes": ["保持模板结构"],
+            "reviewer_notes": ["检查模板章节"],
+            "files": ["codepilot/templates/task-template.md"],
+            "notes": ["这是基线任务。"],
+            "forbidden": ["不要改动无关代码"],
+            "not_in_scope": ["不改外部文档"],
+            "evidence": "来自 markdown 批量导入需求。",
+        }
+    )
+    invalid_task = ai_mod.build_task_markdown_from_plan(
+        {
+            "title": "缺章节任务",
+            "agent": "codex",
+            "priority": "P2",
+            "goal": "验证缺章节时导入被拒绝。",
+            "acceptance_criteria": ["缺少章节会报错"],
+            "builder_notes": ["保持模板结构"],
+            "reviewer_notes": ["检查失败路径"],
+            "files": ["codepilot/commands/add.py"],
+            "notes": ["删除必需章节后必须拒绝导入。"],
+            "forbidden": ["不要写入半成品任务"],
+            "not_in_scope": ["不改 Web UI"],
+            "evidence": "来自 markdown 批量导入需求。",
+        }
+    ).replace("## Verification Matrix", "## Verification Matrix Missing", 1)
+    tasks_file.write_text(f"{valid_task}\n\n---\n\n{invalid_task}\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["add", "-p", "demo", "-f", str(tasks_file), "--no-ai"])
+
+    assert result.exit_code != 0
+    assert "Markdown 批量导入第 2 项" in result.output
+    assert "Verification Matrix" in result.output
+    assert db.list_tasks(project="demo") == []
+
+
 def test_add_command_preserves_utf8_title_and_content_round_trip(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

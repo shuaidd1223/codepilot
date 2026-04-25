@@ -449,7 +449,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 
 ### 任务模板（外部规划专用）
 
-如果你**不**走 CodePilot 的规划器，而是自己在外部规划好任务并通过 `add -f tasks.json` 投递，
+如果你**不**走 CodePilot 的规划器，而是自己在外部规划好任务并通过 `add -f tasks.json` 或 `add -f tasks.md` 投递，
 必须按任务模板格式准备内容。三种输出：
 
 ```bash
@@ -461,6 +461,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 **重要原则**：
 - 人工只通过 `{command} "需求文本"` 走规划器，不直接 add；
 - 外部 AI 或 Web 批量添加时，content 必须符合上述模板，不能只填标题；
+- 如果走 `tasks.md`，每条任务都要是完整模板正文，多个任务之间用 `---` 分隔；
 - 骨架保持英文，占位符内容用中文。
 """
 
@@ -576,8 +577,8 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
             ],
         },
         "batch_import": {
-            "command": _cmd(command, "add -p <项目名> -f <tasks.json> [--no-ai]"),
-            "description": "用 JSON 数组投递预先规划好的任务。每项必须是对象，字段见下表。",
+            "command": _cmd(command, "add -p <项目名> -f <tasks.json|tasks.md> [--no-ai]"),
+            "description": "可用 JSON 数组投递预先规划好的任务，或直接导入按 task-template 渲染好的 markdown 任务集。",
             "fields": batch_fields,
             "example": [
                 {
@@ -591,6 +592,7 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
             "notes": [
                 "若只传 title，CodePilot 会调用 --agent 指定的模型生成 content。",
                 "单条任务或纯文本批量导入可配合 --no-ai 占坑；JSON tasks.json 中缺少 content 的条目若再配合 --no-ai，会被 CLI 直接拒绝，防止生成空任务。",
+                "Markdown 批量导入时，每个任务都必须是完整 task-template；多个任务之间用 `---` 串联，且分隔线后紧跟下一个一级标题。",
                 "content 中的语言应为中文；模板骨架（章节名）保持英文。",
             ],
         },
@@ -605,6 +607,7 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
             _cmd(command, "ai manifest"),
             _cmd(command, "ai guide"),
             _cmd(command, "add -p <项目名> -f <tasks.json>"),
+            _cmd(command, "add -p <项目名> -f <tasks.md>"),
         ],
     }
 
@@ -646,7 +649,7 @@ def task_template_guide_markdown(*, command_name: str = "codepilot") -> str:
     )
     return f"""# CodePilot 任务模板填充指南
 
-这份指南写给**外部 AI 规划器**：你在自己的流程里拆出任务后，按本指南把结果渲染成 CodePilot 可接收的格式，然后用 `{_cmd(command, 'add -p <项目名> -f <tasks.json>')}` 批量投递。
+这份指南写给**外部 AI 规划器**：你在自己的流程里拆出任务后，按本指南把结果渲染成 CodePilot 可接收的格式，然后用 `{_cmd(command, 'add -p <项目名> -f <tasks.json>')}` 批量投递。若你已经把每条任务渲染成完整 task-template markdown，也可以改用 `{_cmd(command, 'add -p <项目名> -f <tasks.md>')}`，多个任务之间用 `---` 分隔。
 
 ## 语言规则
 
