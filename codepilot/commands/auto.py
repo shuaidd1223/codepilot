@@ -255,34 +255,37 @@ def auto(
 ):
     """将一个高层目标拆分为子任务，并可选立即执行."""
     json_mode = _json_mode(ctx, json_mode)
-    project_info = resolve_project_for_prompt(
-        project,
-        auto_register=False,
-        require_registered=True,
-    )
-    title = _clarify_requirement_for_go(
-        title,
-        project_info=project_info,
-        planner=planner,
-    )
-    try:
-        run_requirement_workflow(
-            project_info=project_info,
-            title=title,
-            planner=planner,
-            task_agent=task_agent,
-            priority=priority,
-            max_tasks=max_tasks,
-            execute=False if plan_only else True,
-            executor=executor,
-            auto_commit=auto_commit,
-            max_retries=max_retries,
-            json_mode=json_mode,
+    from codepilot.cli_progress import maybe_cli_renderer
+
+    with maybe_cli_renderer(enabled=not json_mode):
+        project_info = resolve_project_for_prompt(
+            project,
+            auto_register=False,
+            require_registered=True,
         )
-    except click.ClickException:
-        raise
-    except Exception as exc:
-        raise click.ClickException(str(exc)) from exc
+        title = _clarify_requirement_for_go(
+            title,
+            project_info=project_info,
+            planner=planner,
+        )
+        try:
+            run_requirement_workflow(
+                project_info=project_info,
+                title=title,
+                planner=planner,
+                task_agent=task_agent,
+                priority=priority,
+                max_tasks=max_tasks,
+                execute=False if plan_only else True,
+                executor=executor,
+                auto_commit=auto_commit,
+                max_retries=max_retries,
+                json_mode=json_mode,
+            )
+        except click.ClickException:
+            raise
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
 
 
 @click.command("go")
@@ -322,86 +325,88 @@ def go(
     text = " ".join(requirement).strip()
     if not text:
         text = click.prompt("请输入你的需求")
+    from codepilot.cli_progress import maybe_cli_renderer
 
-    root_obj = _root_options(ctx)
-    project = project or root_obj.get("direct_project")
-    planner = planner or root_obj.get("planner")
-    task_agent = task_agent or root_obj.get("agent")
-    if execute is None:
-        execute = root_obj.get("execute")
-    executor = executor or root_obj.get("executor")
-    if auto_commit is None:
-        auto_commit = root_obj.get("auto_commit")
-    if not max_tasks:
-        max_tasks = root_obj.get("max_tasks", 0)
-    if not max_retries:
-        max_retries = root_obj.get("max_retries", 0)
+    with maybe_cli_renderer(enabled=not json_mode):
+        root_obj = _root_options(ctx)
+        project = project or root_obj.get("direct_project")
+        planner = planner or root_obj.get("planner")
+        task_agent = task_agent or root_obj.get("agent")
+        if execute is None:
+            execute = root_obj.get("execute")
+        executor = executor or root_obj.get("executor")
+        if auto_commit is None:
+            auto_commit = root_obj.get("auto_commit")
+        if not max_tasks:
+            max_tasks = root_obj.get("max_tasks", 0)
+        if not max_retries:
+            max_retries = root_obj.get("max_retries", 0)
 
-    project_info = resolve_project_for_prompt(
-        project,
-        auto_register=False,
-        require_registered=True,
-    )
-    effective = _resolve_effective_options(
-        project_info,
-        planner=planner,
-        executor=executor,
-        auto_commit=auto_commit,
-        max_tasks=max_tasks,
-        max_retries=max_retries,
-    )
-
-    shared_gateway_options = resolve_shared_gateway_options(project_info)
-    intent = resolve_turn_intent(
-        text,
-        category="auto",
-        classify_fn=classify_entry_intent,
-        classify_kwargs={
-            "project_info": project_info,
-            "category": "auto",
-            "gateway_options": shared_gateway_options,
-        },
-        fallback_intent="requirement",
-    )
-    if intent == "command":
-        click.echo(command_intent_guidance(include_release=True))
-        return
-    if intent == "question":
-        try:
-            answer = answer_question_via_api(
-                provider_key=shared_gateway_options.classifier_provider,
-                question=text,
-                gateway_options=shared_gateway_options,
-            )
-        except Exception as exc:
-            answer = f"回答失败：{exc}"
-        click.echo(answer or "未获得回答")
-        return
-
-    text = _clarify_requirement_for_go(
-        text,
-        project_info=project_info,
-        planner=effective["planner"],
-    )
-    max_tasks_override = 1 if intent == "task" else effective["max_tasks"]
-    try:
-        run_requirement_workflow(
-            project_info=project_info,
-            title=text,
-            planner=effective["planner"],
-            task_agent=task_agent,
-            priority=priority,
-            max_tasks=max_tasks_override,
-            execute=execute,
-            executor=effective["executor"],
-            auto_commit=effective["auto_commit"],
-            max_retries=effective["max_retries"],
-            json_mode=json_mode,
+        project_info = resolve_project_for_prompt(
+            project,
+            auto_register=False,
+            require_registered=True,
         )
-    except click.ClickException:
-        raise
-    except Exception as exc:
-        raise click.ClickException(str(exc)) from exc
+        effective = _resolve_effective_options(
+            project_info,
+            planner=planner,
+            executor=executor,
+            auto_commit=auto_commit,
+            max_tasks=max_tasks,
+            max_retries=max_retries,
+        )
+
+        shared_gateway_options = resolve_shared_gateway_options(project_info)
+        intent = resolve_turn_intent(
+            text,
+            category="auto",
+            classify_fn=classify_entry_intent,
+            classify_kwargs={
+                "project_info": project_info,
+                "category": "auto",
+                "gateway_options": shared_gateway_options,
+            },
+            fallback_intent="requirement",
+        )
+        if intent == "command":
+            click.echo(command_intent_guidance(include_release=True))
+            return
+        if intent == "question":
+            try:
+                answer = answer_question_via_api(
+                    provider_key=shared_gateway_options.classifier_provider,
+                    question=text,
+                    gateway_options=shared_gateway_options,
+                )
+            except Exception as exc:
+                answer = f"回答失败：{exc}"
+            click.echo(answer or "未获得回答")
+            return
+
+        text = _clarify_requirement_for_go(
+            text,
+            project_info=project_info,
+            planner=effective["planner"],
+        )
+        max_tasks_override = 1 if intent == "task" else effective["max_tasks"]
+        try:
+            run_requirement_workflow(
+                project_info=project_info,
+                title=text,
+                planner=effective["planner"],
+                task_agent=task_agent,
+                priority=priority,
+                max_tasks=max_tasks_override,
+                execute=execute,
+                executor=effective["executor"],
+                auto_commit=effective["auto_commit"],
+                max_retries=effective["max_retries"],
+                json_mode=json_mode,
+            )
+        except click.ClickException:
+            raise
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
 
 
 @click.command("chat")

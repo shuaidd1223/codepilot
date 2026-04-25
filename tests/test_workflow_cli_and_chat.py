@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import types
@@ -51,6 +52,31 @@ def test_root_command_accepts_plain_text_requirement(tmp_path, monkeypatch):
     assert captured["execute"] is False
 
 
+def test_root_command_wraps_requirement_flow_in_cli_progress_renderer(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    monkeypatch.chdir(project_path)
+
+    entered: list[tuple[str, bool]] = []
+
+    @contextlib.contextmanager
+    def _fake_renderer(*, enabled: bool = True):
+        entered.append(("enter", enabled))
+        yield
+        entered.append(("exit", enabled))
+
+    monkeypatch.setattr("codepilot.cli_progress.maybe_cli_renderer", _fake_renderer)
+    monkeypatch.setattr(auto_cmd, "resolve_turn_intent", lambda *args, **kwargs: "requirement")
+    monkeypatch.setattr(auto_cmd, "run_requirement_workflow", lambda **kwargs: {"ok": True})
+
+    result = CliRunner().invoke(main, ["--no-execute", "实现一个自动重试机制"])
+
+    assert result.exit_code == 0, result.output
+    assert entered == [("enter", True), ("exit", True)]
+
+
 def test_root_command_passes_selected_task_agent(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
@@ -71,6 +97,32 @@ def test_root_command_passes_selected_task_agent(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert captured["task_agent"] == "codex"
+
+
+def test_auto_command_wraps_planning_flow_in_cli_progress_renderer(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    entered: list[tuple[str, bool]] = []
+
+    @contextlib.contextmanager
+    def _fake_renderer(*, enabled: bool = True):
+        entered.append(("enter", enabled))
+        yield
+        entered.append(("exit", enabled))
+
+    monkeypatch.setattr("codepilot.cli_progress.maybe_cli_renderer", _fake_renderer)
+    monkeypatch.setattr(auto_cmd, "run_requirement_workflow", lambda **kwargs: {"ok": True})
+
+    result = CliRunner().invoke(
+        main,
+        ["auto", "--project", "demo", "--title", "实现一个自动重试机制", "--plan-only"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert entered == [("enter", True), ("exit", True)]
 
 
 def test_plain_text_command_uses_registered_config_file_over_project_agents_toml(tmp_path, monkeypatch):

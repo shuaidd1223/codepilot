@@ -7,6 +7,7 @@ recreates the original "system is running but I see nothing" pain.
 
 from __future__ import annotations
 
+import contextlib
 import io
 
 import pytest
@@ -112,3 +113,21 @@ def test_renderer_unsubscribes_on_exit(_reset_state):
     # emits never reach the terminal again.
     progress_bus.emit(stage="system", message="leaked")
     assert "leaked" not in buf.getvalue()
+
+
+def test_maybe_cli_renderer_is_noop_when_nested(_reset_state, monkeypatch):
+    calls: list[str] = []
+
+    @contextlib.contextmanager
+    def _fake_cli_renderer():
+        calls.append("enter")
+        yield
+        calls.append("exit")
+
+    monkeypatch.setattr(cli_progress, "cli_renderer", _fake_cli_renderer)
+
+    with cli_progress.maybe_cli_renderer():
+        with cli_progress.maybe_cli_renderer():
+            pass
+
+    assert calls == ["enter", "exit"]

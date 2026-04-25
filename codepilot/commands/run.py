@@ -420,10 +420,10 @@ def run(
         echo("[red]错误: 必须指定 --project[/red]")
         return
 
-    from codepilot.cli_progress import cli_renderer
+    from codepilot.cli_progress import maybe_cli_renderer
 
     try:
-        with cli_renderer():
+        with maybe_cli_renderer():
             stats = run_backlog(
                 project,
                 once=once,

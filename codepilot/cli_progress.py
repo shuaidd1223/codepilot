@@ -19,6 +19,7 @@ without leaking subscriptions across the test suite. It deliberately:
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import threading
 import time
 from typing import Any, Iterator, Optional
@@ -28,6 +29,10 @@ from codepilot.output import echo
 
 
 _HEARTBEAT_THROTTLE_SECONDS = 1.0
+_CLI_RENDERER_ACTIVE: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "codepilot_cli_progress_active",
+    default=False,
+)
 _LEVEL_TO_ECHO = {
     "info": "info",
     "warning": "warning",
@@ -110,3 +115,18 @@ def cli_renderer() -> Iterator[None]:
     renderer = _Renderer()
     with progress_bus.subscription(renderer):
         yield
+
+
+@contextlib.contextmanager
+def maybe_cli_renderer(*, enabled: bool = True) -> Iterator[None]:
+    """Attach ``cli_renderer`` once, or no-op when CLI progress is disabled."""
+    if not enabled or _CLI_RENDERER_ACTIVE.get():
+        yield
+        return
+
+    token = _CLI_RENDERER_ACTIVE.set(True)
+    try:
+        with cli_renderer():
+            yield
+    finally:
+        _CLI_RENDERER_ACTIVE.reset(token)

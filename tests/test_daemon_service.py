@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import types
+
 from click.testing import CliRunner
 
 from codepilot import db
@@ -136,3 +139,39 @@ def test_daemon_foreground_ui_starts_detached_webui_process(tmp_path, monkeypatc
     assert "--no-daemon" in cmd
     assert "--no-open" in cmd
     assert cmd[-2:] == ["--port", "9911"]
+
+
+def test_run_loop_wraps_foreground_backlog_drain_in_cli_progress_renderer(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    db.register_project("demo", str(tmp_path))
+
+    entered: list[tuple[str, bool]] = []
+
+    @contextlib.contextmanager
+    def _fake_renderer(*, enabled: bool = True):
+        entered.append(("enter", enabled))
+        yield
+        entered.append(("exit", enabled))
+
+    monkeypatch.setattr("codepilot.cli_progress.maybe_cli_renderer", _fake_renderer)
+    monkeypatch.setattr(daemon_cmd, "_start_heartbeat_thread", lambda project: types.SimpleNamespace(set=lambda: None))
+    monkeypatch.setattr(daemon_cmd, "_tick_heartbeat", lambda project: None)
+    monkeypatch.setattr(daemon_cmd, "_stop_requested", lambda project: False)
+    monkeypatch.setattr(daemon_cmd, "reap_stalled_tasks", lambda project: [])
+    monkeypatch.setattr(daemon_cmd, "_get_combined_stats", lambda project: {"backlog": 1, "in_progress": 0})
+    monkeypatch.setattr(daemon_cmd, "_sleep_or_stop", lambda project, interval: True)
+
+    drained = []
+    monkeypatch.setattr(
+        daemon_cmd,
+        "run_backlog",
+        lambda *args, **kwargs: drained.append((args, kwargs))
+        or {"processed": 1, "done": 1, "failed": 0, "requeued": 0},
+    )
+
+    daemon_cmd._run_loop("demo", interval=1, verbose=False, shell="auto", executor="builtin", auto_commit=False)
+
+    assert drained
+    assert entered == [("enter", True), ("exit", True)]

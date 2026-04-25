@@ -466,6 +466,8 @@ def _run_loop(
     auto_commit: bool,
     max_concurrent: int = 1,
 ) -> None:
+    from codepilot.cli_progress import maybe_cli_renderer
+
     echo(
         f"[cyan]CodePilot Daemon[/cyan]  项目: {project or 'all'}  间隔: {interval}s  "
         f"执行器: {executor}  并行度: {max_concurrent}\n"
@@ -476,58 +478,59 @@ def _run_loop(
     heartbeat_stop = _start_heartbeat_thread(project)
 
     try:
-        while True:
-            _tick_heartbeat(project)
-            if _stop_requested(project):
-                echo("[yellow]收到停止轮询请求，退出 daemon；未中断正在执行的任务。[/yellow]")
-                break
-            reaped = reap_stalled_tasks(project)
-            for task in reaped:
-                echo(f"[yellow]已回收卡住任务 #{task['id']}：{task['title']}[/yellow]")
+        with maybe_cli_renderer():
+            while True:
+                _tick_heartbeat(project)
+                if _stop_requested(project):
+                    echo("[yellow]收到停止轮询请求，退出 daemon；未中断正在执行的任务。[/yellow]")
+                    break
+                reaped = reap_stalled_tasks(project)
+                for task in reaped:
+                    echo(f"[yellow]已回收卡住任务 #{task['id']}：{task['title']}[/yellow]")
 
-            stats = _get_combined_stats(project)
-            if stats["backlog"] == 0:
+                stats = _get_combined_stats(project)
+                if stats["backlog"] == 0:
+                    if verbose:
+                        echo("[dim]空闲，backlog: 0[/dim]")
+                    if _sleep_or_stop(project, interval):
+                        echo("[yellow]收到停止轮询请求，退出 daemon。[/yellow]")
+                        break
+                    continue
+
+                echo(
+                    f"[green]backlog: {stats['backlog']}[/green]  "
+                    f"[blue]in-progress: {stats['in_progress']}[/blue]"
+                )
+
+                targets = [project] if project else [proj["name"] for proj in db.list_projects()]
+
+                def _drain(name: str) -> dict:
+                    return run_backlog(
+                        name,
+                        once=True,
+                        limit=1,
+                        dry_run=False,
+                        shell=shell,
+                        executor=executor,
+                        auto_commit=auto_commit,
+                    )
+
+                if max_concurrent > 1 and len(targets) > 1:
+                    with ThreadPoolExecutor(max_workers=max_concurrent) as pool:
+                        results = list(pool.map(_drain, targets))
+                else:
+                    results = [_drain(name) for name in targets]
+
                 if verbose:
-                    echo("[dim]空闲，backlog: 0[/dim]")
+                    for name, result in zip(targets, results):
+                        echo(
+                            f"[dim]{name}: processed={result['processed']} "
+                            f"done={result['done']} failed={result['failed']} "
+                            f"requeued={result['requeued']}[/dim]"
+                        )
                 if _sleep_or_stop(project, interval):
                     echo("[yellow]收到停止轮询请求，退出 daemon。[/yellow]")
                     break
-                continue
-
-            echo(
-                f"[green]backlog: {stats['backlog']}[/green]  "
-                f"[blue]in-progress: {stats['in_progress']}[/blue]"
-            )
-
-            targets = [project] if project else [proj["name"] for proj in db.list_projects()]
-
-            def _drain(name: str) -> dict:
-                return run_backlog(
-                    name,
-                    once=True,
-                    limit=1,
-                    dry_run=False,
-                    shell=shell,
-                    executor=executor,
-                    auto_commit=auto_commit,
-                )
-
-            if max_concurrent > 1 and len(targets) > 1:
-                with ThreadPoolExecutor(max_workers=max_concurrent) as pool:
-                    results = list(pool.map(_drain, targets))
-            else:
-                results = [_drain(name) for name in targets]
-
-            if verbose:
-                for name, result in zip(targets, results):
-                    echo(
-                        f"[dim]{name}: processed={result['processed']} "
-                        f"done={result['done']} failed={result['failed']} "
-                        f"requeued={result['requeued']}[/dim]"
-                    )
-            if _sleep_or_stop(project, interval):
-                echo("[yellow]收到停止轮询请求，退出 daemon。[/yellow]")
-                break
     finally:
         heartbeat_stop.set()
 
