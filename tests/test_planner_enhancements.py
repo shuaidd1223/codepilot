@@ -12,6 +12,16 @@ from codepilot import ai_clarify
 from codepilot import ai_planner_context as ctx_mod
 
 
+def _q(text: str, *, qid: str = "q1") -> dict:
+    return {
+        "id": qid,
+        "type": "text",
+        "text": text,
+        "options": [],
+        "allow_free_text": False,
+    }
+
+
 # ─── ai_planner_context ────────────────────────────────────────────────────
 
 
@@ -296,7 +306,7 @@ def test_assess_requirement_consults_ai_for_broad_non_vague_input(monkeypatch):
         calls["count"] += 1
         return {
             "status": "needs_clarification",
-            "questions": ["你希望先覆盖哪些模块?"],
+            "questions": [_q("你希望先覆盖哪些模块?")],
         }
 
     monkeypatch.setattr(ai_clarify, "_invoke_clarifier_ai", _fake_ai)
@@ -313,7 +323,7 @@ def test_assess_requirement_forces_ready_after_max_turns(monkeypatch):
     """After max_turns rounds we stop asking and plan with what we have."""
     monkeypatch.setattr(
         ai_clarify, "_invoke_clarifier_ai",
-        lambda *a, **kw: {"status": "needs_clarification", "questions": ["again?"]},
+        lambda *a, **kw: {"status": "needs_clarification", "questions": [_q("again?")]},
     )
     result = ai_clarify.assess_requirement(
         "优化一下",
@@ -333,13 +343,13 @@ def test_assess_requirement_relays_ai_questions(monkeypatch):
         ai_clarify, "_invoke_clarifier_ai",
         lambda *a, **kw: {
             "status": "needs_clarification",
-            "questions": ["优化谁?", "目标指标?"],
+            "questions": [_q("优化谁?", qid="scope"), _q("目标指标?", qid="metric")],
             "reason": "太宽泛",
         },
     )
     result = ai_clarify.assess_requirement("优化一下", project_path="")
     assert result["status"] == "needs_clarification"
-    assert result["questions"] == ["优化谁?", "目标指标?"]
+    assert result["questions"] == [_q("优化谁?", qid="scope"), _q("目标指标?", qid="metric")]
     assert result["source"] == "ai"
     assert result["turn"] == 1
 

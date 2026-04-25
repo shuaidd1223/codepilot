@@ -23,6 +23,14 @@ import click
 
 from codepilot.ai_gateway_types import GatewayCallOptions
 from codepilot import db
+from codepilot.clarification_protocol import (
+    build_clarification_answer_summary,
+    normalize_clarification_answers as _normalize_protocol_answers,
+    normalize_clarification_history as _normalize_protocol_history,
+    normalize_clarification_questions as _normalize_protocol_questions,
+    normalize_text as _normalize_protocol_text,
+    render_clarification_questions,
+)
 from codepilot.commands import auto_project_resolution as _project_resolution
 from codepilot.config import (
     load_project_config,
@@ -100,7 +108,7 @@ def clarify_requirement(
     """
     from codepilot.ai_clarify import assess_requirement
 
-    qa_history = list(qa_history or [])
+    qa_history = normalize_clarification_history(qa_history)
     runtime = _classifier_runtime(project_info)
     cfg = runtime["config"]
     if cfg and not getattr(cfg.automation, "clarify_vague_requirements", True):
@@ -130,28 +138,31 @@ def clarify_requirement(
 
 def normalize_requirement_text(text: str) -> str:
     """Normalize a free-text requirement into a planner-friendly single line."""
-    return " ".join((text or "").split())
+    return _normalize_protocol_text(text)
 
 
 def append_clarification_answer(
     qa_history: Optional[list[dict]],
     *,
-    answer: str,
-    questions: Optional[list[str]] = None,
+    answer: str = "",
+    questions: Optional[list[dict]] = None,
+    clarify_answers: Optional[list[dict]] = None,
 ) -> list[dict]:
     """Append one clarification Q/A turn with shared normalization rules."""
-    merged_history = list(qa_history or [])
-    normalized_answer = normalize_requirement_text(answer)
-    if not normalized_answer:
+    merged_history = normalize_clarification_history(qa_history)
+    normalized_questions = normalize_clarification_questions(questions)
+    normalized_answers = normalize_clarification_answers(
+        normalized_questions,
+        raw_answers=clarify_answers,
+        answer_text=answer,
+    )
+    summary = build_clarification_answer_summary(normalized_answers) or normalize_requirement_text(answer)
+    if not normalized_answers and not summary:
         return merged_history
-    normalized_questions = [
-        q.strip()
-        for q in (questions or [])
-        if isinstance(q, str) and q.strip()
-    ]
     merged_history.append({
-        "question": " | ".join(normalized_questions),
-        "answer": normalized_answer,
+        "questions": normalized_questions,
+        "answers": normalized_answers,
+        "answer": summary,
     })
     return merged_history
 
@@ -159,43 +170,40 @@ def append_clarification_answer(
 _DEFAULT_CLARIFICATION_INTENT = "requirement"
 
 
-def _normalize_clarification_questions(questions: Optional[list[str]]) -> list[str]:
-    return [
-        normalize_requirement_text(q)
-        for q in (questions or [])
-        if isinstance(q, str) and normalize_requirement_text(q)
-    ]
+def normalize_clarification_questions(questions: Optional[list[dict]]) -> list[dict]:
+    return _normalize_protocol_questions(questions)
 
 
-def _normalize_clarification_history(qa_history: Optional[list[dict]]) -> list[dict]:
-    rows: list[dict] = []
-    for item in (qa_history or []):
-        if not isinstance(item, dict):
-            continue
-        question = normalize_requirement_text(str(item.get("question") or ""))
-        answer = normalize_requirement_text(str(item.get("answer") or ""))
-        if not question and not answer:
-            continue
-        rows.append({
-            "question": question,
-            "answer": answer,
-        })
-    return rows
+def normalize_clarification_answers(
+    questions: Optional[list[dict]],
+    *,
+    raw_answers: Optional[list[dict]] = None,
+    answer_text: str = "",
+) -> list[dict]:
+    return _normalize_protocol_answers(
+        questions,
+        raw_answers=raw_answers,
+        answer_text=answer_text,
+    )
+
+
+def normalize_clarification_history(qa_history: Optional[list[dict]]) -> list[dict]:
+    return _normalize_protocol_history(qa_history)
 
 
 def build_clarification_state(
     *,
     original_title: str,
     qa_history: Optional[list[dict]] = None,
-    last_questions: Optional[list[str]] = None,
+    last_questions: Optional[list[dict]] = None,
     intent: str = _DEFAULT_CLARIFICATION_INTENT,
 ) -> dict:
     """Build normalized clarification session state shared by chat/webui/go."""
     normalized_intent = normalize_requirement_text(intent).lower() or _DEFAULT_CLARIFICATION_INTENT
     return {
         "original_title": normalize_requirement_text(original_title),
-        "qa_history": _normalize_clarification_history(qa_history),
-        "last_questions": _normalize_clarification_questions(last_questions),
+        "qa_history": normalize_clarification_history(qa_history),
+        "last_questions": normalize_clarification_questions(last_questions),
         "intent": normalized_intent,
     }
 
@@ -203,8 +211,9 @@ def build_clarification_state(
 def append_clarification_answer_to_state(
     state: Optional[dict],
     *,
-    answer: str,
-    questions: Optional[list[str]] = None,
+    answer: str = "",
+    questions: Optional[list[dict]] = None,
+    clarify_answers: Optional[list[dict]] = None,
 ) -> dict:
     """Append one user answer to clarification state and return a new state."""
     base = build_clarification_state(
@@ -216,12 +225,13 @@ def append_clarification_answer_to_state(
     active_questions = (
         base["last_questions"]
         if questions is None
-        else _normalize_clarification_questions(questions)
+        else normalize_clarification_questions(questions)
     )
     merged_history = append_clarification_answer(
         base["qa_history"],
         answer=answer,
         questions=active_questions,
+        clarify_answers=clarify_answers,
     )
     return build_clarification_state(
         original_title=base["original_title"],
@@ -254,7 +264,8 @@ def clarification_state_from_assessment(
 def continue_pending_clarification(
     pending_state: Optional[dict],
     *,
-    answer: str,
+    answer: str = "",
+    clarify_answers: Optional[list[dict]] = None,
     project_info: dict,
     planner: str = "codex",
     max_turns: int = 3,
@@ -282,6 +293,7 @@ def continue_pending_clarification(
             qa_history=base_state["qa_history"],
             original_title=base_state["original_title"],
             last_questions=base_state["last_questions"],
+            clarify_answers=clarify_answers,
             max_turns=max_turns,
             clarify_fn=clarify_fn,
         )
@@ -340,7 +352,8 @@ def assess_requirement_for_planning(
     planner: str = "codex",
     qa_history: Optional[list[dict]] = None,
     original_title: str = "",
-    last_questions: Optional[list[str]] = None,
+    last_questions: Optional[list[dict]] = None,
+    clarify_answers: Optional[list[dict]] = None,
     max_turns: int = 3,
     clarify_fn=None,
 ) -> dict:
@@ -359,6 +372,7 @@ def assess_requirement_for_planning(
             merged_history,
             answer=normalized_text,
             questions=last_questions,
+            clarify_answers=clarify_answers,
         )
 
     clarifier = clarify_fn or _shell().clarify_requirement

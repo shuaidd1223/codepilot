@@ -141,6 +141,14 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row[1] == column for row in rows)
 
 
+def _has_table(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
 def _ensure_column(
     conn: sqlite3.Connection,
     table: str,
@@ -252,6 +260,7 @@ CREATE TABLE IF NOT EXISTS session_messages (
     content     TEXT NOT NULL DEFAULT '',
     intent      TEXT,
     task_ids    TEXT,
+    metadata    TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -317,6 +326,10 @@ def _mig_7_service_states(conn: sqlite3.Connection) -> None:
     _ensure_service_states_schema(conn)
 
 
+def _mig_8_session_message_metadata(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "session_messages", "metadata", "TEXT")
+
+
 _MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (1, "tasks: retry_count / max_retries", _mig_1_retry_fields),
     (2, "tasks: run_phase / heartbeat / active_pid / log_path / last_output", _mig_2_runtime_fields),
@@ -325,6 +338,7 @@ _MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (5, "tasks: dedup_key", _mig_5_dedup_key),
     (6, "tasks: fallback_reason", _mig_6_fallback_reason),
     (7, "service_states: daemon/inspect/webui runtime state", _mig_7_service_states),
+    (8, "session_messages: metadata for structured clarification", _mig_8_session_message_metadata),
 ]
 
 SCHEMA_VERSION = max(v for v, _, _ in _MIGRATIONS)
@@ -349,15 +363,30 @@ def init_db() -> None:
     with get_write_conn() as conn:
         conn.executescript(_BASELINE_SCHEMA)
 
-        # Seed schema_migrations on an existing pre-versioned DB. If tasks
-        # already has all current columns (i.e., an older `_ensure_column`
-        # run brought it up to date), mark all migrations as applied so we
-        # don't double-run them.
+        # Seed schema_migrations on existing pre-versioned DBs by inferring
+        # which historical schema changes are already present.
         current = _get_schema_version(conn)
-        if current == 0 and _has_column(conn, "tasks", "fallback_reason"):
+        if current == 0:
+            inferred = 0
+            migration_checks = [
+                _has_column(conn, "tasks", "retry_count") and _has_column(conn, "tasks", "max_retries"),
+                _has_column(conn, "tasks", "last_output"),
+                _has_column(conn, "tasks", "stop_requested") and _has_column(conn, "tasks", "stop_reason"),
+                _has_column(conn, "tasks", "source"),
+                _has_column(conn, "tasks", "dedup_key"),
+                _has_column(conn, "tasks", "fallback_reason"),
+                _has_table(conn, "service_states"),
+                _has_column(conn, "session_messages", "metadata"),
+            ]
+            for version, present in enumerate(migration_checks, 1):
+                if not present:
+                    break
+                inferred = version
             for version, description, _ in _MIGRATIONS:
+                if version > inferred:
+                    break
                 _record_migration(conn, version, description)
-            current = SCHEMA_VERSION
+            current = inferred
 
         for version, description, apply in _MIGRATIONS:
             if version <= current:
@@ -922,10 +951,11 @@ def create_session_message(
     content: str,
     intent: Optional[str] = None,
     task_ids: Optional[list[int]] = None,
+    metadata: Optional[dict] = None,
 ) -> dict:
     """Add a message to a session and touch updated_at."""
     with get_write_conn() as conn:
-        msg_id = _insert_session_message(conn, session_id, role, content, intent, task_ids)
+        msg_id = _insert_session_message(conn, session_id, role, content, intent, task_ids, metadata)
         _touch_session_updated_at(conn, session_id)
         result = _fetch_session_message_by_id(conn, msg_id)
     _cache_invalidate("sessions", "session_by_id", "session_messages")

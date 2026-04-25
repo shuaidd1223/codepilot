@@ -113,3 +113,15 @@ def echo(
 def safe(text) -> str:
     """Escape rich markup in untrusted text (agent output, exceptions, git stdout)."""
     return _markup_escape(str(text) if text is not None else "")
+
+
+def terminal_console() -> Console:
+    """Build an ad-hoc Rich console sized to the real terminal width.
+
+    Subtracts 1 column on Windows-style consoles so a fully-filled trailing line
+    does not auto-wrap into a phantom blank row.
+    """
+    import shutil
+
+    term_width = shutil.get_terminal_size((120, 24)).columns
+    return Console(width=max(80, term_width - 1), highlight=False)

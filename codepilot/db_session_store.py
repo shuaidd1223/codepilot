@@ -77,10 +77,18 @@ def insert_session_message(
     content: str,
     intent: Optional[str],
     task_ids: Optional[list[int]],
+    metadata: Optional[dict] = None,
 ) -> int:
     cur = conn.execute(
-        "INSERT INTO session_messages (session_id, role, content, intent, task_ids) VALUES (?, ?, ?, ?, ?)",
-        (session_id, role, content, intent, json.dumps(task_ids) if task_ids else None),
+        "INSERT INTO session_messages (session_id, role, content, intent, task_ids, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            session_id,
+            role,
+            content,
+            intent,
+            json.dumps(task_ids) if task_ids else None,
+            json.dumps(metadata, ensure_ascii=False) if metadata else None,
+        ),
     )
     return int(cur.lastrowid)
 

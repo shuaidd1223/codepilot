@@ -351,13 +351,15 @@ def test_create_task_empty_title_returns_error(ui_server):
 def test_goal_endpoint_normalizes_non_list_qa_history(ui_server, monkeypatch):
     captured = {}
 
-    def fake_submit_goal(project, text, *, category="auto", qa_history=None, original_title=""):
+    def fake_submit_goal(project, text, *, category="auto", qa_history=None, original_title="", clarify_answers=None, clarify_questions=None):
         captured.update({
             "project": project,
             "text": text,
             "category": category,
             "qa_history": qa_history,
             "original_title": original_title,
+            "clarify_answers": clarify_answers,
+            "clarify_questions": clarify_questions,
         })
         return {"ok": True, "intent": "question", "message": "ok"}
 
@@ -374,17 +376,20 @@ def test_goal_endpoint_normalizes_non_list_qa_history(ui_server, monkeypatch):
     assert status == 200
     assert body["ok"] is True
     assert captured["qa_history"] == []
+    assert captured["clarify_answers"] == []
+    assert captured["clarify_questions"] == []
 
 
 def test_session_message_endpoint_routes_to_action(ui_server, monkeypatch):
     session = db.create_session("demo", title="chat")
     captured = {}
 
-    def fake_send_session_message(session_id, text, *, category="auto"):
+    def fake_send_session_message(session_id, text, *, category="auto", clarify_answers=None):
         captured.update({
             "session_id": session_id,
             "text": text,
             "category": category,
+            "clarify_answers": clarify_answers,
         })
         return {"ok": True, "intent": "question", "message": "routed", "task_ids": []}
 
@@ -401,6 +406,7 @@ def test_session_message_endpoint_routes_to_action(ui_server, monkeypatch):
         "session_id": session["id"],
         "text": "hello session",
         "category": "question",
+        "clarify_answers": [],
     }
 
 

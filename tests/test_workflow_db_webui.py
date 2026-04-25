@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -14,6 +15,7 @@ from codepilot.agent_support import ai_guide_markdown, command_manifest
 from codepilot import binary as binary_mod
 from codepilot import binary_paths as binary_paths_mod
 from codepilot import db
+from codepilot import db_session_store
 from codepilot import ai as ai_mod
 from codepilot import progress_bus
 from codepilot.ai_gateway import GatewayResponse
@@ -25,6 +27,114 @@ from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
 from codepilot.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
+
+
+def test_init_db_infers_preversioned_schema_and_only_runs_missing_migrations(tmp_path, monkeypatch):
+    db_path = tmp_path / "legacy.db"
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(db_path))
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'backlog',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 3,
+                last_output TEXT,
+                stop_requested INTEGER NOT NULL DEFAULT 0,
+                stop_reason TEXT,
+                source TEXT NOT NULL DEFAULT 'user',
+                dedup_key TEXT,
+                fallback_reason TEXT
+            );
+            CREATE TABLE session_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                content TEXT NOT NULL DEFAULT '',
+                intent TEXT,
+                task_ids TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """
+        )
+
+    db.init_db()
+    status = db.schema_status()
+
+    assert status["current_version"] == db.SCHEMA_VERSION
+    assert [row["version"] for row in status["applied"]] == list(range(1, db.SCHEMA_VERSION + 1))
+    with sqlite3.connect(db_path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(session_messages)").fetchall()]
+    assert "metadata" in columns
+
+
+def test_init_db_does_not_record_missing_intermediate_preversioned_migration(tmp_path, monkeypatch):
+    db_path = tmp_path / "partial-legacy.db"
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(db_path))
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'backlog',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 3,
+                last_output TEXT,
+                stop_requested INTEGER NOT NULL DEFAULT 0,
+                stop_reason TEXT,
+                dedup_key TEXT,
+                fallback_reason TEXT
+            );
+            CREATE TABLE session_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                content TEXT NOT NULL DEFAULT '',
+                intent TEXT,
+                task_ids TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """
+        )
+
+    db.init_db()
+
+    with sqlite3.connect(db_path) as conn:
+        task_columns = [row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()]
+        message_columns = [row[1] for row in conn.execute("PRAGMA table_info(session_messages)").fetchall()]
+
+    assert "source" in task_columns
+    assert "metadata" in message_columns
+    assert db.schema_status()["current_version"] == db.SCHEMA_VERSION
+
+
+def test_insert_session_message_metadata_argument_is_optional(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    session = db.create_session("demo", title="chat")
+
+    with db.get_write_conn() as conn:
+        msg_id = db_session_store.insert_session_message(
+            conn,
+            session["id"],
+            "assistant",
+            "ok",
+            "info",
+            None,
+        )
+        row = db_session_store.fetch_session_message_by_id(conn, msg_id)
+
+    assert row is not None
+    assert row["metadata"] is None
 
 
 def test_update_task_allows_core_fields(tmp_path, monkeypatch):

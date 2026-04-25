@@ -80,8 +80,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       taskTemplateError: '',
       batchComposer: { raw: '' },
       chatText: '', chatCategory: 'auto',
-      /* active clarification (intent=clarify) state per session. Map
-       * sessionId -> {questions: [...], answerDraft: ''} */
+      /* active clarification draft per session.
+       * sessionId -> {questions, answers, original_title?, qa_history?} */
       clarifyDrafts: {},
     });
 
@@ -102,6 +102,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       SESSION_SEND: 'session.send',
       SESSION_DELETE: 'session.delete',
       SESSION_CLARIFY_REPLY: 'session.clarify.reply',
+      SESSION_CLARIFY_CANCEL: 'session.clarify.cancel',
     });
     const _REFRESH_BLOCKING_ACTIONS = new Set([
       ACTION_KEYS.GOAL_SUBMIT,
@@ -110,6 +111,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       ACTION_KEYS.SESSION_SEND,
       ACTION_KEYS.SESSION_DELETE,
       ACTION_KEYS.SESSION_CLARIFY_REPLY,
+      ACTION_KEYS.SESSION_CLARIFY_CANCEL,
     ]);
     function _syncLegacySending() {
       /* Backward-compatible aggregate flag retained for existing call sites. */
@@ -444,6 +446,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         if (state.nav.view !== 'session' || state.nav.id !== targetId) return;
         state.sessionDetail = data.session;
         state.sessionMessages = data.messages || [];
+        _syncSessionClarifyDraft(targetId, state.sessionMessages);
         await nextTick();
         if (chatScrollEl) chatScrollEl.scrollTop = chatScrollEl.scrollHeight;
       } catch (err) {
@@ -461,30 +464,40 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
     async function submitGoal() {
       if (!state.nav.project) { pushToast('先选择一个项目', 'error'); return; }
+      const goalClarify = state.goalClarify;
+      const clarifyAnswers = goalClarify
+        ? CP.exportClarifyAnswers(goalClarify.questions, goalClarify.answers)
+        : [];
       const text = state.goalText.trim();
-      if (!text) { pushToast('输入不能为空', 'error'); return; }
+      if (!text && !clarifyAnswers.length) { pushToast('输入不能为空', 'error'); return; }
       await _runScopedAction(ACTION_KEYS.GOAL_SUBMIT, async () => {
         state.answer = null;
         try {
           const payload = {
             project: state.nav.project, text, category: state.goalCategory,
           };
-          if (state.goalClarify) {
-            payload.original_title = state.goalClarify.original_title;
-            payload.qa_history = state.goalClarify.qa_history || [];
+          if (goalClarify) {
+            payload.original_title = goalClarify.original_title;
+            payload.qa_history = goalClarify.qa_history || [];
+            payload.clarify_answers = clarifyAnswers;
+            payload.clarify_questions = goalClarify.questions || [];
           }
           const out = await CP.api.post('/api/goal', payload);
           if (out.intent === 'question' || out.intent === 'command') {
             state.answer = out.message || '完成';
             state.goalClarify = null;
           } else if (out.intent === 'clarify') {
-            const questions = out.questions || [];
-            state.goalClarify = {
-              original_title: out.original_title || text,
-              qa_history: out.qa_history || [],
-              questions,
-            };
-            state.answer = `${out.message || '需要补充信息'}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
+            state.goalClarify = _buildClarifyStateFromPayload(
+              out,
+              {
+                fallbackTitle: (goalClarify && goalClarify.original_title) || text,
+                existing: goalClarify,
+              },
+            );
+            state.answer = _renderClarifyMessage(
+              out.message || '需要补充信息',
+              state.goalClarify ? state.goalClarify.questions : [],
+            );
             state.goalText = '';
             return;
           } else {
@@ -501,8 +514,15 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
     async function submitComposer() {
       if (!state.nav.project) { pushToast('先选择一个项目', 'error'); return; }
+      const composerClarify = state.composerMode === 'requirement' ? state.composerClarify : null;
+      const clarifyAnswers = composerClarify
+        ? CP.exportClarifyAnswers(composerClarify.questions, composerClarify.answers)
+        : [];
       const title = state.composer.title.trim();
-      if (!title) { pushToast('标题不能为空', 'error'); return; }
+      if (!title && state.composerMode !== 'requirement') { pushToast('标题不能为空', 'error'); return; }
+      if (!title && !clarifyAnswers.length && state.composerMode === 'requirement') {
+        pushToast('标题不能为空', 'error'); return;
+      }
       await _runScopedAction(ACTION_KEYS.COMPOSER_SUBMIT, async () => {
         const payload = {
           project: state.nav.project, title,
@@ -512,9 +532,11 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
           planner: state.composer.planner,
           execute: state.composer.execute,
         };
-        if (state.composerMode === 'requirement' && state.composerClarify) {
-          payload.original_title = state.composerClarify.original_title;
-          payload.qa_history = state.composerClarify.qa_history || [];
+        if (composerClarify) {
+          payload.original_title = composerClarify.original_title;
+          payload.qa_history = composerClarify.qa_history || [];
+          payload.clarify_answers = clarifyAnswers;
+          payload.clarify_questions = composerClarify.questions || [];
         }
         try {
           let out;
@@ -533,13 +555,17 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
           } else {
             out = await CP.api.post('/api/requirements', payload);
             if (out.intent === 'clarify') {
-              const questions = out.questions || [];
-              state.composerClarify = {
-                original_title: out.original_title || title,
-                qa_history: out.qa_history || [],
-                questions,
-              };
-              state.answer = `${out.message || '需要补充信息'}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
+              state.composerClarify = _buildClarifyStateFromPayload(
+                out,
+                {
+                  fallbackTitle: (composerClarify && composerClarify.original_title) || title,
+                  existing: composerClarify,
+                },
+              );
+              state.answer = _renderClarifyMessage(
+                out.message || '需要补充信息',
+                state.composerClarify ? state.composerClarify.questions : [],
+              );
               state.composer.title = '';
               pushToast('需要补充信息', 'warning');
               return;
@@ -690,6 +716,10 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
     async function sendChat() {
       if (state.nav.view !== 'session' || !state.nav.id) return;
+      if (state.clarifyDrafts[state.nav.id]) {
+        pushToast('当前会话正在等待澄清回答，请先提交或取消。', 'warning');
+        return;
+      }
       const text = state.chatText.trim();
       if (!text) return;
       await _runScopedAction(ACTION_KEYS.SESSION_SEND, async () => {
@@ -700,6 +730,40 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
           state.chatText = '';
           await loadSessionChat();
           await loadSessions();
+        } catch (err) {
+          pushToast(err.message, 'error');
+        }
+      });
+    }
+
+    function cancelGoalClarify() {
+      state.goalClarify = null;
+      state.goalText = '';
+      state.answer = null;
+      pushToast('已取消当前这次需求规划', 'info');
+    }
+
+    function cancelComposerClarify() {
+      state.composerClarify = null;
+      state.composer.title = '';
+      state.answer = null;
+      pushToast('已取消当前这次需求规划', 'info');
+    }
+
+    async function cancelSessionClarify(sessionId) {
+      if (!sessionId) return;
+      await _runScopedAction(ACTION_KEYS.SESSION_CLARIFY_CANCEL, async () => {
+        try {
+          await CP.api.post(`/api/sessions/${sessionId}/messages`, {
+            text: '/clear',
+            category: 'auto',
+          });
+          delete state.clarifyDrafts[sessionId];
+          if (state.nav.view === 'session' && state.nav.id === sessionId) {
+            await loadSessionChat();
+          }
+          await loadSessions();
+          pushToast('已取消当前这次需求规划', 'info');
         } catch (err) {
           pushToast(err.message, 'error');
         }
@@ -766,6 +830,102 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       clearInterval(state.timer);
       if (!state.autoRefresh) return;
       state.timer = setInterval(() => scheduleRefresh(), FALLBACK_REFRESH_MS);
+    }
+
+    function _messageMetadata(message) {
+      if (!message || !message.metadata) return {};
+      if (typeof message.metadata === 'object') return message.metadata;
+      if (typeof message.metadata === 'string') {
+        try { return JSON.parse(message.metadata); } catch (e) { return {}; }
+      }
+      return {};
+    }
+    function _legacyClarifyQuestionsFromMessage(message) {
+      const content = String((message && message.content) || '');
+      const questions = [];
+      for (const line of content.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const stripped = line.trimStart();
+        if (stripped.length !== line.length && /^(?:\d+[\.\)、:：]|[-*])\s+/.test(stripped)) continue;
+        const match = /^\s*(?:(?:问题\s*)?\d+[\.\)、:：]|[一二三四五六七八九十]+[、.．:：]|[-*])\s*(.+)$/.exec(line);
+        if (!match) continue;
+        const text = CP._clarifyText(match[1]);
+        if (!text) continue;
+        questions.push({
+          id: `legacy_q${questions.length + 1}`,
+          type: 'text',
+          text,
+          options: [],
+          allow_free_text: false,
+        });
+      }
+      if (questions.length) return questions;
+      const fallback = CP._clarifyText(content);
+      if (fallback && !content.includes('\n')) {
+        return [{
+          id: 'legacy_q1',
+          type: 'text',
+          text: fallback,
+          options: [],
+          allow_free_text: false,
+        }];
+      }
+      return [];
+    }
+    function _buildClarifyStateFromPayload(payload, options = {}) {
+      const fallbackTitle = CP._clarifyText(options.fallbackTitle);
+      const existing = options.existing && typeof options.existing === 'object' ? options.existing : null;
+      const questions = CP.normalizeClarifyQuestions(payload && payload.questions);
+      if (!questions.length) return null;
+      const qaHistory = Array.isArray(payload && payload.qa_history)
+        ? payload.qa_history.slice()
+        : Array.isArray(existing && existing.qa_history)
+          ? existing.qa_history.slice()
+          : [];
+      return {
+        original_title: CP._clarifyText(
+          (payload && payload.original_title)
+          || (existing && existing.original_title)
+          || fallbackTitle,
+        ),
+        qa_history: qaHistory,
+        questions,
+        answers: CP.createClarifyAnswerState(questions, existing && existing.answers),
+      };
+    }
+    function _renderClarifyMessage(message, questions) {
+      const base = CP._clarifyText(message) || '为了更好地规划，请先回答几个问题。';
+      const details = CP.clarifyQuestionsText(questions);
+      return details ? `${base}\n\n${details}` : base;
+    }
+    function _syncSessionClarifyDraft(sessionId, messages) {
+      if (!sessionId) return;
+      const all = Array.isArray(messages) ? messages : [];
+      let pendingMessage = null;
+      for (let i = all.length - 1; i >= 0; i--) {
+        const msg = all[i];
+        if (msg && msg.role === 'assistant') {
+          pendingMessage = msg.intent === 'clarify' ? msg : null;
+          break;
+        }
+      }
+      if (!pendingMessage) {
+        delete state.clarifyDrafts[sessionId];
+        return;
+      }
+      const metadata = _messageMetadata(pendingMessage);
+      const structuredQuestions = CP.normalizeClarifyQuestions(metadata.questions || []);
+      const nextDraft = _buildClarifyStateFromPayload(
+        {
+          questions: structuredQuestions.length
+            ? structuredQuestions
+            : _legacyClarifyQuestionsFromMessage(pendingMessage),
+        },
+        { existing: state.clarifyDrafts[sessionId] || null },
+      );
+      if (nextDraft) state.clarifyDrafts[sessionId] = nextDraft;
+      else delete state.clarifyDrafts[sessionId];
     }
 
     /* ── SSE live progress stream ────────────────────── *
@@ -944,15 +1104,28 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
     };
 
     /* ── Clarification quick-reply ───────────────────── */
-    async function submitClarifyAnswer(sessionId, answerText) {
-      if (!answerText || !answerText.trim()) return;
+    async function submitClarifyAnswer(sessionId, answerText = '') {
+      const draft = state.clarifyDrafts[sessionId] || null;
+      const clarifyAnswers = draft
+        ? CP.exportClarifyAnswers(draft.questions, draft.answers)
+        : [];
+      const text = String(answerText || '').trim();
+      if (!text && !clarifyAnswers.length) return;
       await _runScopedAction(ACTION_KEYS.SESSION_CLARIFY_REPLY, async () => {
         try {
-          await CP.api.post(`/api/sessions/${sessionId}/messages`, {
-            text: answerText.trim(),
+          const out = await CP.api.post(`/api/sessions/${sessionId}/messages`, {
+            text,
             category: 'auto',
+            clarify_answers: clarifyAnswers,
           });
-          delete state.clarifyDrafts[sessionId];
+          if (out.intent === 'clarify') {
+            state.clarifyDrafts[sessionId] = _buildClarifyStateFromPayload(
+              out,
+              { existing: draft },
+            );
+          } else {
+            delete state.clarifyDrafts[sessionId];
+          }
           await loadSessionChat();
           await loadSessions();
         } catch (err) {
@@ -984,6 +1157,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       projectService,
       newSession, sendChat, deleteSession,
       submitClarifyAnswer,
+      cancelGoalClarify, cancelComposerClarify, cancelSessionClarify,
       /* Per-task pending helpers for per-row spinners. */
       isTaskPending: (taskId) => !!state.pendingTasks[taskId],
       taskPendingAction: (taskId) => state.pendingTasks[taskId] || '',

@@ -425,6 +425,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             category=body.get("category") or "auto",
             qa_history=body.get("qa_history") if isinstance(body.get("qa_history"), list) else [],
             original_title=(body.get("original_title") or "").strip(),
+            clarify_answers=body.get("clarify_answers") if isinstance(body.get("clarify_answers"), list) else [],
+            clarify_questions=body.get("clarify_questions") if isinstance(body.get("clarify_questions"), list) else [],
         )
 
     def _handle_post_projects(self, body: dict) -> dict:
@@ -473,6 +475,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             run_async=bool(body.get("run_async", True)),
             qa_history=body.get("qa_history") if isinstance(body.get("qa_history"), list) else [],
             original_title=(body.get("original_title") or "").strip(),
+            clarify_answers=body.get("clarify_answers") if isinstance(body.get("clarify_answers"), list) else [],
+            clarify_questions=body.get("clarify_questions") if isinstance(body.get("clarify_questions"), list) else [],
         )
 
     def _handle_post_sessions(self, body: dict) -> dict:
@@ -533,6 +537,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             int(match.group(1)),
             body.get("text") or "",
             category=body.get("category") or "auto",
+            clarify_answers=body.get("clarify_answers") if isinstance(body.get("clarify_answers"), list) else [],
         )
 
     def _dispatch_post_pattern(self, path: str, get_body: Callable[[], dict]) -> dict | None:

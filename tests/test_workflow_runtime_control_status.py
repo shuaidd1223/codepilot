@@ -560,8 +560,10 @@ def test_show_logs_flag_prints_full_log_output(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert "执行日志" in result.output
-    assert "exit=-" in result.output
-    assert "duration=-" in result.output
+    # New layout renders log entries as a Rich table with 退出/耗时 columns
+    # plus a per-entry separator before the raw output dump.
+    assert "退出" in result.output
+    assert "耗时" in result.output
     assert "full\nlog\nbody" in result.output
     assert "完整日志: codepilot task logs" not in result.output
 

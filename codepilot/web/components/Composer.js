@@ -6,6 +6,9 @@ CP.Components.Composer = Vue.defineComponent({
   computed: {
     s() { return this.cp.state; },
     composerPending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.COMPOSER_SUBMIT); },
+    isClarifyingRequirement() {
+      return this.s.composerMode === 'requirement' && !!this.s.composerClarify;
+    },
     modeHint() {
       const m = this.s.composerMode;
       if (m === 'requirement') return '推荐：写一段自然语言需求，由规划器拆成符合模板的任务。';
@@ -15,6 +18,10 @@ CP.Components.Composer = Vue.defineComponent({
   },
   methods: {
     submit() { this.cp.submitComposer(); },
+    cancelClarify() { this.cp.cancelComposerClarify(); },
+    updateClarifyAnswers(nextAnswers) {
+      if (this.s.composerClarify) this.s.composerClarify.answers = nextAnswers;
+    },
   },
   template: `
     <section class="card">
@@ -23,11 +30,16 @@ CP.Components.Composer = Vue.defineComponent({
         <p class="muted">3 选 1：自然语言需求 / 完整任务 / 仅标题（AI 补全）</p>
       </div>
       <form class="form" @submit.prevent="submit">
-        <div v-if="s.composerClarify && s.composerMode === 'requirement'" class="clarify-panel">
-          <div class="clarify-head">需要澄清几个点</div>
-          <ol>
-            <li v-for="q in s.composerClarify.questions" :key="q">{{ q }}</li>
-          </ol>
+        <div v-if="isClarifyingRequirement" class="clarify-panel">
+          <div class="clarify-head">继续完善这次需求规划</div>
+          <div v-if="s.composerClarify.original_title" class="muted tiny" style="margin-bottom:8px">
+            原始需求：{{ s.composerClarify.original_title }}
+          </div>
+          <cp-clarify-fields
+            :questions="s.composerClarify.questions"
+            :answers="s.composerClarify.answers"
+            @update:answers="updateClarifyAnswers"
+          ></cp-clarify-fields>
         </div>
         <div class="grid grid-2 gap-sm">
           <div class="field">
@@ -45,11 +57,11 @@ CP.Components.Composer = Vue.defineComponent({
               <option>P0</option><option>P1</option><option>P2</option><option>P3</option>
             </select>
           </div>
-          <div class="field full">
-            <label>{{ s.composerClarify && s.composerMode === 'requirement' ? '补充回答' : '标题' }}</label>
-            <textarea v-model="s.composer.title" rows="2" :placeholder="s.composerClarify && s.composerMode === 'requirement' ? '回答上面的问题，可以一次性写完' : '例如：把失败任务的原因直接显示在 UI 里，并一键重试'"></textarea>
+          <div v-if="!isClarifyingRequirement" class="field full">
+            <label>标题</label>
+            <textarea v-model="s.composer.title" rows="2" placeholder="例如：把失败任务的原因直接显示在 UI 里，并一键重试"></textarea>
           </div>
-          <div class="field full" v-if="s.composerMode !== 'task_ai'">
+          <div class="field full" v-if="s.composerMode !== 'task_ai' && !isClarifyingRequirement">
             <label>{{ s.composerMode === 'task' ? 'content（必须符合 task-template 9 章节）' : '补充说明' }}</label>
             <textarea v-model="s.composer.content" rows="6" :placeholder="s.composerMode === 'task' ? '## Task Goal\\n...\\n\\n## In Scope\\n- ...\\n\\n## Acceptance Criteria\\n...（参见 ai template --format md）' : '可选：范围、约束、验收标准'"></textarea>
           </div>
@@ -75,10 +87,15 @@ CP.Components.Composer = Vue.defineComponent({
             <input type="checkbox" v-model="s.composer.execute" :disabled="s.composerMode !== 'requirement'">
             提交后立即执行
           </label>
-          <button type="submit" class="btn btn-primary" :disabled="composerPending">
-            <span v-if="composerPending" class="spinner"></span>
-            提交到当前项目
-          </button>
+          <div class="row gap-sm end">
+            <button v-if="isClarifyingRequirement" type="button" class="btn btn-outline" @click="cancelClarify">
+              取消本次规划
+            </button>
+            <button type="submit" class="btn btn-primary" :disabled="composerPending">
+              <span v-if="composerPending" class="spinner"></span>
+              {{ isClarifyingRequirement ? '继续规划' : '提交到当前项目' }}
+            </button>
+          </div>
         </div>
       </form>
     </section>

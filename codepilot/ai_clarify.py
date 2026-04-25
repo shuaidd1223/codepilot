@@ -27,6 +27,10 @@ import sys
 from typing import Optional
 
 from codepilot.ai_planner_context import collect_planner_context
+from codepilot.clarification_protocol import (
+    build_clarification_answer_summary,
+    normalize_clarification_questions,
+)
 from codepilot.prompts import load_prompt as _load_prompt
 
 
@@ -66,8 +70,30 @@ CLARIFY_SCHEMA = {
         "reason": {"type": "string"},
         "questions": {
             "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "type": {"type": "string", "enum": ["text", "single", "multi"]},
+                    "text": {"type": "string"},
+                    "allow_free_text": {"type": "boolean"},
+                    "options": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "label": {"type": "string"},
+                            },
+                            "required": ["id", "label"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["id", "type", "text"],
+                "additionalProperties": False,
+            },
+            "maxItems": 3,
         },
         "refined_title": {"type": "string"},
     },
@@ -115,8 +141,10 @@ def merge_clarification_history(original: str, qa_history: list[dict]) -> str:
     """Fold Q/A rounds back into a single refined prompt for the planner."""
     parts = [original.strip()]
     for round_ in qa_history:
-        q = (round_.get("question") or "").strip()
-        a = (round_.get("answer") or "").strip()
+        answer_entries = round_.get("answers") if isinstance(round_.get("answers"), list) else []
+        a = build_clarification_answer_summary(answer_entries) or (round_.get("answer") or "").strip()
+        questions = round_.get("questions") if isinstance(round_.get("questions"), list) else []
+        q = " | ".join(item.get("text") or "" for item in normalize_clarification_questions(questions))
         if not a:
             continue
         if q:
@@ -190,13 +218,13 @@ def assess_requirement(
     Args:
         title: The *original* requirement the user typed.
         project_path: Used to fetch project context for grounded questions.
-        qa_history: List of ``{"question": str, "answer": str}`` rounds so far.
+        qa_history: List of structured clarification rounds so far.
         max_turns: Safety cap — after this many rounds we force ``ready``.
 
     Returns:
         ``{"status": "ready", "refined_title": str, "source": "heuristic|ai|forced"}``
         or
-        ``{"status": "needs_clarification", "questions": [str, ...], "source": "ai", "turn": int}``.
+        ``{"status": "needs_clarification", "questions": [dict, ...], "source": "ai", "turn": int}``.
     """
     qa_history = list(qa_history or [])
     turn = len(qa_history) + 1
@@ -227,8 +255,9 @@ def assess_requirement(
     context = collect_planner_context(project_path, merged, max_chars=2500)
     history_lines = []
     for idx, round_ in enumerate(qa_history, 1):
-        q = (round_.get("question") or "").strip()
-        a = (round_.get("answer") or "").strip()
+        questions = round_.get("questions") if isinstance(round_.get("questions"), list) else []
+        q = " | ".join(item.get("text") or "" for item in normalize_clarification_questions(questions))
+        a = build_clarification_answer_summary(round_.get("answers") or []) or (round_.get("answer") or "").strip()
         if q:
             history_lines.append(f"Q{idx}: {q}")
         if a:
@@ -273,7 +302,7 @@ def assess_requirement(
 
     status = (payload.get("status") or "").strip()
     if status == "needs_clarification":
-        questions = [q.strip() for q in (payload.get("questions") or []) if q and q.strip()]
+        questions = normalize_clarification_questions(payload.get("questions") or [])
         questions = questions[:3]
         if not questions:
             return {

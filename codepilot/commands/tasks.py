@@ -12,7 +12,7 @@ from codepilot import db
 from codepilot.display_sort import sort_tasks_for_display
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.commands.status import _resolve_project
-from codepilot.output import echo
+from codepilot.output import echo, terminal_console
 from codepilot.runtime import (
     clear_task_runtime,
     is_process_alive,
@@ -20,6 +20,19 @@ from codepilot.runtime import (
     stop_process_tree,
     stop_worktree_leftovers,
 )
+from rich import box
+from rich.markup import escape as _markup_escape
+from rich.table import Table
+
+
+_FIND_STATUS_STYLE = {
+    "backlog": "yellow",
+    "in_progress": "blue",
+    "done": "green",
+    "failed": "red",
+    "cancelled": "magenta",
+    "archived": "dim",
+}
 
 
 # ── show ──────────────────────────────────────────────────────────────────────
@@ -129,7 +142,12 @@ def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
         emit_json_payload("show", ok=True, data=payload)
         return
 
-    echo(f"[cyan]任务详情[/cyan]  #{task['id']}  {task['title']}")
+    console = terminal_console()
+    console.print()
+    console.print(
+        f"[bold cyan]任务详情[/bold cyan]  [dim]#[/dim]{task['id']}  "
+        f"[bold]{_markup_escape(task['title'] or '')}[/bold]"
+    )
     click.echo()
 
     shown = set()
@@ -167,20 +185,38 @@ def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
     _show_block("最近输出", task.get("last_output"))
 
     if logs:
-        echo(f"[cyan]执行日志[/cyan]  {len(logs)} 条")
+        console.print()
+        console.print(f"[bold cyan]执行日志[/bold cyan]  [dim]{len(logs)} 条[/dim]")
+        log_table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
+        log_table.add_column("ID", style="dim", justify="right", width=5, no_wrap=True)
+        log_table.add_column("阶段", width=10, no_wrap=True)
+        log_table.add_column("Agent", width=10, no_wrap=True, overflow="ellipsis")
+        log_table.add_column("退出", justify="right", width=5, no_wrap=True)
+        log_table.add_column("耗时", justify="right", width=8, no_wrap=True)
+        log_table.add_column("开始时间", style="dim", width=19, no_wrap=True)
+        log_table.add_column("结束时间", style="dim", width=19, no_wrap=True)
         for entry in logs:
-            click.echo(
-                f"- #{entry.get('id')} {entry.get('phase') or '-'} "
-                f"agent={entry.get('agent') or '-'} "
-                f"exit={entry.get('exit_code') if entry.get('exit_code') is not None else '-'} "
-                f"duration={entry.get('duration') if entry.get('duration') is not None else '-'} "
-                f"started={entry.get('started_at') or '-'} "
-                f"finished={entry.get('finished_at') or '-'}"
+            exit_code = entry.get("exit_code")
+            exit_text = "-" if exit_code is None else str(exit_code)
+            exit_style = "green" if exit_code == 0 else ("red" if exit_code not in (None, 0) else "dim")
+            log_table.add_row(
+                f"#{entry.get('id')}",
+                str(entry.get("phase") or "-"),
+                str(entry.get("agent") or "-"),
+                f"[{exit_style}]{exit_text}[/{exit_style}]",
+                str(entry.get("duration") if entry.get("duration") is not None else "-"),
+                (entry.get("started_at") or "-")[:19],
+                (entry.get("finished_at") or "-")[:19],
             )
-            if include_logs and entry.get("output"):
-                click.echo(entry["output"])
-        if not include_logs:
-            click.echo(f"  完整日志: codepilot task logs {task_id} --full")
+        console.print(log_table)
+        if include_logs:
+            for entry in logs:
+                if entry.get("output"):
+                    console.print()
+                    console.print(f"[dim]── #{entry.get('id')} {entry.get('phase') or '-'} ──[/dim]")
+                    click.echo(entry["output"])
+        else:
+            console.print(f"[dim]  完整日志: codepilot task logs {task_id} --full[/dim]")
 
 
 # ── done ──────────────────────────────────────────────────────────────────────
@@ -512,27 +548,35 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
         emit_json_payload("find", ok=True, data={"tasks": rows, "count": len(rows)})
         return
 
-    echo(f"[cyan]找到 {len(rows)} 个任务：[/cyan]")
-    click.echo()
-    for r in rows:
-        status_color = {
-            "backlog": "dim",
-            "in_progress": "blue",
-            "done": "green",
-            "failed": "red",
-            "cancelled": "magenta",
-            "archived": "white",
-        }.get(r["status"], "dim")
+    console = terminal_console()
+    console.print()
+    console.print(f"[bold cyan]找到 {len(rows)} 个任务[/bold cyan]")
 
-        echo(
-            f"  #{r['id']}  [bold]{r['title']}[/bold]  "
-            f"[{status_color}]{r['status']}[/{status_color}]  "
-            f"{r['priority']}  {r['project']}"
-        )
-        if keyword and r["content"]:
-            snippet = r["content"][:80].replace("\n", " ")
-            click.echo(f"    -> {snippet}...")
-        click.echo()
+    table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
+    table.add_column("ID", style="dim", justify="right", width=5, no_wrap=True)
+    table.add_column("P", justify="center", width=3, no_wrap=True)
+    table.add_column("状态", width=10, no_wrap=True)
+    table.add_column("项目", width=14, no_wrap=True, overflow="ellipsis")
+    table.add_column("标题", ratio=3, no_wrap=True, overflow="ellipsis")
+    if keyword:
+        table.add_column("命中片段", style="dim", ratio=2, no_wrap=True, overflow="ellipsis")
+
+    for r in rows:
+        style = _FIND_STATUS_STYLE.get(r["status"], "dim")
+        row = [
+            f"#{r['id']}",
+            r["priority"] or "-",
+            f"[{style}]{r['status']}[/{style}]",
+            _markup_escape(r["project"] or "-"),
+            _markup_escape((r["title"] or "").replace("\n", " ").strip() or "-"),
+        ]
+        if keyword:
+            content = (r.get("content") or "").replace("\n", " ").strip()
+            row.append(_markup_escape(content) if content else "-")
+        table.add_row(*row)
+
+    console.print(table)
+    console.print()
 
 
 # ── stop ───────────────────────────────────────────────────────────────────────

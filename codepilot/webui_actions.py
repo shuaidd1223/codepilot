@@ -10,6 +10,7 @@ the patchable ``run_requirement_workflow`` via ``codepilot.webui``.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 from dataclasses import dataclass
@@ -19,6 +20,15 @@ from typing import Callable, Optional
 
 from codepilot import db
 from codepilot.agent_support import task_template_schema
+from codepilot.clarification_protocol import (
+    build_clarification_answer_summary,
+    build_clarification_input_summary,
+    normalize_clarification_answers,
+    normalize_clarification_history,
+    normalize_clarification_questions,
+    normalize_text,
+    render_clarification_questions,
+)
 from codepilot.display_sort import sort_jobs_for_display, sort_sessions_for_display
 from codepilot.commands.auto import (  # noqa: F401 — patched in tests
     assess_requirement_for_planning,
@@ -48,6 +58,9 @@ from codepilot.webui_payloads import _now_iso, _task_payload
 _MAX_EVENTS = 40
 _MAX_JOB_LOG_LINES = 50
 _GOAL_MAX_BYTES = 4096
+_LEGACY_CLARIFY_LINE_RE = re.compile(
+    r"^\s*(?:(?:问题\s*)?\d+[\.\)、:：]|[一二三四五六七八九十]+[、.．:：]|[-*])\s*(.+)$"
+)
 
 
 def _shell():
@@ -89,8 +102,13 @@ def _normalize_goal_category(category: str | None) -> str:
     return normalized
 
 
-def _format_numbered_questions(questions: list[str]) -> str:
-    return "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
+def _is_cancel_clarification(text: str) -> bool:
+    normalized = normalize_text(text).lower()
+    return normalized in {"/clear", "/cancel", "取消", "取消本次规划", "取消当前规划"}
+
+
+def _format_numbered_questions(questions: list[dict]) -> str:
+    return render_clarification_questions(questions)
 
 
 def _extract_job_task_ids(result: dict) -> list[int]:
@@ -142,6 +160,8 @@ class _GoalDispatchContext:
     project_info: dict
     planner: str
     text: str
+    clarify_answers: Optional[list[dict]]
+    clarify_questions: Optional[list[dict]]
     category: str
     qa_history: Optional[list[dict]]
     original_title: str
@@ -155,6 +175,7 @@ class _SessionDispatchContext:
     project_info: dict
     planner: str
     text: str
+    clarify_answers: Optional[list[dict]]
     category: str
     gateway_options: object
 
@@ -184,6 +205,8 @@ def _assess_requirement(
     planner: str,
     qa_history: Optional[list[dict]] = None,
     original_title: str = "",
+    clarify_answers: Optional[list[dict]] = None,
+    last_questions: Optional[list[dict]] = None,
 ) -> dict:
     return assess_requirement_for_planning(
         text,
@@ -191,6 +214,8 @@ def _assess_requirement(
         planner=planner,
         qa_history=qa_history,
         original_title=original_title,
+        last_questions=last_questions,
+        clarify_answers=clarify_answers,
         clarify_fn=clarify_requirement,
     )
 
@@ -212,6 +237,8 @@ def _assess_or_continue_requirement(
     planner: str,
     qa_history: Optional[list[dict]] = None,
     original_title: str = "",
+    clarify_answers: Optional[list[dict]] = None,
+    last_questions: Optional[list[dict]] = None,
     intent: str = "requirement",
 ) -> dict:
     normalized_original = normalize_requirement_text(original_title)
@@ -222,16 +249,20 @@ def _assess_or_continue_requirement(
             planner=planner,
             qa_history=qa_history,
             original_title="",
+            clarify_answers=clarify_answers,
+            last_questions=last_questions,
         )
 
     pending_state = build_clarification_state(
         original_title=normalized_original,
         qa_history=qa_history,
+        last_questions=last_questions,
         intent=intent,
     )
     outcome = continue_pending_clarification(
         pending_state,
         answer=text,
+        clarify_answers=clarify_answers,
         project_info=project_info,
         planner=planner,
         intent=intent,
@@ -264,7 +295,7 @@ def _assess_or_continue_requirement(
     }
 
 
-def _goal_clarify_payload(*, seed_title: str, questions: list[str], qa_history: Optional[list[dict]] = None) -> dict:
+def _goal_clarify_payload(*, seed_title: str, questions: list[dict], qa_history: Optional[list[dict]] = None) -> dict:
     return {
         "ok": True,
         "intent": "clarify",
@@ -280,7 +311,7 @@ def _session_payload(
     message: str,
     *,
     task_ids: Optional[list[int]] = None,
-    questions: Optional[list[str]] = None,
+    questions: Optional[list[dict]] = None,
     refined_title: str = "",
 ) -> dict:
     payload: dict = {
@@ -988,6 +1019,8 @@ def submit_requirement_action(
     run_async: bool = True,
     qa_history: Optional[list[dict]] = None,
     original_title: str = "",
+    clarify_answers: Optional[list[dict]] = None,
+    clarify_questions: Optional[list[dict]] = None,
     clarify: bool = True,
 ) -> dict:
     shell = _shell()
@@ -996,6 +1029,13 @@ def submit_requirement_action(
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
     normalized_title = normalize_requirement_text(title)
+    normalized_clarify_answers = clarify_answers if isinstance(clarify_answers, list) else []
+    normalized_clarify_questions = normalize_clarification_questions(clarify_questions)
+    if not normalized_title and normalized_clarify_answers:
+        normalized_title = build_clarification_input_summary(
+            normalized_clarify_questions,
+            raw_answers=normalized_clarify_answers,
+        )
     if not normalized_title:
         raise RuntimeError("需求文本不能为空。")
     normalized_priority = (priority or "P2").upper()
@@ -1008,8 +1048,10 @@ def submit_requirement_action(
             normalized_title,
             project_info=project_info,
             planner=effective_planner,
-            qa_history=qa_history,
+            qa_history=normalize_clarification_history(qa_history),
             original_title=original_title,
+            clarify_answers=normalized_clarify_answers,
+            last_questions=normalized_clarify_questions,
             intent="requirement",
         )
         seed_title = assessment.get("seed_title") or normalized_title
@@ -1168,6 +1210,8 @@ def _dispatch_goal_requirement(ctx: _GoalDispatchContext, *, intent: str) -> dic
         planner=ctx.planner,
         qa_history=ctx.qa_history,
         original_title=ctx.original_title,
+        clarify_answers=ctx.clarify_answers,
+        last_questions=ctx.clarify_questions,
         intent=intent,
     )
     seed_title = assessment.get("seed_title") or ctx.text
@@ -1228,13 +1272,22 @@ def submit_goal_action(
     category: str = "auto",
     qa_history: Optional[list[dict]] = None,
     original_title: str = "",
+    clarify_answers: Optional[list[dict]] = None,
+    clarify_questions: Optional[list[dict]] = None,
 ) -> dict:
     """POST /api/goal — validate payload then delegate to intent handlers."""
     db.init_db()
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
-    text = (text or "").strip()
+    text = normalize_text(text)
+    normalized_clarify_answers = clarify_answers if isinstance(clarify_answers, list) else []
+    normalized_clarify_questions = normalize_clarification_questions(clarify_questions)
+    if not text and normalized_clarify_answers:
+        text = build_clarification_input_summary(
+            normalized_clarify_questions,
+            raw_answers=normalized_clarify_answers,
+        )
     if not text:
         raise RuntimeError("输入不能为空。")
     if len(text.encode("utf-8")) > _GOAL_MAX_BYTES:
@@ -1245,8 +1298,10 @@ def submit_goal_action(
         project_info=project_info,
         planner=_effective_planner(project_info),
         text=text,
+        clarify_answers=normalized_clarify_answers,
+        clarify_questions=normalized_clarify_questions,
         category=_normalize_goal_category(category),
-        qa_history=qa_history,
+        qa_history=normalize_clarification_history(qa_history),
         original_title=original_title,
         gateway_options=resolve_shared_gateway_options(project_info),
     )
@@ -1302,8 +1357,72 @@ def get_session_action(session_id: int) -> dict:
                 parsed["task_ids"] = []
         else:
             parsed["task_ids"] = []
+        if parsed.get("metadata"):
+            try:
+                parsed["metadata"] = json.loads(parsed["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                parsed["metadata"] = {}
+        else:
+            parsed["metadata"] = {}
         parsed_messages.append(parsed)
     return {"ok": True, "session": session, "messages": parsed_messages}
+
+
+def _message_metadata(message: dict) -> dict:
+    raw = message.get("metadata")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _legacy_clarification_questions_from_content(content: str) -> list[dict]:
+    raw_content = str(content or "")
+    questions: list[dict] = []
+    for raw_line in raw_content.splitlines():
+        if not raw_line.strip():
+            continue
+        stripped = raw_line.lstrip()
+        if len(stripped) != len(raw_line) and re.match(r"^(?:\d+[\.\)、:：]|[-*])\s+", stripped):
+            continue
+        match = _LEGACY_CLARIFY_LINE_RE.match(raw_line)
+        if not match:
+            continue
+        text = normalize_text(match.group(1))
+        if not text:
+            continue
+        question_index = len(questions) + 1
+        questions.append({
+            "id": f"legacy_q{question_index}",
+            "type": "text",
+            "text": text,
+            "options": [],
+            "allow_free_text": False,
+        })
+    if questions:
+        return questions
+    fallback = normalize_text(raw_content)
+    if fallback and "\n" not in raw_content:
+        return [{
+            "id": "legacy_q1",
+            "type": "text",
+            "text": fallback,
+            "options": [],
+            "allow_free_text": False,
+        }]
+    return []
+
+
+def _message_questions(message: dict) -> list[dict]:
+    structured = normalize_clarification_questions(_message_metadata(message).get("questions"))
+    if structured:
+        return structured
+    return _legacy_clarification_questions_from_content(message.get("content") or "")
 
 
 def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
@@ -1341,11 +1460,7 @@ def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
         return None
 
     original_title = (messages[original_user_idx].get("content") or "").strip()
-    # Collect Q/A pairs between the original user message and *last_assistant*
-    # (exclusive on the assistant at last_assistant_idx because that one is the
-    # *outstanding* question the current user input answers).
     qa_history: list[dict] = []
-    # Iterate paired (assistant clarify, user answer) through prior rounds.
     idx = clarify_start
     while idx < last_assistant_idx:
         a_msg = messages[idx]
@@ -1354,16 +1469,22 @@ def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
             a_msg.get("role") == "assistant" and a_msg.get("intent") == "clarify"
             and u_msg and u_msg.get("role") == "user"
         ):
+            questions = _message_questions(a_msg)
+            answers = normalize_clarification_answers(
+                questions,
+                raw_answers=_message_metadata(u_msg).get("answers"),
+                answer_text=(u_msg.get("content") or "").strip(),
+            )
             qa_history.append({
-                "question": (a_msg.get("content") or "").strip(),
-                "answer": (u_msg.get("content") or "").strip(),
+                "questions": questions,
+                "answers": answers,
+                "answer": build_clarification_answer_summary(answers) or (u_msg.get("content") or "").strip(),
             })
             idx += 2
         else:
             break
 
-    last_questions_raw = (last_assistant.get("content") or "").splitlines()
-    last_questions = [line.lstrip("0123456789.、 -") for line in last_questions_raw if line.strip()]
+    last_questions = _message_questions(last_assistant)
 
     return build_clarification_state(
         original_title=original_title,
@@ -1374,10 +1495,30 @@ def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
 
 
 def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pending: dict) -> dict:
-    db.create_session_message(ctx.session_id, "user", ctx.text)
+    if _is_cancel_clarification(ctx.text):
+        db.create_session_message(ctx.session_id, "user", "取消本次需求规划")
+        reply = "已取消当前这次需求规划，请重新输入新的需求。"
+        db.create_session_message(ctx.session_id, "assistant", reply, intent="info")
+        return _session_payload("info", reply)
+
+    user_answers = normalize_clarification_answers(
+        pending.get("last_questions"),
+        raw_answers=ctx.clarify_answers,
+        answer_text=ctx.text,
+    )
+    if not user_answers and not ctx.text:
+        return _session_payload("info", "澄清问题已变化或过期，请刷新后重试。")
+    user_content = build_clarification_answer_summary(user_answers) or ctx.text
+    db.create_session_message(
+        ctx.session_id,
+        "user",
+        user_content,
+        metadata={"answers": user_answers} if user_answers else None,
+    )
     outcome = continue_pending_clarification(
         pending,
         answer=ctx.text,
+        clarify_answers=ctx.clarify_answers,
         project_info=ctx.project_info,
         planner=ctx.planner,
         intent=pending.get("intent") or "requirement",
@@ -1395,7 +1536,13 @@ def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pendin
         next_state = transition.pending_state or pending
         questions = list(transition.questions) or next_state.get("last_questions") or []
         reply = _format_numbered_questions(questions)
-        db.create_session_message(ctx.session_id, "assistant", reply, intent="clarify")
+        db.create_session_message(
+            ctx.session_id,
+            "assistant",
+            reply,
+            intent="clarify",
+            metadata={"questions": questions},
+        )
         return _session_payload("clarify", reply, questions=questions)
 
     refined = transition.refined_title or normalize_requirement_text(pending.get("original_title") or "")
@@ -1436,6 +1583,7 @@ def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) 
         ctx.text,
         project_info=ctx.project_info,
         planner=ctx.planner,
+        clarify_answers=ctx.clarify_answers,
     )
     if assessment.get("status") == "needs_clarification":
         questions = assessment.get("questions") or []
@@ -1445,7 +1593,13 @@ def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) 
             if numbered
             else "为了更好地规划，请先确认以下几个点。"
         )
-        db.create_session_message(ctx.session_id, "assistant", reply, intent="clarify")
+        db.create_session_message(
+            ctx.session_id,
+            "assistant",
+            reply,
+            intent="clarify",
+            metadata={"questions": questions},
+        )
         return _session_payload("clarify", reply, questions=questions)
 
     refined = assessment.get("refined_title") or ctx.text
@@ -1502,7 +1656,13 @@ def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: l
     )
 
 
-def send_session_message_action(session_id: int, text: str, *, category: str = "auto") -> dict:
+def send_session_message_action(
+    session_id: int,
+    text: str,
+    *,
+    category: str = "auto",
+    clarify_answers: Optional[list[dict]] = None,
+) -> dict:
     """Send a message in a session — validate payload then delegate by scenario."""
     db.init_db()
     session = db.get_session(session_id)
@@ -1512,14 +1672,25 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
-    text = (text or "").strip()
-    if not text:
+    text = normalize_text(text)
+    clarify_answers = clarify_answers if isinstance(clarify_answers, list) else []
+    if not text and not clarify_answers:
         raise RuntimeError("输入不能为空。")
     normalized_category = _normalize_goal_category(category)
 
     existing_messages = db.list_session_messages(session_id)
+    pending_state = _reconstruct_clarification_state(existing_messages)
+    if not pending_state and _is_cancel_clarification(text):
+        db.create_session_message(session_id, "user", "取消本次需求规划")
+        reply = "当前没有正在等待澄清的需求规划。"
+        db.create_session_message(session_id, "assistant", reply, intent="info")
+        return _session_payload("info", reply)
+    if not pending_state and clarify_answers:
+        reply = "当前没有正在等待回答的澄清问题，请重新提交需求。"
+        return _session_payload("info", reply)
     if not existing_messages:
-        short_title = text[:40] + ("…" if len(text) > 40 else "")
+        short_seed = text or build_clarification_input_summary(raw_answers=clarify_answers)
+        short_title = short_seed[:40] + ("…" if len(short_seed) > 40 else "")
         db.update_session(session_id, title=short_title)
 
     ctx = _SessionDispatchContext(
@@ -1528,6 +1699,7 @@ def send_session_message_action(session_id: int, text: str, *, category: str = "
         project_info=project_info,
         planner=_effective_planner(project_info),
         text=text,
+        clarify_answers=clarify_answers,
         category=normalized_category,
         gateway_options=resolve_shared_gateway_options(project_info),
     )

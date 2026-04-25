@@ -12,11 +12,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from codepilot.clarification_protocol import normalize_clarification_questions, normalize_text
+
 _VALID_INTENTS = {"question", "task", "requirement", "command"}
 
 
 def _normalize_text(text: str) -> str:
-    return " ".join((text or "").split())
+    return normalize_text(text)
 
 
 def parse_intent_prefix(text: str) -> tuple[Optional[str], str]:
@@ -86,7 +88,7 @@ class ClarificationTransition:
     status: str
     message: str = ""
     pending_state: Optional[dict] = None
-    questions: tuple[str, ...] = ()
+    questions: tuple[dict, ...] = ()
     refined_title: str = ""
 
 
@@ -122,11 +124,7 @@ def interpret_clarification_outcome(
         if not isinstance(next_pending, dict):
             next_pending = base_pending
         raw_questions = payload.get("questions") or next_pending.get("last_questions") or []
-        questions = tuple(
-            _normalize_text(str(q))
-            for q in raw_questions
-            if _normalize_text(str(q))
-        )
+        questions = tuple(normalize_clarification_questions(raw_questions))
         return ClarificationTransition(
             status="needs_clarification",
             pending_state=next_pending,

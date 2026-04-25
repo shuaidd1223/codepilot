@@ -2509,6 +2509,56 @@ input::placeholder, textarea::placeholder { color: hsl(var(--muted-foreground));
   background: hsl(var(--muted) / .5);
   border: 1px solid hsl(var(--border));
 }
+.clarify-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.clarify-question {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--muted) / .16);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.clarify-question-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+.clarify-question-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+.clarify-question-type {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+}
+.clarify-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.clarify-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: hsl(var(--foreground));
+}
+.clarify-option input {
+  width: auto;
+  height: auto;
+  accent-color: hsl(var(--primary));
+}
+.clarify-free-text {
+  margin-top: 4px;
+}
 .batch-import-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

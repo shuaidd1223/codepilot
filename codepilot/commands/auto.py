@@ -21,6 +21,12 @@ from typing import Optional
 import click
 
 from codepilot import db
+from codepilot.clarification_protocol import (
+    build_clarification_answer_summary,
+    normalize_clarification_answers,
+    normalize_clarification_questions,
+    render_clarification_questions,
+)
 from codepilot.interaction_controller import (
     interpret_clarification_outcome,
     resolve_turn_intent,
@@ -109,6 +115,7 @@ from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
     clarification_state_from_assessment,
     command_intent_guidance,
     continue_pending_clarification,
+    normalize_clarification_history,
     resolve_question_answer_options,
     resolve_shared_gateway_options,
     normalize_requirement_text,
@@ -134,6 +141,57 @@ def _json_mode(ctx: click.Context, json_mode: bool) -> bool:
 def _root_options(ctx: click.Context) -> dict:
     root = ctx.find_root()
     return root.obj if root and root.obj else {}
+
+
+def _is_clarification_cancel(raw: str) -> bool:
+    return normalize_requirement_text(raw).lower() in {"/cancel", "/clear", "取消", "取消本次规划"}
+
+
+def _prompt_clarification_answers_for_cli(
+    questions,
+    *,
+    first_input: str = "",
+    allow_skip: bool = True,
+) -> tuple[str, list[dict], str]:
+    normalized_questions = normalize_clarification_questions(questions)
+    if not normalized_questions:
+        return "empty", [], ""
+
+    collected: list[dict] = []
+    seeded = normalize_requirement_text(first_input)
+    for idx, question in enumerate(normalized_questions, 1):
+        qtype = question.get("type") or "text"
+        prompt = "你的补充"
+        if qtype == "single":
+            prompt = "选择一项（编号 / 标签；或直接输入文本）"
+        elif qtype == "multi":
+            prompt = "选择多项（逗号分隔；或直接输入文本）"
+
+        raw = seeded if idx == 1 and seeded else click.prompt(prompt, default="", show_default=False).strip()
+        seeded = ""
+        if _is_clarification_cancel(raw):
+            return "cancel", [], ""
+        if not raw:
+            if allow_skip and not collected:
+                return "skip", [], ""
+            continue
+        answers = normalize_clarification_answers([question], answer_text=raw)
+        if not answers:
+            continue
+        entry = answers[0]
+        collected.append({
+            "question_id": entry.get("question_id"),
+            "selected_option_ids": entry.get("selected_option_ids") or [],
+            "free_text": entry.get("free_text") or "",
+        })
+    if not collected:
+        return ("skip" if allow_skip else "empty"), [], ""
+    summary = build_clarification_answer_summary(
+        normalize_clarification_answers(normalized_questions, raw_answers=collected)
+    )
+    if not summary:
+        return ("skip" if allow_skip else "empty"), [], ""
+    return "ok", collected, summary
 
 
 def _clarify_requirement_for_go(
@@ -186,16 +244,19 @@ def _clarify_requirement_for_go(
         if not questions:
             break
         echo("[cyan]先补充几个关键信息，再开始规划：[/cyan]")
-        for i, q in enumerate(questions, 1):
-            click.echo(f"  {i}. {q}")
-        answer = click.prompt("你的补充", default="", show_default=False).strip()
-        if not answer:
+        click.echo(render_clarification_questions(questions))
+        click.echo("[dim]输入 /cancel 可取消当前这次需求规划。[/dim]")
+        status, clarify_answers, answer_summary = _prompt_clarification_answers_for_cli(questions)
+        if status == "cancel":
+            raise click.ClickException("已取消当前这次需求规划。")
+        if status == "skip":
             echo("[yellow]未收到补充信息，将按当前内容继续规划。[/yellow]")
             break
 
         outcome = continue_pending_clarification(
             pending_state,
-            answer=answer,
+            answer=answer_summary,
+            clarify_answers=clarify_answers,
             project_info=project_info,
             planner=planner,
             max_turns=max_turns,

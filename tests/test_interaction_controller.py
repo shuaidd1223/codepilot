@@ -10,6 +10,16 @@ from codepilot.interaction_controller import (
 )
 
 
+def _q(text: str, *, qid: str = "q1") -> dict:
+    return {
+        "id": qid,
+        "type": "text",
+        "text": text,
+        "options": [],
+        "allow_free_text": False,
+    }
+
+
 def test_parse_intent_prefix_supports_question_task_requirement():
     assert parse_intent_prefix("? 怎么用") == ("question", "怎么用")
     assert parse_intent_prefix("! 修复登录") == ("task", "修复登录")
@@ -54,7 +64,7 @@ def test_should_continue_pending_clarification_only_for_auto_unforced_non_questi
 
 
 def test_interpret_clarification_outcome_normalizes_transitions():
-    pending = {"original_title": "优化一下", "last_questions": ["先做哪块?"]}
+    pending = {"original_title": "优化一下", "last_questions": [_q("先做哪块?")]}
 
     interrupt = interpret_clarification_outcome(
         {"status": "error", "error_kind": "interrupt", "message": "stop"},
@@ -68,7 +78,7 @@ def test_interpret_clarification_outcome_normalizes_transitions():
         pending_state=pending,
     )
     assert needs.status == "needs_clarification"
-    assert list(needs.questions) == ["先做哪块?"]
+    assert list(needs.questions) == [_q("先做哪块?")]
 
     ready = interpret_clarification_outcome(
         {"status": "ready", "refined_title": "  优化 webui 启动速度  "},

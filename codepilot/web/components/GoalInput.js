@@ -10,6 +10,10 @@ CP.Components.GoalInput = Vue.defineComponent({
   methods: {
     submit() { this.cp.submitGoal(); },
     clearAnswer() { this.cp.state.answer = null; },
+    cancelClarify() { this.cp.cancelGoalClarify(); },
+    updateClarifyAnswers(nextAnswers) {
+      if (this.s.goalClarify) this.s.goalClarify.answers = nextAnswers;
+    },
   },
   template: `
     <div>
@@ -22,10 +26,29 @@ CP.Components.GoalInput = Vue.defineComponent({
       </div>
 
       <div class="card pad" style="margin-top: 16px">
-        <div class="row gap-sm wrap end">
+        <div v-if="s.goalClarify" class="clarify-panel">
+          <div class="clarify-head">继续完善这次需求规划</div>
+          <div v-if="s.goalClarify.original_title" class="muted tiny" style="margin-bottom:8px">
+            原始需求：{{ s.goalClarify.original_title }}
+          </div>
+          <cp-clarify-fields
+            :questions="s.goalClarify.questions"
+            :answers="s.goalClarify.answers"
+            @update:answers="updateClarifyAnswers"
+          ></cp-clarify-fields>
+          <div class="row gap-sm end" style="margin-top:12px">
+            <button class="btn btn-outline" @click="cancelClarify">取消本次规划</button>
+            <button class="btn btn-primary" @click="submit" :disabled="goalPending">
+              <span v-if="goalPending" class="spinner"></span>
+              继续规划
+            </button>
+          </div>
+        </div>
+
+        <div v-else class="row gap-sm wrap end">
           <div class="field grow">
-            <label>{{ s.goalClarify ? '补充回答' : '快速输入' }}</label>
-            <input v-model="s.goalText" @keydown.enter.exact.prevent="submit" maxlength="4096" :placeholder="s.goalClarify ? '回答上面的问题，可以一次性写完' : '输入问题、需求或命令… 由 AI 自动判断'">
+            <label>快速输入</label>
+            <input v-model="s.goalText" @keydown.enter.exact.prevent="submit" maxlength="4096" placeholder="输入问题、需求或命令… 由 AI 自动判断">
           </div>
           <div class="field w-28">
             <label>类型</label>

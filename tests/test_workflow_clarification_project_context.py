@@ -15,6 +15,10 @@ from codepilot import binary as binary_mod
 from codepilot import binary_paths as binary_paths_mod
 from codepilot import db
 from codepilot import ai as ai_mod
+from codepilot.clarification_protocol import (
+    build_clarification_input_summary,
+    normalize_clarification_answers,
+)
 from codepilot import progress_bus
 from codepilot.ai_gateway import GatewayResponse
 from codepilot import runtime as runtime_mod
@@ -25,6 +29,43 @@ from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
 from codepilot.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
+
+
+def _q(
+    text: str,
+    *,
+    qid: str = "q1",
+    qtype: str = "text",
+    options: list[tuple[str, str]] | None = None,
+    allow_free_text: bool = False,
+) -> dict:
+    return {
+        "id": qid,
+        "type": qtype,
+        "text": text,
+        "options": [{"id": option_id, "label": label} for option_id, label in (options or [])],
+        "allow_free_text": allow_free_text,
+    }
+
+
+def _a(question: dict, answer: str) -> dict:
+    return {
+        "question_id": question["id"],
+        "question_text": question["text"],
+        "type": question["type"],
+        "selected_option_ids": [],
+        "selected_option_labels": [],
+        "free_text": answer,
+        "answer_text": answer,
+    }
+
+
+def _h(question: dict, answer: str) -> dict:
+    return {
+        "questions": [question],
+        "answers": [_a(question, answer)],
+        "answer": f"{question['text']}：{answer}",
+    }
 
 
 def test_clarify_requirement_passes_config_ref_to_assess_requirement(tmp_path, monkeypatch):
@@ -88,51 +129,97 @@ def test_assess_requirement_for_planning_uses_shared_input_builder(tmp_path, mon
         project_info=project_info,
         planner="codex",
         original_title="  优化一下 ",
-        qa_history=[{"question": "Q1", "answer": "A1"}],
-        last_questions=[" 先做哪块? ", ""],
+        qa_history=[_h(_q("Q1", qid="prev"), "A1")],
+        last_questions=[_q("先做哪块?", qid="scope")],
     )
 
     assert seen["title"] == "优化一下"
     assert seen["qa_history"] == [
-        {"question": "Q1", "answer": "A1"},
-        {"question": "先做哪块?", "answer": "先做 Web UI"},
+        _h(_q("Q1", qid="prev"), "A1"),
+        _h(_q("先做哪块?", qid="scope"), "先做 Web UI"),
     ]
     assert result["seed_title"] == "优化一下"
     assert result["refined_title"] == "细化需求"
 
 
 def test_append_clarification_answer_normalizes_history_rows():
-    qa_history = [{"question": "Q1", "answer": "A1"}]
+    qa_history = [_h(_q("Q1", qid="prev"), "A1")]
     merged = auto_cmd.append_clarification_answer(
         qa_history,
         answer="  继续补充  ",
-        questions=["", " 先确认范围 ", " "],
+        questions=[{}, _q("先确认范围", qid="scope"), ""],
     )
 
     assert merged == [
-        {"question": "Q1", "answer": "A1"},
-        {"question": "先确认范围", "answer": "继续补充"},
+        _h(_q("Q1", qid="prev"), "A1"),
+        _h(_q("先确认范围", qid="scope"), "继续补充"),
     ]
     # Original input remains untouched.
-    assert qa_history == [{"question": "Q1", "answer": "A1"}]
+    assert qa_history == [_h(_q("Q1", qid="prev"), "A1")]
+
+
+def test_protocol_single_free_text_override_clears_selected_option():
+    question = _q(
+        "先覆盖哪个入口?",
+        qid="entry",
+        qtype="single",
+        options=[("web", "Web UI"), ("cli", "CLI")],
+        allow_free_text=True,
+    )
+
+    answers = normalize_clarification_answers(
+        [question],
+        raw_answers=[{
+            "question_id": "entry",
+            "selected_option_ids": ["web"],
+            "free_text": "桌面端集成",
+        }],
+    )
+
+    assert answers == [{
+        "question_id": "entry",
+        "question_text": "先覆盖哪个入口?",
+        "type": "single",
+        "selected_option_ids": [],
+        "selected_option_labels": [],
+        "free_text": "桌面端集成",
+        "answer_text": "其他：桌面端集成",
+    }]
+
+
+def test_build_clarification_input_summary_uses_question_schema_for_raw_answers():
+    question = _q(
+        "先覆盖哪个入口?",
+        qid="entry",
+        qtype="single",
+        options=[("web", "Web UI"), ("cli", "CLI")],
+        allow_free_text=True,
+    )
+
+    summary = build_clarification_input_summary(
+        [question],
+        raw_answers=[{"question_id": "entry", "selected_option_ids": ["web"]}],
+    )
+
+    assert summary == "先覆盖哪个入口?：Web UI"
 
 
 def test_build_clarification_state_normalizes_payload():
     state = auto_cmd.build_clarification_state(
         original_title="  优化 一下  ",
         qa_history=[
-            {"question": "  Q1  ", "answer": "  A1  "},
-            {"question": " ", "answer": " "},
+            _h(_q("  Q1  ", qid="prev"), "  A1  "),
+            {"questions": [_q(" ", qid="blank")], "answer": " "},
             "invalid",
         ],
-        last_questions=[" 先做哪块? ", ""],
+        last_questions=[_q(" 先做哪块? ", qid="scope"), ""],
         intent=" TASK ",
     )
 
     assert state == {
         "original_title": "优化 一下",
-        "qa_history": [{"question": "Q1", "answer": "A1"}],
-        "last_questions": ["先做哪块?"],
+        "qa_history": [_h(_q("Q1", qid="prev"), "A1")],
+        "last_questions": [_q("先做哪块?", qid="scope")],
         "intent": "task",
     }
 
@@ -141,7 +228,7 @@ def test_clarification_state_helpers_keep_intent_across_rounds():
     pending = auto_cmd.build_clarification_state(
         original_title="优化一下",
         qa_history=[],
-        last_questions=["先做哪块?"],
+        last_questions=[_q("先做哪块?", qid="scope")],
         intent="task",
     )
 
@@ -150,13 +237,13 @@ def test_clarification_state_helpers_keep_intent_across_rounds():
         answer=" 先做 Web UI ",
     )
     assert with_answer["qa_history"] == [
-        {"question": "先做哪块?", "answer": "先做 Web UI"}
+        _h(_q("先做哪块?", qid="scope"), "先做 Web UI")
     ]
 
     next_state = auto_cmd.clarification_state_from_assessment(
         assessment={
             "status": "needs_clarification",
-            "questions": [" 目标是啥? "],
+            "questions": [_q(" 目标是啥? ", qid="goal")],
             "qa_history": with_answer["qa_history"],
         },
         seed_title="ignored",
@@ -164,8 +251,8 @@ def test_clarification_state_helpers_keep_intent_across_rounds():
     )
     assert next_state == {
         "original_title": "优化一下",
-        "qa_history": [{"question": "先做哪块?", "answer": "先做 Web UI"}],
-        "last_questions": ["目标是啥?"],
+        "qa_history": [_h(_q("先做哪块?", qid="scope"), "先做 Web UI")],
+        "last_questions": [_q("目标是啥?", qid="goal")],
         "intent": "task",
     }
     assert auto_cmd.clarification_state_from_assessment(

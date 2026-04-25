@@ -9,6 +9,16 @@ from codepilot.commands import auto as auto_mod
 from tests.chat_flow_testkit import register_project
 
 
+def _q(text: str, *, qid: str = "q1", qtype: str = "text", options: list[tuple[str, str]] | None = None, allow_free_text: bool = False) -> dict:
+    return {
+        "id": qid,
+        "type": qtype,
+        "text": text,
+        "options": [{"id": option_id, "label": label} for option_id, label in (options or [])],
+        "allow_free_text": allow_free_text,
+    }
+
+
 def test_go_runs_interactive_clarification_before_planning(tmp_path, monkeypatch):
     register_project(tmp_path, monkeypatch)
 
@@ -22,7 +32,15 @@ def test_go_runs_interactive_clarification_before_planning(tmp_path, monkeypatch
             }
         return {
             "status": "needs_clarification",
-            "questions": ["先优先做哪一块?"],
+            "questions": [
+                _q(
+                    "先优先做哪一块?",
+                    qid="scope",
+                    qtype="single",
+                    options=[("loop", "规划-执行闭环"), ("ui", "Web UI")],
+                    allow_free_text=True,
+                )
+            ],
             "qa_history": [],
             "turn": 1,
         }
@@ -53,12 +71,12 @@ def test_go_runs_interactive_clarification_before_planning(tmp_path, monkeypatch
     result = runner.invoke(
         main,
         ["go", "做一个全自动编程工作流智能体", "--execute"],
-        input="先打通规划-执行闭环\n",
+        input="1\n",
     )
 
     assert result.exit_code == 0
     assert "先补充几个关键信息" in result.output
-    assert "补充: 先打通规划-执行闭环" in captured["title"]
+    assert "规划-执行闭环" in captured["title"]
 
 
 def test_auto_command_runs_interactive_clarification_before_planning(tmp_path, monkeypatch):
@@ -73,7 +91,7 @@ def test_auto_command_runs_interactive_clarification_before_planning(tmp_path, m
             }
         return {
             "status": "needs_clarification",
-            "questions": ["先落哪个入口?"],
+            "questions": [_q("先落哪个入口?")],
             "qa_history": [],
         }
 
@@ -161,7 +179,7 @@ def test_go_pending_clarification_error_does_not_fall_through_to_planning(tmp_pa
     })
     monkeypatch.setattr(auto_mod, "clarify_requirement", lambda *a, **kw: {
         "status": "needs_clarification",
-        "questions": ["先聚焦哪块?"],
+        "questions": [_q("先聚焦哪块?")],
         "qa_history": [],
     })
     monkeypatch.setattr(auto_mod, "continue_pending_clarification", lambda *a, **kw: {
@@ -195,4 +213,43 @@ def test_go_pending_clarification_error_does_not_fall_through_to_planning(tmp_pa
     assert result.exit_code != 0
     assert "clarifier backend exploded" in result.output
     assert "Aborted!" not in result.output
+    assert not ran
+
+
+def test_go_can_cancel_pending_clarification(tmp_path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
+        "intent": "requirement", "source": "forced",
+    })
+    monkeypatch.setattr(auto_mod, "clarify_requirement", lambda *a, **kw: {
+        "status": "needs_clarification",
+        "questions": [_q("先做哪块?")],
+        "qa_history": [],
+    })
+
+    ran = []
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw["title"]))
+    original_get_stream = auto_mod.click.get_text_stream
+
+    class _TtyIn:
+        @staticmethod
+        def isatty():
+            return True
+
+    monkeypatch.setattr(
+        auto_mod.click,
+        "get_text_stream",
+        lambda name: _TtyIn() if name == "stdin" else original_get_stream(name),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["go", "优化一下"],
+        input="/cancel\n",
+    )
+
+    assert result.exit_code != 0
+    assert "已取消当前这次需求规划" in result.output
     assert not ran

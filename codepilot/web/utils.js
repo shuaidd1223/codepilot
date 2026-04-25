@@ -25,6 +25,103 @@ CP.TONE_MAP = {
   command: 'neutral',
 };
 
+CP._clarifyText = (value) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+CP._clarifyQuestionId = (idx) => `q${idx + 1}`;
+CP._clarifyOptionId = (idx) => `opt${idx + 1}`;
+CP.normalizeClarifyQuestion = (question, idx = 0) => {
+  if (typeof question === 'string') {
+    const text = CP._clarifyText(question);
+    if (!text) return null;
+    return { id: CP._clarifyQuestionId(idx), type: 'text', text, options: [], allow_free_text: false };
+  }
+  if (!question || typeof question !== 'object') return null;
+  const text = CP._clarifyText(question.text || question.question || question.label);
+  if (!text) return null;
+  let type = CP._clarifyText(question.type || 'text').toLowerCase();
+  if (!['text', 'single', 'multi'].includes(type)) type = 'text';
+  const options = Array.isArray(question.options)
+    ? question.options
+      .map((opt, optIdx) => {
+        if (typeof opt === 'string') {
+          const label = CP._clarifyText(opt);
+          if (!label) return null;
+          return { id: CP._clarifyOptionId(optIdx), label };
+        }
+        if (!opt || typeof opt !== 'object') return null;
+        const label = CP._clarifyText(opt.label || opt.text || opt.value);
+        if (!label) return null;
+        return { id: CP._clarifyText(opt.id || opt.value || CP._clarifyOptionId(optIdx)), label };
+      })
+      .filter(Boolean)
+    : [];
+  if ((type === 'single' || type === 'multi') && !options.length) type = 'text';
+  return {
+    id: CP._clarifyText(question.id || question.question_id || CP._clarifyQuestionId(idx)),
+    type,
+    text,
+    options,
+    allow_free_text: type === 'text' ? false : !!(question.allow_free_text ?? true),
+  };
+};
+CP.normalizeClarifyQuestions = (questions) =>
+  (Array.isArray(questions) ? questions : []).map((q, idx) => CP.normalizeClarifyQuestion(q, idx)).filter(Boolean);
+CP.createClarifyAnswerState = (questions, existing = {}) => {
+  const state = {};
+  for (const q of CP.normalizeClarifyQuestions(questions)) {
+    const prev = existing && typeof existing === 'object' ? existing[q.id] || {} : {};
+    const optionIds = new Set((q.options || []).map(opt => CP._clarifyText(opt && opt.id)).filter(Boolean));
+    const selected = Array.isArray(prev.selectedOptionIds)
+      ? prev.selectedOptionIds.map(x => CP._clarifyText(x)).filter(Boolean)
+      : [];
+    const text = CP._clarifyText(prev.text);
+    const normalizedSelected = selected.filter(id => !optionIds.size || optionIds.has(id));
+    state[q.id] = {
+      selectedOptionIds: q.type === 'single'
+        ? ((q.allow_free_text && text) ? [] : normalizedSelected.slice(0, 1))
+        : normalizedSelected,
+      text,
+    };
+  }
+  return state;
+};
+CP.exportClarifyAnswers = (questions, answers) => {
+  const out = [];
+  for (const q of CP.normalizeClarifyQuestions(questions)) {
+    const state = (answers && answers[q.id]) || {};
+    const optionIds = new Set((q.options || []).map(opt => CP._clarifyText(opt && opt.id)).filter(Boolean));
+    const selected = Array.isArray(state.selectedOptionIds)
+      ? state.selectedOptionIds.map(x => CP._clarifyText(x)).filter(Boolean)
+      : [];
+    const text = CP._clarifyText(state.text);
+    const normalizedSelected = selected.filter(id => !optionIds.size || optionIds.has(id));
+    const exportedSelected = q.type === 'single' && q.allow_free_text && text
+      ? []
+      : (q.type === 'single' ? normalizedSelected.slice(0, 1) : normalizedSelected);
+    if (!exportedSelected.length && !text) continue;
+    out.push({
+      question_id: q.id,
+      selected_option_ids: exportedSelected,
+      free_text: text,
+    });
+  }
+  return out;
+};
+CP.clarifyQuestionText = (question) => {
+  const q = CP.normalizeClarifyQuestion(question, 0);
+  return q ? q.text : '';
+};
+CP.clarifyQuestionsText = (questions) => {
+  const lines = [];
+  for (const [idx, q] of CP.normalizeClarifyQuestions(questions).entries()) {
+    lines.push(`${idx + 1}. ${q.text}`);
+    if (q.type === 'single' || q.type === 'multi') {
+      q.options.forEach((opt, optIdx) => lines.push(`   ${optIdx + 1}. ${opt.label}`));
+      if (q.allow_free_text) lines.push('   其他：可直接手动输入文本');
+    }
+  }
+  return lines.join('\n');
+};
+
 CP.escapeHtml = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');

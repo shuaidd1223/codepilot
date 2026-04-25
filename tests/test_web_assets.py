@@ -158,6 +158,7 @@ def test_web_ui_action_protocol_exposes_scoped_pending_keys():
     assert "SESSION_SEND: 'session.send'" in app_state
     assert "SESSION_DELETE: 'session.delete'" in app_state
     assert "SESSION_CLARIFY_REPLY: 'session.clarify.reply'" in app_state
+    assert "SESSION_CLARIFY_CANCEL: 'session.clarify.cancel'" in app_state
     assert "isActionPending: (actionKey) => _isActionPending(actionKey)" in app_state
     assert "ACTION_KEYS," in app_state
 
@@ -175,6 +176,50 @@ def test_form_components_use_scoped_action_pending_instead_of_global_sending():
     assert "s.sending" not in goal
     assert "s.sending" not in composer
     assert "s.sending" not in chat
+
+
+def test_web_ui_wires_structured_clarification_fields_and_cancel_actions():
+    index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
+    utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
+    fields = Path("codepilot/web/components/ClarifyFields.js").read_text(encoding="utf-8")
+    goal = Path("codepilot/web/components/GoalInput.js").read_text(encoding="utf-8")
+    composer = Path("codepilot/web/components/Composer.js").read_text(encoding="utf-8")
+    chat = Path("codepilot/web/components/ChatView.js").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+
+    assert "<script src=\"/static/components/ClarifyFields.js\"></script>" in index_html
+    assert "CP.normalizeClarifyQuestion" in utils
+    assert "CP.createClarifyAnswerState" in utils
+    assert "CP.exportClarifyAnswers" in utils
+    assert "CP.Components.ClarifyFields" in fields
+    assert "<cp-clarify-fields" in goal
+    assert "<cp-clarify-fields" in composer
+    assert "<cp-clarify-fields" in chat
+    assert "cancelGoalClarify" in app_state
+    assert "cancelComposerClarify" in app_state
+    assert "cancelSessionClarify" in app_state
+    assert "_legacyClarifyQuestionsFromMessage" in app_state
+    assert "legacy_q${questions.length + 1}" in app_state
+
+
+def test_clarify_fields_scope_radio_groups_and_single_free_text_override():
+    utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
+    fields = Path("codepilot/web/components/ClarifyFields.js").read_text(encoding="utf-8")
+    goal = Path("codepilot/web/components/GoalInput.js").read_text(encoding="utf-8")
+    composer = Path("codepilot/web/components/Composer.js").read_text(encoding="utf-8")
+    chat = Path("codepilot/web/components/ChatView.js").read_text(encoding="utf-8")
+
+    assert "emits: ['update:answers']" in fields
+    assert "groupPrefix" in fields
+    assert "radioName(question)" in fields
+    assert ':name="radioName(q)"' in fields
+    assert "commitState(question, nextState)" in fields
+    assert "this.$emit('update:answers', answers);" in fields
+    assert "updateFreeText(question, value)" in fields
+    assert "@update:answers=\"updateClarifyAnswers\"" in goal
+    assert "@update:answers=\"updateClarifyAnswers\"" in composer
+    assert "@update:answers=\"updateClarifyAnswers\"" in chat
+    assert "q.type === 'single' && q.allow_free_text && text" in utils
 
 
 def test_project_view_wires_batch_task_import_panel():

@@ -15,7 +15,7 @@ from rich.console import Group
 from codepilot import db
 from codepilot.display_sort import sort_tasks_for_display
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
-from codepilot.output import echo
+from codepilot.output import echo, terminal_console
 from codepilot.runtime import runtime_summary
 
 STATUS_META = {
@@ -61,10 +61,7 @@ def _status_stats_line(stats: dict, *, include_cancelled: bool = False) -> str:
 def _build_console(console: Console | None = None) -> Console:
     if console is not None:
         return console
-    import shutil
-
-    term_width = shutil.get_terminal_size((120, 24)).columns
-    return Console(width=min(term_width, 140))
+    return terminal_console()
 
 
 def _metric_panel(label: str, value: int, color: str) -> Panel:
@@ -88,12 +85,12 @@ def _task_table(tasks: list[dict], *, verbose: bool = False) -> Table:
     table.add_column("ID", style="dim", width=4, justify="right", no_wrap=True)
     table.add_column("P", width=3, justify="center", no_wrap=True)
     table.add_column("Agent", width=8, no_wrap=True, overflow="ellipsis")
-    table.add_column("标题", min_width=24, ratio=3, no_wrap=True, overflow="ellipsis")
+    table.add_column("标题", ratio=3, no_wrap=True, overflow="ellipsis")
     table.add_column("阶段", width=10, no_wrap=True, overflow="ellipsis")
-    table.add_column("最近信息", min_width=30, ratio=4, no_wrap=True, overflow="ellipsis")
+    table.add_column("最近信息", ratio=4, no_wrap=True, overflow="ellipsis")
     if verbose:
         table.add_column("创建时间", style="dim", width=19, no_wrap=True)
-        table.add_column("最后输出", style="dim", min_width=24, ratio=3, no_wrap=True, overflow="ellipsis")
+        table.add_column("最后输出", style="dim", ratio=3, no_wrap=True, overflow="ellipsis")
 
     for task in tasks:
         row = [
@@ -278,7 +275,7 @@ def _show_all_projects_status(verbose: bool, json_mode: bool):
         emit_json_payload("status", ok=True, data={"projects": all_data, "count": len(all_data)})
         return
 
-    console = Console(width=160)
+    console = _build_console()
     console.print()
     console.print(Panel(Text("CodePilot 所有项目", style="bold cyan"), border_style="cyan", padding=(0, 1)))
 

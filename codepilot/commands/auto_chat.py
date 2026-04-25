@@ -414,7 +414,7 @@ def _handle_chat_meta_command(
                 if turn.get("assistant"):
                     click.echo(f"  → {turn['assistant'][:120]}")
         return True
-    if cmd == "/clear":
+    if cmd in {"/clear", "/cancel"}:
         runtime.chat_history.clear()
         if runtime.pending_clarification:
             runtime.pending_clarification = None
@@ -497,15 +497,31 @@ def _handle_chat_command(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdo
 def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdown_ui, echo, safe) -> None:
     """Continue an in-flight clarification dialog and possibly trigger planning."""
     shell = runtime.shell
-    answer_text = frame.payload_text
     pending_state = runtime.pending_clarification or {}
     pending_intent = pending_state.get("intent", "requirement")
+    prompt_status, clarify_answers, answer_text = shell._prompt_clarification_answers_for_cli(
+        pending_state.get("last_questions") or [],
+        first_input=frame.payload_text,
+        allow_skip=False,
+    )
+    if prompt_status == "cancel":
+        runtime.pending_clarification = None
+        echo("[yellow]已取消当前这次需求规划[/yellow]")
+        click.echo()
+        frame.state = _ChatLoopState.READ_INPUT
+        return
+    if prompt_status == "empty":
+        echo("[yellow]请至少回答一个澄清问题，或输入 /clear 取消当前规划。[/yellow]")
+        click.echo()
+        frame.state = _ChatLoopState.READ_INPUT
+        return
 
     spinner = _Spinner("正在评估补充信息")
     spinner.__enter__()
     outcome = shell.continue_pending_clarification(
         pending_state,
         answer=answer_text,
+        clarify_answers=clarify_answers,
         project_info=runtime.project_info,
         planner=runtime.effective["planner"],
     )
@@ -539,11 +555,10 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
         runtime.pending_clarification = transition.pending_state or pending_state
         questions = list(transition.questions)
         echo("[cyan]还需要再澄清一下：[/cyan]")
-        for i, q in enumerate(questions, 1):
-            click.echo(f"  {i}. {q}")
+        click.echo(shell.render_clarification_questions(questions))
         runtime.chat_history.append({
             "user": answer_text,
-            "assistant": "继续澄清：" + " / ".join(questions),
+            "assistant": "继续澄清：\n" + shell.render_clarification_questions(questions),
             "intent": "clarify",
         })
         click.echo()
@@ -672,10 +687,9 @@ def _dispatch_chat_requirement(
     if runtime.pending_clarification:
         questions = runtime.pending_clarification.get("last_questions") or []
         echo("[cyan]为了更好地规划，我想先确认几个点：[/cyan]")
-        for i, q in enumerate(questions, 1):
-            click.echo(f"  {i}. {q}")
-        echo("[dim]请直接回复你的答案（可以一次性全写）。输入 /clear 放弃此需求。[/dim]")
-        return "请求澄清：" + " / ".join(questions)
+        click.echo(shell.render_clarification_questions(questions))
+        echo("[dim]下一条输入会作为澄清回答；选项题可输入编号/标签，也可直接输入其他文本。输入 /clear 或 /cancel 放弃此需求。[/dim]")
+        return "请求澄清：\n" + shell.render_clarification_questions(questions)
 
     refined = assessment.get("refined_title") or ctx.payload_text
     echo("[dim]阶段 3/3：正在生成计划并执行任务...[/dim]")
