@@ -4,15 +4,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from codepilot import ai_gateway
-from codepilot import progress_bus
-from codepilot.ai_gateway import GatewayRequest
-from codepilot.ai_gateway_execute import (
+from codepilot.gateway import service as ai_gateway
+from codepilot.core import progress_bus
+from codepilot.gateway.service import GatewayRequest
+from codepilot.gateway.execute import (
     execute_api_prompt,
     execute_structured_cli_call,
     execute_text_cli_candidate,
 )
-from codepilot.ai_gateway_resolution import (
+from codepilot.gateway.resolution import (
     ResolvedStructuredCLICall,
     ResolvedTextCLICandidate,
 )
@@ -32,7 +32,7 @@ def test_execute_api_prompt_delegates_to_provider_runner(monkeypatch):
         captured["prompt"] = prompt
         return "ok"
 
-    monkeypatch.setattr("codepilot.ai_providers._run_api_provider", _fake_run)
+    monkeypatch.setattr("codepilot.ai_support.providers._run_api_provider", _fake_run)
 
     provider = object()
     raw = execute_api_prompt(provider, "hello")
@@ -43,7 +43,7 @@ def test_execute_api_prompt_delegates_to_provider_runner(monkeypatch):
 
 
 def test_run_api_provider_streams_heartbeat_events_when_subscribed():
-    from codepilot.ai_providers import _run_api_provider
+    from codepilot.ai_support.providers import _run_api_provider
 
     class _FakeChatCompletions:
         def create(self, **kwargs):
@@ -95,7 +95,7 @@ def test_execute_structured_cli_call_dispatches_claude_variant(monkeypatch):
         captured["kwargs"] = kwargs
         return {"intent": "task"}
 
-    monkeypatch.setattr("codepilot.ai._run_claude_schema_prompt", _fake_claude)
+    monkeypatch.setattr("codepilot.ai_support.service._run_claude_schema_prompt", _fake_claude)
 
     request = GatewayRequest(
         prompt="plan",
@@ -123,7 +123,7 @@ def test_execute_structured_cli_call_dispatches_claude_variant(monkeypatch):
 
 def test_execute_text_cli_candidate_reports_success(monkeypatch):
     monkeypatch.setattr(
-        "codepilot.ai_gateway_execute.subprocess.run",
+        "codepilot.gateway.execute.subprocess.run",
         lambda *args, **kwargs: CompletedProcessStub(returncode=0, stdout="  answer  ", stderr=""),
     )
 
@@ -143,7 +143,7 @@ def test_execute_text_cli_candidate_reports_success(monkeypatch):
 
 def test_execute_text_cli_candidate_reports_failure(monkeypatch):
     monkeypatch.setattr(
-        "codepilot.ai_gateway_execute.subprocess.run",
+        "codepilot.gateway.execute.subprocess.run",
         lambda *args, **kwargs: CompletedProcessStub(returncode=1, stdout="", stderr="boom"),
     )
 
@@ -163,7 +163,7 @@ def test_execute_text_cli_candidate_reports_failure(monkeypatch):
 
 def test_execute_text_cli_candidate_decodes_non_utf8_stderr(monkeypatch):
     monkeypatch.setattr(
-        "codepilot.ai_gateway_execute.subprocess.run",
+        "codepilot.gateway.execute.subprocess.run",
         lambda *args, **kwargs: CompletedProcessStub(
             returncode=1,
             stdout=b"",
@@ -265,3 +265,4 @@ def test_call_text_prefers_api_when_key_available(gateway_state):
     assert resp.source == "api:openai"
     assert resp.text == '{"intent": "task", "reason": "from api"}'
     assert gateway_state["cli_calls"] == []
+

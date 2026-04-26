@@ -8,12 +8,12 @@ from typing import Any
 
 import click
 
-from codepilot import db
-from codepilot.display_sort import sort_tasks_for_display
+from codepilot.storage import database as db
+from codepilot.webapp.display_sort import sort_tasks_for_display
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.commands.status import _resolve_project
-from codepilot.output import echo, terminal_console
-from codepilot.runtime import (
+from codepilot.core.output import echo, terminal_console
+from codepilot.core.runtime import (
     clear_task_runtime,
     is_process_alive,
     request_task_stop,
@@ -643,7 +643,7 @@ def _render_log_text(text: str, tail: int) -> str:
 @click.option("--dry-run", is_flag=True, help="只列出候选 PID，不真的杀")
 def sweep(task_id: int, dry_run: bool):
     """清理任务 worktree 里遗留的长生命进程（next dev / vite / npm run dev 等）。"""
-    from codepilot.runtime import find_worktree_processes
+    from codepilot.core.runtime import find_worktree_processes
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -707,3 +707,4 @@ def logs(task_id: int, tail: int, full: bool):
         if text:
             click.echo(text if full else _render_log_text(text, tail))
         click.echo()
+

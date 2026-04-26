@@ -4,7 +4,7 @@ import json
 
 from click.testing import CliRunner
 
-from codepilot import db
+from codepilot.storage import database as db
 from codepilot.commands import inspect as inspect_cmd
 
 
@@ -106,3 +106,4 @@ def test_inspect_stop_json_reports_not_running_with_error_contract(tmp_path, mon
     assert payload["ok"] is False
     assert payload["command"] == "inspect"
     assert payload["error"]["code"] == "service_not_running"
+

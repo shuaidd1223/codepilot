@@ -6,7 +6,7 @@ import io
 import logging
 import re
 
-from codepilot import logger as logger_mod
+from codepilot.core import logger as logger_mod
 
 
 def teardown_function(_):

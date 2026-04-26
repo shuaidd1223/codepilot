@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from codepilot.binary import (
+from codepilot.binary_support.manager import (
     build_binary,
     create_release_bundle,
     default_install_dir,
@@ -20,7 +20,7 @@ from codepilot.binary import (
     verify_release_bundle,
     _merge_release_inputs,
 )
-from codepilot.output import echo
+from codepilot.core.output import echo
 
 
 @click.group("binary")
@@ -251,3 +251,4 @@ def binary_prepare(
             raise click.ClickException("版本已更新，但发布目录校验失败。")
         echo(f"[green][OK] 发布目录校验通过[/green]  {verification.release_dir}")
         click.echo(f"  checked_files: {verification.checked_files}")
+

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
-from codepilot import db
-from codepilot import db_config
+from codepilot.storage import config as db_config
+from codepilot.storage import database as db
 
 
 def test_db_config_default_path_lives_at_codepilot_root(monkeypatch, tmp_path):
@@ -30,3 +30,4 @@ def test_open_connection_applies_common_pragmas(tmp_path):
         assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
     finally:
         conn.close()
+

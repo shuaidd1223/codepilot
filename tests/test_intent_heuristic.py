@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from codepilot.ai import _heuristic_intent
+from codepilot.ai_support.service import _heuristic_intent
 
 
 # ─── question ────────────────────────────────────────────────────────────────
@@ -84,3 +84,4 @@ def test_heuristic_returns_none_when_unsure(text: str):
 def test_heuristic_returns_none_for_empty():
     assert _heuristic_intent("") is None
     assert _heuristic_intent("   ") is None
+

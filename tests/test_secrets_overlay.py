@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from codepilot import config as config_mod
-from codepilot.config import (
+from codepilot.core import config as config_mod
+from codepilot.core.config import (
     SECRETS_FILENAME,
     SECRETS_PATH_ENV,
     load_config,
@@ -74,7 +74,7 @@ def test_inline_api_key_in_agents_toml_logs_warning(_isolate, monkeypatch, caplo
 
     # codepilot keeps propagate=False to avoid duplicate console output;
     # logger.py mirrors pytest's capture handler so caplog still sees it.
-    from codepilot import logger as logger_mod
+    from codepilot.core import logger as logger_mod
 
     logger_mod.reset_for_tests()
     logger = logger_mod.get_logger("config")
@@ -117,3 +117,4 @@ def test_sanitize_config_scrubs_api_key(_isolate):
     assert safe.providers["openai-gpt4o"].api_key == "***"
     # Original untouched.
     assert cfg.providers["openai-gpt4o"].api_key == "sk-secret"
+

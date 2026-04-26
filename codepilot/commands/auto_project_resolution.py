@@ -9,8 +9,8 @@ from typing import Optional
 
 import click
 
-from codepilot import db
-from codepilot.config import find_config, load_config
+from codepilot.storage import database as db
+from codepilot.core.config import find_config, load_config
 
 TEMP_SESSION_NAME = "公共临时会话"
 
@@ -216,3 +216,4 @@ def resolve_project_for_prompt(
         current_dir=current_dir,
         policy=policy,
     )
+

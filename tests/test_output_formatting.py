@@ -6,7 +6,7 @@ import io
 
 from rich.console import Console
 
-from codepilot import output as output_mod
+from codepilot.core import output as output_mod
 
 
 def _test_console(buffer: io.StringIO) -> Console:

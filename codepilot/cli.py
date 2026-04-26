@@ -7,13 +7,13 @@ import importlib
 import click
 
 from codepilot import __version__
-from codepilot.console_encoding import configure_console_encoding
-from codepilot.runtime import silence_subprocess_windows_if_detached
+from codepilot.core.console_encoding import configure_console_encoding
+from codepilot.core.runtime import silence_subprocess_windows_if_detached
 
 configure_console_encoding()
 silence_subprocess_windows_if_detached()
 
-from codepilot.db import init_db
+from codepilot.storage.database import init_db
 
 _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "init": ("codepilot.commands.init", "init_"),
@@ -174,3 +174,4 @@ def main(
 
 if __name__ == "__main__":
     main()
+

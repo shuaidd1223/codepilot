@@ -79,12 +79,12 @@ def gateway_state(monkeypatch):
         cli_calls.append({"cli": "codex", "prompt": prompt, "schema": schema, "kwargs": kw})
         return {"intent": "requirement", "reason": "from codex CLI"}
 
-    monkeypatch.setattr("codepilot.ai_providers._run_api_provider", _fake_run_api_provider)
-    monkeypatch.setattr("codepilot.ai._run_claude_schema_prompt", _fake_run_claude_schema_prompt)
-    monkeypatch.setattr("codepilot.ai._run_codex_schema_prompt", _fake_run_codex_schema_prompt)
+    monkeypatch.setattr("codepilot.ai_support.providers._run_api_provider", _fake_run_api_provider)
+    monkeypatch.setattr("codepilot.ai_support.service._run_claude_schema_prompt", _fake_run_claude_schema_prompt)
+    monkeypatch.setattr("codepilot.ai_support.service._run_codex_schema_prompt", _fake_run_codex_schema_prompt)
 
     fake_registry = {}
-    monkeypatch.setattr("codepilot.ai_providers.API_PROVIDERS", fake_registry)
+    monkeypatch.setattr("codepilot.ai_support.providers.API_PROVIDERS", fake_registry)
 
     return {
         "api_calls": api_calls,

@@ -5,7 +5,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from codepilot.cli import main
-from codepilot.config import (
+from codepilot.core.config import (
     GLOBAL_CONFIG_PATH_ENV,
     SECRETS_FILENAME,
     SECRETS_PATH_ENV,
@@ -189,3 +189,4 @@ def test_config_sync_global_writes_tool_root_config(tmp_path, monkeypatch):
     assert "[project]" in content
     assert "[automation]" in content
     assert "[providers]" in content
+

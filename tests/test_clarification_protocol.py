@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from codepilot.clarification_protocol import (
+from codepilot.ai_support.clarification_protocol import (
     build_clarification_answer_summary,
     build_clarification_input_summary,
     normalize_clarification_answers,
@@ -137,3 +137,4 @@ def test_normalize_clarification_history_round_trips_structured_rows():
         }],
         "answer": "先做哪块?：Web UI",
     }]
+

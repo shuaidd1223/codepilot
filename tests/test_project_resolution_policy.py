@@ -5,7 +5,7 @@ from pathlib import Path
 import click
 from click.testing import CliRunner
 
-from codepilot import db
+from codepilot.storage import database as db
 from codepilot.cli import main
 from codepilot.commands import auto_project_resolution as auto_project_resolution_mod
 from codepilot.commands import auto as auto_cmd
@@ -127,3 +127,4 @@ def test_go_requires_registered_project_when_running_from_unregistered_workspace
 
     assert result.exit_code != 0
     assert "codepilot init" in result.output
+

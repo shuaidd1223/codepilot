@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
-from codepilot import db
+from codepilot.storage import database as db
 from codepilot.commands import webui_service as svc
 
 
@@ -182,3 +182,4 @@ def test_webui_stop_succeeds_if_process_exits_during_final_grace_period(tmp_path
     assert result.exit_code == 0
     assert "以下 PID 停止时返回失败，但进程已退出：33024" in result.output
     assert "Web UI 已停止" in result.output
+

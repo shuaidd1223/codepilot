@@ -11,7 +11,7 @@ from typing import Optional
 import click
 
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
-from codepilot.output import echo, safe
+from codepilot.core.output import echo, safe
 
 
 # ── Check result model ───────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ def _check_git(project_root: Optional[Path]) -> list[CheckResult]:
         ))
 
     # 3) base_branch exists?
-    from codepilot.config import load_config
+    from codepilot.core.config import load_config
     cfg = load_config()
     base = cfg.base_branch if cfg else "dev"
     cp2 = subprocess.run(
@@ -127,7 +127,7 @@ def _check_git(project_root: Optional[Path]) -> list[CheckResult]:
 
 def _check_agents_toml() -> CheckResult:
     """AGENTS.toml parseable & key fields present."""
-    from codepilot.config import find_config
+    from codepilot.core.config import find_config
 
     config_path = find_config()
     if config_path is None:
@@ -190,9 +190,9 @@ def _check_cli_tools() -> list[CheckResult]:
 
 def _check_api_keys() -> list[CheckResult]:
     """Check API key availability for commonly used providers."""
-    from codepilot.ai import API_PROVIDERS, normalize_agent_name
-    from codepilot.ai_providers import resolve_api_provider
-    from codepilot.config import load_config
+    from codepilot.ai_support.service import API_PROVIDERS, normalize_agent_name
+    from codepilot.ai_support.providers import resolve_api_provider
+    from codepilot.core.config import load_config
 
     results: list[CheckResult] = []
     cfg = load_config()
@@ -309,7 +309,7 @@ def _check_api_keys() -> list[CheckResult]:
 
 def _check_db_path() -> CheckResult:
     """Task DB path readable & writable."""
-    from codepilot.db_config import get_db_path
+    from codepilot.storage.config import get_db_path
 
     db_path = get_db_path()
     if db_path.exists():
@@ -424,3 +424,4 @@ def doctor(ctx: click.Context, json_mode: bool):
         echo()
 
     echo()
+

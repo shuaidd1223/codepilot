@@ -8,7 +8,7 @@ import click
 from click.testing import CliRunner
 
 from codepilot import __version__
-from codepilot import db
+from codepilot.storage import database as db
 from codepilot.cli import main
 from codepilot.commands import auto as auto_mod
 from codepilot.commands import auto_chat as auto_chat_mod
@@ -31,7 +31,7 @@ def test_chat_question_heuristic_does_not_create_task(tmp_path, monkeypatch):
     original_classify = auto_mod.classify_intent
 
     def _heuristic_only(text, **kwargs):
-        from codepilot.ai import _heuristic_intent
+        from codepilot.ai_support.service import _heuristic_intent
         intent = _heuristic_intent(text)
         if intent:
             return {"intent": intent, "reason": "heuristic", "source": "heuristic"}
@@ -72,7 +72,7 @@ def test_chat_requirement_heuristic_triggers_planning(tmp_path, monkeypatch):
     })
 
     def _heuristic_only(text, **kwargs):
-        from codepilot.ai import _heuristic_intent
+        from codepilot.ai_support.service import _heuristic_intent
         intent = _heuristic_intent(text)
         if intent:
             return {"intent": intent, "reason": "heuristic", "source": "heuristic"}
@@ -95,7 +95,7 @@ def test_chat_command_heuristic_shows_help(tmp_path, monkeypatch):
     register_project(tmp_path, monkeypatch)
 
     def _heuristic_only(text, **kwargs):
-        from codepilot.ai import _heuristic_intent
+        from codepilot.ai_support.service import _heuristic_intent
         intent = _heuristic_intent(text)
         if intent:
             return {"intent": intent, "reason": "heuristic", "source": "heuristic"}
@@ -130,7 +130,7 @@ def test_chat_slash_version_shows_current_version_without_creating_task(tmp_path
 
 def test_classify_intent_uses_heuristic_first(monkeypatch):
     """Heuristic match should short-circuit without calling any AI."""
-    from codepilot.ai import classify_intent
+    from codepilot.ai_support.service import classify_intent
 
     result = classify_intent("怎么安装这个工具")
     assert result["intent"] == "question"
@@ -139,9 +139,9 @@ def test_classify_intent_uses_heuristic_first(monkeypatch):
 
 def test_classify_intent_defaults_to_requirement_on_failure(monkeypatch):
     """When heuristic misses and all AI fails, default to requirement."""
-    from codepilot import ai_classifier as classifier_mod
-    from codepilot import ai_gateway
-    from codepilot.ai import classify_intent
+    from codepilot.ai_support import classifier as classifier_mod
+    from codepilot.gateway import service as ai_gateway
+    from codepilot.ai_support.service import classify_intent
 
     # Heuristic must miss so we exercise the AI path.
     monkeypatch.setattr(classifier_mod, "_heuristic_intent", lambda t: None)
@@ -165,9 +165,9 @@ def test_classify_intent_defaults_to_requirement_on_failure(monkeypatch):
 
 def test_classify_intent_falls_back_to_cli_when_api_key_missing(monkeypatch, tmp_path):
     """Configured API without a key should still route through CLI fallback."""
-    from codepilot import ai_classifier as classifier_mod
-    from codepilot import ai_providers
-    from codepilot.ai import classify_intent
+    from codepilot.ai_support import classifier as classifier_mod
+    from codepilot.ai_support import providers as ai_providers
+    from codepilot.ai_support.service import classify_intent
 
     monkeypatch.setattr(classifier_mod, "_heuristic_intent", lambda t: None)
     monkeypatch.delenv("CODEPILOT_TEST_AI_GATEWAY_KEY", raising=False)
@@ -194,7 +194,7 @@ def test_classify_intent_falls_back_to_cli_when_api_key_missing(monkeypatch, tmp
         return {"intent": "question", "reason": "from CLI fallback"}
 
     monkeypatch.setattr(ai_providers, "_run_api_provider", _api_should_be_skipped)
-    monkeypatch.setattr("codepilot.ai._run_claude_schema_prompt", _fake_claude_schema_prompt)
+    monkeypatch.setattr("codepilot.ai_support.service._run_claude_schema_prompt", _fake_claude_schema_prompt)
 
     result = classify_intent(
         "需要判断这段输入的类型",
@@ -217,9 +217,9 @@ def test_classify_intent_falls_back_to_cli_when_api_key_missing(monkeypatch, tmp
 
 def test_classify_intent_command_guardrail_avoids_non_cli_false_positive(monkeypatch):
     """AI returning 'command' for unrelated text should be downgraded."""
-    from codepilot import ai_classifier as classifier_mod
-    from codepilot import ai_gateway
-    from codepilot.ai import classify_intent
+    from codepilot.ai_support import classifier as classifier_mod
+    from codepilot.gateway import service as ai_gateway
+    from codepilot.ai_support.service import classify_intent
 
     monkeypatch.setattr(classifier_mod, "_heuristic_intent", lambda t: None)
 
@@ -315,5 +315,6 @@ def test_chat_exit_does_not_stop_global_webui_service(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert calls == []
+
 
 

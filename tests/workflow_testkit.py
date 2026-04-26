@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from codepilot import db
-from codepilot import webui as webui_mod
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod
 
 
 def init_test_db(tmp_path, monkeypatch):
@@ -11,3 +11,4 @@ def init_test_db(tmp_path, monkeypatch):
     webui_mod._UI_JOBS.clear()
     webui_mod._UI_EVENTS.clear()
     webui_mod._UI_JOB_SEQ = 0
+

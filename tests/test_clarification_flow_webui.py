@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from codepilot import db
-from codepilot import webui as webui_mod
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod
 from tests.chat_flow_testkit import register_project
 
 
@@ -23,7 +23,7 @@ def test_webui_submit_goal_returns_clarify(tmp_path, monkeypatch):
     register_project(tmp_path, monkeypatch)
 
     monkeypatch.setattr(
-        "codepilot.webui_actions.clarify_requirement",
+        "codepilot.webapp.actions.clarify_requirement",
         lambda *a, **kw: {
             "status": "needs_clarification",
             "questions": [_q("要优化哪里?")],
@@ -45,7 +45,7 @@ def test_webui_submit_goal_continues_with_history(tmp_path, monkeypatch):
             return {"status": "ready", "refined_title": title + " refined", "qa_history": qa_history}
         return {"status": "needs_clarification", "questions": [_q("?")], "qa_history": []}
 
-    monkeypatch.setattr("codepilot.webui_actions.clarify_requirement", fake_clarify)
+    monkeypatch.setattr("codepilot.webapp.actions.clarify_requirement", fake_clarify)
 
     plan_calls = []
 
@@ -54,7 +54,7 @@ def test_webui_submit_goal_continues_with_history(tmp_path, monkeypatch):
         return {"ok": True, "message": "queued", "job": {"task_ids": []}}
 
     monkeypatch.setattr(
-        "codepilot.webui_actions.submit_requirement_action", fake_submit
+        "codepilot.webapp.actions.submit_requirement_action", fake_submit
     )
 
     out = webui_mod.submit_goal_action(
@@ -78,7 +78,7 @@ def test_webui_submit_goal_builds_text_from_structured_answers_and_questions(tmp
         captured["questions"] = ctx.clarify_questions
         return {"ok": True, "intent": "noop", "message": "ok"}
 
-    monkeypatch.setattr("codepilot.webui_actions._dispatch_goal_by_intent", fake_dispatch)
+    monkeypatch.setattr("codepilot.webapp.actions._dispatch_goal_by_intent", fake_dispatch)
 
     question = _q(
         "先覆盖哪个入口?",
@@ -120,7 +120,7 @@ def test_webui_submit_requirement_returns_clarify_before_job(tmp_path, monkeypat
     register_project(tmp_path, monkeypatch)
 
     monkeypatch.setattr(
-        "codepilot.webui_actions.clarify_requirement",
+        "codepilot.webapp.actions.clarify_requirement",
         lambda *a, **kw: {
             "status": "needs_clarification",
             "questions": [_q("先覆盖哪个入口?")],
@@ -177,7 +177,7 @@ def test_webui_submit_requirement_continues_after_clarify_answer(tmp_path, monke
             "qa_history": [],
         }
 
-    monkeypatch.setattr("codepilot.webui_actions.clarify_requirement", fake_clarify)
+    monkeypatch.setattr("codepilot.webapp.actions.clarify_requirement", fake_clarify)
 
     def fake_run_requirement_workflow(**kwargs):
         task = db.create_task(
@@ -214,3 +214,4 @@ def test_webui_submit_requirement_continues_after_clarify_answer(tmp_path, monke
     assert jobs and jobs[0]["task_ids"]
     task = db.get_task(jobs[0]["task_ids"][0])
     assert "Web UI" in task["title"]
+

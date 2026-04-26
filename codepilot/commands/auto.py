@@ -20,14 +20,14 @@ from typing import Optional
 
 import click
 
-from codepilot import db
-from codepilot.clarification_protocol import (
+from codepilot.storage import database as db
+from codepilot.ai_support.clarification_protocol import (
     build_clarification_answer_summary,
     normalize_clarification_answers,
     normalize_clarification_questions,
     render_clarification_questions,
 )
-from codepilot.interaction_controller import (
+from codepilot.ai_support.interaction_controller import (
     interpret_clarification_outcome,
     resolve_turn_intent,
 )
@@ -35,9 +35,9 @@ from codepilot.interaction_controller import (
 # Re-exported dependencies — tests monkeypatch these on ``codepilot.commands.auto``
 # and the implementation modules resolve them via this shell at call time.
 def _ai_module():
-    from codepilot import ai
+    from codepilot.ai_support import service as ai_module
 
-    return ai
+    return ai_module
 
 
 def answer_question_via_api(*args, **kwargs):  # noqa: F401 (re-export)
@@ -88,7 +88,7 @@ def render_project_stats(*args, **kwargs):  # noqa: F401 (re-export)
 
 def _resolve_project_strict(ctx, param, value):
     """Require an existing registered project name for strict command modes."""
-    from codepilot.output import echo
+    from codepilot.core.output import echo
 
     if not value:
         raise click.BadParameter("需要 --project 参数")
@@ -201,7 +201,7 @@ def _clarify_requirement_for_go(
     planner: str,
 ) -> str:
     """Interactive clarification loop for `go` command before planning."""
-    from codepilot.output import echo
+    from codepilot.core.output import echo
 
     if not click.get_text_stream("stdin").isatty():
         return text
@@ -316,7 +316,7 @@ def auto(
 ):
     """将一个高层目标拆分为子任务，并可选立即执行."""
     json_mode = _json_mode(ctx, json_mode)
-    from codepilot.cli_progress import maybe_cli_renderer
+    from codepilot.core.cli_progress import maybe_cli_renderer
 
     with maybe_cli_renderer(enabled=not json_mode):
         project_info = resolve_project_for_prompt(
@@ -386,7 +386,7 @@ def go(
     text = " ".join(requirement).strip()
     if not text:
         text = click.prompt("请输入你的需求")
-    from codepilot.cli_progress import maybe_cli_renderer
+    from codepilot.core.cli_progress import maybe_cli_renderer
 
     with maybe_cli_renderer(enabled=not json_mode):
         root_obj = _root_options(ctx)
@@ -527,3 +527,4 @@ def chat(
         enable_ui=enable_ui,
         ui_port=ui_port,
     )
+

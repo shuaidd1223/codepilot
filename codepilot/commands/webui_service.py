@@ -18,12 +18,12 @@ from pathlib import Path
 
 import click
 
-from codepilot import db
+from codepilot.storage import database as db
 from codepilot.commands.daemon import start_daemon_service
-from codepilot.output import echo, safe
-from codepilot.paths import global_storage_root
-from codepilot.runtime import is_process_alive, stop_process_tree
-from codepilot.text_decode import decode_subprocess_text
+from codepilot.core.output import echo, safe
+from codepilot.core.paths import global_storage_root
+from codepilot.core.runtime import is_process_alive, stop_process_tree
+from codepilot.core.text_decode import decode_subprocess_text
 
 
 STATE_DIR = global_storage_root() / "webui"
@@ -418,3 +418,4 @@ def logs_cmd(tail: int) -> None:
     if tail > 0 and len(lines) > tail:
         lines = lines[-tail:]
     click.echo("\n".join(lines))
+

@@ -11,21 +11,21 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from codepilot.agent_support import ai_guide_markdown, command_manifest
-from codepilot import binary as binary_mod
-from codepilot import binary_paths as binary_paths_mod
-from codepilot import db
-from codepilot import db_session_store
-from codepilot import ai as ai_mod
-from codepilot import progress_bus
-from codepilot.ai_gateway import GatewayResponse
-from codepilot import runtime as runtime_mod
-from codepilot import webui as webui_mod
+from codepilot.ai_support.agent_support import ai_guide_markdown, command_manifest
+from codepilot.binary_support import manager as binary_mod
+from codepilot.binary_support import paths as binary_paths_mod
+from codepilot.storage import database as db
+from codepilot.storage import session_store as db_session_store
+from codepilot.ai_support import service as ai_mod
+from codepilot.core import progress_bus
+from codepilot.gateway.service import GatewayResponse
+from codepilot.core import runtime as runtime_mod
+from codepilot.webapp import server as webui_mod
 from codepilot.cli import main
 from codepilot.commands import add as add_cmd
 from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
-from codepilot.config import load_project_config
+from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
 
 
@@ -278,7 +278,7 @@ def test_webui_retry_and_promote_actions_update_task_state(tmp_path, monkeypatch
             self._target()
 
     monkeypatch.setattr(
-        "codepilot.webui_actions.threading.Thread",
+        "codepilot.webapp.actions.threading.Thread",
         _ImmediateThread,
     )
     monkeypatch.setattr(
@@ -436,7 +436,7 @@ def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeyp
 
     monkeypatch.setattr(webui_mod, "run_requirement_workflow", fake_run_requirement_workflow)
     monkeypatch.setattr(
-        "codepilot.webui_actions.clarify_requirement",
+        "codepilot.webapp.actions.clarify_requirement",
         lambda title, **kw: {"status": "ready", "refined_title": title},
     )
 
@@ -645,3 +645,4 @@ def test_webui_session_list_sorts_by_activity_then_creation(tmp_path, monkeypatc
 
     payload = webui_mod.list_sessions_action("demo")
     assert [item["id"] for item in payload["sessions"]] == [third["id"], second["id"], first["id"]]
+

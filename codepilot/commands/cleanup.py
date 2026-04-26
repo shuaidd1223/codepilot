@@ -10,9 +10,9 @@ from typing import Optional
 
 import click
 
-from codepilot import db
-from codepilot.output import echo, safe
-from codepilot.runtime import is_process_alive
+from codepilot.storage import database as db
+from codepilot.core.output import echo, safe
+from codepilot.core.runtime import is_process_alive
 
 
 # ── Core logic ──────────────────────────────────────────────────────────────
@@ -183,7 +183,7 @@ def cleanup(
     # Resolve stale_minutes from config if not provided.
     if stale_minutes is None:
         try:
-            from codepilot.config import load_config
+            from codepilot.core.config import load_config
 
             cfg = load_config()
             stale_minutes = cfg.stale_minutes if cfg else 30
@@ -264,3 +264,4 @@ def cleanup(
         freed_label = "可释放" if dry_run else "已释放"
         echo(f"  {freed_label}空间：{_format_bytes(freed_bytes)}")
     echo()
+

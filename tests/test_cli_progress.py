@@ -13,7 +13,8 @@ import io
 import pytest
 from rich.console import Console
 
-from codepilot import cli_progress, output as output_mod, progress_bus
+from codepilot.core import cli_progress, progress_bus
+from codepilot.core import output as output_mod
 
 
 @pytest.fixture(autouse=True)

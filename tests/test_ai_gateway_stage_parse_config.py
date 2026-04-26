@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from codepilot import ai_gateway
-from codepilot.ai_gateway import GatewayRequest
-from codepilot.ai_gateway_resolution import (
+from codepilot.gateway import service as ai_gateway
+from codepilot.gateway.service import GatewayRequest
+from codepilot.gateway.resolution import (
     resolve_api_call,
     resolve_structured_cli_call,
     resolve_text_cli_candidates,
@@ -19,14 +19,14 @@ def test_resolve_api_call_applies_overrides_and_prefers_config_ref(monkeypatch):
     provider = FakeAPIProvider(model="from-registry", api_key="registry-key")
     captured = {}
 
-    monkeypatch.setattr("codepilot.ai_providers.API_PROVIDERS", {"openai": object()})
+    monkeypatch.setattr("codepilot.ai_support.providers.API_PROVIDERS", {"openai": object()})
 
     def _fake_resolve(provider_key, provider_ref):
         captured["provider_key"] = provider_key
         captured["provider_ref"] = provider_ref
         return provider
 
-    monkeypatch.setattr("codepilot.ai_providers.resolve_api_provider", _fake_resolve)
+    monkeypatch.setattr("codepilot.ai_support.providers.resolve_api_provider", _fake_resolve)
 
     resolved = resolve_api_call(
         GatewayRequest(
@@ -51,8 +51,8 @@ def test_resolve_api_call_applies_overrides_and_prefers_config_ref(monkeypatch):
 
 def test_resolve_api_call_returns_none_when_required_key_missing(monkeypatch):
     provider = FakeAPIProvider(needs_key=True, api_key="")
-    monkeypatch.setattr("codepilot.ai_providers.API_PROVIDERS", {"openai": object()})
-    monkeypatch.setattr("codepilot.ai_providers.resolve_api_provider", lambda *_: provider)
+    monkeypatch.setattr("codepilot.ai_support.providers.API_PROVIDERS", {"openai": object()})
+    monkeypatch.setattr("codepilot.ai_support.providers.resolve_api_provider", lambda *_: provider)
 
     resolved = resolve_api_call(
         GatewayRequest(
@@ -80,7 +80,7 @@ def test_resolve_text_cli_candidates_builds_codex_command_with_project_path(monk
             return FakeCLIProvider(exe="")
         return FakeCLIProvider(exe="C:/bin/codex.exe")
 
-    monkeypatch.setattr("codepilot.ai_providers.resolve_cli_provider", _fake_resolve_cli_provider)
+    monkeypatch.setattr("codepilot.ai_support.providers.resolve_cli_provider", _fake_resolve_cli_provider)
 
     candidates, last_error = resolve_text_cli_candidates(
         GatewayRequest(
@@ -151,3 +151,4 @@ def test_call_structured_uses_provider_model_from_project_config(gateway_state, 
     assert used.model == "custom-config-model"
     assert used.api_key == "sk-from-config"
     assert used.base_url == "https://models.example.invalid/v1"
+

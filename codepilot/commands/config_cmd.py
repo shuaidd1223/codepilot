@@ -7,7 +7,7 @@ from typing import Any
 
 import click
 
-from codepilot import config as config_mod
+from codepilot.core import config as config_mod
 
 
 def _quote(value: str) -> str:
@@ -429,3 +429,4 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(content, encoding="utf-8")
     click.echo(f"已同步配置: {config_path}")
+

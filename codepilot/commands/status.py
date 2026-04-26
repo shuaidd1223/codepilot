@@ -12,11 +12,11 @@ from rich.markup import escape as _markup_escape
 from rich.text import Text
 from rich.console import Group
 
-from codepilot import db
-from codepilot.display_sort import sort_tasks_for_display
+from codepilot.storage import database as db
+from codepilot.webapp.display_sort import sort_tasks_for_display
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
-from codepilot.output import echo, terminal_console
-from codepilot.runtime import runtime_summary
+from codepilot.core.output import echo, terminal_console
+from codepilot.core.runtime import runtime_summary
 
 STATUS_META = {
     "backlog": ("待办", "yellow"),
@@ -306,3 +306,4 @@ def _show_all_projects_status(verbose: bool, json_mode: bool):
 
     console.print(table)
     console.print()
+

@@ -96,7 +96,7 @@ def test_normalize_task_spec_passthrough_for_non_dict():
 def test_build_task_markdown_fallback_renders_without_placeholder_defaults():
     """End-to-end: a fallback breakdown item rendered via the template should
     NOT show the template-level fallback literals like 待评估/未设定."""
-    from codepilot.ai import build_task_markdown_from_plan
+    from codepilot.ai_support.service import build_task_markdown_from_plan
 
     breakdown = aw._fallback_single_task_breakdown(
         title="验证 fallback 渲染",
@@ -124,7 +124,7 @@ def test_build_task_markdown_fallback_renders_without_placeholder_defaults():
 def test_create_tasks_from_breakdown_normalizes_planner_output(monkeypatch):
     """A planner item without risk_level/scope_budget should still render
     sensible defaults by running through _normalize_task_spec."""
-    from codepilot.ai import build_task_markdown_from_plan
+    from codepilot.ai_support.service import build_task_markdown_from_plan
 
     captured_contents: list[str] = []
 
@@ -170,3 +170,4 @@ def test_create_tasks_from_breakdown_normalizes_planner_output(monkeypatch):
     # Sanity: smoke build_task_markdown_from_plan is still live alongside.
     assert "第一个任务" in rendered
     assert build_task_markdown_from_plan is not None
+

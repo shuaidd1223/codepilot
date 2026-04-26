@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from codepilot import ai_gateway
-from codepilot.ai_gateway_call_skeleton import (
+from codepilot.gateway import service as ai_gateway
+from codepilot.gateway.call_skeleton import (
     make_structured_mode,
     make_text_mode,
     run_with_fallback,
 )
-from codepilot.ai_gateway_entrypoints import run_gateway_entry, validate_request_mode
-from codepilot.ai_gateway_errors import aggregate_errors, build_combined_failure
-from codepilot.ai_gateway_types import GatewayMode, GatewayRequest, GatewayResponse
+from codepilot.gateway.entrypoints import run_gateway_entry, validate_request_mode
+from codepilot.gateway.errors import aggregate_errors, build_combined_failure
+from codepilot.gateway.types import GatewayMode, GatewayRequest, GatewayResponse
 from tests.ai_gateway_assertions import assert_failure_response
 from tests.ai_gateway_testkit import FakeAPIProvider, STRUCTURED_SCHEMA, gateway_state
 
@@ -128,7 +128,7 @@ def test_run_with_fallback_delegates_to_entrypoint(monkeypatch):
         captured["build_failure"] = build_failure
         return GatewayResponse(ok=True, source="api:test", payload={"ok": True})
 
-    monkeypatch.setattr("codepilot.ai_gateway_call_skeleton.run_gateway_entry", _fake_entry)
+    monkeypatch.setattr("codepilot.gateway.call_skeleton.run_gateway_entry", _fake_entry)
 
     request = GatewayRequest(prompt="hello", schema={"type": "object"})
     mode = make_structured_mode(
@@ -167,7 +167,7 @@ def test_call_structured_reports_combined_error_when_both_fail(gateway_state, mo
     def _cli_raises(*_a, **_kw):
         raise RuntimeError("cli down")
 
-    monkeypatch.setattr("codepilot.ai._run_codex_schema_prompt", _cli_raises)
+    monkeypatch.setattr("codepilot.ai_support.service._run_codex_schema_prompt", _cli_raises)
 
     resp = ai_gateway.call_structured(
         GatewayRequest(
@@ -204,3 +204,4 @@ def test_call_text_reports_combined_error_when_both_fail(monkeypatch):
         source="cli:none",
         error_exact="api down; cli down",
     )
+

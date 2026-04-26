@@ -6,10 +6,10 @@ import sys
 
 import pytest
 
-from codepilot import ai as ai_mod
-from codepilot import ai_backlog_dedup as dedup_mod
-from codepilot import ai_clarify
-from codepilot import ai_planner_context as ctx_mod
+from codepilot.ai_support import service as ai_mod
+from codepilot.ai_support import backlog_dedup as dedup_mod
+from codepilot.ai_support import clarify as ai_clarify
+from codepilot.ai_support import planner_context as ctx_mod
 
 
 def _q(text: str, *, qid: str = "q1") -> dict:
@@ -365,8 +365,8 @@ def test_assess_requirement_falls_back_to_ready_on_ai_error(monkeypatch):
 
 
 def test_assess_requirement_passes_config_ref_to_gateway(monkeypatch):
-    from codepilot import ai_gateway
-    from codepilot.ai_gateway import GatewayResponse
+    from codepilot.gateway import service as ai_gateway
+    from codepilot.gateway.service import GatewayResponse
 
     captured: dict[str, str] = {}
 
@@ -909,3 +909,4 @@ def test_generate_task_breakdown_can_return_raw_payload(tmp_path, monkeypatch):
     )
 
     assert result is raw_payload
+

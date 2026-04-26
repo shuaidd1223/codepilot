@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from codepilot import db
-from codepilot import webui as webui_mod
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod
 
 
 def init_test_db(tmp_path, monkeypatch) -> None:
@@ -24,3 +24,4 @@ def register_project(tmp_path, monkeypatch):
     db.register_project("demo", str(project_path))
     monkeypatch.chdir(project_path)
     return project_path
+

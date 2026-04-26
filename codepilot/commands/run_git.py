@@ -14,7 +14,7 @@ from typing import Optional, Sequence
 import click
 
 from codepilot.commands.run_shell import _run_command
-from codepilot.paths import project_storage_root
+from codepilot.core.paths import project_storage_root
 
 
 def _git_current_branch(project_path: Path) -> str:
@@ -646,4 +646,5 @@ def _git_auto_commit(project_path: Path, task_id: int, title: str) -> str:
 
     sha_code, sha_output = _run_command(["git", "rev-parse", "--short", "HEAD"], cwd=project_path, timeout=30)
     return sha_output.strip() if sha_code == 0 else ""
+
 

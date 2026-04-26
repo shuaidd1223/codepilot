@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from textwrap import dedent
 
-from codepilot.webui_payloads import _normalize_legacy_live_output_markdown
+from codepilot.webapp.payloads import _normalize_legacy_live_output_markdown
 
 
 def test_normalize_legacy_live_output_splits_runtime_role_and_exec_sections():
@@ -121,3 +121,4 @@ def test_normalize_legacy_live_output_handles_missing_closing_fence():
         ~~~
         """
     ).lstrip()
+

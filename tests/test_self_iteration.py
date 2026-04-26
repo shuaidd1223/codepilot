@@ -12,9 +12,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from codepilot import ai as ai_mod
-from codepilot import db
-from codepilot import webui as webui_mod
+from codepilot.ai_support import service as ai_mod
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod
 from codepilot.commands import run as run_cmd
 
 
@@ -224,3 +224,4 @@ def test_self_iteration_review_fail_not_merged(tmp_path, monkeypatch):
     assert "bad change" not in readme
 
     assert stats["done"] == 0
+

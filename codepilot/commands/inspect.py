@@ -10,8 +10,8 @@ from typing import Optional
 
 import click
 
-from codepilot import db
-from codepilot.ai import (
+from codepilot.storage import database as db
+from codepilot.ai_support.service import (
     API_PROVIDERS,
     _run_api_provider,
     _run_claude_schema_prompt,
@@ -21,10 +21,10 @@ from codepilot.ai import (
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands import inspect_lifecycle, inspect_service, inspect_signals
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
-from codepilot.config import load_project_config, resolve_planner
-from codepilot.output import echo
-from codepilot.paths import global_storage_root
-from codepilot.runtime import is_process_alive, stop_process_tree
+from codepilot.core.config import load_project_config, resolve_planner
+from codepilot.core.output import echo
+from codepilot.core.paths import global_storage_root
+from codepilot.core.runtime import is_process_alive, stop_process_tree
 
 INSPECT_STATE_DIR = global_storage_root() / "inspect"
 SKIPPED_SIGNAL = "（跳过）"
@@ -867,4 +867,5 @@ def inspect(
         emit_inspection_result_fn=_emit_inspection_result,
         echo_fn=echo,
     )
+
 

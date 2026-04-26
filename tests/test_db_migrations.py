@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from codepilot import db
+from codepilot.storage import database as db
 
 
 @pytest.fixture
@@ -171,3 +171,4 @@ def test_read_conn_does_not_implicitly_commit_writes(fresh_db):
 def test_service_state_readers_are_safe_before_init_db(fresh_db):
     assert db.get_service_state("daemon", "demo") is None
     assert db.list_service_states("daemon") == []
+

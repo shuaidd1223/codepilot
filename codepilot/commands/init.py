@@ -6,9 +6,10 @@ from pathlib import Path
 
 import click
 
-from codepilot import config, db as db_module
-from codepilot.db import register_project
-from codepilot.output import echo
+from codepilot.core import config
+from codepilot.storage import database as db_module
+from codepilot.storage.database import register_project
+from codepilot.core.output import echo
 
 
 def initialize_project(path: Path, project_name: str | None = None, *, no_config: bool = False) -> dict:
@@ -120,3 +121,4 @@ def _update_config(config_file: Path, project_name: str) -> None:
     content = config.DEFAULT_TEMPLATE.format(name=project_name)
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text(content, encoding="utf-8")
+

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from codepilot.ai_gateway_types import GatewayCallOptions, GatewayRequest, GatewayResponse
+from codepilot.gateway.types import GatewayCallOptions, GatewayRequest, GatewayResponse
 
 
 def make_gateway_options(
@@ -58,3 +58,4 @@ def assert_failure_response(
         assert response.error == error_exact
     for fragment in error_contains:
         assert fragment in response.error
+

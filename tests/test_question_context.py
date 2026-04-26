@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from codepilot.ai_providers import _collect_project_context
+from codepilot.ai_support.providers import _collect_project_context
 
 
 def test_collect_project_context_auto_discovers_nested_project_root(tmp_path):
@@ -44,3 +44,4 @@ def test_collect_project_context_uses_rich_summary_for_project_root(tmp_path):
 
     assert "structured overview" in context
     assert "Directory Layout" in context
+

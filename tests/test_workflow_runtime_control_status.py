@@ -11,20 +11,20 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from codepilot.agent_support import ai_guide_markdown, command_manifest
-from codepilot import binary as binary_mod
-from codepilot import binary_paths as binary_paths_mod
-from codepilot import db
-from codepilot import ai as ai_mod
-from codepilot import progress_bus
-from codepilot.ai_gateway import GatewayResponse
-from codepilot import runtime as runtime_mod
-from codepilot import webui as webui_mod
+from codepilot.ai_support.agent_support import ai_guide_markdown, command_manifest
+from codepilot.binary_support import manager as binary_mod
+from codepilot.binary_support import paths as binary_paths_mod
+from codepilot.storage import database as db
+from codepilot.ai_support import service as ai_mod
+from codepilot.core import progress_bus
+from codepilot.gateway.service import GatewayResponse
+from codepilot.core import runtime as runtime_mod
+from codepilot.webapp import server as webui_mod
 from codepilot.cli import main
 from codepilot.commands import add as add_cmd
 from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
-from codepilot.config import load_project_config
+from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
 
 
@@ -708,3 +708,4 @@ def test_extract_error_hint_humanizes_json_payload():
     assert "当前账号额度已用完" in hint
     assert "重置时间 Apr 14, 1pm" in hint
     assert "{" not in hint
+

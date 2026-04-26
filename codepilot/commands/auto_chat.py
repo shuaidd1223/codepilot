@@ -23,14 +23,14 @@ from typing import Callable, Optional
 
 import click
 
-from codepilot.interaction_controller import (
+from codepilot.ai_support.interaction_controller import (
     interpret_clarification_outcome,
     parse_intent_prefix as _parse_intent_prefix_core,
     resolve_turn_intent,
     should_continue_pending_clarification,
 )
 from codepilot import __version__
-from codepilot.runtime import no_window_kwargs
+from codepilot.core.runtime import no_window_kwargs
 
 
 def _shell():
@@ -113,7 +113,7 @@ class _Spinner:
 
 def _start_chat_ui(port: int = 8766):
     """Ensure Web UI is running for chat mode without blocking REPL startup."""
-    from codepilot.output import echo, safe
+    from codepilot.core.output import echo, safe
 
     if _is_chat_ui_healthy(port):
         echo(f"[dim]Web UI 已在运行: http://127.0.0.1:{port}/[/dim]")
@@ -815,7 +815,7 @@ def run_chat_session(
     ui_port: int = 8766,
 ) -> None:
     """Run a simple REPL that accepts plain-text requirements."""
-    from codepilot.output import echo, safe
+    from codepilot.core.output import echo, safe
 
     shell = _shell()
     project_info = shell.resolve_project_for_prompt(
@@ -877,3 +877,4 @@ def run_chat_session(
     )
     while frame.state != _ChatLoopState.EXIT:
         _step_chat_loop(dispatch_ctx)
+

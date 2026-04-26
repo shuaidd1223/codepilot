@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from codepilot.ai_main_resolution import (
+from codepilot.ai_support.main_resolution import (
     ResolvedAPITaskContentCall,
     ResolvedCLITaskContentCall,
     resolve_task_content_call,
@@ -68,4 +68,5 @@ def test_resolve_task_content_call_raises_when_provider_unavailable():
             api_provider_keys={"openai-gpt4"},
             cli_provider_keys={"codex"},
         )
+
 

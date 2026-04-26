@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from codepilot import ai_planner_context as planner_context
-from codepilot import ai_providers
+from codepilot.ai_support import planner_context as planner_context
+from codepilot.ai_support import providers as ai_providers
 from codepilot.commands import run_shell
 
 

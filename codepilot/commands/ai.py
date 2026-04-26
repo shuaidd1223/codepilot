@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from codepilot.agent_support import (
+from codepilot.ai_support.agent_support import (
     ai_guide_markdown,
     ai_prompt_text,
     manifest_json,
@@ -85,3 +85,4 @@ def ai_template(fmt: str, indent: int, command_name: str | None):
         click.echo(task_template_guide_markdown(command_name=command))
     else:
         click.echo(_task_template_markdown())
+

@@ -11,8 +11,8 @@ from pathlib import Path
 
 import click
 
-from codepilot import db
-from codepilot.ai import (
+from codepilot.storage import database as db
+from codepilot.ai_support.service import (
     check_provider_availability,
     generate_task_content,
     list_available_providers,
@@ -20,9 +20,9 @@ from codepilot.ai import (
     resolve_agent_with_fallback,
 )
 from codepilot.commands.status import _resolve_project
-from codepilot.config import resolve_project_config_reference
-from codepilot.output import echo
-from codepilot.task_template import missing_task_template_sections
+from codepilot.core.config import resolve_project_config_reference
+from codepilot.core.output import echo
+from codepilot.core.task_template import missing_task_template_sections
 
 
 MARKDOWN_BATCH_SUFFIXES = {".md", ".markdown"}
@@ -554,3 +554,4 @@ def _batch_add(
 
     echo()
     echo(f"[green][OK] 成功导入 {len(results)} 个任务[/green]")
+

@@ -6,13 +6,13 @@ import click
 from rich import box
 from rich.table import Table
 
-from codepilot.ai import (
+from codepilot.ai_support.service import (
     CLI_PROVIDERS,
     API_PROVIDERS,
     list_available_providers,
     check_provider_availability,
 )
-from codepilot.output import terminal_console
+from codepilot.core.output import terminal_console
 
 
 def _short_status(is_available: bool, message: str | None, *, ok_label: str) -> str:
@@ -136,3 +136,4 @@ def providers(ctx: click.Context, available: bool, json_mode: bool):
                   "[cyan]HUNYUAN_API_KEY[/cyan] · [cyan]ZHIPU_API_KEY[/cyan] · "
                   "[cyan]ERNIE_API_KEY[/cyan] · [cyan]DASHSCOPE_API_KEY[/cyan] · [cyan]DEEPSEEK_API_KEY[/cyan]")
     console.print('[dim]示例:[/dim] [cyan]codepilot add -p myproj -t "任务" -a openai-gpt4o[/cyan]')
+

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from codepilot.commands.reviewer_output import ReviewerVerdict, parse_reviewer_output
-from codepilot.task_template import missing_task_template_sections
+from codepilot.core.task_template import missing_task_template_sections
 
 
 _DETERMINISTIC_FAILURE_TRIAGE_SCHEMA = {
@@ -966,6 +966,26 @@ def apply_review_failure_triage(
         rationale = decision["rationale"]
 
     if action == "retry_with_hint":
+        if not retry_on_failure:
+            if decision.get("overridden_from") == "discard":
+                triage_line = (
+                    "AI triage: reviewer 有明确修复点，但当前运行已禁用自动重试，"
+                    f"任务标记为失败（{rationale or '按 reviewer 反馈终止'}）"
+                )
+            else:
+                triage_line = (
+                    "AI triage: 建议追加提示后重试，但当前运行已禁用自动重试，"
+                    f"任务标记为失败（{rationale or 'review 反馈可继续修复'}）"
+                )
+            final_error = f"{error_message}\n{triage_line}".strip()
+            updated = mark_task_failed_fn(task, final_error)
+            return {
+                "updated": updated,
+                "error_message": final_error,
+                "decision": decision,
+                "should_stop": bool(stop_on_failure),
+            }
+
         updated, retry_should_stop = handle_failure_fn(task, error_message, stop_on_failure=stop_on_failure)
         if updated["status"] == "failed":
             triage_line = f"AI triage: 建议自动重试，但已达到重试上限（{rationale or 'review 反馈可继续修复'}）"
@@ -1071,3 +1091,4 @@ def apply_review_failure_triage(
         "decision": decision,
         "should_stop": terminal_should_stop,
     }
+

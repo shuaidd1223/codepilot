@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from codepilot import db
+from codepilot.storage import database as db
 from codepilot.cli import main
 from codepilot.commands import inspect as inspect_cmd
-from codepilot.config import (
+from codepilot.core.config import (
     GLOBAL_CONFIG_PATH_ENV,
     AgentsConfig,
     load_project_config,
@@ -292,3 +292,4 @@ max_new_tasks_per_round = 2
 def test_resolve_planner_for_inspect_scope(cfg_data, explicit, expected):
     cfg = AgentsConfig.from_dict(cfg_data or {}) if cfg_data is not None else None
     assert resolve_planner(cfg, "inspect", explicit=explicit) == expected
+

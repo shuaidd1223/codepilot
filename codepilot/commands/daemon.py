@@ -13,12 +13,12 @@ import click
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from codepilot import db
+from codepilot.storage import database as db
 from codepilot.commands.run import run_backlog
-from codepilot.output import echo, safe
-from codepilot.paths import _slugify_project_name, global_storage_root
-from codepilot.runtime import is_process_alive, reap_stalled_tasks
-from codepilot.text_decode import decode_subprocess_text
+from codepilot.core.output import echo, safe
+from codepilot.core.paths import _slugify_project_name, global_storage_root
+from codepilot.core.runtime import is_process_alive, reap_stalled_tasks
+from codepilot.core.text_decode import decode_subprocess_text
 
 
 def _resolve_project(ctx, param, value):
@@ -466,7 +466,7 @@ def _run_loop(
     auto_commit: bool,
     max_concurrent: int = 1,
 ) -> None:
-    from codepilot.cli_progress import maybe_cli_renderer
+    from codepilot.core.cli_progress import maybe_cli_renderer
 
     echo(
         f"[cyan]CodePilot Daemon[/cyan]  项目: {project or 'all'}  间隔: {interval}s  "
@@ -545,3 +545,4 @@ def _get_combined_stats(project: str | None) -> dict:
         for key in combined:
             combined[key] += stats.get(key, 0)
     return combined
+

@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from codepilot.cli import main
 from codepilot.commands import doctor as doctor_mod
-from codepilot.config import SECRETS_FILENAME, SECRETS_PATH_ENV
+from codepilot.core.config import SECRETS_FILENAME, SECRETS_PATH_ENV
 
 
 API_KEY_ENVS = (
@@ -336,3 +336,4 @@ def test_doctor_json_status_emoji_depends_on_error_severity(
     assert payload["ok"] is (expected_emoji != "✘")
     assert payload["command"] == "doctor"
     assert payload["data"]["status_emoji"] == expected_emoji
+

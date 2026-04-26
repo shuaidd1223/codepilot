@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from codepilot import ai_gateway
-from codepilot.ai_gateway import GatewayRequest, GatewayResponse
-from codepilot.ai_gateway_prompt_build import (
+from codepilot.gateway import service as ai_gateway
+from codepilot.gateway.service import GatewayRequest, GatewayResponse
+from codepilot.gateway.prompt_build import (
     build_request,
     call_structured_prompt,
     call_text_prompt,
@@ -140,3 +140,4 @@ def test_call_text_requires_no_schema():
 def test_call_structured_requires_schema():
     with pytest.raises(ValueError):
         ai_gateway.call_structured(GatewayRequest(prompt="hi"))
+

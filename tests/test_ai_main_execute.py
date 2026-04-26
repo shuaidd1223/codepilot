@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from codepilot.ai_main_execute import execute_task_content_call
-from codepilot.ai_main_resolution import (
+from codepilot.ai_support.main_execute import execute_task_content_call
+from codepilot.ai_support.main_resolution import (
     ResolvedAPITaskContentCall,
     ResolvedCLITaskContentCall,
 )
@@ -100,4 +100,5 @@ def test_execute_task_content_call_claude_node_requires_installed_cli(tmp_path):
             run_cli_provider=lambda *_args, **_kwargs: "should-not-run",
             get_node_modules_path=lambda: str(Path(tmp_path)),
         )
+
 

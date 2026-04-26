@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import click
 
-from codepilot.output import echo
-from codepilot.webhook import start_webhook_server
+from codepilot.core.output import echo
+from codepilot.webapp.webhook import start_webhook_server
 
 
 @click.command()
@@ -34,3 +34,4 @@ def webhook(host: str, port: int):
         echo("[dim]Webhook 服务已停止[/dim]")
     finally:
         server.server_close()
+

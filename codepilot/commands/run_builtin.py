@@ -16,15 +16,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from codepilot import db
-from codepilot.ai import (
+from codepilot.storage import database as db
+from codepilot.ai_support.service import (
     _get_node_modules_path,
     normalize_agent_name,
     resolve_dual_phase_agents,
 )
-from codepilot.config import load_project_config
-from codepilot.output import echo
-from codepilot.paths import project_storage_root
+from codepilot.core.config import load_project_config
+from codepilot.core.output import echo
+from codepilot.core.paths import project_storage_root
 from codepilot.prompts import load_prompt as _load_prompt
 from codepilot.commands.reviewer_output import (
     ReviewerVerdict,
@@ -266,7 +266,7 @@ def _collect_project_conventions_snippet(project_path: Path, *, max_chars: int =
     want the hard "don't do X" / "style must be Y" rules here.
     """
     try:
-        from codepilot.ai_planner_context import _read_project_conventions
+        from codepilot.ai_support.planner_context import _read_project_conventions
     except Exception:
         return ""
     try:
@@ -650,7 +650,7 @@ def _run_builtin_phase(
     dispatch checks below.
     """
     # stub 注入钩子：e2e 测试可通过 ai._phase_stub 替换真实 CLI 调用
-    from codepilot import ai as _ai_hook
+    from codepilot.ai_support import service as _ai_hook
     if _ai_hook._phase_stub is not None:
         return _ai_hook._phase_stub(task=task, project_path=project_path, phase=phase, prompt=prompt)
 
@@ -859,7 +859,7 @@ def _run_phase_with_tooling_fallback(
     timeout: int,
 ) -> tuple[str, int, str, datetime]:
     """Run one phase and, for dual mode, switch agent on CLI/model failures."""
-    from codepilot import progress_bus
+    from codepilot.core import progress_bus
 
     runner_mod = _runner_module()
     started = datetime.now()
@@ -958,7 +958,7 @@ def _run_builder_round(
     previous_findings: str,
 ) -> _PhaseOutcome:
     """Run one builder invocation; persist a task_log row on completion."""
-    from codepilot import progress_bus
+    from codepilot.core import progress_bus
 
     output_path = _make_phase_output_path(ctx.output_dir, ctx.task["id"], round_num, "builder")
     label = "builder" if round_num == 1 else f"builder (round {round_num}/{ctx.max_rounds})"
@@ -1027,7 +1027,7 @@ def _run_reviewer_round(
     previous_findings: str = "",
 ) -> _PhaseOutcome:
     """Run one reviewer invocation; persist a task_log row on completion."""
-    from codepilot import progress_bus
+    from codepilot.core import progress_bus
 
     output_path = _make_phase_output_path(ctx.output_dir, ctx.task["id"], round_num, "review")
     label = "reviewer" if round_num == 1 else f"reviewer (round {round_num}/{ctx.max_rounds})"
@@ -1125,7 +1125,7 @@ def _finalize_executor_success(
 
 def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
     """Run builder/reviewer rounds until success or a terminal failure state."""
-    from codepilot import progress_bus
+    from codepilot.core import progress_bus
 
     previous_findings = ""
     builder = _PhaseOutcome(agent="", exit_code=0, output="", display_phase="")
@@ -1327,4 +1327,5 @@ def _run_builtin_executor(
     )
     loop_outcome = _runner_module()._run_builtin_round_loop(ctx)
     return _runner_module()._map_builtin_loop_outcome(ctx, loop_outcome, auto_commit=auto_commit)
+
 

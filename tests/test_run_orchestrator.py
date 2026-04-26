@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from codepilot import db
-from codepilot import webui as webui_mod
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod
 from codepilot.commands import run as run_cmd
 from codepilot.commands import run_orchestrator as run_orchestrator_mod
 
@@ -229,3 +229,4 @@ def test_run_backlog_recovers_failed_dirty_task_branch_before_selecting_work(tmp
 
     assert stats["done"] == 1
     assert current["status"] == "done"
+

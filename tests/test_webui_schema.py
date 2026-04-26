@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from codepilot import db
-from codepilot import webui_payloads
-from codepilot.webui_schema import (
+from codepilot.storage import database as db
+from codepilot.webapp import payloads as webui_payloads
+from codepilot.webapp.schema import (
     DashboardPayload,
     ProjectStats,
     ProjectSummary,
@@ -61,7 +61,7 @@ def test_task_detail_includes_list_item_keys(fresh_db):
 def test_dashboard_payload_shape(fresh_db, monkeypatch):
     # Stub out list_ui_jobs / list_ui_events — they depend on the webui
     # service module state which we don't need to exercise here.
-    import codepilot.webui as webui
+    import codepilot.webapp.server as webui
 
     monkeypatch.setattr(webui, "list_ui_jobs", lambda project: [], raising=False)
     monkeypatch.setattr(webui, "list_ui_events", lambda project: [], raising=False)
@@ -90,3 +90,4 @@ def test_to_json_schema_captures_required_fields():
         assert field in schema["properties"]
     # required mirrors declared keys for a fully-typed dict.
     assert set(schema["required"]) == payload_keys(TaskListItem)
+

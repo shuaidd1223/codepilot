@@ -17,14 +17,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from codepilot.runtime import (
+from codepilot.core.runtime import (
     HEARTBEAT_INTERVAL_SECONDS,
     get_stop_request,
     stop_process_tree,
     tail_text,
     update_task_runtime,
 )
-from codepilot.text_decode import decode_subprocess_text
+from codepilot.core.text_decode import decode_subprocess_text
 
 
 class TaskCancelled(RuntimeError):
@@ -371,7 +371,7 @@ def _build_live_popen_kwargs(
         else:
             # Prevent console pop-ups when the parent (e.g. the detached
             # webui service) has no console of its own.
-            from codepilot.runtime import no_window_kwargs
+            from codepilot.core.runtime import no_window_kwargs
 
             popen_kwargs.update(no_window_kwargs())
     return popen_kwargs, pty_master_fd, pty_slave_fd
@@ -407,7 +407,7 @@ class _LiveOutputProcessor:
         self.footer_written = False
 
     def _emit_log_stream(self, raw: str, start_offset: int) -> None:
-        from codepilot import progress_bus
+        from codepilot.core import progress_bus
 
         cursor = start_offset
         idx = 0
@@ -435,7 +435,7 @@ class _LiveOutputProcessor:
             cursor = end_offset
 
     def _emit_progress_line(self, stripped: str) -> None:
-        from codepilot import progress_bus
+        from codepilot.core import progress_bus
 
         if not _should_show_line(stripped):
             return
@@ -752,3 +752,4 @@ def _run_command_live(
             if process.poll() is None:
                 deps.stop_process_tree(process.pid)
             reader.join(timeout=2)
+

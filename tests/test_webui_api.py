@@ -8,12 +8,12 @@ import urllib.request
 
 import pytest
 
-from codepilot import db
+from codepilot.storage import database as db
 from codepilot.commands import daemon as daemon_cmd
-from codepilot import webui as webui_mod
-from codepilot import runtime as runtime_mod
-from codepilot.webui_payloads import daemon_health_payload
-from codepilot.webui import start_ui_server
+from codepilot.webapp import server as webui_mod
+from codepilot.core import runtime as runtime_mod
+from codepilot.webapp.payloads import daemon_health_payload
+from codepilot.webapp.server import start_ui_server
 
 
 @pytest.fixture()
@@ -263,7 +263,7 @@ def test_create_task_full_mode_rejects_missing_template_sections(ui_server):
 
 def test_create_task_ai_complete_mode_invokes_generation(ui_server, monkeypatch):
     """mode=ai_complete：只传 title，由后端调 AI 生成 content。"""
-    from codepilot import ai as ai_mod
+    from codepilot.ai_support import service as ai_mod
     monkeypatch.setattr(ai_mod, "generate_task_content", lambda *a, **kw: _COMPLIANT_TASK_CONTENT)
 
     status, body = _post(f"{ui_server}/api/tasks", {
@@ -282,7 +282,7 @@ def test_create_task_ai_complete_mode_invokes_generation(ui_server, monkeypatch)
 
 def test_create_task_ai_complete_mode_rejects_when_generation_returns_incomplete(ui_server, monkeypatch):
     """mode=ai_complete + AI 给出缺章节内容 → 必须拒绝，不写 backlog。"""
-    from codepilot import ai as ai_mod
+    from codepilot.ai_support import service as ai_mod
     monkeypatch.setattr(
         ai_mod,
         "generate_task_content",
@@ -304,7 +304,7 @@ def test_create_task_ai_complete_mode_rejects_when_generation_returns_incomplete
 
 def test_create_task_ai_complete_mode_rejects_when_generation_raises(ui_server, monkeypatch):
     """mode=ai_complete + AI 抛 RuntimeError → 必须拒绝并保留可读错误。"""
-    from codepilot import ai as ai_mod
+    from codepilot.ai_support import service as ai_mod
 
     def _raise(*args, **kwargs):
         raise RuntimeError("provider unavailable")
@@ -638,3 +638,4 @@ def test_root_serves_html(ui_server):
         html = resp.read().decode("utf-8")
     assert "CodePilot" in html
     assert "<html" in html
+

@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from click.testing import CliRunner
 
-from codepilot import db
-from codepilot import webui as webui_mod
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod
 from codepilot.cli import main
 from codepilot.commands import auto as auto_mod
 from tests.ai_gateway_testkit import build_gateway_capture
@@ -50,8 +50,8 @@ timeout = 17
     session = webui_mod.create_session_action("demo", title="chat")
 
     captured, fake_classify, fake_answer = build_gateway_capture(answer_text="来自会话问答路径")
-    monkeypatch.setattr("codepilot.ai.classify_intent", fake_classify)
-    monkeypatch.setattr("codepilot.ai.answer_question_via_api", fake_answer)
+    monkeypatch.setattr("codepilot.ai_support.service.classify_intent", fake_classify)
+    monkeypatch.setattr("codepilot.ai_support.service.answer_question_via_api", fake_answer)
 
     out = webui_mod.send_session_message_action(session["session"]["id"], "随便说点什么", category="auto")
 
@@ -95,3 +95,4 @@ def test_gateway_config_ref_is_shared_between_classifier_and_answer(tmp_path, mo
     assert classify_opts.config_ref == expected_config_ref
     assert answer_opts.config_ref == expected_config_ref
     assert classify_opts is answer_opts
+

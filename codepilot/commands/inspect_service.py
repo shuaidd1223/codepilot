@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from codepilot.paths import _slugify_project_name, global_storage_root
+from codepilot.core.paths import _slugify_project_name, global_storage_root
 
 INSPECT_STATE_DIR = global_storage_root() / "inspect"
 
@@ -130,3 +130,4 @@ def spawn_detached_inspect(
     else:
         popen_kwargs["start_new_session"] = True
     return subprocess.Popen(cmd, **popen_kwargs)
+

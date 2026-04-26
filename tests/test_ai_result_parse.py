@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from codepilot.ai_result_parse import (
+from codepilot.ai_support.result_parse import (
     extract_error_hint,
     parse_structured_json_output,
     unwrap_structured_payload,
@@ -29,3 +29,4 @@ def test_extract_error_hint_reads_message_from_error_payload():
     hint = extract_error_hint(raw)
     assert "limit exceeded" in hint
     assert "重置时间 Apr 30" in hint
+

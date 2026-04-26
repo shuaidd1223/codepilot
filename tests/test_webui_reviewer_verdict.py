@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from codepilot import db
-from codepilot import webui_payloads
+from codepilot.storage import database as db
+from codepilot.webapp import payloads as webui_payloads
 
 
 @pytest.fixture
@@ -172,3 +172,4 @@ def test_task_detail_review_is_attached_when_agent_name_contains_review(fresh_db
     payload = webui_payloads.task_detail_payload(tid)
     assert payload["latest_review"] is not None
     assert payload["latest_review"]["verdict"] == "pass"
+

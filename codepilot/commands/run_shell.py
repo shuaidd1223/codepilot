@@ -19,7 +19,7 @@ from codepilot.commands.run_live_runner import (
     _should_show_line,
     _summarize_output,
 )
-from codepilot.text_decode import decode_subprocess_text
+from codepilot.core.text_decode import decode_subprocess_text
 
 
 @dataclass
@@ -132,3 +132,4 @@ def _run_command(
     stderr_text = decode_subprocess_text(result.stderr)
     output = (stdout_text + "\n" + stderr_text).strip()
     return result.returncode, output
+

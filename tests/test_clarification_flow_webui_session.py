@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from codepilot import db
-from codepilot import webui as webui_mod
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod
 from tests.chat_flow_testkit import register_project
 
 
@@ -45,13 +45,13 @@ planner = "claude"
             return {"status": "ready", "refined_title": f"{title} refined", "qa_history": qa_history}
         return {"status": "needs_clarification", "questions": [_q("先做哪块?")], "qa_history": []}
 
-    monkeypatch.setattr("codepilot.webui_actions.clarify_requirement", fake_clarify)
+    monkeypatch.setattr("codepilot.webapp.actions.clarify_requirement", fake_clarify)
 
     def fake_submit(project, text, **kw):
         submit_planners.append(kw.get("planner") or "")
         return {"ok": True, "message": "queued", "job": {"task_ids": []}}
 
-    monkeypatch.setattr("codepilot.webui_actions.submit_requirement_action", fake_submit)
+    monkeypatch.setattr("codepilot.webapp.actions.submit_requirement_action", fake_submit)
 
     first = webui_mod.send_session_message_action(
         session["session"]["id"],
@@ -75,7 +75,7 @@ def test_webui_session_pending_clarification_error_uses_unified_error_exit(tmp_p
     session = webui_mod.create_session_action("demo", title="chat")
 
     monkeypatch.setattr(
-        "codepilot.webui_actions.clarify_requirement",
+        "codepilot.webapp.actions.clarify_requirement",
         lambda *a, **kw: {
             "status": "needs_clarification",
             "questions": [_q("先做哪块?")],
@@ -91,7 +91,7 @@ def test_webui_session_pending_clarification_error_uses_unified_error_exit(tmp_p
     assert first["intent"] == "clarify"
 
     monkeypatch.setattr(
-        "codepilot.webui_actions.continue_pending_clarification",
+        "codepilot.webapp.actions.continue_pending_clarification",
         lambda *a, **kw: {
             "status": "error",
             "error_kind": "runtime",
@@ -132,7 +132,7 @@ def test_webui_session_accepts_structured_choice_answers(tmp_path, monkeypatch):
             "qa_history": [],
         }
 
-    monkeypatch.setattr("codepilot.webui_actions.clarify_requirement", fake_clarify)
+    monkeypatch.setattr("codepilot.webapp.actions.clarify_requirement", fake_clarify)
 
     planned: list[str] = []
 
@@ -140,7 +140,7 @@ def test_webui_session_accepts_structured_choice_answers(tmp_path, monkeypatch):
         planned.append(text)
         return {"ok": True, "message": "queued", "job": {"task_ids": []}}
 
-    monkeypatch.setattr("codepilot.webui_actions.submit_requirement_action", fake_submit)
+    monkeypatch.setattr("codepilot.webapp.actions.submit_requirement_action", fake_submit)
 
     first = webui_mod.send_session_message_action(
         session["session"]["id"],
@@ -169,7 +169,7 @@ def test_webui_session_rejects_structured_answer_without_pending_question(tmp_pa
         captured["existing_messages"] = existing_messages
         return {"ok": True, "intent": "info", "message": "ok"}
 
-    monkeypatch.setattr("codepilot.webui_actions._dispatch_session_message", fake_dispatch)
+    monkeypatch.setattr("codepilot.webapp.actions._dispatch_session_message", fake_dispatch)
 
     out = webui_mod.send_session_message_action(
         session["session"]["id"],
@@ -209,7 +209,7 @@ def test_webui_session_clear_without_pending_is_server_side_noop(tmp_path, monke
 
     dispatched = []
     monkeypatch.setattr(
-        "codepilot.webui_actions._dispatch_session_message",
+        "codepilot.webapp.actions._dispatch_session_message",
         lambda *a, **kw: dispatched.append(True) or {"ok": True, "intent": "bad", "message": "bad"},
     )
 
@@ -281,7 +281,7 @@ def test_webui_session_reconstructs_legacy_pending_clarification_without_metadat
         captured["questions"] = pending.get("last_questions")
         return {"ok": True, "intent": "info", "message": "ok"}
 
-    monkeypatch.setattr("codepilot.webui_actions._dispatch_session_pending_clarification", fake_pending)
+    monkeypatch.setattr("codepilot.webapp.actions._dispatch_session_pending_clarification", fake_pending)
 
     out = webui_mod.send_session_message_action(
         session_id,
@@ -318,7 +318,7 @@ def test_webui_session_reconstructs_legacy_question_prefix_variants(tmp_path, mo
         captured["questions"] = pending.get("last_questions")
         return {"ok": True, "intent": "info", "message": "ok"}
 
-    monkeypatch.setattr("codepilot.webui_actions._dispatch_session_pending_clarification", fake_pending)
+    monkeypatch.setattr("codepilot.webapp.actions._dispatch_session_pending_clarification", fake_pending)
 
     out = webui_mod.send_session_message_action(session_id, "先做 Web UI", category="auto")
 
@@ -359,7 +359,7 @@ def test_webui_session_legacy_parser_ignores_indented_option_lines(tmp_path, mon
         captured["questions"] = pending.get("last_questions")
         return {"ok": True, "intent": "info", "message": "ok"}
 
-    monkeypatch.setattr("codepilot.webui_actions._dispatch_session_pending_clarification", fake_pending)
+    monkeypatch.setattr("codepilot.webapp.actions._dispatch_session_pending_clarification", fake_pending)
 
     out = webui_mod.send_session_message_action(session_id, "Web UI", category="auto")
 
@@ -378,7 +378,7 @@ def test_webui_session_can_cancel_pending_clarification(tmp_path, monkeypatch):
     session = webui_mod.create_session_action("demo", title="chat")
 
     monkeypatch.setattr(
-        "codepilot.webui_actions.clarify_requirement",
+        "codepilot.webapp.actions.clarify_requirement",
         lambda *a, **kw: {
             "status": "needs_clarification",
             "questions": [_q("先做哪块?")],
@@ -402,3 +402,4 @@ def test_webui_session_can_cancel_pending_clarification(tmp_path, monkeypatch):
     assert cancelled["intent"] == "info"
     assert "已取消当前这次需求规划" in cancelled["message"]
     assert detail["messages"][-1]["intent"] == "info"
+

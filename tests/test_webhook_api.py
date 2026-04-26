@@ -9,12 +9,12 @@ import urllib.request
 
 from click.testing import CliRunner
 
-from codepilot import db
-from codepilot import webui as webui_mod  # noqa: F401 - dashboard payload looks up this module dynamically.
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod  # noqa: F401 - dashboard payload looks up this module dynamically.
 from codepilot.commands import run as run_cmd
 from codepilot.commands import webhook as webhook_cmd
-from codepilot.webui_payloads import dashboard_payload, task_detail_payload
-from codepilot.webhook import start_webhook_server
+from codepilot.webapp.payloads import dashboard_payload, task_detail_payload
+from codepilot.webapp.webhook import start_webhook_server
 
 
 def _start_server(tmp_path, monkeypatch):
@@ -241,3 +241,4 @@ def test_webhook_command_starts_server(monkeypatch):
     assert calls == [("0.0.0.0", 9999)]
     assert "CodePilot Webhook Server" in result.output
     assert "Webhook 服务已停止" in result.output
+

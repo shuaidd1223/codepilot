@@ -15,8 +15,8 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
-from codepilot import db
-from codepilot import webui as webui_mod
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod
 from codepilot.cli import main
 from codepilot.commands import auto as auto_mod
 from codepilot.commands import run as run_cmd
@@ -243,3 +243,4 @@ def test_cli_plain_text_plan_and_execute(tmp_path, monkeypatch):
     tasks = db.list_tasks(project="demo")
     done_tasks = [t for t in tasks if t["status"] == "done"]
     assert len(done_tasks) >= 1
+

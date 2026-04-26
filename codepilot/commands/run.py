@@ -17,25 +17,25 @@ from typing import Optional
 import click
 from rich.console import Console
 
-from codepilot import db
-from codepilot.ai import (
+from codepilot.storage import database as db
+from codepilot.ai_support.service import (
     _get_node_modules_path,
     check_provider_availability,
     normalize_agent_name,
     resolve_dual_phase_agents,
     resolve_cli_provider,
 )
-from codepilot.ai_gateway import GatewayRequest, call_structured
+from codepilot.gateway.service import GatewayRequest, call_structured
 from codepilot.commands.status import _resolve_project, render_project_dashboard
-from codepilot.config import (
+from codepilot.core.config import (
     load_project_config,
     resolve_planner,
     resolve_project_config_reference,
 )
-from codepilot.output import echo, safe
-from codepilot.paths import project_storage_root
+from codepilot.core.output import echo, safe
+from codepilot.core.paths import project_storage_root
 from codepilot.prompts import load_prompt as _load_prompt
-from codepilot.runtime import (
+from codepilot.core.runtime import (
     HEARTBEAT_INTERVAL_SECONDS,
     clear_task_runtime,
     get_stop_request,
@@ -46,7 +46,7 @@ from codepilot.runtime import (
     tail_text,
     update_task_runtime,
 )
-from codepilot.webhook import notify_task_status
+from codepilot.webapp.webhook import notify_task_status
 
 # Re-export shell + command helpers
 from codepilot.commands.run_shell import (  # noqa: F401
@@ -628,7 +628,7 @@ def run(
         echo("[red]错误: 必须指定 --project[/red]")
         return
 
-    from codepilot.cli_progress import maybe_cli_renderer
+    from codepilot.core.cli_progress import maybe_cli_renderer
 
     try:
         with maybe_cli_renderer():
@@ -650,3 +650,4 @@ def run(
         f"\n[dim]Run 完成: processed={stats['processed']} done={stats['done']} "
         f"failed={stats['failed']} requeued={stats['requeued']} cancelled={stats['cancelled']}[/dim]"
     )
+

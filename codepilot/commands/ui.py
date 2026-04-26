@@ -5,8 +5,8 @@ from __future__ import annotations
 import click
 
 from codepilot.commands.webui_service import logs_cmd, restart_cmd, start_cmd, status_cmd, stop_cmd
-from codepilot.output import echo
-from codepilot.webui import start_ui_server
+from codepilot.core.output import echo
+from codepilot.webapp.server import start_ui_server
 
 
 def _serve_foreground(*, host: str, port: int, open_browser: bool) -> None:
@@ -45,3 +45,4 @@ ui.add_command(stop_cmd)
 ui.add_command(restart_cmd)
 ui.add_command(status_cmd)
 ui.add_command(logs_cmd)
+

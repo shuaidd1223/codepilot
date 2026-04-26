@@ -10,8 +10,8 @@ import tokenize
 from pathlib import Path
 from typing import Optional
 
-from codepilot import db
-from codepilot.text_decode import decode_subprocess_text
+from codepilot.storage import database as db
+from codepilot.core.text_decode import decode_subprocess_text
 
 
 def _run_git(args: list[str], cwd: Path, timeout: int = 20) -> str:
@@ -520,3 +520,4 @@ def collect_code_metrics(project_path: Path, limit: int = 20) -> str:
             lines.append(f"- {rel}: 分支复杂度约 {complexity} / {code_lines} 行")
 
     return "\n".join(lines)
+

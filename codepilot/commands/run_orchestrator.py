@@ -16,7 +16,7 @@ from pathlib import Path
 
 import click
 
-from codepilot import db
+from codepilot.storage import database as db
 
 
 def _runner_module():
@@ -746,3 +746,4 @@ def run_backlog(
             time.sleep(2)
 
     return stats
+

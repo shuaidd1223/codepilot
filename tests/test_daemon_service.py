@@ -5,7 +5,7 @@ import types
 
 from click.testing import CliRunner
 
-from codepilot import db
+from codepilot.storage import database as db
 from codepilot.commands import daemon as daemon_cmd
 
 
@@ -155,7 +155,7 @@ def test_run_loop_wraps_foreground_backlog_drain_in_cli_progress_renderer(tmp_pa
         yield
         entered.append(("exit", enabled))
 
-    monkeypatch.setattr("codepilot.cli_progress.maybe_cli_renderer", _fake_renderer)
+    monkeypatch.setattr("codepilot.core.cli_progress.maybe_cli_renderer", _fake_renderer)
     monkeypatch.setattr(daemon_cmd, "_start_heartbeat_thread", lambda project: types.SimpleNamespace(set=lambda: None))
     monkeypatch.setattr(daemon_cmd, "_tick_heartbeat", lambda project: None)
     monkeypatch.setattr(daemon_cmd, "_stop_requested", lambda project: False)
@@ -175,3 +175,4 @@ def test_run_loop_wraps_foreground_backlog_drain_in_cli_progress_renderer(tmp_pa
 
     assert drained
     assert entered == [("enter", True), ("exit", True)]
+

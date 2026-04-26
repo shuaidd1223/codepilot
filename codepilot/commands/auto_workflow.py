@@ -21,9 +21,9 @@ from typing import Optional
 
 import click
 
-from codepilot.ai_gateway_types import GatewayCallOptions
-from codepilot import db
-from codepilot.clarification_protocol import (
+from codepilot.gateway.types import GatewayCallOptions
+from codepilot.storage import database as db
+from codepilot.ai_support.clarification_protocol import (
     build_clarification_answer_summary,
     normalize_clarification_answers as _normalize_protocol_answers,
     normalize_clarification_history as _normalize_protocol_history,
@@ -32,7 +32,7 @@ from codepilot.clarification_protocol import (
     render_clarification_questions,
 )
 from codepilot.commands import auto_project_resolution as _project_resolution
-from codepilot.config import (
+from codepilot.core.config import (
     load_project_config,
     resolve_project_config_reference,
 )
@@ -41,13 +41,13 @@ TEMP_SESSION_NAME = _project_resolution.TEMP_SESSION_NAME
 
 
 def _normalize_agent_name(value: str) -> str:
-    from codepilot.ai import normalize_agent_name
+    from codepilot.ai_support.service import normalize_agent_name
 
     return normalize_agent_name(value)
 
 
 def _build_task_markdown_from_plan(item: dict) -> str:
-    from codepilot.ai import build_task_markdown_from_plan
+    from codepilot.ai_support.service import build_task_markdown_from_plan
 
     return build_task_markdown_from_plan(item)
 
@@ -106,7 +106,7 @@ def clarify_requirement(
     The ``qa_history`` field is always returned so callers can persist it
     between turns (e.g. chat REPL, Web UI session state).
     """
-    from codepilot.ai_clarify import assess_requirement
+    from codepilot.ai_support.clarify import assess_requirement
 
     qa_history = normalize_clarification_history(qa_history)
     runtime = _classifier_runtime(project_info)
@@ -811,7 +811,7 @@ def _plan_requirement_breakdown(
     project_info: dict,
     two_stage_enabled: bool,
 ):
-    from codepilot.output import echo
+    from codepilot.core.output import echo
 
     planning_text = "正在用 {planner} 侦察项目 → 拆分任务，请稍候..." if two_stage_enabled else "正在用 {planner} 规划任务，请稍候..."
     echo(f"[dim]  {planning_text.format(planner=planner)}[/dim]")
@@ -909,7 +909,7 @@ def _plan_requirement_breakdown(
 
 
 def _echo_dedup_skips(dedup_skipped: list[dict]) -> None:
-    from codepilot.output import echo
+    from codepilot.core.output import echo
 
     for dup in dedup_skipped:
         echo(
@@ -998,7 +998,7 @@ def _emit_non_json_plan_output(
     task_agent: str,
     quiet: bool,
 ) -> None:
-    from codepilot.output import echo
+    from codepilot.core.output import echo
 
     label = "复杂任务" if should_split else "简单任务"
     echo(f"[green][OK] 已识别为{label}[/green]  complexity={complexity}")
@@ -1110,7 +1110,7 @@ def _run_requirement_decision_phase(
     priority: str,
     execute: Optional[bool],
 ) -> _RequirementDecisionResult:
-    from codepilot.output import echo
+    from codepilot.core.output import echo
 
     echo(f"[cyan]收到需求：{runtime.title}[/cyan]")
     breakdown = _plan_requirement_breakdown(
@@ -1179,7 +1179,7 @@ def _execute_requirement_plain_phase(
     decision: _RequirementDecisionResult,
     quiet: bool,
 ) -> dict:
-    from codepilot.output import echo
+    from codepilot.core.output import echo
 
     payload = decision.payload
     _emit_non_json_plan_output(
@@ -1271,3 +1271,4 @@ def run_requirement_workflow(
         decision=decision,
         quiet=quiet,
     )
+

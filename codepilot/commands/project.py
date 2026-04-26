@@ -6,8 +6,8 @@ import json
 
 import click
 
-from codepilot import db
-from codepilot.output import echo
+from codepilot.storage import database as db
+from codepilot.core.output import echo
 
 
 @click.group("project")
@@ -54,3 +54,4 @@ def delete_project(ctx: click.Context, name: str, yes: bool, json_mode: bool) ->
 
 project_group.add_command(delete_project)
 project_group.add_command(delete_project, "rm")
+

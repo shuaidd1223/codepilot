@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from codepilot import db
-from codepilot import progress_bus
-from codepilot import webui as webui_mod
+from codepilot.storage import database as db
+from codepilot.core import progress_bus
+from codepilot.webapp import server as webui_mod
 
 
 # ─── progress_bus ─────────────────────────────────────────────────────────
@@ -366,7 +366,7 @@ def test_split_task_action_cancels_original_and_spawns_job(tmp_path, monkeypatch
         return {"ok": True, "message": "queued", "job": {"id": 99, "task_ids": []}}
 
     monkeypatch.setattr(
-        "codepilot.webui_actions.submit_requirement_action", fake_submit
+        "codepilot.webapp.actions.submit_requirement_action", fake_submit
     )
 
     result = webui_mod.split_task_action(task["id"])
@@ -384,7 +384,7 @@ def test_split_task_action_cancels_original_and_spawns_job(tmp_path, monkeypatch
 
 def test_desktop_notification_never_raises(monkeypatch):
     """Even if the OS tooling is missing, the helper must not propagate errors."""
-    from codepilot import webhook
+    from codepilot.webapp import webhook
 
     # Force 'linux' path + drop notify-send to simulate an absent tool.
     import platform as _platform
@@ -396,6 +396,7 @@ def test_desktop_notification_never_raises(monkeypatch):
 
 
 def test_desktop_notification_honors_env_opt_out(monkeypatch):
-    from codepilot import webhook
+    from codepilot.webapp import webhook
     monkeypatch.setenv("CODEPILOT_DESKTOP_NOTIFY", "0")
     assert webhook._send_desktop_notification(title="t", body="b") is False
+

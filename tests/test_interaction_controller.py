@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from codepilot.interaction_controller import (
+from codepilot.ai_support.interaction_controller import (
     interpret_clarification_outcome,
     parse_intent_prefix,
     resolve_turn_intent,
@@ -86,3 +86,4 @@ def test_interpret_clarification_outcome_normalizes_transitions():
     )
     assert ready.status == "ready"
     assert ready.refined_title == "优化 webui 启动速度"
+

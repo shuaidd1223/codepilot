@@ -186,7 +186,7 @@ def test_split_phase_helpers_preserve_runtime_phase_log_phase_and_review_bounds(
     tmp_path,
 ):
     """Builder/reviewer helpers keep the pre-split visible phase semantics."""
-    from codepilot import progress_bus
+    from codepilot.core import progress_bus
 
     calls: list[dict] = []
     logs: list[dict] = []
@@ -313,7 +313,7 @@ def test_reviewer_round_continues_when_changed_file_detection_fails(
 
 def test_review_loop_retries_until_pass(fake_project, monkeypatch, tmp_path):
     """First reviewer says FAIL, builder retries, second reviewer PASS → done."""
-    from codepilot import ai as ai_mod
+    from codepilot.ai_support import service as ai_mod
 
     recorder = _PhaseRecorder([
         ("builder", "first attempt output", 0),
@@ -341,7 +341,7 @@ def test_review_loop_retries_until_pass(fake_project, monkeypatch, tmp_path):
 
 def test_review_loop_exhausts_rounds_and_fails(fake_project, monkeypatch, tmp_path):
     """Reviewer keeps returning FAIL → result exit_code=2, summary says exhausted."""
-    from codepilot import ai as ai_mod
+    from codepilot.ai_support import service as ai_mod
 
     recorder = _PhaseRecorder([
         ("builder", "b1", 0),
@@ -367,7 +367,7 @@ def test_review_loop_exhausts_rounds_and_fails(fake_project, monkeypatch, tmp_pa
 
 def test_builder_crash_is_not_deterministic(fake_project, monkeypatch, tmp_path):
     """builder 非零退出是瞬时失败，仍允许任务级重试。"""
-    from codepilot import ai as ai_mod
+    from codepilot.ai_support import service as ai_mod
 
     recorder = _PhaseRecorder([("builder", "boom", 1)])
     monkeypatch.setattr(ai_mod, "_phase_stub", recorder)
@@ -447,7 +447,7 @@ def test_dual_builder_tooling_failure_falls_back_to_reviewer_agent(
 
 def test_review_loop_disabled_when_max_rounds_one(fake_project, monkeypatch, tmp_path):
     """max_review_rounds=1 reverts to legacy single-pass behavior."""
-    from codepilot import ai as ai_mod
+    from codepilot.ai_support import service as ai_mod
 
     recorder = _PhaseRecorder([
         ("builder", "b1", 0),
@@ -470,7 +470,7 @@ def test_review_loop_disabled_when_max_rounds_one(fake_project, monkeypatch, tmp
 
 def test_review_loop_stops_on_first_pass(fake_project, monkeypatch, tmp_path):
     """Reviewer PASS on round 1 → exactly 2 phases, auto-commit triggered."""
-    from codepilot import ai as ai_mod
+    from codepilot.ai_support import service as ai_mod
 
     recorder = _PhaseRecorder([
         ("builder", "b1", 0),
@@ -601,6 +601,7 @@ def test_map_builtin_loop_outcome_uses_loop_provided_terminal_fields(fake_projec
 
 def test_config_threads_max_review_rounds():
     """AutomationConfig should expose max_review_rounds with a sane default."""
-    from codepilot.config import AutomationConfig
+    from codepilot.core.config import AutomationConfig
     cfg = AutomationConfig()
     assert cfg.max_review_rounds == 2
+
