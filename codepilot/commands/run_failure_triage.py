@@ -194,14 +194,16 @@ def _build_review_failure_triage_prompt(
     return (
         "你在做 review failure 的 AI triage。\n"
         "当前任务已经跑完 builder/reviewer 闭环，但 reviewer 最终仍未通过。"
-        "代码现场已经清理完成，所以你只能基于任务说明、review 输出、builder 摘要、现有开放任务候选来决定下一步。\n\n"
+        "你只能基于任务说明、review 输出、builder 摘要、现有开放任务候选来决定下一步；"
+        "系统会按你的动作决定保留现场重试，还是终态清理后继续队列。\n\n"
         "可选动作只有四种：\n"
-        "1. discard：这次失败不值得继续跟进。\n"
-        "2. retry_with_hint：当前任务仍然成立，但需要把 reviewer 反馈浓缩成明确 hint 后再重跑同一个任务。\n"
-        "3. replan：当前任务粒度/路径/目标错了，应该生成一个新的 backlog 任务重新规划。\n"
-        "4. merge_partial：当前失败里有一部分价值已经被别的 backlog/in_progress 任务覆盖，应把失败上下文归并到那个任务。\n\n"
+        "1. retry_with_hint：当前任务仍然成立，且 reviewer 给了可执行修复点；把反馈浓缩成明确 hint 后重跑同一个任务。\n"
+        "2. replan：当前任务粒度/路径/目标错了，应该生成一个新的 backlog 任务重新规划。\n"
+        "3. merge_partial：当前失败里有一部分价值已经被别的 backlog/in_progress 任务覆盖，应把失败上下文归并到那个任务。\n"
+        "4. discard：只有在当前失败明确不需要继续跟进、需求已经无效、或没有任何可执行修复价值时才允许丢弃。\n\n"
         "严格规则：\n"
         "- 只能返回 discard / retry_with_hint / replan / merge_partial；兼容旧字段时 merge 视为 merge_partial。\n"
+        "- 只要 reviewer 输出里有具体 blocker、失败 AC、缺文件/缺导入/测试失败等可执行修复点，且任务目标仍有效，禁止 discard；优先 retry_with_hint。\n"
         "- discard / retry_with_hint / replan 时 matched_task_id 必须为 null。\n"
         "- merge_partial 时 matched_task_id 必须是候选列表中的任务 id。\n"
         "- retry_with_hint 时 retry_hint 必须是可直接追加到任务里的中文修复提示；其他动作的 retry_hint 置空。\n"
@@ -352,6 +354,66 @@ def _format_retry_hint_block(
             for idx, item in enumerate(advisory[:item_limit], start=1):
                 lines.append(f"- A{idx}. {_trim_triage_text(item, limit=item_char_limit)}")
     return "\n".join(lines).rstrip()
+
+
+def _reviewer_actionable_items(
+    reviewer_verdict: Optional[ReviewerVerdict],
+    *,
+    item_limit: int = 6,
+    item_char_limit: int = 220,
+) -> list[str]:
+    if reviewer_verdict is None or reviewer_verdict.source == "empty":
+        return []
+
+    items: list[str] = []
+    for item in reviewer_verdict.blockers or []:
+        text = str(item).strip()
+        if text:
+            items.append(_trim_triage_text(text, limit=item_char_limit))
+
+    for idx, item in enumerate(reviewer_verdict.ac_checks or [], start=1):
+        if str((item or {}).get("status") or "").strip().lower() != "fail":
+            continue
+        ac_id = str((item or {}).get("id") or f"AC{idx}")
+        reason = _trim_triage_text(str((item or {}).get("reason") or ""), limit=item_char_limit)
+        items.append(f"{ac_id}: {reason or '验收项未通过'}")
+
+    return items[:item_limit]
+
+
+def _review_output_has_actionable_failure(review_output: str, error_message: str) -> bool:
+    text = f"{review_output or ''}\n{error_message or ''}".lower()
+    return any(
+        marker in text
+        for marker in (
+            "verdict: fail",
+            '"verdict":"fail"',
+            '"status":"fail"',
+            "moduleNotFoundError".lower(),
+            "importerror",
+            "assertionerror",
+            "failed",
+            "缺少",
+            "未通过",
+            "不存在",
+        )
+    )
+
+
+def _build_forced_retry_hint(
+    *,
+    reviewer_verdict: Optional[ReviewerVerdict],
+    review_output: str,
+    error_message: str,
+    rationale: str,
+) -> str:
+    items = _reviewer_actionable_items(reviewer_verdict)
+    if items:
+        return "reviewer 已给出明确阻塞点，不能丢弃；请按以下事项继续修复：" + "；".join(items)
+    compact_review = _trim_triage_text(review_output or error_message, limit=420)
+    if compact_review:
+        return f"reviewer 仍有可执行失败反馈，不能丢弃；请围绕这段反馈继续修复：{compact_review}"
+    return rationale or "reviewer 未通过，继续修复当前任务而不是丢弃。"
 
 
 def _resolve_triage_project_context(
@@ -863,7 +925,7 @@ def apply_review_failure_triage(
             )
         else:
             updated = mark_task_failed_fn(task, error_message)
-            should_stop = True
+            should_stop = bool(stop_on_failure)
         return {
             "updated": updated,
             "error_message": error_message,
@@ -881,12 +943,37 @@ def apply_review_failure_triage(
 
     action = decision["action"]
     rationale = decision.get("rationale") or ""
+    if (
+        action == "discard"
+        and _reviewer_actionable_items(reviewer_verdict)
+        and _review_output_has_actionable_failure(review_output, error_message)
+    ):
+        retry_hint = _build_forced_retry_hint(
+            reviewer_verdict=reviewer_verdict,
+            review_output=review_output,
+            error_message=error_message,
+            rationale=rationale,
+        )
+        decision = {
+            **decision,
+            "action": "retry_with_hint",
+            "retry_hint": retry_hint,
+            "rationale": rationale or "reviewer 已给出可执行修复点，不能丢弃",
+            "overridden_from": "discard",
+            "override_reason": "reviewer_actionable_failure",
+        }
+        action = "retry_with_hint"
+        rationale = decision["rationale"]
+
     if action == "retry_with_hint":
         updated, retry_should_stop = handle_failure_fn(task, error_message, stop_on_failure=stop_on_failure)
         if updated["status"] == "failed":
             triage_line = f"AI triage: 建议自动重试，但已达到重试上限（{rationale or 'review 反馈可继续修复'}）"
         else:
-            triage_line = f"AI triage: 已追加重试提示并回退 backlog（{rationale or '按 reviewer 反馈重试'}）"
+            if decision.get("overridden_from") == "discard":
+                triage_line = f"AI triage: reviewer 有明确修复点，已覆盖 discard 并回退 backlog（{rationale or '按 reviewer 反馈重试'}）"
+            else:
+                triage_line = f"AI triage: 已追加重试提示并回退 backlog（{rationale or '按 reviewer 反馈重试'}）"
         final_error = f"{error_message}\n{triage_line}".strip()
         # Compose hint block from the schema-correct ``retry_hint`` field
         # (the previous code read decision["note"] which doesn't exist in

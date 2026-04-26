@@ -730,10 +730,10 @@ def reset_task_for_retry(task_id: int, *, reset_retry_count: bool = True) -> dic
     return update_task(task_id, **updates)
 
 
-def next_backlog_task(project: str) -> list[dict]:
+def next_backlog_task(project: str, *, exclude_task_ids: Optional[set[int]] = None) -> list[dict]:
     """Return the next runnable backlog task for a project."""
     with get_read_conn() as conn:
-        return _query_next_backlog_task(conn, project)
+        return _query_next_backlog_task(conn, project, exclude_task_ids=exclude_task_ids)
 
 
 def compute_agent_eta_seconds(

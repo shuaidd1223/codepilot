@@ -8,6 +8,7 @@ result finalization. Concrete execution details remain in ``run.py`` /
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -43,6 +44,7 @@ class _TaskWorkspacePlan:
     task_branch: str
     execution_path: Path
     preflight_error: str = ""
+    resume_existing_task_branch: bool = False
 
 
 def _resolve_run_context(project_record: dict, *, shell: str, executor: str) -> _RunContext:
@@ -94,6 +96,17 @@ def _prepare_task_workspace(
 ) -> _TaskWorkspacePlan:
     runner = _runner_module()
 
+    task_branch = runner._git_current_branch(context.project_path)
+    execution_path = context.project_path
+    resume_existing_task_branch = False
+    if context.per_task_branch_enabled and context.task_workspace == "branch" and not dry_run:
+        expected_branch = runner._task_branch_name(task["id"], task["title"])
+        recorded_branch = str(task.get("branch_name") or "").strip()
+        current_branch = task_branch
+        resume_existing_task_branch = bool(
+            current_branch and current_branch in {expected_branch, recorded_branch}
+        )
+
     preflight_error = ""
     if context.executor == "builtin":
         effective_agent_mode = (
@@ -102,9 +115,8 @@ def _prepare_task_workspace(
             else "dual"
         )
         preflight_error = runner._builtin_preflight_error(context.project_path, auto_commit, effective_agent_mode)
-
-    task_branch = runner._git_current_branch(context.project_path)
-    execution_path = context.project_path
+        if resume_existing_task_branch and "未提交改动" in preflight_error:
+            preflight_error = ""
 
     if context.per_task_branch_enabled and not preflight_error and not dry_run:
         try:
@@ -128,14 +140,15 @@ def _prepare_task_workspace(
                     task_branch = prepared_branch
                 execution_path = prepared_worktree
             elif context.task_workspace == "branch":
-                prepared_branch = runner._git_prepare_task_branch(
-                    context.project_path,
-                    task_id=task["id"],
-                    title=task["title"],
-                    base_branch=context.base_branch,
-                )
-                if prepared_branch:
-                    task_branch = prepared_branch
+                if not resume_existing_task_branch:
+                    prepared_branch = runner._git_prepare_task_branch(
+                        context.project_path,
+                        task_id=task["id"],
+                        title=task["title"],
+                        base_branch=context.base_branch,
+                    )
+                    if prepared_branch:
+                        task_branch = prepared_branch
                 execution_path = context.project_path
             else:
                 if runner._git_is_repo(context.project_path) and runner._git_local_branch_exists(
@@ -151,6 +164,7 @@ def _prepare_task_workspace(
         task_branch=task_branch,
         execution_path=execution_path,
         preflight_error=preflight_error,
+        resume_existing_task_branch=resume_existing_task_branch,
     )
 
 
@@ -193,6 +207,7 @@ def _execute_task(
     *,
     auto_commit: bool,
     execution_path: Path,
+    allow_dirty_resume: bool = False,
 ):
     runner = _runner_module()
     if context.executor == "dispatch":
@@ -208,6 +223,7 @@ def _execute_task(
         auto_commit=auto_commit,
         max_review_rounds=context.max_review_rounds,
         execution_path=execution_path,
+        allow_dirty_resume=allow_dirty_resume,
     )
 
 
@@ -285,6 +301,64 @@ def _render_dashboard(project: str, *, quiet: bool, title: str) -> None:
     if quiet:
         return
     _runner_module().render_project_dashboard(project, include_done=False, max_rows=10, title=title)
+
+
+def _recover_retryable_dirty_task_branch(context: _RunContext, project: str) -> dict | None:
+    """Requeue a failed task when its dirty task branch is still checked out.
+
+    Older failure handling could leave the main worktree on
+    ``feat/task-<id>-...`` with uncommitted builder changes while the DB row was
+    already ``failed``. That blocks every later task in branch mode. If the task
+    still has retry budget, put that exact task back in backlog so the next
+    executor pass resumes the dirty branch instead of asking for manual cleanup.
+    """
+    runner = _runner_module()
+    if context.executor != "builtin" or context.task_workspace != "branch":
+        return None
+    if not context.per_task_branch_enabled:
+        return None
+    try:
+        if not runner._git_is_repo(context.project_path) or not runner._git_has_changes(context.project_path):
+            return None
+        current_branch = runner._git_current_branch(context.project_path)
+    except Exception:
+        return None
+
+    match = re.match(r"^feat/task-(\d+)-", current_branch or "")
+    if not match:
+        return None
+    task_id = int(match.group(1))
+    task = db.get_task(task_id)
+    if not task or task.get("project") != project:
+        return None
+    if task.get("status") not in {"failed", "cancelled"}:
+        return None
+    retry_count = int(task.get("retry_count") or 0)
+    max_retries = int(task.get("max_retries") or 3)
+    if retry_count >= max_retries:
+        return None
+
+    recorded_branch = str(task.get("branch_name") or "").strip()
+    expected_branch = runner._task_branch_name(task_id, task.get("title") or "")
+    if current_branch not in {recorded_branch, expected_branch}:
+        return None
+
+    recovered = db.update_task(
+        task_id,
+        status="backlog",
+        completed_at=None,
+        run_phase=None,
+        heartbeat_at=None,
+        active_pid=None,
+        current_log_path=None,
+        stop_requested=0,
+        stop_reason=None,
+    )
+    runner.echo(
+        f"[yellow]检测到任务 #{task_id} 的失败现场仍在当前分支，"
+        "已自动回退 backlog 继续修复。[/yellow]"
+    )
+    return recovered
 
 
 def _handle_workspace_preflight_error(
@@ -396,10 +470,10 @@ def _handle_executor_exception(
     """
     runner = _runner_module()
     if retry_on_failure:
-        updated, should_stop = runner._handle_failure(task, error_text, stop_on_failure=(context.executor == "builtin"))
+        updated, should_stop = runner._handle_failure(task, error_text, stop_on_failure=False)
     else:
         updated = runner._mark_task_failed(task, error_text)
-        should_stop = True
+        should_stop = False
     runner.echo(f"[red]执行出错: {runner.safe(error_text)}[/red]")
     if updated["status"] == "failed":
         stats["failed"] += 1
@@ -457,14 +531,8 @@ def _handle_execution_result(
         stats["done"] += 1
     else:
         error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
-        runner._finalize_failed_task_workspace(
-            task_id=task_id,
-            project_path=context.project_path,
-            worktree_path=workspace.execution_path,
-            task_branch=workspace.task_branch,
-            base_branch=context.base_branch,
-        )
-        if result.deterministic_failure:
+        runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
+        if result.deterministic_failure and not result.review_output:
             # Deterministic failures (compile errors, AC obviously broken,
             # duplicate-of-existing-bug 等) 的语义和 review-fail 不同：不允许
             # 重试也不需要 replan，只能 merge 到已有任务或 discard。继续走
@@ -472,7 +540,7 @@ def _handle_execution_result(
             # 错误覆盖。
             error_message = runner._apply_deterministic_failure_triage(task, error_message)
             updated = runner._mark_task_failed(task, error_message)
-            should_stop = context.executor == "builtin"
+            should_stop = False
         else:
             # 非 deterministic 走 review triage：可能 retry_with_hint /
             # replan / merge_partial / discard。AI 不可用（gateway 返回 None）
@@ -483,11 +551,20 @@ def _handle_execution_result(
                 review_output=result.review_output,
                 output=result.output,
                 retry_on_failure=retry_on_failure,
-                stop_on_failure=context.executor == "builtin",
+                stop_on_failure=False,
             )
             updated = triage_result["updated"]
             error_message = triage_result["error_message"]
             should_stop = bool(triage_result.get("should_stop", True))
+        if updated["status"] == "failed":
+            runner._finalize_failed_task_workspace(
+                task_id=task_id,
+                project_path=context.project_path,
+                worktree_path=workspace.execution_path,
+                task_branch=workspace.task_branch,
+                base_branch=context.base_branch,
+                abandon_dirty_branch=True,
+            )
         if updated["status"] == "failed":
             stats["failed"] += 1
             runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_message)
@@ -547,6 +624,7 @@ def run_backlog(
         return {"processed": 0, "done": 0, "failed": 0, "requeued": 0, "cancelled": 0, "executor": executor}
 
     context = _resolve_run_context(project_record, shell=shell, executor=executor)
+    _recover_retryable_dirty_task_branch(context, project)
     runner.echo(f"[dim]使用执行器: {context.executor}[/dim]")
     if context.executor == "dispatch":
         runner.echo(f"[dim]使用 Shell: {context.shell_info.version_hint}[/dim]")
@@ -561,14 +639,16 @@ def run_backlog(
         "executor": context.executor,
     }
 
+    attempted_task_ids: set[int] = set()
     for _ in range(limit):
-        tasks = db.next_backlog_task(project)
+        tasks = db.next_backlog_task(project, exclude_task_ids=attempted_task_ids)
         if not tasks:
             runner.echo("[yellow]没有待执行的任务[/yellow]")
             break
 
         task = tasks[0]
         task_id = task["id"]
+        attempted_task_ids.add(int(task_id))
         workspace = _prepare_task_workspace(context, task, auto_commit=auto_commit, dry_run=dry_run)
         if workspace.preflight_error:
             if _handle_workspace_preflight_error(
@@ -609,6 +689,7 @@ def run_backlog(
                 task_file,
                 auto_commit=auto_commit,
                 execution_path=workspace.execution_path,
+                allow_dirty_resume=workspace.resume_existing_task_branch,
             )
         except runner.TaskCancelled as exc:
             if _handle_executor_cancelled(

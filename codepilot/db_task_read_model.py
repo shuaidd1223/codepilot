@@ -51,12 +51,25 @@ def query_tasks(
     return [dict(row) for row in rows]
 
 
-def query_next_backlog_task(conn: sqlite3.Connection, project: str) -> list[dict]:
+def query_next_backlog_task(
+    conn: sqlite3.Connection,
+    project: str,
+    exclude_task_ids: Optional[set[int]] = None,
+) -> list[dict]:
+    excludes = {int(task_id) for task_id in (exclude_task_ids or set()) if int(task_id) > 0}
+    exclude_sql = ""
+    params: list[object] = [project]
+    if excludes:
+        placeholders = ", ".join("?" for _ in excludes)
+        exclude_sql = f" AND t.id NOT IN ({placeholders})"
+        params.extend(sorted(excludes))
+
     rows = conn.execute(
-        """
+        f"""
         SELECT t.* FROM tasks t
         WHERE t.project = ?
           AND t.status = 'backlog'
+          {exclude_sql}
           AND (
               t.depends_on IS NULL
               OR t.depends_on = ''
@@ -78,7 +91,7 @@ def query_next_backlog_task(conn: sqlite3.Connection, project: str) -> list[dict
             t.created_at ASC
         LIMIT 1
         """,
-        (project,),
+        params,
     ).fetchall()
     return [dict(row) for row in rows]
 

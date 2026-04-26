@@ -207,7 +207,7 @@ def test_run_backlog_review_failure_retry_with_hint_requeues_and_appends_hint(tm
 
     call_order: list[str] = []
 
-    def fake_cleanup(**kwargs):
+    def fake_cleanup(*args, **kwargs):
         call_order.append("cleanup")
 
     def fake_call_structured(request):
@@ -226,7 +226,7 @@ def test_run_backlog_review_failure_retry_with_hint_requeues_and_appends_hint(tm
             },
         )
 
-    monkeypatch.setattr(run_cmd, "_finalize_failed_task_workspace", fake_cleanup)
+    monkeypatch.setattr(run_cmd, "_cleanup_worktree_leftovers", fake_cleanup)
     monkeypatch.setattr(run_cmd, "call_structured", fake_call_structured)
 
     stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
@@ -784,6 +784,71 @@ def test_retry_with_hint_appends_structured_reviewer_blockers_to_task_content(tm
     assert "AC2: 空 body 直接 200" in content
     # advisory 也要带（非阻塞但提示 builder）
     assert "A1. 命名建议改成 validate_payload" in content
+
+
+def test_review_failure_discard_is_overridden_when_reviewer_has_actionable_blockers(tmp_path, monkeypatch):
+    """reviewer 给出明确 blocker 时，AI 误判 discard 也必须自动转成重试。
+
+    这覆盖任务 #33 暴露的问题：review 轮次耗尽后，反馈里已经写明缺哪些文件、
+    哪些 AC 未过，这种失败不能被当成"丢弃单独跟进"后停住。
+    """
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "建 serialization 子目录", content="原始任务", max_retries=3)
+
+    structured_review = (
+        "VERDICT: FAIL\n"
+        "```json\n"
+        '{"verdict":"fail",'
+        '"blockers":["创建 deserialize.py / decoders.py / attachments.py，并更新 re-export"],'
+        '"advisory":[],'
+        '"ac_checks":[{"id":"AC5","status":"fail","reason":"serialization/*.py 只有 3 个，期望 4 个"}]}\n'
+        "```"
+    )
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(
+            exit_code=2,
+            output="builder output",
+            review_output=structured_review,
+            summary="review 未通过（已用完重做轮次）",
+            executor="builtin",
+            deterministic_failure=True,
+        ),
+    )
+    monkeypatch.setattr(
+        run_cmd,
+        "call_structured",
+        lambda request: GatewayResponse(
+            ok=True,
+            source="cli:codex",
+            payload={
+                "action": "discard",
+                "matched_task_id": None,
+                "rationale": "误判为无需跟进",
+                "merged_note": "直接丢弃。",
+                "retry_hint": "",
+                "replan_title": "",
+                "replan_content": "",
+            },
+        ),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+    content = current["content"] or ""
+
+    assert stats["requeued"] == 1
+    assert stats["failed"] == 0
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 1
+    assert "覆盖 discard" in (current["error_message"] or "")
+    assert "AI triage 重试提示" in content
+    assert "deserialize.py / decoders.py / attachments.py" in content
+    assert "AC5: serialization/*.py 只有 3 个" in content
 
 
 def test_run_backlog_review_failure_falls_back_when_ai_triage_unavailable(tmp_path, monkeypatch):

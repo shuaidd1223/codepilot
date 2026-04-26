@@ -516,6 +516,119 @@ def _resolve_builtin_phase_agent(
     return _resolve_builtin_single_agent(normalized)
 
 
+_BUILTIN_TOOLING_FAILURE_PATTERNS = (
+    "requires a newer version of codex",
+    "please upgrade to the latest app or cli",
+    "invalid_request_error",
+    "unsupported model",
+    "model_not_found",
+    "unknown model",
+    "当前无法使用 codex",
+    "没有找到 `codex`",
+    "command not found",
+    "not recognized as",
+    "no such file or directory",
+    "authentication failed",
+    "login required",
+    "api key",
+)
+
+
+def _agent_label_runner(agent_label: str) -> str:
+    """Collapse persisted phase labels like ``codex-review`` to runner names."""
+    label = str(agent_label or "").strip().lower()
+    if label.startswith("codex"):
+        return "codex"
+    if label.startswith("claude-node"):
+        return "claude-node"
+    if label.startswith("claude"):
+        return "claude"
+    return label
+
+
+def _is_builtin_agent_tooling_failure(agent_label: str, output: str) -> bool:
+    """Return whether a phase failed because its CLI/model is unavailable."""
+    text = str(output or "").lower()
+    if not text:
+        return False
+    runner = _agent_label_runner(agent_label)
+    if runner == "codex":
+        return any(pattern in text for pattern in _BUILTIN_TOOLING_FAILURE_PATTERNS)
+    return any(
+        pattern in text
+        for pattern in (
+            "command not found",
+            "not recognized as",
+            "no such file or directory",
+            "authentication failed",
+            "login required",
+            "api key",
+        )
+    )
+
+
+def _expected_phase_agent_label(
+    task: dict,
+    phase: str,
+    config_ref: str | Path | dict | None,
+) -> str:
+    """Return the label we expect ``_run_builtin_phase`` to use."""
+    runner, _model = _resolve_builtin_phase_agent(
+        task.get("agent", "dual"),
+        phase,
+        task=task,
+        project_ref=config_ref,
+    )
+    if phase == "reviewer":
+        return "codex-review" if runner == "codex" else f"{runner}-review"
+    return "codex" if runner == "codex" else runner
+
+
+def _select_builtin_phase_fallback_agent(
+    ctx: "_ExecutorContext",
+    *,
+    phase: str,
+    failed_agent: str,
+    output: str,
+) -> Optional[str]:
+    """Choose another dual-mode phase agent for CLI/tooling failures."""
+    if not _is_builtin_agent_tooling_failure(failed_agent, output):
+        return None
+
+    try:
+        normalized = normalize_agent_name(str(ctx.task.get("agent") or "dual"))
+    except Exception:
+        return None
+    if normalized != "dual":
+        return None
+
+    try:
+        builder_agent, reviewer_agent = _resolve_dual_phase_agents_for_task(ctx.task, ctx.config_ref)
+    except Exception:
+        return None
+
+    preferred = reviewer_agent if phase == "builder" else builder_agent
+    candidates = [preferred, "claude", "claude-node", "codex"]
+    failed_runner = _agent_label_runner(failed_agent)
+    seen: set[str] = set()
+    runner_mod = _runner_module()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            normalized_candidate = normalize_agent_name(str(candidate))
+            runner, _model = _resolve_builtin_single_agent(normalized_candidate)
+        except Exception:
+            continue
+        if runner == failed_runner or normalized_candidate in seen:
+            continue
+        seen.add(normalized_candidate)
+        available, _message = runner_mod.check_provider_availability(runner, project_path=ctx.config_ref)
+        if available:
+            return normalized_candidate
+    return None
+
+
 def _run_builtin_phase(
     *,
     task: dict,
@@ -527,6 +640,7 @@ def _run_builtin_phase(
     config_ref: str | Path | None = None,
     display_phase: Optional[str] = None,
     silence_timeout_seconds: int = 0,
+    agent_override: Optional[str] = None,
 ) -> tuple[str, int, str]:
     """Execute one builtin phase with the requested agent.
 
@@ -540,12 +654,15 @@ def _run_builtin_phase(
     if _ai_hook._phase_stub is not None:
         return _ai_hook._phase_stub(task=task, project_path=project_path, phase=phase, prompt=prompt)
 
-    runner, model = _resolve_builtin_phase_agent(
-        task.get("agent", "dual"),
-        phase,
-        task=task,
-        project_ref=config_ref or project_path,
-    )
+    if agent_override:
+        runner, model = _resolve_builtin_single_agent(agent_override)
+    else:
+        runner, model = _resolve_builtin_phase_agent(
+            task.get("agent", "dual"),
+            phase,
+            task=task,
+            project_ref=config_ref or project_path,
+        )
     task_id = int(task.get("id") or 0)
     heartbeat_phase = display_phase or phase
     provider_ref = config_ref or project_path
@@ -729,6 +846,111 @@ def _make_phase_output_path(output_dir: Path, task_id: int, round_num: int, kind
     return path
 
 
+def _run_phase_with_tooling_fallback(
+    ctx: _ExecutorContext,
+    *,
+    phase: str,
+    round_num: int,
+    phase_name: str,
+    label: str,
+    display_phase: str,
+    prompt: str,
+    output_path: Path,
+    timeout: int,
+) -> tuple[str, int, str, datetime]:
+    """Run one phase and, for dual mode, switch agent on CLI/model failures."""
+    from codepilot import progress_bus
+
+    runner_mod = _runner_module()
+    started = datetime.now()
+    try:
+        agent, exit_code, output = runner_mod._run_builtin_phase(
+            task=ctx.task,
+            project_path=ctx.project_path,
+            phase=phase,
+            prompt=prompt,
+            output_path=output_path,
+            timeout=timeout,
+            config_ref=ctx.config_ref,
+            display_phase=display_phase,
+            silence_timeout_seconds=ctx.silence_timeout,
+        )
+    except Exception as exc:
+        agent = _expected_phase_agent_label(ctx.task, phase, ctx.config_ref)
+        exit_code = 1
+        output = str(exc)
+        fallback_agent = _select_builtin_phase_fallback_agent(
+            ctx,
+            phase=phase,
+            failed_agent=agent,
+            output=output,
+        )
+        if not fallback_agent:
+            raise
+    else:
+        fallback_agent = _select_builtin_phase_fallback_agent(
+            ctx,
+            phase=phase,
+            failed_agent=agent,
+            output=output,
+        )
+
+    if not fallback_agent:
+        return agent, exit_code, output, started
+
+    runner_mod._write_task_log(
+        ctx.task["id"],
+        agent,
+        f"{phase_name}-tooling-failure",
+        output,
+        exit_code,
+        started,
+    )
+    message = f"{label} 的 {agent} 工具失败，自动切换到 {fallback_agent} 继续执行"
+    echo(f"[yellow]  {message}[/yellow]")
+    progress_bus.emit(
+        task_id=ctx.task_id_for_events,
+        stage=display_phase,
+        level="warning",
+        event_type="phase_retry",
+        message=message,
+        extra={
+            "round": round_num,
+            "round_total": ctx.max_rounds,
+            "phase_kind": phase,
+            "failed_agent": agent,
+            "fallback_agent": fallback_agent,
+        },
+    )
+
+    fallback_output_path = _make_phase_output_path(
+        ctx.output_dir,
+        ctx.task["id"],
+        round_num,
+        f"{phase}-fallback",
+    )
+    fallback_started = datetime.now()
+    fallback_label, fallback_exit_code, fallback_output = runner_mod._run_builtin_phase(
+        task=ctx.task,
+        project_path=ctx.project_path,
+        phase=phase,
+        prompt=prompt,
+        output_path=fallback_output_path,
+        timeout=timeout,
+        config_ref=ctx.config_ref,
+        display_phase=display_phase,
+        silence_timeout_seconds=ctx.silence_timeout,
+        agent_override=fallback_agent,
+    )
+    if fallback_exit_code != 0:
+        fallback_output = (
+            f"原 agent {agent} 因工具异常失败，已自动切换到 {fallback_label}，但备用 agent 仍失败。\n\n"
+            f"【原始工具异常】\n{output}\n\n"
+            f"【备用 agent 输出】\n{fallback_output}"
+        )
+    return fallback_label, fallback_exit_code, fallback_output, fallback_started
+
+
 def _run_builder_round(
     ctx: _ExecutorContext,
     *,
@@ -750,7 +972,6 @@ def _run_builder_round(
         extra={"round": round_num, "round_total": ctx.max_rounds, "phase_kind": "builder"},
     )
 
-    started = datetime.now()
     prompt = _build_builtin_prompt(
         ctx.task,
         ctx.task_file,
@@ -759,16 +980,16 @@ def _run_builder_round(
         previous_review_feedback=previous_findings,
     )
     try:
-        agent, exit_code, output = _runner_module()._run_builtin_phase(
-            task=ctx.task,
-            project_path=ctx.project_path,
+        agent, exit_code, output, started = _run_phase_with_tooling_fallback(
+            ctx,
             phase="builder",
+            round_num=round_num,
+            phase_name="builder" if round_num == 1 else f"builder-r{round_num}",
+            label=label,
+            display_phase=display_phase,
             prompt=prompt,
             output_path=output_path,
             timeout=3600,
-            config_ref=ctx.config_ref,
-            display_phase=display_phase,
-            silence_timeout_seconds=ctx.silence_timeout,
         )
     except Exception as exc:
         progress_bus.emit(
@@ -820,7 +1041,6 @@ def _run_reviewer_round(
         extra={"round": round_num, "round_total": ctx.max_rounds, "phase_kind": "reviewer"},
     )
 
-    started = datetime.now()
     # 列出 builder 在 worktree 里实际改动的文件，提供给 reviewer 做越界守卫。
     try:
         changed_files = _runner_module()._git_changed_files(ctx.project_path)
@@ -833,16 +1053,16 @@ def _run_reviewer_round(
         changed_files=changed_files,
     )
     try:
-        agent, exit_code, output = _runner_module()._run_builtin_phase(
-            task=ctx.task,
-            project_path=ctx.project_path,
+        agent, exit_code, output, started = _run_phase_with_tooling_fallback(
+            ctx,
             phase="reviewer",
+            round_num=round_num,
+            phase_name="reviewer" if round_num == 1 else f"reviewer-r{round_num}",
+            label=label,
+            display_phase=display_phase,
             prompt=prompt,
             output_path=output_path,
             timeout=1800,
-            config_ref=ctx.config_ref,
-            display_phase=display_phase,
-            silence_timeout_seconds=ctx.silence_timeout,
         )
     except Exception as exc:
         progress_bus.emit(
@@ -1059,6 +1279,7 @@ def _run_builtin_executor(
     *,
     max_review_rounds: int = 2,
     execution_path: Path | None = None,
+    allow_dirty_resume: bool = False,
 ) -> ExecutionResult:
     """Execute a task with Codex/Claude CLI, review, and retry on FAIL.
 
@@ -1076,6 +1297,8 @@ def _run_builtin_executor(
         else "dual"
     )
     preflight_error = _runner_module()._builtin_preflight_error(working_path, auto_commit, effective_agent_mode)
+    if allow_dirty_resume and "未提交改动" in preflight_error:
+        preflight_error = ""
     if preflight_error:
         # 用 PreflightSkipError 而不是 RuntimeError，run 循环会把任务直接送回
         # backlog，不 bump retry_count。之前用 RuntimeError 会被 generic

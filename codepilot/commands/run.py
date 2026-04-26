@@ -106,9 +106,14 @@ from codepilot.commands.run_builtin import (  # noqa: F401
     _extract_review_verdict,
     _resolve_builtin_single_agent,
     _resolve_builtin_phase_agent,
+    _agent_label_runner,
+    _is_builtin_agent_tooling_failure,
+    _expected_phase_agent_label,
+    _select_builtin_phase_fallback_agent,
     _run_builtin_phase,
     _extract_reviewer_findings,
     _make_phase_output_path,
+    _run_phase_with_tooling_fallback,
     _run_builder_round,
     _run_reviewer_round,
     _finalize_executor_success,
@@ -249,7 +254,7 @@ def _run_dispatch(project: dict, task_file: Path, agent_mode: str, shell: ShellI
 
 def _handle_failure(task: dict, error_message: str, stop_on_failure: bool = False) -> tuple[dict, bool]:
     updated = db.increment_task_retry(task["id"], error_message[:4000])
-    should_stop = stop_on_failure or updated["status"] == "failed"
+    should_stop = bool(stop_on_failure)
     return updated, should_stop
 
 
@@ -387,6 +392,7 @@ def _finalize_failed_task_workspace(
     worktree_path: Path | str | None,
     task_branch: str | None,
     base_branch: str | None,
+    abandon_dirty_branch: bool = False,
 ) -> None:
     """End-of-task housekeeping for failure / cancellation paths.
 
@@ -405,6 +411,12 @@ def _finalize_failed_task_workspace(
        HEAD is back on base, force-delete that branch so the next
        ``_git_prepare_task_branch`` call doesn't trip on "branch already
        exists".
+
+    When ``abandon_dirty_branch`` is true, a dirty checked-out task branch is
+    treated as an explicit terminal decision (discard / replan / merge into
+    another task): reset and clean that task branch before switching back to
+    base. Retry paths leave the branch intact so the next attempt can continue
+    from the builder's partial work.
 
     Every step swallows its own exceptions and surfaces a yellow warning
     so a cleanup hiccup can never mask the real failure cause.
@@ -472,6 +484,24 @@ def _finalize_failed_task_workspace(
             _git_checkout(pp, base)
             current_after_checkout = base
             echo(f"[dim]主仓库已切回 {base}[/dim]")
+        elif (
+            abandon_dirty_branch
+            and branch
+            and same_as_main
+            and current == branch
+            and _git_has_changes(pp)
+        ):
+            reset_code, reset_output = _run_command(["git", "reset", "--hard"], cwd=pp, timeout=120)
+            clean_code, clean_output = _run_command(["git", "clean", "-fd"], cwd=pp, timeout=120)
+            if reset_code != 0 or clean_code != 0:
+                echo(
+                    f"[yellow]任务 #{task_id} 分支 {branch} 终态清理失败: "
+                    f"{safe((reset_output or clean_output)[:300])}[/yellow]"
+                )
+                return
+            _git_checkout(pp, base)
+            current_after_checkout = base
+            echo(f"[dim]任务 #{task_id} 分支 {branch} 的未合并改动已按终态决策丢弃，主仓库已切回 {base}[/dim]")
     except Exception as exc:
         echo(f"[yellow]切回 base_branch={base} 失败: {safe(exc)}[/yellow]")
         return
@@ -482,8 +512,9 @@ def _finalize_failed_task_workspace(
     # 保险性二次检查；不会重复删。
     if branch and branch != base and same_as_main:
         # 关键守卫：HEAD 必须真的已经在 base 才能 -D。否则（脏工作区跳过了
-        # checkout / checkout 失败）当前分支就是任务分支，git 会拒删 + 警告
-        # 噪音，自愈语义假阳。这种情况下显式留下分支，告诉用户人工处理。
+        # checkout / checkout 失败）当前分支就是任务分支，git 会拒删。
+        # retry 路径显式留下分支；terminal 路径可通过 abandon_dirty_branch
+        # 在上面先丢弃改动再回 base。
         if current_after_checkout != base:
             echo(
                 f"[yellow]任务 #{task_id} 分支 {branch} 暂未清理：HEAD 仍在 "

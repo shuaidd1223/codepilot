@@ -384,6 +384,67 @@ def test_builder_crash_is_not_deterministic(fake_project, monkeypatch, tmp_path)
     assert result.deterministic_failure is False
 
 
+def test_dual_builder_tooling_failure_falls_back_to_reviewer_agent(
+    fake_project,
+    monkeypatch,
+    tmp_path,
+):
+    """A broken primary builder CLI should not consume the task as task failure."""
+    calls: list[dict] = []
+    logs: list[dict] = []
+
+    def fake_run_builtin_phase(**kwargs):
+        calls.append(kwargs)
+        if kwargs["phase"] == "builder" and not kwargs.get("agent_override"):
+            return (
+                "codex",
+                1,
+                "ERROR: The 'gpt-5.5' model requires a newer version of Codex. "
+                "Please upgrade to the latest app or CLI and try again.",
+            )
+        if kwargs["phase"] == "builder" and kwargs.get("agent_override") == "claude":
+            return "claude", 0, "builder ok"
+        return "claude-review", 0, "all good\nVERDICT: PASS"
+
+    monkeypatch.setattr(run_mod, "_run_builtin_phase", fake_run_builtin_phase)
+    monkeypatch.setattr(
+        run_mod,
+        "check_provider_availability",
+        lambda agent, project_path=None: (agent == "claude", "ok"),
+    )
+    monkeypatch.setattr(
+        run_mod,
+        "_write_task_log",
+        lambda task_id, agent, phase, output, exit_code, started_at: logs.append(
+            {"agent": agent, "phase": phase, "exit_code": exit_code, "output": output}
+        ),
+    )
+
+    task = _sample_task()
+    task["agent"] = "dual"
+    task_file = tmp_path / "42-task.md"
+    task_file.write_text("stub", encoding="utf-8")
+
+    result = run_mod._run_builtin_executor(
+        task,
+        fake_project,
+        task_file,
+        auto_commit=False,
+        max_review_rounds=1,
+    )
+
+    assert result.exit_code == 0
+    assert "builder=claude" in (result.summary or "")
+    assert calls[1]["agent_override"] == "claude"
+    assert [entry["phase"] for entry in logs] == [
+        "builder-tooling-failure",
+        "builder",
+        "reviewer",
+    ]
+    assert logs[0]["agent"] == "codex"
+    assert logs[0]["exit_code"] == 1
+
+
 def test_review_loop_disabled_when_max_rounds_one(fake_project, monkeypatch, tmp_path):
     """max_review_rounds=1 reverts to legacy single-pass behavior."""
     from codepilot import ai as ai_mod
