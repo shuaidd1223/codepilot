@@ -120,6 +120,41 @@ def test_materialize_inspection_output_dry_run_skips_db_write(tmp_path, monkeypa
     assert skipped == [{"title": "重复项", "reason": "duplicate"}]
 
 
+def test_materialize_inspection_output_skips_repeated_inspector_failed_title(tmp_path, monkeypatch):
+    project = tmp_path / "demo"
+    project.mkdir()
+    monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda *_: set())
+    monkeypatch.setattr(
+        inspect_cmd.db,
+        "list_tasks",
+        lambda **kwargs: [
+            {
+                "title": "重复巡检任务",
+                "status": "failed",
+                "source": "inspector",
+            }
+        ],
+    )
+
+    def _should_not_write(**kwargs):
+        raise AssertionError("repeated inspector title should be skipped before db write")
+
+    monkeypatch.setattr(inspect_cmd.db, "create_task", _should_not_write)
+
+    created, skipped = inspect_cmd._materialize_inspection_output(
+        [{"title": "重复巡检任务", "goal": "继续做同一件事", "priority": "P2"}],
+        max_new_tasks=1,
+        project_name="demo",
+        project_path=project,
+        priority="P3",
+        agent="codex",
+        dry_run=False,
+    )
+
+    assert created == []
+    assert skipped == [{"title": "重复巡检任务", "reason": "duplicate_title_history"}]
+
+
 def test_emit_inspection_result_routes_json_and_terminal(monkeypatch):
     rendered: dict[str, object] = {}
 

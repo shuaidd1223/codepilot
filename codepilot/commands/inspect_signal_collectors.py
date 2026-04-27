@@ -41,6 +41,7 @@ def collect_failed_tasks(project: str, limit: int = 10) -> str:
         t
         for t in db.list_tasks(project=project)
         if t["status"] in {"failed", "cancelled"}
+        and (t.get("source") or "") != "inspector"
     ][:limit]
     if not rows:
         return "（无）"

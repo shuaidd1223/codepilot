@@ -360,6 +360,24 @@ def _dedup_key(title: str, goal: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _existing_inspector_titles(project: str) -> set[str]:
+    """Return inspector-generated titles that are still unresolved.
+
+    These are exactly the titles that previously created a self-feedback loop:
+    inspect saw its own failed tasks in `failed_tasks`, then generated the same
+    titles again on later rounds. We deliberately treat any non-done inspector
+    task as unresolved and block re-creation until a human retries/resets/edits
+    the existing task instead of cloning it.
+    """
+    return {
+        str(t.get("title") or "").strip()
+        for t in db.list_tasks(project=project)
+        if (t.get("source") or "") == "inspector"
+        and t.get("status") in {"backlog", "in_progress", "failed", "cancelled"}
+        and str(t.get("title") or "").strip()
+    }
+
+
 def _call_llm(
     prompt: str,
     classifier_provider: str,
@@ -555,12 +573,16 @@ def _materialize_inspection_output(
 ) -> tuple[list[dict], list[dict]]:
     """Write candidate output to the selected path (preview or DB)."""
     existing_keys = db.existing_dedup_keys(project_name)
+    existing_inspector_titles = _existing_inspector_titles(project_name)
     created: list[dict] = []
     skipped: list[dict] = []
     for item in candidates[:max_new_tasks]:
         title = (item.get("title") or "").strip()
         goal = (item.get("goal") or "").strip()
         if not title or not goal:
+            continue
+        if title in existing_inspector_titles:
+            skipped.append({"title": title, "reason": "duplicate_title_history"})
             continue
         key = _dedup_key(title, goal)
         if key in existing_keys:
@@ -592,6 +614,7 @@ def _materialize_inspection_output(
         )
         created.append(task)
         existing_keys.add(key)
+        existing_inspector_titles.add(title)
     return created, skipped
 
 
