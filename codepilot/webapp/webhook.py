@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
+import time
 import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -127,28 +131,74 @@ def start_webhook_server(*, host: str = "127.0.0.1", port: int = 8765) -> Thread
 
 def _get_webhook_config(project_path: str) -> dict:
     """Read webhook settings from config plus environment overrides."""
-    config = {"webhook_url": "", "enabled": False}
+    config = {
+        "webhook_url": "",
+        "provider": "auto",
+        "webhook_secret": "",
+        "enabled": False,
+    }
     toml_path = Path(project_path) / "AGENTS.toml"
     cfg = load_config(toml_path) if toml_path.exists() else None
     if cfg:
         config["webhook_url"] = cfg.webhook_url or cfg.notifications.get("webhook_url", "")
+        config["provider"] = str(
+            cfg.webhook_provider
+            or cfg.notifications.get("provider", "auto")
+            or "auto"
+        ).strip().lower() or "auto"
+        config["webhook_secret"] = str(
+            cfg.webhook_secret
+            or cfg.notifications.get("webhook_secret", "")
+            or ""
+        )
         config["enabled"] = bool(cfg.notifications_enabled or cfg.notifications.get("enabled", False))
 
     if os.environ.get("CODEPILOT_WEBHOOK_URL"):
         config["webhook_url"] = os.environ["CODEPILOT_WEBHOOK_URL"]
         config["enabled"] = True
+    if os.environ.get("CODEPILOT_WEBHOOK_PROVIDER"):
+        config["provider"] = os.environ["CODEPILOT_WEBHOOK_PROVIDER"].strip().lower() or "auto"
+    if os.environ.get("CODEPILOT_WEBHOOK_SECRET"):
+        config["webhook_secret"] = os.environ["CODEPILOT_WEBHOOK_SECRET"]
     if os.environ.get("CODEPILOT_WEBHOOK_ENABLED"):
         config["enabled"] = os.environ["CODEPILOT_WEBHOOK_ENABLED"].lower() in ("true", "1", "yes")
 
     return config
 
 
-def _send_feishu_webhook(url: str, text: str) -> bool:
-    """发送飞书/企微机器人消息."""
-    payload = json.dumps({
+def _normalize_webhook_provider(value: object) -> str:
+    provider = str(value or "auto").strip().lower()
+    return provider if provider in {"auto", "feishu", "wecom", "generic"} else "auto"
+
+
+def _detect_webhook_provider(url: str) -> str:
+    lowered = str(url or "").lower()
+    if any(marker in lowered for marker in ("open.feishu.cn", "feishu", "lark", "larksuite")):
+        return "feishu"
+    if any(marker in lowered for marker in ("qyapi.weixin.qq.com", "wecom")):
+        return "wecom"
+    return "generic"
+
+
+def _build_feishu_payload(text: str, *, secret: str = "") -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "msg_type": "text",
         "content": {"text": text},
-    }).encode("utf-8")
+    }
+    secret = str(secret or "").strip()
+    if secret:
+        timestamp = str(int(time.time()))
+        string_to_sign = f"{timestamp}\n{secret}".encode("utf-8")
+        payload["timestamp"] = timestamp
+        payload["sign"] = base64.b64encode(
+            hmac.new(string_to_sign, digestmod=hashlib.sha256).digest()
+        ).decode("utf-8")
+    return payload
+
+
+def _send_feishu_webhook(url: str, text: str, *, secret: str = "") -> bool:
+    """发送飞书机器人消息."""
+    payload = json.dumps(_build_feishu_payload(text, secret=secret), ensure_ascii=False).encode("utf-8")
 
     try:
         req = urllib.request.Request(
@@ -158,8 +208,35 @@ def _send_feishu_webhook(url: str, text: str) -> bool:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            return result.get("code", 0) == 0
+            raw = resp.read()
+            if not raw:
+                return 200 <= getattr(resp, "status", 200) < 300
+            result = json.loads(raw.decode("utf-8"))
+            return int(result.get("code", 0) or 0) == 0
+    except Exception:
+        return False
+
+
+def _send_wecom_webhook(url: str, text: str) -> bool:
+    """发送企业微信机器人消息."""
+    payload = json.dumps({
+        "msgtype": "text",
+        "text": {"content": text},
+    }, ensure_ascii=False).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+            if not raw:
+                return 200 <= getattr(resp, "status", 200) < 300
+            result = json.loads(raw.decode("utf-8"))
+            return int(result.get("errcode", 0) or 0) == 0
     except Exception:
         return False
 
@@ -222,9 +299,14 @@ def notify_task_status(
     if error_message:
         message += f"\n错误: {error_message[:100]}"
 
-    # 检测 webhook 类型
-    if "feishu" in url or "lark" in url or "wecom" in url or "qyapi" in url:
-        ok = _send_feishu_webhook(url, message)
+    provider = _normalize_webhook_provider(config.get("provider"))
+    if provider == "auto":
+        provider = _detect_webhook_provider(url)
+
+    if provider == "feishu":
+        ok = _send_feishu_webhook(url, message, secret=str(config.get("webhook_secret") or ""))
+    elif provider == "wecom":
+        ok = _send_wecom_webhook(url, message)
     else:
         ok = _send_generic_webhook(url, {
             "event": "task_status_changed",

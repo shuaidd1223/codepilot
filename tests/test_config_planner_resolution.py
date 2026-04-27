@@ -77,6 +77,8 @@ def test_config_empty_dict_uses_declared_defaults():
     assert cfg.classifier.model == ""
     assert cfg.classifier.enabled is True
     assert cfg.classifier.timeout == 30
+    assert cfg.webhook_provider == "auto"
+    assert cfg.webhook_secret == ""
 
 
 def test_config_sync_updates_old_config_and_removes_unknown_keys(tmp_path, monkeypatch):
@@ -116,6 +118,8 @@ extra = "drop"
 
 [notifications]
 webhook_url = "https://example.invalid/hook"
+provider = "feishu"
+webhook_secret = "sign-secret"
 extra = "drop"
 """.strip(),
     )
@@ -161,6 +165,8 @@ extra = "drop"
     assert parsed["providers"]["openai-gpt4o"]["api_key"] == "sk-test"
     assert parsed["providers"]["openai-gpt4o"]["base_url"] == "https://models.example.invalid/v1"
     assert parsed["notifications"]["webhook_url"] == "https://example.invalid/hook"
+    assert parsed["notifications"]["provider"] == "feishu"
+    assert parsed["notifications"]["webhook_secret"] == "sign-secret"
 
 
 def test_config_sync_adds_provider_section_for_classifier_provider(tmp_path, monkeypatch):

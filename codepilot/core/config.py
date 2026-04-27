@@ -178,6 +178,8 @@ class AgentsConfig:
     interval_seconds: int = 600
     stale_minutes: int = 30
     webhook_url: str = ""
+    webhook_provider: str = "auto"
+    webhook_secret: str = ""
     notifications_enabled: bool = False
     config_file_path: Optional[str] = None
 
@@ -273,6 +275,8 @@ class AgentsConfig:
             interval_seconds=dispatch.get("interval_seconds", 600),
             stale_minutes=dispatch.get("stale_minutes", 30),
             webhook_url=notifications.get("webhook_url", ""),
+            webhook_provider=str(notifications.get("provider", "auto") or "auto"),
+            webhook_secret=notifications.get("webhook_secret", ""),
             notifications_enabled=notifications.get("enabled", False),
             config_file_path=config_file_path,
         )
@@ -837,8 +841,12 @@ planner = ""
 # temperature = 0.7
 
 [notifications]
-# 飞书/企微 Webhook URL
+# 任务状态通知 Webhook URL
 webhook_url = ""
+# 通知类型：auto / feishu / wecom / generic
+provider = "auto"
+# 飞书机器人签名密钥（未开启签名校验时留空）
+webhook_secret = ""
 enabled = false
 """
 
@@ -877,6 +885,8 @@ max_retries = 3
 
 [notifications]
 webhook_url = ""
+provider = "auto"
+webhook_secret = ""
 enabled = false
 """
 

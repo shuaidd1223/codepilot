@@ -166,6 +166,8 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
         "providers": {},
         "notifications": {
             "webhook_url": _string(notifications.get("webhook_url"), ""),
+            "provider": _choice(notifications.get("provider"), {"auto", "feishu", "wecom", "generic"}, "auto"),
+            "webhook_secret": _string(notifications.get("webhook_secret"), ""),
             "enabled": _bool(notifications.get("enabled"), False),
         },
     }
@@ -257,7 +259,9 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("inspect", "auto_execute"): ["巡检新增任务后是否自动执行。"],
     ("inspect", "priority"): ["巡检新增任务默认优先级。"],
     ("inspect", "planner"): ["巡检专用 planner；留空时回退到 [agents].planner / codex。"],
-    ("notifications", "webhook_url"): ["飞书/企微等 Webhook URL。"],
+    ("notifications", "webhook_url"): ["任务状态通知 Webhook URL。"],
+    ("notifications", "provider"): ["auto / feishu / wecom / generic。建议飞书显式写 feishu。"],
+    ("notifications", "webhook_secret"): ["飞书机器人签名密钥；未开启签名校验时留空。"],
     ("notifications", "enabled"): ["是否发送通知。"],
 }
 

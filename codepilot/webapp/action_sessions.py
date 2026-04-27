@@ -1,0 +1,495 @@
+"""Session and clarification actions for the Web UI."""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+from dataclasses import dataclass
+from typing import Optional
+
+from codepilot.storage import database as db
+from codepilot.ai_support.clarification_protocol import (
+    build_clarification_answer_summary,
+    build_clarification_input_summary,
+    normalize_clarification_answers,
+    normalize_clarification_questions,
+    normalize_text,
+)
+from codepilot.ai_support.interaction_controller import (
+    interpret_clarification_outcome,
+    resolve_turn_intent,
+)
+from codepilot.webapp.action_requirements import (
+    _answer_project_question,
+    _assess_requirement,
+    _dispatch_with_intent_handlers,
+    _format_numbered_questions,
+    _raise_clarification_error,
+    _submit_requirement_from_message,
+)
+from codepilot.webapp.action_state import (
+    _append_event,
+    _effective_planner,
+    _normalize_goal_category,
+)
+from codepilot.webapp.display_sort import sort_sessions_for_display
+
+
+_LEGACY_CLARIFY_LINE_RE = re.compile(
+    r"^\s*(?:(?:问题\s*)?\d+[\.\)、:：]|[一二三四五六七八九十]+[、.．:：]|[-*])\s*(.+)$"
+)
+
+
+def _actions():
+    return sys.modules["codepilot.webapp.actions"]
+
+
+@dataclass(frozen=True)
+class _SessionDispatchContext:
+    session_id: int
+    project: str
+    project_info: dict
+    planner: str
+    text: str
+    clarify_answers: Optional[list[dict]]
+    category: str
+    gateway_options: object
+
+
+@dataclass(frozen=True)
+class _SessionDispatchDecision:
+    intent: str
+    pending_clarification: Optional[dict] = None
+
+
+def _is_cancel_clarification(text: str) -> bool:
+    normalized = normalize_text(text).lower()
+    return normalized in {"/clear", "/cancel", "取消", "取消本次规划", "取消当前规划"}
+
+
+def _session_payload(
+    intent: str,
+    message: str,
+    *,
+    task_ids: Optional[list[int]] = None,
+    questions: Optional[list[dict]] = None,
+    refined_title: str = "",
+) -> dict:
+    payload: dict = {
+        "ok": True,
+        "intent": intent,
+        "message": message,
+        "task_ids": task_ids or [],
+    }
+    if questions is not None:
+        payload["questions"] = questions
+    if refined_title:
+        payload["refined_title"] = refined_title
+    return payload
+
+
+def list_sessions_action(project: str = "") -> dict:
+    db.init_db()
+    sessions = sort_sessions_for_display(db.list_sessions(project=project or None, status="active"))
+    return {
+        "ok": True,
+        "sessions": [
+            {
+                "id": s["id"],
+                "project": s["project"],
+                "title": s["title"],
+                "status": s["status"],
+                "created_at": s["created_at"],
+                "updated_at": s["updated_at"],
+                "message_count": len(db.list_session_messages(s["id"])),
+            }
+            for s in sessions
+        ],
+    }
+
+
+def create_session_action(project: str, title: str = "") -> dict:
+    db.init_db()
+    project_info = db.get_project(project)
+    if not project_info:
+        raise RuntimeError(f"项目 '{project}' 不存在。")
+    session = db.create_session(project, title=title or "新会话")
+    _append_event(f"新建会话 #{session['id']}：{session['title']}", project=project)
+    return {"ok": True, "session": session}
+
+
+def get_session_action(session_id: int) -> dict:
+    db.init_db()
+    session = db.get_session(session_id)
+    if not session:
+        raise RuntimeError(f"会话 #{session_id} 不存在。")
+    messages = db.list_session_messages(session_id)
+    parsed_messages = []
+    for msg in messages:
+        parsed = dict(msg)
+        if parsed.get("task_ids"):
+            try:
+                parsed["task_ids"] = json.loads(parsed["task_ids"])
+            except (json.JSONDecodeError, TypeError):
+                parsed["task_ids"] = []
+        else:
+            parsed["task_ids"] = []
+        if parsed.get("metadata"):
+            try:
+                parsed["metadata"] = json.loads(parsed["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                parsed["metadata"] = {}
+        else:
+            parsed["metadata"] = {}
+        parsed_messages.append(parsed)
+    return {"ok": True, "session": session, "messages": parsed_messages}
+
+
+def _message_metadata(message: dict) -> dict:
+    raw = message.get("metadata")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _legacy_clarification_questions_from_content(content: str) -> list[dict]:
+    raw_content = str(content or "")
+    questions: list[dict] = []
+    for raw_line in raw_content.splitlines():
+        if not raw_line.strip():
+            continue
+        stripped = raw_line.lstrip()
+        if len(stripped) != len(raw_line) and re.match(r"^(?:\d+[\.\)、:：]|[-*])\s+", stripped):
+            continue
+        match = _LEGACY_CLARIFY_LINE_RE.match(raw_line)
+        if not match:
+            continue
+        text = normalize_text(match.group(1))
+        if not text:
+            continue
+        question_index = len(questions) + 1
+        questions.append(
+            {
+                "id": f"legacy_q{question_index}",
+                "type": "text",
+                "text": text,
+                "options": [],
+                "allow_free_text": False,
+            }
+        )
+    if questions:
+        return questions
+    fallback = normalize_text(raw_content)
+    if fallback and "\n" not in raw_content:
+        return [
+            {
+                "id": "legacy_q1",
+                "type": "text",
+                "text": fallback,
+                "options": [],
+                "allow_free_text": False,
+            }
+        ]
+    return []
+
+
+def _message_questions(message: dict) -> list[dict]:
+    structured = normalize_clarification_questions(_message_metadata(message).get("questions"))
+    if structured:
+        return structured
+    return _legacy_clarification_questions_from_content(message.get("content") or "")
+
+
+def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
+    if not messages:
+        return None
+    last_assistant_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "assistant":
+            last_assistant_idx = i
+            break
+    if last_assistant_idx is None:
+        return None
+    last_assistant = messages[last_assistant_idx]
+    if last_assistant.get("intent") != "clarify":
+        return None
+
+    clarify_start = last_assistant_idx
+    while clarify_start - 2 >= 0:
+        prev_assistant = messages[clarify_start - 2]
+        if prev_assistant.get("role") == "assistant" and prev_assistant.get("intent") == "clarify":
+            clarify_start -= 2
+            continue
+        break
+
+    original_user_idx = clarify_start - 1
+    if original_user_idx < 0 or messages[original_user_idx].get("role") != "user":
+        return None
+
+    original_title = (messages[original_user_idx].get("content") or "").strip()
+    qa_history: list[dict] = []
+    idx = clarify_start
+    while idx < last_assistant_idx:
+        a_msg = messages[idx]
+        u_msg = messages[idx + 1] if idx + 1 < len(messages) else None
+        if (
+            a_msg.get("role") == "assistant"
+            and a_msg.get("intent") == "clarify"
+            and u_msg
+            and u_msg.get("role") == "user"
+        ):
+            questions = _message_questions(a_msg)
+            answers = normalize_clarification_answers(
+                questions,
+                raw_answers=_message_metadata(u_msg).get("answers"),
+                answer_text=(u_msg.get("content") or "").strip(),
+            )
+            qa_history.append(
+                {
+                    "questions": questions,
+                    "answers": answers,
+                    "answer": build_clarification_answer_summary(answers) or (u_msg.get("content") or "").strip(),
+                }
+            )
+            idx += 2
+        else:
+            break
+
+    last_questions = _message_questions(last_assistant)
+    return _actions().build_clarification_state(
+        original_title=original_title,
+        qa_history=qa_history,
+        last_questions=last_questions,
+        intent="requirement",
+    )
+
+
+def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pending: dict) -> dict:
+    if _is_cancel_clarification(ctx.text):
+        db.create_session_message(ctx.session_id, "user", "取消本次需求规划")
+        reply = "已取消当前这次需求规划，请重新输入新的需求。"
+        db.create_session_message(ctx.session_id, "assistant", reply, intent="info")
+        return _session_payload("info", reply)
+
+    user_answers = normalize_clarification_answers(
+        pending.get("last_questions"),
+        raw_answers=ctx.clarify_answers,
+        answer_text=ctx.text,
+    )
+    if not user_answers and not ctx.text:
+        return _session_payload("info", "澄清问题已变化或过期，请刷新后重试。")
+    user_content = build_clarification_answer_summary(user_answers) or ctx.text
+    db.create_session_message(
+        ctx.session_id,
+        "user",
+        user_content,
+        metadata={"answers": user_answers} if user_answers else None,
+    )
+    actions = _actions()
+    outcome = actions.continue_pending_clarification(
+        pending,
+        answer=ctx.text,
+        clarify_answers=ctx.clarify_answers,
+        project_info=ctx.project_info,
+        planner=ctx.planner,
+        intent=pending.get("intent") or "requirement",
+        clarify_fn=actions.clarify_requirement,
+    )
+    transition = interpret_clarification_outcome(
+        outcome,
+        pending_state=pending,
+        fallback_title=ctx.text,
+        normalize_text=actions.normalize_requirement_text,
+    )
+    if transition.status in {"interrupt", "error"}:
+        _raise_clarification_error(transition)
+    if transition.status == "needs_clarification":
+        next_state = transition.pending_state or pending
+        questions = list(transition.questions) or next_state.get("last_questions") or []
+        reply = _format_numbered_questions(questions)
+        db.create_session_message(
+            ctx.session_id,
+            "assistant",
+            reply,
+            intent="clarify",
+            metadata={"questions": questions},
+        )
+        return _session_payload("clarify", reply, questions=questions)
+
+    refined = actions.normalize_requirement_text(pending.get("original_title") or "")
+    refined = transition.refined_title or refined
+    _, reply, task_ids = _submit_requirement_from_message(
+        ctx.project,
+        refined,
+        planner=ctx.planner,
+        max_tasks=5,
+    )
+    db.create_session_message(
+        ctx.session_id,
+        "assistant",
+        reply,
+        intent="requirement",
+        task_ids=task_ids,
+    )
+    return _session_payload("requirement", reply, refined_title=refined, task_ids=task_ids)
+
+
+def _dispatch_session_command(ctx: _SessionDispatchContext) -> dict:
+    reply = _actions().command_intent_guidance()
+    db.create_session_message(ctx.session_id, "assistant", reply, intent="command")
+    return _session_payload("command", reply)
+
+
+def _dispatch_session_question(ctx: _SessionDispatchContext) -> dict:
+    reply = _answer_project_question(
+        ctx.project_info,
+        ctx.text,
+        gateway_options=ctx.gateway_options,
+    )
+    db.create_session_message(ctx.session_id, "assistant", reply, intent="question")
+    return _session_payload("question", reply)
+
+
+def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) -> dict:
+    assessment = _assess_requirement(
+        ctx.text,
+        project_info=ctx.project_info,
+        planner=ctx.planner,
+        clarify_answers=ctx.clarify_answers,
+    )
+    if assessment.get("status") == "needs_clarification":
+        questions = assessment.get("questions") or []
+        numbered = _format_numbered_questions(questions)
+        reply = (
+            "为了更好地规划，请先确认以下几个点：\n" + numbered
+            if numbered
+            else "为了更好地规划，请先确认以下几个点。"
+        )
+        db.create_session_message(
+            ctx.session_id,
+            "assistant",
+            reply,
+            intent="clarify",
+            metadata={"questions": questions},
+        )
+        return _session_payload("clarify", reply, questions=questions)
+
+    refined = assessment.get("refined_title") or ctx.text
+    max_tasks = 1 if intent == "task" else 5
+    _, reply, task_ids = _submit_requirement_from_message(
+        ctx.project,
+        refined,
+        planner=ctx.planner,
+        max_tasks=max_tasks,
+    )
+    db.create_session_message(ctx.session_id, "assistant", reply, intent=intent, task_ids=task_ids)
+    return _session_payload(intent, reply, refined_title=refined, task_ids=task_ids)
+
+
+def _resolve_session_dispatch_decision(
+    ctx: _SessionDispatchContext,
+    existing_messages: list[dict],
+) -> _SessionDispatchDecision:
+    pending = _reconstruct_clarification_state(existing_messages)
+    if pending and ctx.category == "auto":
+        return _SessionDispatchDecision(
+            intent=pending.get("intent") or "requirement",
+            pending_clarification=pending,
+        )
+
+    actions = _actions()
+    intent = resolve_turn_intent(
+        ctx.text,
+        category=ctx.category,
+        classify_fn=actions.classify_entry_intent,
+        classify_kwargs={
+            "project_info": ctx.project_info,
+            "category": ctx.category,
+            "gateway_options": ctx.gateway_options,
+        },
+        fallback_intent="requirement",
+    )
+    return _SessionDispatchDecision(intent=intent)
+
+
+def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: list[dict]) -> dict:
+    decision = _resolve_session_dispatch_decision(ctx, existing_messages)
+    if decision.pending_clarification:
+        return _actions()._dispatch_session_pending_clarification(ctx, decision.pending_clarification)
+
+    db.create_session_message(ctx.session_id, "user", ctx.text)
+    return _dispatch_with_intent_handlers(
+        decision.intent,
+        handlers={
+            "command": lambda: _dispatch_session_command(ctx),
+            "question": lambda: _dispatch_session_question(ctx),
+        },
+        fallback=lambda: _dispatch_session_requirement(ctx, intent=decision.intent),
+    )
+
+
+def send_session_message_action(
+    session_id: int,
+    text: str,
+    *,
+    category: str = "auto",
+    clarify_answers: Optional[list[dict]] = None,
+) -> dict:
+    """Send a message in a session — validate payload then delegate by scenario."""
+    db.init_db()
+    session = db.get_session(session_id)
+    if not session:
+        raise RuntimeError(f"会话 #{session_id} 不存在。")
+    project = session["project"]
+    project_info = db.get_project(project)
+    if not project_info:
+        raise RuntimeError(f"项目 '{project}' 不存在。")
+    text = normalize_text(text)
+    clarify_answers = clarify_answers if isinstance(clarify_answers, list) else []
+    if not text and not clarify_answers:
+        raise RuntimeError("输入不能为空。")
+    normalized_category = _normalize_goal_category(category)
+
+    existing_messages = db.list_session_messages(session_id)
+    pending_state = _reconstruct_clarification_state(existing_messages)
+    if not pending_state and _is_cancel_clarification(text):
+        db.create_session_message(session_id, "user", "取消本次需求规划")
+        reply = "当前没有正在等待澄清的需求规划。"
+        db.create_session_message(session_id, "assistant", reply, intent="info")
+        return _session_payload("info", reply)
+    if not pending_state and clarify_answers:
+        reply = "当前没有正在等待回答的澄清问题，请重新提交需求。"
+        return _session_payload("info", reply)
+    if not existing_messages:
+        short_seed = text or build_clarification_input_summary(raw_answers=clarify_answers)
+        short_title = short_seed[:40] + ("…" if len(short_seed) > 40 else "")
+        db.update_session(session_id, title=short_title)
+
+    ctx = _SessionDispatchContext(
+        session_id=session_id,
+        project=project,
+        project_info=project_info,
+        planner=_effective_planner(project_info),
+        text=text,
+        clarify_answers=clarify_answers,
+        category=normalized_category,
+        gateway_options=_actions().resolve_shared_gateway_options(project_info),
+    )
+    return _actions()._dispatch_session_message(ctx, existing_messages)
+
+
+def delete_session_action(session_id: int) -> dict:
+    db.init_db()
+    session = db.get_session(session_id)
+    if not session:
+        raise RuntimeError(f"会话 #{session_id} 不存在。")
+    db.delete_session(session_id)
+    _append_event(f"删除会话 #{session_id}", project=session["project"])
+    return {"ok": True, "message": f"会话 #{session_id} 已删除。"}
