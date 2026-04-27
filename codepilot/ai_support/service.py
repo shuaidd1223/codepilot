@@ -6,12 +6,7 @@ here so existing `from codepilot.ai_support.service import X` imports keep worki
 
 from __future__ import annotations
 
-import json
-import os
-import platform
 import subprocess
-import sys
-from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -38,8 +33,6 @@ from codepilot.ai_support.providers import (  # noqa: F401 (re-export)
 )
 from codepilot.ai_support.prompts import (  # noqa: F401 (re-export)
     AgentConfig,
-    TASK_BREAKDOWN_PROMPT_TEMPLATE,
-    TASK_BREAKDOWN_SCHEMA,
     TASK_PROMPT_TEMPLATE,
 )
 from codepilot.ai_support.classifier import (  # noqa: F401 (re-export)
@@ -49,7 +42,6 @@ from codepilot.ai_support.classifier import (  # noqa: F401 (re-export)
 )
 from codepilot.ai_support.result_parse import (
     extract_error_hint as _extract_error_hint_core,
-    parse_structured_json_output as _parse_structured_json_output,
 )
 from codepilot.ai_support.main_resolution import (
     resolve_task_content_call as _main_resolve_task_content_call,
@@ -57,6 +49,8 @@ from codepilot.ai_support.main_resolution import (
 from codepilot.ai_support.main_execute import (
     execute_task_content_call as _main_execute_task_content_call,
 )
+from codepilot.ai_support import planner_execution as _planner_execution
+from codepilot.ai_support import task_planning as _task_planning
 from codepilot.core.text_decode import decode_subprocess_text
 
 # ── Module-level state (kept here so monkeypatch in tests keeps working) ─────
@@ -367,182 +361,29 @@ def _run_claude_schema_prompt(
     timeout: int = 240,
 ) -> dict:
     """Use Claude CLI to produce schema-constrained JSON output."""
-    normalized = normalize_agent_name(planner)
-    model_alias = None
-    provider_key = normalized
-    if normalized in {"claude-sonnet", "claude-opus", "claude-haiku"}:
-        provider_key = "claude"
-        model_alias = normalized.split("-", 1)[1]
-    elif normalized not in {"claude", "claude-node"}:
-        raise RuntimeError("当前自动拆分只支持 Claude 或 Codex 作为规划器。")
-
-    provider_ref = config_ref or project_path
-    provider = resolve_cli_provider(provider_key, provider_ref)
-    exe = provider.find_executable()
-    if not exe:
-        raise RuntimeError(f"当前无法使用 {provider.name} 进行任务拆分。请先安装对应 CLI，或改用 codex。")
-
-    cmd = [str(exe)]
-    if provider_key == "claude-node":
-        cli_js = Path(_get_node_modules_path()) / "@anthropic-ai" / "claude-code" / "cli.js"
-        if not cli_js.exists():
-            raise RuntimeError(
-                "当前无法使用 Claude Code (Node) 进行任务拆分，因为没有找到全局安装的 "
-                "`@anthropic-ai/claude-code`。请先执行: npm install -g @anthropic-ai/claude-code"
-            )
-        cmd.append(str(cli_js))
-
-    cmd.extend([
-        "--output-format", "json",
-        "--json-schema", json.dumps(schema, ensure_ascii=False),
-        "--dangerously-skip-permissions",
-    ])
-    if model_alias:
-        cmd.extend(["--model", model_alias])
-    # -p "prompt" 必须放最后，否则 claude CLI 会忽略 --json-schema
-    cmd.extend(["-p", prompt])
-
-    process = None
-    try:
-        import threading, sys, time as _time
-
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            **_planner_process_group_kwargs(),
-        )
-
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
-        last_activity = [_time.monotonic()]
-
-        # stderr 线程实时打印 claude 进度
-        def _stream_stderr():
-            assert process.stderr is not None
-            for line in process.stderr:
-                decoded_line = _decode_planner_chunk(line)
-                stderr_chunks.append(decoded_line)
-                stripped = decoded_line.rstrip()
-                if not stripped:
-                    continue
-                last_activity[0] = _time.monotonic()
-                sys.stderr.write(f"  [planner] {stripped}\n")
-                sys.stderr.flush()
-                if _planner_progress_callback:
-                    try:
-                        _planner_progress_callback(stripped)
-                    except Exception:
-                        pass
-
-        stderr_thread = threading.Thread(target=_stream_stderr, daemon=True)
-        stderr_thread.start()
-
-        def _read_stdout():
-            assert process.stdout is not None
-            stdout_chunks.append(_decode_planner_chunk(process.stdout.read()))
-
-        stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
-        stdout_thread.start()
-
-        # Wait with idle-based stall detection.
-        # Semantics: `timeout` is the MAX IDLE TIME (no new output) before we
-        # kill the child. As long as claude keeps printing progress to stderr,
-        # the deadline keeps sliding. A separate hard cap protects against
-        # runaway processes that never stop printing either.
-        started = _time.monotonic()
-        hard_cap = max(timeout * 10, 1800)  # absolute safety net
-        stall_warned = False
-        while True:
-            exit_code = process.poll()
-            if exit_code is not None:
-                break
-            now = _time.monotonic()
-            elapsed = now - started
-            idle = now - last_activity[0]
-
-            # Hard cap (only to stop a truly runaway process)
-            if elapsed > hard_cap:
-                _kill_process_tree(process.pid)
-                process.wait(timeout=5)
-                raise subprocess.TimeoutExpired(cmd, hard_cap)
-
-            # Idle kill — silent for too long → consider hung
-            if idle > timeout:
-                _kill_process_tree(process.pid)
-                process.wait(timeout=5)
-                raise subprocess.TimeoutExpired(cmd, timeout)
-
-            # Heartbeat warning once per stall period
-            if idle > 60 and not stall_warned:
-                stall_warned = True
-                msg = f"claude 已 {int(idle)}s 无输出（idle 超过 {timeout}s 会强制结束）..."
-                sys.stderr.write(f"  [planner] {msg}\n")
-                sys.stderr.flush()
-                if _planner_progress_callback:
-                    try:
-                        _planner_progress_callback(msg)
-                    except Exception:
-                        pass
-            elif idle < 5 and stall_warned:
-                # Output resumed — allow a fresh warning next stall
-                stall_warned = False
-
-            _time.sleep(0.5)
-
-        stdout_thread.join(timeout=5)
-        stderr_thread.join(timeout=2)
-
-        result_stdout = "".join(stdout_chunks)
-        result_stderr = "".join(stderr_chunks)
-        result_returncode = process.returncode
-    except subprocess.TimeoutExpired as exc:
-        _terminate_planner_process(process)
-        raise RuntimeError(
-            f"{provider.name} 在任务拆分阶段已连续 {timeout}s 没有任何输出，视为卡住并强制终止。"
-            "可以稍后重试，或改用 codex 作为规划器。"
-        ) from exc
-    except KeyboardInterrupt as exc:
-        _terminate_planner_process(process)
-        raise RuntimeError(
-            f"{provider.name} 在任务拆分阶段被中断，已终止当前规划。可以稍后重试。"
-        ) from exc
-    except BaseException:
-        _terminate_planner_process(process)
-        raise
-
-    if result_returncode != 0:
-        hint = _extract_error_hint("\n".join(part for part in (result_stderr, result_stdout) if part))
-        suffix = f"原因：{hint}" if hint else "请检查 Claude CLI 当前是否可用。"
-        raise RuntimeError(f"{provider.name} 没有成功完成任务拆分。{suffix}")
-
-    output = result_stdout.strip()
-    if not output:
-        raise RuntimeError("Claude 任务拆分返回空内容")
-    return _parse_structured_json_output(output, provider_name=provider.name)
+    return _planner_execution.run_claude_schema_prompt(
+        prompt,
+        schema,
+        planner=planner,
+        project_path=project_path,
+        config_ref=config_ref,
+        timeout=timeout,
+        normalize_agent_name=normalize_agent_name,
+        resolve_cli_provider=resolve_cli_provider,
+        get_node_modules_path=_get_node_modules_path,
+        subprocess_module=subprocess,
+        planner_process_group_kwargs_fn=_planner_process_group_kwargs,
+        decode_planner_chunk=_decode_planner_chunk,
+        kill_process_tree_fn=_kill_process_tree,
+        terminate_planner_process_fn=_terminate_planner_process,
+        extract_error_hint=_extract_error_hint,
+        get_progress_callback=lambda: _planner_progress_callback,
+    )
 
 
 def _kill_process_tree(pid: int) -> None:
     """Kill a process and all its children. Works on Windows and Unix."""
-    if platform.system().lower() == "windows":
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True,
-                timeout=10,
-            )
-        except Exception:
-            pass
-    else:
-        import signal
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except Exception:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except Exception:
-                pass
+    _planner_execution.kill_process_tree(pid)
 
 
 def _planner_process_group_kwargs() -> dict:
@@ -552,24 +393,15 @@ def _planner_process_group_kwargs() -> dict:
     console (e.g. when the planner runs inside the detached `codepilot ui start`
     service). Delegates to :func:`runtime.no_window_kwargs`.
     """
-    from codepilot.core.runtime import no_window_kwargs
-    return no_window_kwargs(new_process_group=True)
+    return _planner_execution.planner_process_group_kwargs()
 
 
 def _terminate_planner_process(process) -> None:
     """Best-effort cleanup for planner subprocesses left running by timeouts/interruption."""
-    if process is None:
-        return
-    pid = getattr(process, "pid", None)
-    if pid:
-        try:
-            _kill_process_tree(int(pid))
-        except Exception:
-            pass
-    try:
-        process.wait(timeout=5)
-    except Exception:
-        pass
+    _planner_execution.terminate_planner_process(
+        process,
+        kill_process_tree_fn=_kill_process_tree,
+    )
 
 
 
@@ -583,240 +415,30 @@ def _run_codex_schema_prompt(
     timeout: int = 240,
 ) -> dict:
     """Use Codex CLI with a JSON schema output contract."""
-    provider_ref = config_ref or project_path
-    available, message = check_provider_availability("codex", project_path=provider_ref)
-    if not available:
-        raise RuntimeError(message)
-    exe = resolve_cli_provider("codex", provider_ref).find_executable()
-    if not exe:
-        raise RuntimeError("当前无法使用 Codex 进行任务拆分，因为本机没有找到 `codex` 命令。")
-
-    import tempfile
-
-    with tempfile.TemporaryDirectory(prefix="codepilot-plan-") as temp_dir:
-        temp = Path(temp_dir)
-        schema_path = temp / "schema.json"
-        output_path = temp / "result.json"
-        schema_path.write_text(json.dumps(schema, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        cmd = [str(exe)]
-        if project_path:
-            cmd.extend(["-C", project_path])
-        cmd.extend(
-            [
-                "exec",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                "--dangerously-bypass-approvals-and-sandbox",
-                "--output-schema",
-                str(schema_path),
-                "-o",
-                str(output_path),
-                "-",
-            ]
-        )
-
-        process = None
-        try:
-            import threading as _threading
-            import time as _time
-
-            process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                **_planner_process_group_kwargs(),
-            )
-            if process.stdin:
-                process.stdin.write(prompt.encode("utf-8"))
-                process.stdin.close()
-
-            # Use separate threads for BOTH stdout and stderr (avoid communicate() deadlock)
-            stdout_chunks: list[str] = []
-            stderr_chunks: list[str] = []
-            last_activity = [_time.monotonic()]  # mutable for closure
-
-            def _read_codex_stdout():
-                assert process.stdout is not None
-                for line in process.stdout:
-                    decoded_line = _decode_planner_chunk(line)
-                    stdout_chunks.append(decoded_line)
-                    if decoded_line:
-                        last_activity[0] = _time.monotonic()
-
-            def _stream_codex_stderr():
-                assert process.stderr is not None
-                for line in process.stderr:
-                    decoded_line = _decode_planner_chunk(line)
-                    stderr_chunks.append(decoded_line)
-                    stripped = decoded_line.rstrip()
-                    if stripped:
-                        last_activity[0] = _time.monotonic()
-                        sys.stderr.write(f"  [planner] {stripped}\n")
-                        sys.stderr.flush()
-                        if _planner_progress_callback:
-                            try:
-                                _planner_progress_callback(stripped)
-                            except Exception:
-                                pass
-
-            stdout_thread = _threading.Thread(target=_read_codex_stdout, daemon=True)
-            stderr_thread = _threading.Thread(target=_stream_codex_stderr, daemon=True)
-            stdout_thread.start()
-            stderr_thread.start()
-
-            # Wait with idle-based stall detection.
-            # `timeout` = MAX IDLE TIME (no new output) before we kill.
-            # As long as codex keeps printing, the deadline slides.
-            started = _time.monotonic()
-            hard_cap = max(timeout * 10, 1800)
-            stall_warned = False
-            while True:
-                exit_code = process.poll()
-                if exit_code is not None:
-                    break
-                now = _time.monotonic()
-                elapsed = now - started
-                idle = now - last_activity[0]
-
-                if elapsed > hard_cap:
-                    _kill_process_tree(process.pid)
-                    process.wait(timeout=5)
-                    raise subprocess.TimeoutExpired(cmd, hard_cap)
-
-                if idle > timeout:
-                    _kill_process_tree(process.pid)
-                    process.wait(timeout=5)
-                    raise subprocess.TimeoutExpired(cmd, timeout)
-
-                if idle > 60 and not stall_warned:
-                    stall_warned = True
-                    msg = f"codex 已 {int(idle)}s 无输出（idle 超过 {timeout}s 会强制结束）..."
-                    sys.stderr.write(f"  [planner] {msg}\n")
-                    sys.stderr.flush()
-                    if _planner_progress_callback:
-                        try:
-                            _planner_progress_callback(msg)
-                        except Exception:
-                            pass
-                elif idle < 5 and stall_warned:
-                    stall_warned = False  # output resumed
-
-                _time.sleep(0.5)
-
-            stdout_thread.join(timeout=5)
-            stderr_thread.join(timeout=2)
-            codex_returncode = process.returncode
-            codex_stdout = "".join(stdout_chunks)
-            codex_stderr = "".join(stderr_chunks)
-        except subprocess.TimeoutExpired as exc:
-            _terminate_planner_process(process)
-            raise RuntimeError(
-                f"Codex 在任务拆分阶段已连续 {timeout}s 没有任何输出，视为卡住并强制终止。"
-                "可以稍后重试，或改用 claude 作为规划器。"
-            ) from exc
-        except KeyboardInterrupt as exc:
-            _terminate_planner_process(process)
-            raise RuntimeError("Codex 在任务拆分阶段被中断，已终止当前规划。可以稍后重试。") from exc
-        except BaseException:
-            _terminate_planner_process(process)
-            raise
-
-        if codex_returncode != 0:
-            hint = _extract_error_hint("\n".join(part for part in (codex_stderr, codex_stdout) if part))
-            suffix = f"原因：{hint}" if hint else "请检查 Codex CLI 当前是否可用。"
-            raise RuntimeError(f"Codex 没有成功完成任务拆分。{suffix}")
-
-        output = output_path.read_text(encoding="utf-8", errors="replace").strip() if output_path.exists() else ""
-        if not output:
-            output = codex_stdout.strip()
-    if not output:
-        raise RuntimeError("Codex 没有返回任务拆分结果，暂时无法继续自动规划。")
-    return _parse_structured_json_output(output, provider_name="Codex")
+    return _planner_execution.run_codex_schema_prompt(
+        prompt,
+        schema,
+        project_path=project_path,
+        config_ref=config_ref,
+        timeout=timeout,
+        check_provider_availability=check_provider_availability,
+        resolve_cli_provider=resolve_cli_provider,
+        subprocess_module=subprocess,
+        planner_process_group_kwargs_fn=_planner_process_group_kwargs,
+        decode_planner_chunk=_decode_planner_chunk,
+        kill_process_tree_fn=_kill_process_tree,
+        terminate_planner_process_fn=_terminate_planner_process,
+        extract_error_hint=_extract_error_hint,
+        get_progress_callback=lambda: _planner_progress_callback,
+    )
 
 
 def build_task_markdown_from_plan(task: dict) -> str:
     """Convert a structured plan item into task markdown using task templates."""
-
-    class _SafeFormat(dict):
-        def __missing__(self, key: str) -> str:  # type: ignore[override]
-            return ""
-
-    def _bullet(items: list[str], fallback: str) -> str:
-        rows = [str(item).strip() for item in (items or []) if str(item).strip()]
-        return "\n".join(f"- {row}" for row in rows) if rows else f"- {fallback}"
-
-    def _coerce_list(value: object) -> list[str]:
-        if isinstance(value, list):
-            return [str(item) for item in value]
-        return []
-
-    def _ac_matrix(criteria_items: list[str]) -> str:
-        rows = [str(item).strip() for item in (criteria_items or []) if str(item).strip()]
-        if not rows:
-            rows = ["待补充"]
-        header = (
-            "| AC # | Criterion | Verification Command / Action | Expected Result | Evidence Location |\n"
-            "| :--- | :--- | :--- | :--- | :--- |"
-        )
-        body_lines = []
-        for i, row in enumerate(rows):
-            safe = row.replace("|", "\\|")
-            body_lines.append(f"| AC-{i + 1} | {safe} |  |  |  |")
-        return header + "\n" + "\n".join(body_lines)
-
-    title = str(task.get("title") or "").strip() or "未命名任务"
-    goal = str(task.get("goal") or "").strip() or "待补充"
-    acceptance_items = _coerce_list(task.get("acceptance_criteria"))
-    acceptance = _bullet(acceptance_items, "待补充")
-    ac_matrix = _ac_matrix(acceptance_items)
-    builder_notes = _bullet(_coerce_list(task.get("builder_notes")), "待补充")
-    reviewer_notes = _bullet(_coerce_list(task.get("reviewer_notes")), "待补充")
-    files = _bullet(_coerce_list(task.get("files")), "待确认")
-    notes = _bullet(_coerce_list(task.get("notes")), "无")
-    forbidden = _bullet(_coerce_list(task.get("forbidden")), "不改动任务声明范围外的生产代码；不做无关重构。")
-    not_in_scope = _bullet(_coerce_list(task.get("not_in_scope")), "与本任务目标无关的模块、文档、部署流程。")
-    priority = str(task.get("priority") or "").strip() or "P2"
-    risk_level = str(task.get("risk_level") or "").strip() or "待评估"
-    scope_budget = str(task.get("scope_budget") or "").strip() or "未设定"
-    owner = str(task.get("owner") or "").strip() or "未指派"
-    evidence = str(task.get("evidence") or "").strip() or "（未提供规划依据，建议人工复核）"
-    dep_indices_raw = task.get("depends_on_indices")
-    dep_indices = (
-        [i for i in dep_indices_raw if isinstance(i, int) and i >= 0]
-        if isinstance(dep_indices_raw, list)
-        else []
-    )
-    depends_on = "无" if not dep_indices else ", ".join(f"T{idx + 1}" for idx in dep_indices)
-
-    normalized_agent = normalize_agent_name(str(task.get("agent") or "dual"))
-
-    template_path = Path(__file__).resolve().parent.parent / "templates" / "task-template.md"
-    template_text = template_path.read_text(encoding="utf-8", errors="replace")
-    return template_text.format_map(
-        _SafeFormat(
-            {
-                "title": title,
-                "agent": normalized_agent,
-                "priority": priority,
-                "depends_on": depends_on,
-                "risk_level": risk_level,
-                "scope_budget": scope_budget,
-                "owner": owner,
-                "evidence": evidence,
-                "goal": goal,
-                "criteria": acceptance,
-                "ac_matrix": ac_matrix,
-                "requirements": builder_notes,
-                "builder_responsibilities": builder_notes,
-                "reviewer_responsibilities": reviewer_notes,
-                "files": files,
-                "forbidden": forbidden,
-                "not_in_scope": not_in_scope,
-                "notes": notes,
-            }
-        )
+    return _task_planning.build_task_markdown_from_plan(
+        task,
+        normalize_agent_name=normalize_agent_name,
+        template_path=Path(__file__).resolve().parent.parent / "templates" / "task-template.md",
     )
 
 
@@ -831,104 +453,26 @@ def _run_recon_stage(
     project_context: str,
     progress_prefix: str = "  [recon]",
 ) -> dict:
-    """Run the reconnaissance stage: let the planner read the project before planning.
-
-    Returns a dict matching :data:`RECON_SCHEMA`. Errors are swallowed and
-    replaced with an empty-but-valid result so the planning stage still runs
-    (better to plan with less context than to fail the whole workflow).
-    """
-    from codepilot.ai_support.prompts import RECON_PROMPT_TEMPLATE, RECON_SCHEMA
-
-    prompt = RECON_PROMPT_TEMPLATE.format(
-        title=title,
-        project_context=project_context or "(No project context; inspect via tools.)",
-    )
-
-    cb = _planner_progress_callback
-    if cb:
-        try:
-            cb(f"{progress_prefix} 启动侦察：读取相关文件，梳理现状...")
-        except Exception:
-            pass
-
-    try:
-        if planner_normalized in {"claude", "claude-node", "claude-sonnet", "claude-opus", "claude-haiku"}:
-            payload = _run_claude_schema_prompt(
-                prompt,
-                RECON_SCHEMA,
-                planner=planner_normalized,
-                project_path=project_path,
-                config_ref=config_ref,
-            )
-        elif planner_normalized == "codex":
-            payload = _run_codex_schema_prompt(
-                prompt,
-                RECON_SCHEMA,
-                project_path=project_path,
-                config_ref=config_ref,
-            )
-        else:
-            payload = {}
-    except Exception as exc:
-        if cb:
-            try:
-                cb(f"{progress_prefix} 侦察失败，跳过直接进规划：{exc}")
-            except Exception:
-                pass
-        return {}
-
-    if not isinstance(payload, dict):
-        return {}
-
-    # Sanitize hallucinated paths. Any file the recon claims we should
-    # touch has to actually exist on disk; otherwise downstream tasks will
-    # carry forward fake paths and the executor will choke. When validation
-    # drops everything we backfill with keyword-matched real files.
+    """Run the reconnaissance stage: let the planner read the project before planning."""
     from codepilot.ai_support.planner_context import validate_recon_payload
 
-    cleaned, dropped = validate_recon_payload(payload, project_path, title=title)
-    if cb:
-        try:
-            kept = cleaned.get("relevant_files") or []
-            if dropped:
-                cb(
-                    f"{progress_prefix} 侦察完成：认定 {len(kept)} 个相关文件；"
-                    f"丢弃 {len(dropped)} 个不存在的路径（{', '.join(dropped[:3])}{'…' if len(dropped) > 3 else ''}）"
-                )
-            else:
-                cb(f"{progress_prefix} 侦察完成：认定 {len(kept)} 个相关文件")
-        except Exception:
-            pass
-    return cleaned
+    return _task_planning.run_recon_stage(
+        title,
+        project_path,
+        planner_normalized=planner_normalized,
+        config_ref=config_ref,
+        project_context=project_context,
+        progress_prefix=progress_prefix,
+        run_claude_schema_prompt=_run_claude_schema_prompt,
+        run_codex_schema_prompt=_run_codex_schema_prompt,
+        validate_recon_payload=validate_recon_payload,
+        get_progress_callback=lambda: _planner_progress_callback,
+    )
 
 
 def _format_recon_block(recon: dict) -> str:
     """Render recon payload as a readable block for the planner prompt."""
-    if not recon:
-        return "(No recon conclusions were produced; plan based on project context.)"
-    lines: list[str] = []
-    current = (recon.get("current_state") or "").strip()
-    if current:
-        lines.append(f"Current state: {current}")
-    files = [f for f in (recon.get("relevant_files") or []) if isinstance(f, str) and f.strip()]
-    if files:
-        lines.append("Relevant files:")
-        for f in files[:12]:
-            lines.append(f"  - {f}")
-    findings = [x for x in (recon.get("key_findings") or []) if isinstance(x, str) and x.strip()]
-    if findings:
-        lines.append("Key findings:")
-        for x in findings[:8]:
-            lines.append(f"  - {x}")
-    risks = [x for x in (recon.get("risks") or []) if isinstance(x, str) and x.strip()]
-    if risks:
-        lines.append("Risks:")
-        for x in risks[:6]:
-            lines.append(f"  - {x}")
-    approach = (recon.get("suggested_approach") or "").strip()
-    if approach:
-        lines.append(f"Suggested approach: {approach}")
-    return "\n".join(lines) if lines else "(Recon output is empty.)"
+    return _task_planning.format_recon_block(recon)
 
 
 def parse_automation_planner_result(
@@ -939,9 +483,7 @@ def parse_automation_planner_result(
     existing_tasks: Optional[list[dict]] = None,
 ) -> dict:
     """Normalize planner output via the dedicated parser module."""
-    from codepilot.ai_support.planner_parse import parse_automation_planner_result as _parse_result
-
-    return _parse_result(
+    return _task_planning.parse_automation_planner_result(
         breakdown,
         title=title,
         max_tasks=max_tasks,
@@ -961,72 +503,27 @@ def generate_task_breakdown(
     parse_result: bool = True,
     existing_tasks: Optional[list[dict]] = None,
 ) -> dict:
-    """Generate a structured subtask breakdown for a high-level goal.
-
-    When ``two_stage`` is True (default) the planner runs a preliminary
-    reconnaissance stage where it is encouraged to read relevant project
-    files, then the breakdown stage consumes the recon output. Setting it to
-    False falls back to a single-shot planning call (legacy behavior).
-
-    When ``existing_tasks`` is provided (open backlog + in-progress rows for
-    the project), they are surfaced to the planner and used to filter
-    near-duplicate titles after the fact. Pass ``None`` from unit tests that
-    don't care about dedup.
-    """
+    """Generate a structured subtask breakdown for a high-level goal."""
     from codepilot.ai_support.backlog_dedup import format_existing_block
     from codepilot.ai_support.planner_context import collect_planner_context
 
-    max_tasks = max(1, min(max_tasks, 8))
-    normalized = normalize_agent_name(planner)
-    context = collect_planner_context(project_path, title)
-
-    recon: dict = {}
-    if two_stage:
-        recon = _run_recon_stage(
-            title,
-            project_path,
-            planner_normalized=normalized,
-            config_ref=config_ref,
-            project_context=context,
-        )
-
-    recon_block = _format_recon_block(recon)
-    existing_block = format_existing_block(existing_tasks)
-    prompt = TASK_BREAKDOWN_PROMPT_TEMPLATE.format(
-        title=title,
-        project_context=context or "(Context collection failed; plan from requirement only.)",
-        recon_block=recon_block,
-        existing_tasks_block=existing_block,
+    return _task_planning.generate_task_breakdown(
+        title,
+        project_path=project_path,
+        planner=planner,
         max_tasks=max_tasks,
-    )
-
-    if normalized in {"claude", "claude-node", "claude-sonnet", "claude-opus", "claude-haiku"}:
-        breakdown = _run_claude_schema_prompt(
-            prompt,
-            TASK_BREAKDOWN_SCHEMA,
-            planner=normalized,
-            project_path=project_path,
-            config_ref=config_ref,
-        )
-    elif normalized == "codex":
-        breakdown = _run_codex_schema_prompt(
-            prompt,
-            TASK_BREAKDOWN_SCHEMA,
-            project_path=project_path,
-            config_ref=config_ref,
-        )
-    else:
-        raise RuntimeError(
-            f"当前自动拆分暂时不支持规划器 `{planner}`。请改用 claude 或 codex。"
-        )
-    if not parse_result:
-        return breakdown
-
-    return parse_automation_planner_result(
-        breakdown,
-        title=title,
-        max_tasks=max_tasks,
+        config_ref=config_ref,
+        two_stage=two_stage,
+        parse_result=parse_result,
         existing_tasks=existing_tasks,
+        normalize_agent_name=normalize_agent_name,
+        collect_planner_context=collect_planner_context,
+        format_existing_block=format_existing_block,
+        run_recon_stage_fn=_run_recon_stage,
+        format_recon_block_fn=_format_recon_block,
+        run_claude_schema_prompt=_run_claude_schema_prompt,
+        run_codex_schema_prompt=_run_codex_schema_prompt,
+        parse_automation_planner_result_fn=parse_automation_planner_result,
     )
 
 
