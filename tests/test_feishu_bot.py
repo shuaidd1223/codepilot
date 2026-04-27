@@ -334,6 +334,96 @@ def test_feishu_delete_task_command_returns_deleted_card(tmp_path, monkeypatch):
     assert db.get_task(task["id"]) is None
 
 
+def test_feishu_batch_cancel_task_command_returns_summary_card(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    first = db.create_task(
+        project="demo",
+        title="批量取消任务 1",
+        content="验证飞书批量取消",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+    second = db.create_task(
+        project="demo",
+        title="批量取消任务 2",
+        content="验证飞书批量取消",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+
+    reply = handle_command_text(f"cancel {first['id']} {second['id']}")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "批量取消完成" in payload
+    assert "成功" in payload
+    assert db.get_task(first["id"])["status"] == "cancelled"
+    assert db.get_task(second["id"])["status"] == "cancelled"
+
+
+def test_feishu_batch_archive_task_command_accepts_comma_separated_ids(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    first = db.create_task(
+        project="demo",
+        title="批量归档任务 1",
+        content="验证飞书批量归档",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+    second = db.create_task(
+        project="demo",
+        title="批量归档任务 2",
+        content="验证飞书批量归档",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+    db.update_task(first["id"], status="done")
+    db.update_task(second["id"], status="done")
+
+    reply = handle_command_text(f"archive {first['id']},{second['id']}")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "批量归档完成" in payload
+    assert db.get_task(first["id"])["status"] == "archived"
+    assert db.get_task(second["id"])["status"] == "archived"
+
+
+def test_feishu_batch_delete_task_command_reports_partial_failures(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    deletable = db.create_task(
+        project="demo",
+        title="批量删除任务 1",
+        content="验证飞书批量删除",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+    blocked = db.create_task(
+        project="demo",
+        title="批量删除任务 2",
+        content="验证飞书批量删除",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+    db.update_task(deletable["id"], status="done")
+    db.update_task(blocked["id"], status="in_progress")
+
+    reply = handle_command_text(f"delete {deletable['id']} {blocked['id']}")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "批量删除完成" in payload
+    assert "失败 1" in payload
+    assert db.get_task(deletable["id"]) is None
+    assert db.get_task(blocked["id"])["status"] == "in_progress"
+
+
 def test_feishu_unknown_command_returns_help_card(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
 

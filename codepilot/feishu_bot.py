@@ -19,6 +19,7 @@ from codepilot.storage import database as db
 from codepilot.webapp.display_sort import sort_tasks_for_display
 from codepilot.webapp.action_task_ops import (
     archive_task_action,
+    batch_task_action,
     cancel_task_action,
     delete_task_action,
     project_service_action,
@@ -370,6 +371,7 @@ def _help_note(prefix: str) -> str:
         f"命令示例: {lead}global | {lead}use demo | {lead}overview | {lead}tasks | {lead}requirements | "
         f"{lead}需求 优化任务面板 | {lead}答 先做飞书入口 | "
         f"{lead}detail 123 | {lead}logs 123 | {lead}stop 123 | {lead}retry 123 | "
+        f"{lead}cancel 12 13 | {lead}archive 20,21 | {lead}delete 30 31 | "
         f"{lead}daemon status | {lead}inspect status"
     )
 
@@ -570,15 +572,16 @@ def build_help_card(*, prefix: str = "", error: str = "") -> dict[str, Any]:
                 ],
                 background="default",
             ),
-            *_section_note("任务操作", "任务卡片里会给出带真实 ID 的下一步命令。"),
+            *_section_note("任务操作", "支持单任务和批量任务 ID；多个 ID 可用空格或逗号分隔。"),
             *_column_panels(
                 [
                     f"**详情**\n{_cmd(prefix, 'detail <id>')}",
                     f"**日志**\n{_cmd(prefix, 'logs <id>')}",
                     f"**停止**\n{_cmd(prefix, 'stop <id>')}",
                     f"**重试**\n{_cmd(prefix, 'retry <id>')}",
-                    f"**取消**\n{_cmd(prefix, 'cancel <id>')}",
-                    f"**删除**\n{_cmd(prefix, 'delete <id>')}",
+                    f"**批量取消**\n{_cmd(prefix, 'cancel <id...>')}",
+                    f"**批量归档**\n{_cmd(prefix, 'archive <id...>')}",
+                    f"**批量删除**\n{_cmd(prefix, 'delete <id...>')}",
                 ],
                 background="default",
             ),
@@ -1620,6 +1623,96 @@ def _parse_task_id(token: str) -> int:
     return task_id
 
 
+def _parse_task_ids(tokens: list[str], *, command_name: str) -> list[int]:
+    raw_parts = [str(token or "").strip() for token in tokens if str(token or "").strip()]
+    if not raw_parts:
+        raise RuntimeError(f"请提供任务 ID，例如 `{command_name} 123`。")
+    raw_items = [item for item in re.split(r"[\s,，]+", " ".join(raw_parts)) if item]
+    if not raw_items:
+        raise RuntimeError(f"请提供任务 ID，例如 `{command_name} 123`。")
+
+    task_ids: list[int] = []
+    seen: set[int] = set()
+    for item in raw_items:
+        task_id = _parse_task_id(item)
+        if task_id in seen:
+            continue
+        seen.add(task_id)
+        task_ids.append(task_id)
+    return task_ids
+
+
+def _batch_action_label(action: str) -> str:
+    return {
+        "cancel": "取消",
+        "archive": "归档",
+        "delete": "删除",
+    }.get(str(action or "").strip().lower(), str(action or "").strip())
+
+
+def build_batch_task_action_card(action: str, result: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
+    action_key = str(action or "").strip().lower()
+    action_label = _batch_action_label(action_key)
+    first_task_id = 0
+    for item in result.get("succeeded") or []:
+        task = item.get("task") if isinstance(item, dict) else None
+        if isinstance(task, dict) and int(task.get("id") or 0) > 0:
+            first_task_id = int(task["id"])
+            break
+
+    blocks: list[str | dict[str, Any]] = [
+        _field_block(
+            [
+                _field(f"**操作**\n`批量{action_label}`"),
+                _field(f"**总计**\n`{int(result.get('total') or 0)}`"),
+                _field(f"**成功**\n`{int(result.get('success_count') or 0)}`"),
+                _field(f"**失败**\n`{int(result.get('failed_count') or 0)}`"),
+            ]
+        ),
+        _note(str(result.get("message") or "").strip()),
+    ]
+
+    succeeded = result.get("succeeded") or []
+    if succeeded:
+        success_lines: list[str] = []
+        for item in succeeded[:8]:
+            if not isinstance(item, dict):
+                continue
+            task = item.get("task") if isinstance(item.get("task"), dict) else None
+            task_id = int((task or {}).get("id") or item.get("deleted_task_id") or item.get("task_id") or 0)
+            if task_id <= 0:
+                continue
+            success_lines.append(f"- `#{task_id}` {str(item.get('message') or '').strip()}")
+        if success_lines:
+            blocks.extend([*_section_note("成功任务"), _md_block("\n".join(success_lines))])
+
+    failed = result.get("failed") or []
+    if failed:
+        failed_lines: list[str] = []
+        for item in failed[:8]:
+            if not isinstance(item, dict):
+                continue
+            task_id = int(item.get("task_id") or 0)
+            error = str(item.get("error") or "").strip()
+            if task_id <= 0:
+                continue
+            failed_lines.append(f"- `#{task_id}` {error}")
+        if failed_lines:
+            blocks.extend([*_section_note("失败任务"), _md_block("\n".join(failed_lines))])
+
+    commands: list[tuple[str, str]] = [("tasks", "任务面板")]
+    if first_task_id and action_key != "delete":
+        commands.insert(0, (f"detail {first_task_id}", "查看首个成功任务"))
+        commands.insert(1, (f"logs {first_task_id}", "查看首个任务日志"))
+    blocks.extend(_command_panel(prefix, commands))
+    return _card(
+        f"批量{action_label}完成",
+        blocks,
+        template="green" if int(result.get("failed_count") or 0) == 0 else "orange",
+        subtitle="飞书已执行批量任务操作，并返回逐项结果。",
+    )
+
+
 def handle_command_text(text: str, *, config_path: Path | None = None, chat_id: str = "") -> dict[str, Any]:
     db.init_db()
     cfg = load_feishu_bot_config(config_path)
@@ -1717,21 +1810,42 @@ def handle_command_text(text: str, *, config_path: Path | None = None, chat_id: 
         stop_task_action(task_id)
         return _reply_card(build_task_card(task_id, prefix=cfg.command_prefix, title_prefix="停止请求已发送"))
     if verb in {"cancel", "discard"}:
-        if len(parts) < 2:
-            raise RuntimeError("请提供任务 ID，例如 `cancel 123`。")
-        task_id = _parse_task_id(parts[1])
+        task_ids = _parse_task_ids(parts[1:], command_name="cancel")
+        if len(task_ids) > 1:
+            return _reply_card(
+                build_batch_task_action_card(
+                    "cancel",
+                    batch_task_action(task_ids, "cancel"),
+                    prefix=cfg.command_prefix,
+                )
+            )
+        task_id = task_ids[0]
         cancel_task_action(task_id)
         return _reply_card(build_task_card(task_id, prefix=cfg.command_prefix, title_prefix="任务已取消"))
     if verb in {"archive", "arch"}:
-        if len(parts) < 2:
-            raise RuntimeError("请提供任务 ID，例如 `archive 123`。")
-        task_id = _parse_task_id(parts[1])
+        task_ids = _parse_task_ids(parts[1:], command_name="archive")
+        if len(task_ids) > 1:
+            return _reply_card(
+                build_batch_task_action_card(
+                    "archive",
+                    batch_task_action(task_ids, "archive"),
+                    prefix=cfg.command_prefix,
+                )
+            )
+        task_id = task_ids[0]
         archive_task_action(task_id)
         return _reply_card(build_task_card(task_id, prefix=cfg.command_prefix, title_prefix="任务已归档"))
     if verb in {"delete", "del", "rm"}:
-        if len(parts) < 2:
-            raise RuntimeError("请提供任务 ID，例如 `delete 123`。")
-        task_id = _parse_task_id(parts[1])
+        task_ids = _parse_task_ids(parts[1:], command_name="delete")
+        if len(task_ids) > 1:
+            return _reply_card(
+                build_batch_task_action_card(
+                    "delete",
+                    batch_task_action(task_ids, "delete"),
+                    prefix=cfg.command_prefix,
+                )
+            )
+        task_id = task_ids[0]
         delete_task_action(task_id)
         return _reply_card(
             _card(
