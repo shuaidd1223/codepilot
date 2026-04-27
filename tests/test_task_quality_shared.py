@@ -27,8 +27,8 @@ def test_base_keywords_are_shared_by_both_contexts():
 
 
 def test_planner_list_keeps_bare_marker_words_out_of_inspect_keywords():
-    """Inspect's signals legitimately reference real TODO markers in code, so
-    bare "todo" must NOT be a filler keyword there. The planner stage can
+    """Inspect signals can legitimately cite code comment markers, so bare
+    ``todo`` must NOT be a filler keyword there. The planner stage can
     afford to be stricter since user-supplied requirements rarely contain
     bare English placeholders."""
     assert "todo" in PLANNER_FILLER_KEYWORDS
@@ -51,9 +51,9 @@ def test_looks_generic_unrelated_text_is_false():
     assert looks_generic("修复登录闪退", PLANNER_FILLER_KEYWORDS) is False
 
 
-def test_inspect_filler_does_not_fire_on_legitimate_todo_reference():
-    """Candidate title 'fix foo.py:42 TODO' should NOT be flagged by inspect
-    even though 'TODO' is literally in the text."""
+def test_inspect_filler_does_not_fire_on_legitimate_marker_reference():
+    """A candidate title citing ``TODO`` should not be treated as filler
+    when it points at a concrete code marker."""
     text = "修复 foo.py:42 的 TODO 标记引用"
     assert looks_generic(text, INSPECT_FILLER_KEYWORDS) is False
 
@@ -192,8 +192,8 @@ def test_planner_quality_gate_accepts_concrete_task():
 # ─── inspect still uses the inspect-specific list ───────────────────────────
 
 
-def test_inspect_filter_keeps_real_todo_reference_with_grounded_evidence():
-    """Regression check: the inspect filter does not drop legitimate TODO
+def test_inspect_filter_keeps_real_marker_reference_with_grounded_evidence():
+    """Regression check: the inspect filter keeps legitimate marker
     references after the refactor routes it through task_quality."""
     signal_results = [
         inspect_cmd.InspectSignalResult(
@@ -208,7 +208,7 @@ def test_inspect_filter_keeps_real_todo_reference_with_grounded_evidence():
         "title": "修复 foo.py 的 TODO",
         "goal": "处理 codepilot/foo.py:42 的 TODO，确保下游读完整数据。",
         "priority": "P3",
-        "rationale": "TODO 指向明确行。",
+        "rationale": "注释标记指向明确行。",
         "kind": "bug",
         "evidence": "signal 3: codepilot/foo.py:42 TODO handle timeout",
         "effort": "small",
