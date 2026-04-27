@@ -111,3 +111,52 @@ def test_notify_task_status_auto_detects_wecom_payload_shape(tmp_path, monkeypat
             "content": "[X] CodePilot #7 失败\n项目: demo\n任务: 处理失败任务\n错误: boom",
         },
     }
+
+
+def test_notify_task_event_sends_generic_progress_payload(tmp_path, monkeypatch):
+    project_path = tmp_path / "demo"
+    project_path.mkdir()
+
+    monkeypatch.setattr(
+        webhook_mod,
+        "_get_webhook_config",
+        lambda _path: {
+            "webhook_url": "https://example.invalid/progress",
+            "provider": "generic",
+            "webhook_secret": "",
+            "enabled": True,
+        },
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req, timeout=10):
+        captured["payload"] = json.loads(req.data.decode("utf-8"))
+        return _FakeHTTPResponse({"ok": True})
+
+    monkeypatch.setattr(webhook_mod.urllib.request, "urlopen", fake_urlopen)
+
+    ok = webhook_mod.notify_task_event(
+        str(project_path),
+        9,
+        "执行阶段反馈",
+        event="phase_end",
+        phase="builder",
+        level="info",
+        message="builder 完成",
+        status="in_progress",
+    )
+
+    assert ok is True
+    assert captured["payload"] == {
+        "event": "task_progress_event",
+        "task_id": 9,
+        "task_title": "执行阶段反馈",
+        "task_event": "phase_end",
+        "phase": "builder",
+        "level": "info",
+        "status": "in_progress",
+        "project": "demo",
+        "message": "builder 完成",
+        "summary": "",
+    }

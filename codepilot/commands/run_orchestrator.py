@@ -200,6 +200,101 @@ def _mark_task_started(
     click.echo(f"  任务文件: {task_file}")
 
 
+def _task_feishu_chat_id(task: dict) -> str:
+    source = str((task or {}).get("source") or "").strip()
+    if not source.startswith("feishu:"):
+        return ""
+    return source.split(":", 1)[1].strip()
+
+
+def _notify_task_event(
+    context: _RunContext,
+    task: dict,
+    *,
+    event: str,
+    phase: str = "",
+    level: str = "info",
+    message: str = "",
+    status: str = "",
+    summary: str = "",
+) -> None:
+    runner = _runner_module()
+    feishu_chat_id = _task_feishu_chat_id(task)
+    # Web / external UI notifications are global progress telemetry: they do
+    # not depend on who created the task. Terminal states are covered by the
+    # legacy status notifier to avoid duplicate external-webhook messages.
+    if event not in {"done", "failed", "cancelled"}:
+        try:
+            runner.notify_task_event(
+                str(context.project_path),
+                int(task["id"]),
+                str(task.get("title") or ""),
+                event=event,
+                phase=phase,
+                level=level,
+                message=message,
+                status=status,
+                summary=summary,
+            )
+        except Exception:
+            pass
+
+    # Feishu only receives task execution progress for tasks that originated
+    # from a Feishu chat. Requirement-planning progress is handled at the
+    # Feishu command entrypoint so non-Feishu requirements are not broadcast.
+    if feishu_chat_id:
+        try:
+            runner.notify_feishu_task_event(
+                project_name=str(context.project.get("name") or task.get("project") or ""),
+                project_path=str(context.project_path),
+                task_id=int(task["id"]),
+                task_title=str(task.get("title") or ""),
+                event=event,
+                phase=phase,
+                level=level,
+                message=message,
+                status=status,
+                summary=summary,
+                chat_ids=[feishu_chat_id],
+            )
+        except Exception:
+            pass
+
+
+def _notify_progress_event(context: _RunContext, task: dict, event: dict) -> None:
+    try:
+        if int(event.get("task_id") or 0) != int(task["id"]):
+            return
+    except Exception:
+        return
+    event_type = str(event.get("type") or "").strip()
+    if event_type not in {"phase_start", "phase_end", "error", "phase_retry"}:
+        return
+    extra = event.get("extra") if isinstance(event.get("extra"), dict) else {}
+    phase_kind = str(extra.get("phase_kind") or event.get("stage") or "").strip()
+    level = str(event.get("level") or "info")
+    message = str(event.get("message") or "")
+    notify_event = "phase_end"
+    if event_type == "phase_start":
+        notify_event = "phase_start"
+    elif event_type == "phase_retry":
+        notify_event = "phase_retry"
+    elif event_type == "error":
+        notify_event = "failed"
+    elif bool(extra.get("review_verdict")):
+        verdict = str(extra.get("verdict") or "").strip().lower()
+        notify_event = "review_pass" if verdict == "pass" else "review_fail"
+    _notify_task_event(
+        context,
+        task,
+        event=notify_event,
+        phase=phase_kind,
+        level=level,
+        message=message,
+        status="in_progress",
+    )
+
+
 def _execute_task(
     context: _RunContext,
     task: dict,
@@ -216,15 +311,18 @@ def _execute_task(
         runner._write_task_log(task["id"], task["agent"], "dispatch", output, exit_code, started_at)
         return runner.ExecutionResult(exit_code=exit_code, output=output, executor="dispatch")
 
-    return runner._run_builtin_executor(
-        task,
-        context.project,
-        task_file,
-        auto_commit=auto_commit,
-        max_review_rounds=context.max_review_rounds,
-        execution_path=execution_path,
-        allow_dirty_resume=allow_dirty_resume,
-    )
+    from codepilot.core import progress_bus
+
+    with progress_bus.subscription(lambda event: _notify_progress_event(context, task, event)):
+        return runner._run_builtin_executor(
+            task,
+            context.project,
+            task_file,
+            auto_commit=auto_commit,
+            max_review_rounds=context.max_review_rounds,
+            execution_path=execution_path,
+            allow_dirty_resume=allow_dirty_resume,
+        )
 
 
 def _maybe_merge_task_branch(
@@ -242,6 +340,14 @@ def _maybe_merge_task_branch(
         return result
 
     try:
+        _notify_task_event(
+            context,
+            task,
+            event="phase_start",
+            phase="merge",
+            message="开始合并任务分支",
+            status="in_progress",
+        )
         if context.task_workspace == "worktree":
             merge_summary = runner._git_merge_task_worktree(
                 context.project_path,
@@ -261,8 +367,25 @@ def _maybe_merge_task_branch(
             )
         if merge_summary:
             result.summary = " | ".join(part for part in [result.summary, merge_summary] if part)
+        _notify_task_event(
+            context,
+            task,
+            event="merged",
+            phase="merge",
+            message=merge_summary or "任务分支已合并",
+            status="in_progress",
+        )
         return result
     except Exception as exc:
+        _notify_task_event(
+            context,
+            task,
+            event="merge_failed",
+            phase="merge",
+            level="error",
+            message=str(exc),
+            status="failed",
+        )
         return runner.ExecutionResult(
             exit_code=2,
             output=result.output,
@@ -377,16 +500,39 @@ def _handle_workspace_preflight_error(
     """
     runner = _runner_module()
     task_id = task["id"]
+    already_reported = (
+        str(task.get("status") or "") == "backlog"
+        and str(task.get("error_message") or "").strip() == str(preflight_error or "").strip()
+    )
     if retry_on_failure:
         db.update_task(task_id, status="backlog", error_message=preflight_error)
         runner.echo(f"[yellow]{preflight_error}[/yellow]")
         click.echo(f"  处理: 任务 #{task_id} 保持 backlog，等待你修正环境后再执行")
         stats["requeued"] += 1
+        if not already_reported:
+            _notify_task_event(
+                context,
+                task,
+                event="preflight_skip",
+                phase="preflight",
+                level="warning",
+                message=preflight_error,
+                status="backlog",
+            )
     else:
         runner._mark_task_failed(task, preflight_error)
         runner.echo(f"[red]{preflight_error}[/red]")
         click.echo(f"  处理: 任务 #{task_id} 已直接标记 failed，不再自动回退")
         stats["failed"] += 1
+        _notify_task_event(
+            context,
+            task,
+            event="failed",
+            phase="preflight",
+            level="error",
+            message=preflight_error,
+            status="failed",
+        )
 
     stats["processed"] += 1
     _render_dashboard(project, quiet=quiet, title="当前任务面板")
@@ -423,6 +569,15 @@ def _handle_executor_cancelled(
     )
     runner.echo(f"[yellow]任务 #{task_id} 已停止[/yellow]")
     runner.notify_task_status(str(context.project_path), task_id, task["title"], "cancelled", str(exc))
+    _notify_task_event(
+        context,
+        task,
+        event="cancelled",
+        phase="runtime",
+        level="warning",
+        message=str(exc),
+        status="cancelled",
+    )
     stats["cancelled"] += 1
     stats["processed"] += 1
     return once
@@ -430,6 +585,8 @@ def _handle_executor_cancelled(
 
 def _handle_executor_preflight_skip(
     *,
+    context: _RunContext,
+    task: dict,
     task_id: int,
     skip_message: str,
     stats: dict,
@@ -437,6 +594,10 @@ def _handle_executor_preflight_skip(
 ) -> bool:
     """Requeue task when builtin executor asks to skip without consuming retry."""
     runner = _runner_module()
+    already_reported = (
+        str(task.get("status") or "") == "backlog"
+        and str(task.get("error_message") or "").strip() == str(skip_message or "").strip()
+    )
     runner.clear_task_runtime(
         task_id,
         status="backlog",
@@ -446,6 +607,16 @@ def _handle_executor_preflight_skip(
         stop_reason=None,
     )
     runner.echo(f"[yellow]任务 #{task_id} 预检跳过（不扣重试次数）：{skip_message.splitlines()[0]}[/yellow]")
+    if not already_reported:
+        _notify_task_event(
+            context,
+            task,
+            event="preflight_skip",
+            phase="preflight",
+            level="warning",
+            message=skip_message,
+            status="backlog",
+        )
     stats["requeued"] += 1
     stats["processed"] += 1
     return once
@@ -478,8 +649,26 @@ def _handle_executor_exception(
     if updated["status"] == "failed":
         stats["failed"] += 1
         runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_text)
+        _notify_task_event(
+            context,
+            task,
+            event="failed",
+            phase="runtime",
+            level="error",
+            message=error_text,
+            status="failed",
+        )
     else:
         stats["requeued"] += 1
+        _notify_task_event(
+            context,
+            task,
+            event="requeued",
+            phase="runtime",
+            level="warning",
+            message=error_text,
+            status="backlog",
+        )
     if workspace is not None:
         runner._finalize_failed_task_workspace(
             task_id=task_id,
@@ -528,6 +717,14 @@ def _handle_execution_result(
         runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
         runner.echo(f"[green][OK] 任务 #{task_id} 完成[/green]")
         runner.notify_task_status(str(context.project_path), task_id, task["title"], "done")
+        _notify_task_event(
+            context,
+            task,
+            event="done",
+            phase="done",
+            status="done",
+            summary=result.summary or result.review_output or result.output,
+        )
         stats["done"] += 1
     else:
         error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
@@ -568,8 +765,26 @@ def _handle_execution_result(
         if updated["status"] == "failed":
             stats["failed"] += 1
             runner.notify_task_status(str(context.project_path), task_id, task["title"], "failed", error_message)
+            _notify_task_event(
+                context,
+                task,
+                event="failed",
+                phase="runtime",
+                level="error",
+                message=error_message,
+                status="failed",
+            )
         else:
             stats["requeued"] += 1
+            _notify_task_event(
+                context,
+                task,
+                event="requeued",
+                phase="runtime",
+                level="warning",
+                message=error_message,
+                status="backlog",
+            )
         runner._show_failure_feedback(
             task_id,
             title=task["title"],
@@ -672,6 +887,14 @@ def run_backlog(
 
         progress_text = f"{stats['processed'] + 1}/{limit}" if limit > 0 else ""
         _mark_task_started(context, task, task_file, workspace, progress_text=progress_text)
+        _notify_task_event(
+            context,
+            task,
+            event="started",
+            phase="pending",
+            message=f"任务进入执行队列，进度 {progress_text or '-'}",
+            status="in_progress",
+        )
 
         if dry_run:
             runner.clear_task_runtime(task_id, status="backlog", started_at=None, stop_requested=0, stop_reason=None)
@@ -705,6 +928,8 @@ def run_backlog(
             continue
         except runner.PreflightSkipError as exc:
             if _handle_executor_preflight_skip(
+                context=context,
+                task=task,
                 task_id=task_id,
                 skip_message=str(exc),
                 stats=stats,

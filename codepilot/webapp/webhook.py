@@ -332,6 +332,75 @@ def notify_task_status(
     return ok
 
 
+def notify_task_event(
+    project_path: str,
+    task_id: int,
+    task_title: str,
+    *,
+    event: str,
+    phase: str = "",
+    level: str = "info",
+    message: str = "",
+    status: str = "",
+    summary: str = "",
+) -> bool:
+    """Send a structured task progress event to the configured external UI webhook."""
+    config = _get_webhook_config(project_path)
+    if not config.get("enabled") or not config.get("webhook_url"):
+        return False
+
+    url = config["webhook_url"]
+    project_name = Path(project_path).name
+    event_label = {
+        "started": "开始执行",
+        "phase_start": "阶段开始",
+        "phase_end": "阶段完成",
+        "phase_retry": "阶段重试",
+        "review_pass": "Review 通过",
+        "review_fail": "Review 未通过",
+        "merged": "分支已合并",
+        "merge_failed": "合并失败",
+        "requeued": "已回队列",
+        "preflight_skip": "预检跳过",
+    }.get(event, event or "状态更新")
+    phase_text = phase or "-"
+    detail = (message or summary or "").strip()
+    text = (
+        f"[{level.upper()}] CodePilot #{task_id} {event_label}\n"
+        f"项目: {project_name}\n"
+        f"任务: {task_title}\n"
+        f"阶段: {phase_text}"
+    )
+    if status:
+        text += f"\n状态: {status}"
+    if detail:
+        text += f"\n说明: {detail[:300]}"
+
+    provider = _normalize_webhook_provider(config.get("provider"))
+    if provider == "auto":
+        provider = _detect_webhook_provider(url)
+
+    if provider == "feishu":
+        return _send_feishu_webhook(url, text, secret=str(config.get("webhook_secret") or ""))
+    if provider == "wecom":
+        return _send_wecom_webhook(url, text)
+    return _send_generic_webhook(
+        url,
+        {
+            "event": "task_progress_event",
+            "task_id": task_id,
+            "task_title": task_title,
+            "task_event": event,
+            "phase": phase,
+            "level": level,
+            "status": status,
+            "project": project_name,
+            "message": message,
+            "summary": summary,
+        },
+    )
+
+
 def _send_desktop_notification(*, title: str, body: str) -> bool:
     """Best-effort cross-platform desktop notification.
 

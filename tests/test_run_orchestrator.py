@@ -88,6 +88,99 @@ def test_run_backlog_quiet_mode_skips_dashboard_render_on_preflight_requeue(tmp_
     assert render_calls == []
 
 
+def test_run_backlog_does_not_repeat_same_preflight_skip_notification(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    _register_project_with_config(tmp_path)
+    db.create_task("demo", "repeat preflight", agent="dual", max_retries=2)
+
+    notifications = []
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "preflight blocked")
+    monkeypatch.setattr(
+        run_cmd,
+        "notify_task_event",
+        lambda *args, **kwargs: notifications.append(kwargs) or True,
+    )
+
+    first = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False, quiet=True)
+    second = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False, quiet=True)
+
+    assert first["requeued"] == 1
+    assert second["requeued"] == 1
+    assert [item["event"] for item in notifications] == ["preflight_skip"]
+
+
+def test_notify_task_event_routes_generic_progress_without_feishu_for_user_source(tmp_path, monkeypatch):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    context = run_orchestrator_mod._RunContext(
+        project={"name": "demo", "path": str(project_path)},
+        project_path=project_path,
+        config=None,
+        base_branch="dev",
+        shell_info=object(),
+        executor="builtin",
+        max_review_rounds=2,
+        per_task_branch_enabled=False,
+        task_workspace="branch",
+    )
+    generic_events: list[dict] = []
+    feishu_events: list[dict] = []
+    monkeypatch.setattr(run_cmd, "notify_task_event", lambda *args, **kwargs: generic_events.append(kwargs) or True)
+    monkeypatch.setattr(
+        run_cmd,
+        "notify_feishu_task_event",
+        lambda **kwargs: feishu_events.append(kwargs) or True,
+    )
+
+    run_orchestrator_mod._notify_task_event(
+        context,
+        {"id": 9, "title": "普通来源任务", "source": "user"},
+        event="phase_start",
+        phase="builder",
+        message="开始构建",
+        status="in_progress",
+    )
+
+    assert [item["event"] for item in generic_events] == ["phase_start"]
+    assert feishu_events == []
+
+
+def test_notify_task_event_routes_feishu_origin_to_source_chat(tmp_path, monkeypatch):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    context = run_orchestrator_mod._RunContext(
+        project={"name": "demo", "path": str(project_path)},
+        project_path=project_path,
+        config=None,
+        base_branch="dev",
+        shell_info=object(),
+        executor="builtin",
+        max_review_rounds=2,
+        per_task_branch_enabled=False,
+        task_workspace="branch",
+    )
+    generic_events: list[dict] = []
+    feishu_events: list[dict] = []
+    monkeypatch.setattr(run_cmd, "notify_task_event", lambda *args, **kwargs: generic_events.append(kwargs) or True)
+    monkeypatch.setattr(
+        run_cmd,
+        "notify_feishu_task_event",
+        lambda **kwargs: feishu_events.append(kwargs) or True,
+    )
+
+    run_orchestrator_mod._notify_task_event(
+        context,
+        {"id": 10, "title": "飞书来源任务", "source": "feishu:chat-source"},
+        event="phase_end",
+        phase="reviewer",
+        message="Review 完成",
+        status="in_progress",
+    )
+
+    assert [item["event"] for item in generic_events] == ["phase_end"]
+    assert [item["chat_ids"] for item in feishu_events] == [["chat-source"]]
+
+
 def test_run_backlog_continues_after_requeued_failure_without_reselecting_same_task(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     _register_project_with_config(tmp_path)

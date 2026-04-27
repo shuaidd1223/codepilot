@@ -13,6 +13,9 @@ CP.STATUS_LABEL = {
 CP.PHASE_LABEL = {
   queued: '排队中', planning: '规划中', running: '执行中',
   done: '完成', failed: '失败', attention: '需关注',
+  pending: '准备执行', preflight: '预检', dispatch: '脚本执行',
+  runtime: '运行中', builder: 'Build', reviewer: 'Review',
+  review: 'Review', commit: '提交', merge: '合并',
 };
 
 CP.TONE_MAP = {
@@ -23,6 +26,85 @@ CP.TONE_MAP = {
   warning: 'warning', attention: 'warning',
   info: 'info', question: 'primary', requirement: 'primary', task: 'primary',
   command: 'neutral',
+};
+
+CP.TASK_PHASE_STEPS = [
+  { key: 'pending', label: '准备' },
+  { key: 'builder', label: 'Build' },
+  { key: 'reviewer', label: 'Review' },
+  { key: 'merge', label: '合并' },
+  { key: 'done', label: '完成' },
+];
+
+CP._normalizeTaskPhase = (value) => String(value || '').trim().toLowerCase();
+CP._taskPhaseBase = (task) => {
+  const raw = CP._normalizeTaskPhase(task && task.phase);
+  if (!raw) return '';
+  if (raw.includes('review')) return 'reviewer';
+  if (raw.includes('build')) return 'builder';
+  if (raw.includes('merge')) return 'merge';
+  if (raw.includes('commit')) return 'merge';
+  if (raw.includes('preflight')) return 'pending';
+  if (raw.includes('dispatch')) return 'builder';
+  if (raw.includes('runtime') || raw.includes('running') || raw.includes('pending')) return 'pending';
+  return raw.split(/\s+/)[0] || raw;
+};
+CP.taskPhaseProgress = (task) => {
+  const t = task || {};
+  const status = String(t.status || '');
+  const failed = status === 'failed' || status === 'cancelled';
+  const backlog = status === 'backlog' || status === 'queued';
+  let key = CP._taskPhaseBase(t);
+  if (status === 'done' || status === 'archived') key = 'done';
+  if (!key) key = backlog ? 'pending' : (status === 'in_progress' ? 'pending' : status || 'pending');
+
+  const stepKeys = CP.TASK_PHASE_STEPS.map(step => step.key);
+  let index = stepKeys.indexOf(key);
+  if (index < 0) index = 0;
+  if (status === 'done' || status === 'archived') index = CP.TASK_PHASE_STEPS.length - 1;
+  const maxIndex = Math.max(CP.TASK_PHASE_STEPS.length - 1, 1);
+  const percent = status === 'done' || status === 'archived'
+    ? 100
+    : Math.max(8, Math.round((index / maxIndex) * 100));
+
+  const steps = CP.TASK_PHASE_STEPS.map((step, idx) => {
+    let state = 'pending';
+    if (idx < index || status === 'done' || status === 'archived') state = 'done';
+    if (idx === index && !['done', 'archived'].includes(status)) state = failed ? 'failed' : (backlog ? 'waiting' : 'current');
+    return { ...step, state };
+  });
+
+  let currentLabel = CP.phaseLabel(t.phase || key);
+  if (backlog) currentLabel = t.skip_reason ? '预检跳过，等待重试' : '等待执行';
+  if (status === 'done') currentLabel = '任务已完成';
+  if (status === 'archived') currentLabel = '任务已归档';
+  if (status === 'failed') currentLabel = `失败在 ${CP.phaseLabel(t.phase || key)}`;
+  if (status === 'cancelled') currentLabel = `已停止在 ${CP.phaseLabel(t.phase || key)}`;
+
+  let nextLabel = '下一步：等待任务轮询执行';
+  if (status === 'in_progress') {
+    nextLabel = {
+      pending: '下一步：进入 Build',
+      builder: '下一步：Review 验收',
+      reviewer: '下一步：合并或回到 Build 修复',
+      merge: '下一步：标记完成',
+    }[key] || '下一步：继续执行';
+  } else if (status === 'done' || status === 'archived') {
+    nextLabel = '流程已结束';
+  } else if (status === 'failed' || status === 'cancelled') {
+    nextLabel = '下一步：查看日志后重试或删除';
+  } else if (t.skip_reason) {
+    nextLabel = '下一步：修正环境后自动重试';
+  }
+
+  return {
+    key,
+    percent,
+    steps,
+    currentLabel,
+    nextLabel,
+    tone: failed ? 'danger' : (backlog || t.skip_reason ? 'warning' : (status === 'done' ? 'success' : 'info')),
+  };
 };
 
 CP._clarifyText = (value) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
@@ -516,6 +598,7 @@ CP.install = (app) => {
     fmtTime: CP.fmtTime,
     statusLabel: CP.statusLabel,
     phaseLabel: CP.phaseLabel,
+    taskPhaseProgress: CP.taskPhaseProgress,
     toneClass: CP.toneClass,
     isJobActive: CP.isJobActive,
     formatLogs: CP.formatLogs,

@@ -15,6 +15,7 @@ dist/
 *.egg-info/
 
 .workbuddy/
+.codepilot.secrets.toml
 tasks.db
 .claude/
 node_modules/

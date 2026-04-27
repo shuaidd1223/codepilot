@@ -397,32 +397,41 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
 
 
 def _overlay_secrets_data(data: dict[str, Any], secrets_path: Path) -> dict[str, Any]:
-    """Overlay provider ``api_key`` values from a secrets TOML onto raw data."""
+    """Overlay sensitive values from a secrets TOML onto raw config data."""
     secrets = _load_toml_dict(secrets_path)
     if not secrets:
         return data
 
-    providers = secrets.get("providers", {})
-    if not isinstance(providers, dict):
-        return data
-
     merged = deepcopy(data)
-    merged_providers = merged.get("providers")
-    if not isinstance(merged_providers, dict):
-        merged_providers = {}
-        merged["providers"] = merged_providers
 
-    for name, cfg in providers.items():
-        if not isinstance(cfg, dict):
-            continue
-        key = str(cfg.get("api_key", "")).strip()
-        if not key:
-            continue
-        target = merged_providers.get(name)
-        if not isinstance(target, dict):
-            target = {}
-            merged_providers[name] = target
-        target["api_key"] = key
+    providers = secrets.get("providers", {})
+    if isinstance(providers, dict):
+        merged_providers = merged.get("providers")
+        if not isinstance(merged_providers, dict):
+            merged_providers = {}
+            merged["providers"] = merged_providers
+
+        for name, cfg in providers.items():
+            if not isinstance(cfg, dict):
+                continue
+            key = str(cfg.get("api_key", "")).strip()
+            if not key:
+                continue
+            target = merged_providers.get(name)
+            if not isinstance(target, dict):
+                target = {}
+                merged_providers[name] = target
+            target["api_key"] = key
+
+    feishu_bot = secrets.get("feishu_bot", {})
+    if isinstance(feishu_bot, dict):
+        app_secret = str(feishu_bot.get("app_secret", "") or "").strip()
+        if app_secret:
+            target = merged.get("feishu_bot")
+            if not isinstance(target, dict):
+                target = {}
+                merged["feishu_bot"] = target
+            target["app_secret"] = app_secret
     return merged
 
 
@@ -444,17 +453,28 @@ def _warn_on_inline_secrets_data(data: dict[str, Any], config_path: Path) -> Non
         if str(cfg.get("api_key", "")).strip():
             leaked.append(str(name))
 
-    if not leaked:
+    feishu_bot = data.get("feishu_bot", {})
+    has_feishu_secret = isinstance(feishu_bot, dict) and bool(str(feishu_bot.get("app_secret", "")).strip())
+
+    if not leaked and not has_feishu_secret:
         return
     try:
         from codepilot.core.logger import get_logger
-        get_logger("config").warning(
-            "AGENTS.toml at %s contains inline api_key for %s; "
-            "move these to %s (sibling file) to avoid committing secrets.",
-            config_path,
-            ", ".join(sorted(leaked)),
-            SECRETS_FILENAME,
-        )
+        if leaked:
+            get_logger("config").warning(
+                "AGENTS.toml at %s contains inline api_key for %s; "
+                "move these to %s (sibling file) to avoid committing secrets.",
+                config_path,
+                ", ".join(sorted(leaked)),
+                SECRETS_FILENAME,
+            )
+        if has_feishu_secret:
+            get_logger("config").warning(
+                "AGENTS.toml at %s contains inline feishu_bot.app_secret; "
+                "move it to %s (sibling file) to avoid committing secrets.",
+                config_path,
+                SECRETS_FILENAME,
+            )
     except Exception:  # logger setup must never break config load
         pass
 
@@ -485,8 +505,9 @@ def load_config(config_path: Optional[Path] = None) -> Optional[AgentsConfig]:
     如果 config_path 为 None，自动查找.
 
     如果同目录存在 ``.codepilot.secrets.toml``，会把其中的
-    ``[providers.<name>].api_key`` 覆盖到返回的配置里，从而让用户可以
-    把敏感字段从 AGENTS.toml 里分离出去（建议 gitignore 后者）。
+    ``[providers.<name>].api_key`` / ``[feishu_bot].app_secret`` 覆盖到
+    返回的配置里，从而让用户可以把敏感字段从 AGENTS.toml 里分离出去
+    （建议 gitignore 后者）。
     """
     if config_path is None:
         config_path = find_config()
@@ -517,6 +538,10 @@ def sanitize_config_for_display(config: AgentsConfig) -> AgentsConfig:
     for provider_cfg in clone.providers.values():
         if provider_cfg.api_key:
             provider_cfg.api_key = "***"
+    if isinstance(clone.feishu_bot, dict) and str(clone.feishu_bot.get("app_secret", "")).strip():
+        clone.feishu_bot["app_secret"] = "***"
+    if clone.feishu_app_secret:
+        clone.feishu_app_secret = "***"
     return clone
 
 

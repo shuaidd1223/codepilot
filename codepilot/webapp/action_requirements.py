@@ -368,6 +368,7 @@ def submit_requirement_action(
     clarify_answers: Optional[list[dict]] = None,
     clarify_questions: Optional[list[dict]] = None,
     clarify: bool = True,
+    task_source: str = "user",
 ) -> dict:
     shell = _shell()
     db.init_db()
@@ -478,6 +479,7 @@ def submit_requirement_action(
                     auto_commit=auto_commit,
                     max_retries=max_retries,
                     json_mode=False,
+                    task_source=task_source,
                 )
                 task_ids = [item["id"] for item in (result.get("tasks") or [])]
                 run_stats = result.get("run") or {}

@@ -91,7 +91,29 @@ CP.Components.ProjectView = Vue.defineComponent({
                 <cp-chip>{{ x.agent || '-' }}</cp-chip>
               </div>
               <div class="task-item-meta">
+                <span>阶段: {{ x.phase || '-' }}</span>
                 <span v-if="x.created_at">创建: {{ $cp.fmtTime(x.created_at) }}</span>
+              </div>
+              <div class="task-phase-progress" :class="'tone-' + $cp.taskPhaseProgress(x).tone">
+                <div class="task-phase-progress-head">
+                  <div class="task-phase-current">
+                    <span class="phase-pulse"></span>
+                    {{ $cp.taskPhaseProgress(x).currentLabel }}
+                  </div>
+                  <div class="task-phase-next">{{ $cp.taskPhaseProgress(x).nextLabel }}</div>
+                </div>
+                <div class="task-phase-track">
+                  <span class="task-phase-fill" :style="{ width: $cp.taskPhaseProgress(x).percent + '%' }"></span>
+                </div>
+                <div class="task-phase-steps">
+                  <span v-for="step in $cp.taskPhaseProgress(x).steps"
+                        :key="step.key"
+                        class="task-phase-step"
+                        :class="'state-' + step.state">
+                    <span class="task-phase-dot"></span>
+                    <span>{{ step.label }}</span>
+                  </span>
+                </div>
               </div>
               <div class="task-item-preview">{{ x.runtime || x.latest || '暂无详细信息' }}</div>
             </div>

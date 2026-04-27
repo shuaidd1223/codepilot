@@ -46,6 +46,24 @@ def test_sibling_secrets_overlay_supplies_api_key(_isolate):
     assert cfg.providers["openai-gpt4o"].model == "gpt-4o"
 
 
+def test_sibling_secrets_overlay_supplies_feishu_app_secret(_isolate):
+    project = _isolate / "proj"
+    _write(
+        project / "AGENTS.toml",
+        '[feishu_bot]\nenabled = true\napp_id = "cli-demo"\napp_secret = ""\n',
+    )
+    _write(
+        project / SECRETS_FILENAME,
+        '[feishu_bot]\napp_secret = "feishu-from-secrets"\n',
+    )
+
+    cfg = load_config(project / "AGENTS.toml")
+
+    assert cfg is not None
+    assert cfg.feishu_app_id == "cli-demo"
+    assert cfg.feishu_app_secret == "feishu-from-secrets"
+
+
 def test_env_secrets_path_overrides_sibling(_isolate, monkeypatch):
     project = _isolate / "proj"
     elsewhere = _isolate / "elsewhere" / "secrets.toml"
@@ -117,4 +135,17 @@ def test_sanitize_config_scrubs_api_key(_isolate):
     assert safe.providers["openai-gpt4o"].api_key == "***"
     # Original untouched.
     assert cfg.providers["openai-gpt4o"].api_key == "sk-secret"
+
+
+def test_sanitize_config_scrubs_feishu_app_secret(_isolate):
+    project = _isolate / "proj"
+    _write(project / "AGENTS.toml", '[feishu_bot]\napp_secret = "feishu-secret"\n')
+
+    cfg = load_config(project / "AGENTS.toml")
+    assert cfg is not None
+    safe = sanitize_config_for_display(cfg)
+
+    assert safe.feishu_bot["app_secret"] == "***"
+    assert safe.feishu_app_secret == "***"
+    assert cfg.feishu_app_secret == "feishu-secret"
 

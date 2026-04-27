@@ -154,6 +154,27 @@ CP.Components.TaskDetail = Vue.defineComponent({
           </div>
         </div>
         <div class="card-body task-detail task-detail-body">
+          <div class="task-phase-progress task-phase-progress-detail" :class="'tone-' + $cp.taskPhaseProgress(task).tone">
+            <div class="task-phase-progress-head">
+              <div class="task-phase-current">
+                <span class="phase-pulse" v-if="task.status === 'in_progress'"></span>
+                {{ $cp.taskPhaseProgress(task).currentLabel }}
+              </div>
+              <div class="task-phase-next">{{ $cp.taskPhaseProgress(task).nextLabel }}</div>
+            </div>
+            <div class="task-phase-track">
+              <span class="task-phase-fill" :style="{ width: $cp.taskPhaseProgress(task).percent + '%' }"></span>
+            </div>
+            <div class="task-phase-steps">
+              <span v-for="step in $cp.taskPhaseProgress(task).steps"
+                    :key="step.key"
+                    class="task-phase-step"
+                    :class="'state-' + step.state">
+                <span class="task-phase-dot"></span>
+                <span>{{ step.label }}</span>
+              </span>
+            </div>
+          </div>
           <div class="task-kv-grid">
             <div class="task-kv-item">
               <span class="task-kv-key">项目</span>

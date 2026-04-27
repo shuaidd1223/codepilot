@@ -97,6 +97,24 @@ def test_task_section_includes_batch_quick_actions():
     assert "taskBatchAction," in app_state
 
 
+def test_web_ui_task_cards_render_phase_progress():
+    utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
+    task_section = Path("codepilot/web/components/TaskSection.js").read_text(encoding="utf-8")
+    task_detail = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")
+    project_view = Path("codepilot/web/components/ProjectView.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "CP.TASK_PHASE_STEPS" in utils
+    assert "CP.taskPhaseProgress" in utils
+    assert "下一步：Review 验收" in utils
+    assert "taskPhaseProgress: CP.taskPhaseProgress" in utils
+    assert "task-phase-progress" in task_section
+    assert "task-phase-progress-detail" in task_detail
+    assert "task-phase-progress" in project_view
+    assert ".task-phase-track" in styles
+    assert ".task-phase-step.state-current" in styles
+
+
 def test_web_ui_bootstrap_wires_app_state_boundary_before_mount():
     index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
     app = Path("codepilot/web/app.js").read_text(encoding="utf-8")

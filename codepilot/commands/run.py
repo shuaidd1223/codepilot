@@ -46,7 +46,8 @@ from codepilot.core.runtime import (
     tail_text,
     update_task_runtime,
 )
-from codepilot.webapp.webhook import notify_task_status
+from codepilot.webapp.webhook import notify_task_event, notify_task_status
+from codepilot.feishu_bot import notify_feishu_task_event
 
 # Re-export shell + command helpers
 from codepilot.commands.run_shell import (  # noqa: F401

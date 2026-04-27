@@ -16,3 +16,10 @@ per_task_branch = false
 
 [inspect]
 signals = ["git_log", "failed_tasks", "todos", "deps", "ruff", "pytest", "code_metrics"]
+
+[feishu_bot]
+enabled = true
+app_id = "cli_a9653cd84db9dcc4"
+app_secret = ""
+node_command = "node"
+default_project = "codepilot-dev"

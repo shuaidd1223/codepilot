@@ -672,6 +672,7 @@ def _create_tasks_from_breakdown(
     task_agent: str,
     priority: str,
     max_retries: int,
+    task_source: str = "user",
 ) -> list[dict]:
     return _planning_flow.create_tasks_from_breakdown(
         breakdown=breakdown,
@@ -680,6 +681,7 @@ def _create_tasks_from_breakdown(
         task_agent=task_agent,
         priority=priority,
         max_retries=max_retries,
+        task_source=task_source,
         build_task_markdown_from_plan=_build_task_markdown_from_plan,
     )
 
@@ -827,6 +829,7 @@ def _run_requirement_decision_phase(
     runtime: _RequirementWorkflowRuntime,
     priority: str,
     execute: Optional[bool],
+    task_source: str = "user",
 ) -> _RequirementDecisionResult:
     from codepilot.core.output import echo
 
@@ -851,6 +854,7 @@ def _run_requirement_decision_phase(
         task_agent=runtime.task_agent,
         priority=priority,
         max_retries=runtime.max_retries,
+        task_source=task_source,
     )
     will_execute = _should_execute(project_info, execute)
     payload = _build_requirement_payload(
@@ -948,6 +952,7 @@ def run_requirement_workflow(
     max_retries: int = 0,
     json_mode: bool = False,
     quiet: bool = False,
+    task_source: str = "user",
 ) -> dict:
     """Plan one requirement (decision phase) and optionally execute it."""
     shell = _shell()
@@ -973,6 +978,7 @@ def run_requirement_workflow(
         runtime=runtime,
         priority=priority,
         execute=execute,
+        task_source=task_source,
     )
     if json_mode:
         payload = _execute_requirement_json_phase(

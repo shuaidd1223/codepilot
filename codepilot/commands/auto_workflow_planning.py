@@ -265,6 +265,7 @@ def create_tasks_from_breakdown(
     priority: str,
     max_retries: int,
     build_task_markdown_from_plan: Callable[[dict], str],
+    task_source: str = "user",
 ) -> list[dict]:
     created_tasks: list[dict] = []
     previous_task_id: int | None = None
@@ -289,6 +290,7 @@ def create_tasks_from_breakdown(
             depends_on=dep_ids or None,
             project_path=project_path,
             max_retries=max_retries,
+            source=task_source or "user",
         )
         created_tasks.append(task)
         created_ids_by_index.append(task["id"])
