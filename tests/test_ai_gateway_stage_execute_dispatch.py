@@ -86,6 +86,79 @@ def test_run_api_provider_streams_heartbeat_events_when_subscribed():
     assert any(event["extra"].get("final") is True for event in heartbeat_events)
 
 
+def test_run_api_provider_falls_back_to_openai_sync_when_streaming_fails():
+    from codepilot.ai_support.providers import _run_api_provider
+
+    calls: list[dict] = []
+
+    class _FakeChatCompletions:
+        def create(self, **kwargs):
+            calls.append(dict(kwargs))
+            if kwargs.get("stream"):
+                raise RuntimeError("stream down")
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="sync fallback"))]
+            )
+
+    provider = SimpleNamespace(
+        name="fake-provider",
+        model="fake-model",
+        max_tokens=128,
+        temperature=0.1,
+        build_client=lambda: (
+            SimpleNamespace(chat=SimpleNamespace(completions=_FakeChatCompletions())),
+            "chat.completions",
+        ),
+    )
+
+    progress_bus.clear_subscribers_for_tests()
+    with progress_bus.subscription(lambda _event: None):
+        text = _run_api_provider(provider, "hello")
+
+    assert text == "sync fallback"
+    assert [call.get("stream", False) for call in calls] == [True, False]
+
+
+def test_run_api_provider_routes_anthropic_streaming_events():
+    from codepilot.ai_support.providers import _run_api_provider
+
+    captured: list[dict] = []
+
+    class _FakeMessages:
+        def create(self, **kwargs):
+            captured.append(dict(kwargs))
+            assert kwargs["stream"] is True
+            return [
+                SimpleNamespace(
+                    type="content_block_start",
+                    content_block=SimpleNamespace(text="hello"),
+                ),
+                SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(text=" world"),
+                ),
+            ]
+
+    provider = SimpleNamespace(
+        name="fake-provider",
+        model="fake-model",
+        max_tokens=128,
+        temperature=0.1,
+        build_client=lambda: (
+            SimpleNamespace(messages=_FakeMessages()),
+            "messages",
+        ),
+    )
+
+    progress_bus.clear_subscribers_for_tests()
+    with progress_bus.subscription(lambda _event: None):
+        text = _run_api_provider(provider, "hello", system_prompt="be brief")
+
+    assert text == "hello world"
+    assert captured[0]["system"] == "be brief"
+    assert captured[0]["messages"] == [{"role": "user", "content": "hello"}]
+
+
 def test_execute_structured_cli_call_dispatches_claude_variant(monkeypatch):
     captured = {}
 

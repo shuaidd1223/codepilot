@@ -671,6 +671,208 @@ def _run_cli_provider(
         raise RuntimeError(f"{provider.name} 执行超时（{provider.timeout}s）")
 
 
+@dataclass(frozen=True)
+class _APIRunContext:
+    provider: Any
+    client: Any
+    prompt: str
+    system_prompt: Optional[str]
+    messages: list[dict[str, str]]
+    started_at: float
+
+
+def _build_api_messages(prompt: str, system_prompt: Optional[str] = None) -> list[dict[str, str]]:
+    """Build chat-style messages for OpenAI-compatible request payloads."""
+    messages: list[dict[str, str]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
+
+def _should_stream_llm_progress() -> bool:
+    try:
+        from codepilot.core import progress_bus
+
+        return progress_bus.has_subscribers()
+    except Exception:
+        return False
+
+
+def _estimate_tokens(text: str) -> int:
+    content = str(text or "")
+    if not content:
+        return 0
+    return max(1, (len(content.encode("utf-8")) + 3) // 4)
+
+
+def _emit_llm_heartbeat(ctx: _APIRunContext, text: str, *, final: bool = False) -> None:
+    try:
+        from codepilot.core import progress_bus
+
+        bus_ctx = progress_bus.current_llm_context()
+        elapsed = round(max(0.0, time.monotonic() - ctx.started_at), 1)
+        estimated_tokens = _estimate_tokens(text)
+        label = str(bus_ctx.get("label") or ctx.provider.name)
+        if final:
+            message = f"{label} 完成：{elapsed}s，约 {estimated_tokens} tokens"
+            level = "info"
+            event_type = "phase_end"
+        elif estimated_tokens <= 0:
+            message = f"{label} 请求已发出：{elapsed}s，等待首个 token"
+            level = "heartbeat"
+            event_type = "phase_start"
+        else:
+            message = f"{label} 生成中：{elapsed}s，约 {estimated_tokens} tokens"
+            level = "heartbeat"
+            event_type = "heartbeat"
+        progress_bus.emit(
+            task_id=bus_ctx.get("task_id"),
+            stage=str(bus_ctx.get("stage") or "system"),
+            level=level,
+            event_type=event_type,
+            message=message,
+            extra={
+                "llm_heartbeat": True,
+                "provider": ctx.provider.name,
+                "model": ctx.provider.model,
+                "elapsed_seconds": elapsed,
+                "estimated_tokens": estimated_tokens,
+                "text_chars": len(text or ""),
+                "final": final,
+            },
+        )
+    except Exception:
+        pass
+
+
+def _extract_openai_chunk_text(chunk: Any) -> str:
+    pieces: list[str] = []
+    for choice in getattr(chunk, "choices", []) or []:
+        delta = getattr(choice, "delta", None)
+        content = getattr(delta, "content", None)
+        if isinstance(content, str):
+            pieces.append(content)
+            continue
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, str):
+                    pieces.append(item)
+                    continue
+                text = ""
+                if isinstance(item, dict):
+                    text = str(item.get("text") or "")
+                else:
+                    text = str(getattr(item, "text", "") or "")
+                if text:
+                    pieces.append(text)
+    return "".join(pieces)
+
+
+def _run_openai_sync(ctx: _APIRunContext) -> str:
+    response = ctx.client.chat.completions.create(
+        model=ctx.provider.model,
+        messages=ctx.messages,
+        max_tokens=ctx.provider.max_tokens,
+        temperature=ctx.provider.temperature,
+    )
+    return (response.choices[0].message.content or "").strip()
+
+
+def _run_openai_stream(ctx: _APIRunContext) -> str:
+    parts: list[str] = []
+    last_emit_at = 0.0
+    _emit_llm_heartbeat(ctx, "", final=False)
+    stream = ctx.client.chat.completions.create(
+        model=ctx.provider.model,
+        messages=ctx.messages,
+        max_tokens=ctx.provider.max_tokens,
+        temperature=ctx.provider.temperature,
+        stream=True,
+    )
+    for chunk in stream:
+        piece = _extract_openai_chunk_text(chunk)
+        if piece:
+            parts.append(piece)
+        now = time.monotonic()
+        if piece and (last_emit_at <= 0 or now - last_emit_at >= 1.0):
+            _emit_llm_heartbeat(ctx, "".join(parts), final=False)
+            last_emit_at = now
+    output = "".join(parts).strip()
+    if output:
+        _emit_llm_heartbeat(ctx, output, final=True)
+    return output
+
+
+def _anthropic_request_kwargs(ctx: _APIRunContext, *, stream: bool = False) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": ctx.provider.model,
+        "max_tokens": ctx.provider.max_tokens,
+        "temperature": ctx.provider.temperature,
+        "messages": [{"role": "user", "content": ctx.prompt}],
+    }
+    if ctx.system_prompt:
+        kwargs["system"] = ctx.system_prompt
+    if stream:
+        kwargs["stream"] = True
+    return kwargs
+
+
+def _run_anthropic_sync(ctx: _APIRunContext) -> str:
+    response = ctx.client.messages.create(**_anthropic_request_kwargs(ctx))
+    return "".join(
+        str(getattr(block, "text", "") or "")
+        for block in (getattr(response, "content", None) or [])
+    ).strip()
+
+
+def _run_anthropic_stream(ctx: _APIRunContext) -> str:
+    parts: list[str] = []
+    last_emit_at = 0.0
+    _emit_llm_heartbeat(ctx, "", final=False)
+    stream = ctx.client.messages.create(**_anthropic_request_kwargs(ctx, stream=True))
+    for event in stream:
+        piece = ""
+        event_type = str(getattr(event, "type", "") or "")
+        if event_type == "content_block_delta":
+            piece = str(getattr(getattr(event, "delta", None), "text", "") or "")
+        elif event_type == "content_block_start":
+            piece = str(getattr(getattr(event, "content_block", None), "text", "") or "")
+        if piece:
+            parts.append(piece)
+        now = time.monotonic()
+        if piece and (last_emit_at <= 0 or now - last_emit_at >= 1.0):
+            _emit_llm_heartbeat(ctx, "".join(parts), final=False)
+            last_emit_at = now
+    output = "".join(parts).strip()
+    if output:
+        _emit_llm_heartbeat(ctx, output, final=True)
+    return output
+
+
+_API_ENDPOINT_RUNNERS = {
+    "chat.completions": (_run_openai_sync, _run_openai_stream),
+    "messages": (_run_anthropic_sync, _run_anthropic_stream),
+}
+
+
+def _run_api_endpoint(ctx: _APIRunContext, endpoint: str) -> str:
+    runners = _API_ENDPOINT_RUNNERS.get(endpoint)
+    if runners is None:
+        raise ValueError(f"未知端点类型: {endpoint}")
+
+    sync_runner, stream_runner = runners
+    should_stream = _should_stream_llm_progress()
+    try:
+        output = stream_runner(ctx) if should_stream else sync_runner(ctx)
+    except Exception:
+        if not should_stream:
+            raise
+        output = sync_runner(ctx)
+
+    if not output:
+        raise RuntimeError(f"{ctx.provider.name} 返回了空内容")
+    return output
 
 
 def _run_api_provider(
@@ -680,198 +882,17 @@ def _run_api_provider(
 ) -> str:
     """执行 API Provider."""
     client, endpoint = provider.build_client()
-
-    # 构建消息
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-
-    def _should_stream() -> bool:
-        try:
-            from codepilot.core import progress_bus
-
-            return progress_bus.has_subscribers()
-        except Exception:
-            return False
-
-    def _estimate_tokens(text: str) -> int:
-        content = str(text or "")
-        if not content:
-            return 0
-        return max(1, (len(content.encode("utf-8")) + 3) // 4)
-
-    def _emit_heartbeat(text: str, *, final: bool = False) -> None:
-        try:
-            from codepilot.core import progress_bus
-
-            ctx = progress_bus.current_llm_context()
-            elapsed = round(max(0.0, time.monotonic() - started_at), 1)
-            estimated_tokens = _estimate_tokens(text)
-            label = str(ctx.get("label") or provider.name)
-            if final:
-                message = f"{label} 完成：{elapsed}s，约 {estimated_tokens} tokens"
-                level = "info"
-                event_type = "phase_end"
-            elif estimated_tokens <= 0:
-                message = f"{label} 请求已发出：{elapsed}s，等待首个 token"
-                level = "heartbeat"
-                event_type = "phase_start"
-            else:
-                message = f"{label} 生成中：{elapsed}s，约 {estimated_tokens} tokens"
-                level = "heartbeat"
-                event_type = "heartbeat"
-            progress_bus.emit(
-                task_id=ctx.get("task_id"),
-                stage=str(ctx.get("stage") or "system"),
-                level=level,
-                event_type=event_type,
-                message=message,
-                extra={
-                    "llm_heartbeat": True,
-                    "provider": provider.name,
-                    "model": provider.model,
-                    "elapsed_seconds": elapsed,
-                    "estimated_tokens": estimated_tokens,
-                    "text_chars": len(text or ""),
-                    "final": final,
-                },
-            )
-        except Exception:
-            pass
-
-    def _extract_openai_chunk_text(chunk: Any) -> str:
-        pieces: list[str] = []
-        for choice in getattr(chunk, "choices", []) or []:
-            delta = getattr(choice, "delta", None)
-            content = getattr(delta, "content", None)
-            if isinstance(content, str):
-                pieces.append(content)
-                continue
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, str):
-                        pieces.append(item)
-                        continue
-                    text = ""
-                    if isinstance(item, dict):
-                        text = str(item.get("text") or "")
-                    else:
-                        text = str(getattr(item, "text", "") or "")
-                    if text:
-                        pieces.append(text)
-        return "".join(pieces)
-
-    def _run_openai_sync() -> str:
-        response = client.chat.completions.create(
-            model=provider.model,
-            messages=messages,
-            max_tokens=provider.max_tokens,
-            temperature=provider.temperature,
-        )
-        return (response.choices[0].message.content or "").strip()
-
-    def _run_openai_stream() -> str:
-        parts: list[str] = []
-        last_emit_at = 0.0
-        _emit_heartbeat("", final=False)
-        stream = client.chat.completions.create(
-            model=provider.model,
-            messages=messages,
-            max_tokens=provider.max_tokens,
-            temperature=provider.temperature,
-            stream=True,
-        )
-        for chunk in stream:
-            piece = _extract_openai_chunk_text(chunk)
-            if piece:
-                parts.append(piece)
-            now = time.monotonic()
-            if piece and (last_emit_at <= 0 or now - last_emit_at >= 1.0):
-                _emit_heartbeat("".join(parts), final=False)
-                last_emit_at = now
-        output = "".join(parts).strip()
-        if output:
-            _emit_heartbeat(output, final=True)
-        return output
-
-    def _run_anthropic_sync() -> str:
-        kwargs: dict[str, Any] = {
-            "model": provider.model,
-            "max_tokens": provider.max_tokens,
-            "temperature": provider.temperature,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if system_prompt:
-            kwargs["system"] = system_prompt
-        response = client.messages.create(**kwargs)
-        return "".join(
-            str(getattr(block, "text", "") or "")
-            for block in (getattr(response, "content", None) or [])
-        ).strip()
-
-    def _run_anthropic_stream() -> str:
-        kwargs: dict[str, Any] = {
-            "model": provider.model,
-            "max_tokens": provider.max_tokens,
-            "temperature": provider.temperature,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": True,
-        }
-        if system_prompt:
-            kwargs["system"] = system_prompt
-        parts: list[str] = []
-        last_emit_at = 0.0
-        _emit_heartbeat("", final=False)
-        stream = client.messages.create(**kwargs)
-        for event in stream:
-            piece = ""
-            event_type = str(getattr(event, "type", "") or "")
-            if event_type == "content_block_delta":
-                piece = str(getattr(getattr(event, "delta", None), "text", "") or "")
-            elif event_type == "content_block_start":
-                piece = str(getattr(getattr(event, "content_block", None), "text", "") or "")
-            if piece:
-                parts.append(piece)
-            now = time.monotonic()
-            if piece and (last_emit_at <= 0 or now - last_emit_at >= 1.0):
-                _emit_heartbeat("".join(parts), final=False)
-                last_emit_at = now
-        output = "".join(parts).strip()
-        if output:
-            _emit_heartbeat(output, final=True)
-        return output
-
-    started_at = time.monotonic()
+    ctx = _APIRunContext(
+        provider=provider,
+        client=client,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        messages=_build_api_messages(prompt, system_prompt),
+        started_at=time.monotonic(),
+    )
 
     try:
-        if endpoint == "chat.completions":
-            should_stream = _should_stream()
-            try:
-                output = _run_openai_stream() if should_stream else _run_openai_sync()
-            except Exception:
-                if not should_stream:
-                    raise
-                output = _run_openai_sync()
-            if not output:
-                raise RuntimeError(f"{provider.name} 返回了空内容")
-            return output
-
-        elif endpoint == "messages":
-            should_stream = _should_stream()
-            try:
-                output = _run_anthropic_stream() if should_stream else _run_anthropic_sync()
-            except Exception:
-                if not should_stream:
-                    raise
-                output = _run_anthropic_sync()
-            if not output:
-                raise RuntimeError(f"{provider.name} 返回了空内容")
-            return output
-
-        else:
-            raise ValueError(f"未知端点类型: {endpoint}")
-
+        return _run_api_endpoint(ctx, endpoint)
     except Exception as e:
         raise RuntimeError(f"{provider.name} API 调用失败: {e}")
 
