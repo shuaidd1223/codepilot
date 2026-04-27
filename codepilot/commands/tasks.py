@@ -66,6 +66,13 @@ _SHOW_FIELD_ORDER = [
     "completed_at",
 ]
 
+_SHOW_EXTRA_FIELD_EXCLUDES = {
+    "content",
+    "error_message",
+    "delivery_record",
+    "last_output",
+}
+
 
 def _parse_depends_on(raw: Any) -> list[int]:
     if raw in (None, ""):
@@ -112,37 +119,51 @@ def _show_block(title: str, text: Any, *, empty_hint: str | None = None) -> None
     click.echo()
 
 
-@click.command()
-@click.argument("task_id", type=int)
-@click.option("--logs", "include_logs", is_flag=True, help="同时显示历史日志完整输出")
-@click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
-@click.pass_context
-def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
-    """精确查看单个任务详情。"""
-    db.init_db()
-    json_mode = resolve_json_mode(ctx, json_mode)
+def _emit_show_not_found(ctx: click.Context, task_id: int, json_mode: bool) -> None:
+    if json_mode:
+        emit_json_payload(
+            "show",
+            ok=False,
+            data={"task": None, "logs": []},
+            error=f"任务 #{task_id} 不存在",
+            error_code="task_not_found",
+        )
+    else:
+        echo(f"[red]任务 #{task_id} 不存在[/red]")
+    ctx.exit(1)
 
+
+def _load_show_task_or_exit(ctx: click.Context, task_id: int, json_mode: bool) -> tuple[dict, list[dict]]:
     task = db.get_task(task_id)
     if not task:
-        if json_mode:
-            emit_json_payload(
-                "show",
-                ok=False,
-                data={"task": None, "logs": []},
-                error=f"任务 #{task_id} 不存在",
-                error_code="task_not_found",
-            )
-        else:
-            echo(f"[red]任务 #{task_id} 不存在[/red]")
-        ctx.exit(1)
+        _emit_show_not_found(ctx, task_id, json_mode)
+    return task, db.list_task_logs(task_id)
 
-    logs = db.list_task_logs(task_id)
-    payload = _task_show_payload(task, logs)
-    if json_mode:
-        emit_json_payload("show", ok=True, data=payload)
-        return
 
-    console = terminal_console()
+def _show_field_value(field: str, value: Any) -> str:
+    if field == "depends_on":
+        deps = _parse_depends_on(value)
+        value = ", ".join(f"#{dep}" for dep in deps) if deps else "-"
+    return _show_value(value)
+
+
+def _iter_show_fields(task: dict) -> list[tuple[str, str]]:
+    shown = set()
+    rows: list[tuple[str, str]] = []
+    for field in _SHOW_FIELD_ORDER:
+        if field not in task:
+            continue
+        shown.add(field)
+        rows.append((field, _show_field_value(field, task.get(field))))
+
+    extra_fields = sorted(
+        key for key in task.keys() if key not in shown and key not in _SHOW_EXTRA_FIELD_EXCLUDES
+    )
+    rows.extend((field, _show_value(task.get(field))) for field in extra_fields)
+    return rows
+
+
+def _render_show_header(console, task: dict) -> None:
     console.print()
     console.print(
         f"[bold cyan]任务详情[/bold cyan]  [dim]#[/dim]{task['id']}  "
@@ -150,27 +171,14 @@ def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
     )
     click.echo()
 
-    shown = set()
-    for field in _SHOW_FIELD_ORDER:
-        if field not in task:
-            continue
-        shown.add(field)
-        value = task.get(field)
-        if field == "depends_on":
-            deps = _parse_depends_on(value)
-            value = ", ".join(f"#{dep}" for dep in deps) if deps else "-"
-        click.echo(f"{field}: {_show_value(value)}")
 
-    extra_fields = sorted(key for key in task.keys() if key not in shown and key not in {
-        "content",
-        "error_message",
-        "delivery_record",
-        "last_output",
-    })
-    for field in extra_fields:
-        click.echo(f"{field}: {_show_value(task.get(field))}")
+def _render_show_fields(task: dict) -> None:
+    for field, value in _iter_show_fields(task):
+        click.echo(f"{field}: {value}")
     click.echo()
 
+
+def _render_show_body(task: dict) -> None:
     _show_block(
         "任务内容",
         task.get("content"),
@@ -184,39 +192,71 @@ def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
     _show_block("交付记录", task.get("delivery_record"))
     _show_block("最近输出", task.get("last_output"))
 
-    if logs:
-        console.print()
-        console.print(f"[bold cyan]执行日志[/bold cyan]  [dim]{len(logs)} 条[/dim]")
-        log_table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
-        log_table.add_column("ID", style="dim", justify="right", width=5, no_wrap=True)
-        log_table.add_column("阶段", width=10, no_wrap=True)
-        log_table.add_column("Agent", width=10, no_wrap=True, overflow="ellipsis")
-        log_table.add_column("退出", justify="right", width=5, no_wrap=True)
-        log_table.add_column("耗时", justify="right", width=8, no_wrap=True)
-        log_table.add_column("开始时间", style="dim", width=19, no_wrap=True)
-        log_table.add_column("结束时间", style="dim", width=19, no_wrap=True)
+
+def _build_show_log_table(logs: list[dict]) -> Table:
+    log_table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
+    log_table.add_column("ID", style="dim", justify="right", width=5, no_wrap=True)
+    log_table.add_column("阶段", width=10, no_wrap=True)
+    log_table.add_column("Agent", width=10, no_wrap=True, overflow="ellipsis")
+    log_table.add_column("退出", justify="right", width=5, no_wrap=True)
+    log_table.add_column("耗时", justify="right", width=8, no_wrap=True)
+    log_table.add_column("开始时间", style="dim", width=19, no_wrap=True)
+    log_table.add_column("结束时间", style="dim", width=19, no_wrap=True)
+    for entry in logs:
+        exit_code = entry.get("exit_code")
+        exit_text = "-" if exit_code is None else str(exit_code)
+        exit_style = "green" if exit_code == 0 else ("red" if exit_code not in (None, 0) else "dim")
+        log_table.add_row(
+            f"#{entry.get('id')}",
+            str(entry.get("phase") or "-"),
+            str(entry.get("agent") or "-"),
+            f"[{exit_style}]{exit_text}[/{exit_style}]",
+            str(entry.get("duration") if entry.get("duration") is not None else "-"),
+            (entry.get("started_at") or "-")[:19],
+            (entry.get("finished_at") or "-")[:19],
+        )
+    return log_table
+
+
+def _render_show_logs(console, task_id: int, logs: list[dict], include_logs: bool) -> None:
+    if not logs:
+        return
+
+    console.print()
+    console.print(f"[bold cyan]执行日志[/bold cyan]  [dim]{len(logs)} 条[/dim]")
+    console.print(_build_show_log_table(logs))
+    if include_logs:
         for entry in logs:
-            exit_code = entry.get("exit_code")
-            exit_text = "-" if exit_code is None else str(exit_code)
-            exit_style = "green" if exit_code == 0 else ("red" if exit_code not in (None, 0) else "dim")
-            log_table.add_row(
-                f"#{entry.get('id')}",
-                str(entry.get("phase") or "-"),
-                str(entry.get("agent") or "-"),
-                f"[{exit_style}]{exit_text}[/{exit_style}]",
-                str(entry.get("duration") if entry.get("duration") is not None else "-"),
-                (entry.get("started_at") or "-")[:19],
-                (entry.get("finished_at") or "-")[:19],
-            )
-        console.print(log_table)
-        if include_logs:
-            for entry in logs:
-                if entry.get("output"):
-                    console.print()
-                    console.print(f"[dim]── #{entry.get('id')} {entry.get('phase') or '-'} ──[/dim]")
-                    click.echo(entry["output"])
-        else:
-            console.print(f"[dim]  完整日志: codepilot task logs {task_id} --full[/dim]")
+            if entry.get("output"):
+                console.print()
+                console.print(f"[dim]── #{entry.get('id')} {entry.get('phase') or '-'} ──[/dim]")
+                click.echo(entry["output"])
+        return
+
+    console.print(f"[dim]  完整日志: codepilot task logs {task_id} --full[/dim]")
+
+
+@click.command()
+@click.argument("task_id", type=int)
+@click.option("--logs", "include_logs", is_flag=True, help="同时显示历史日志完整输出")
+@click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
+@click.pass_context
+def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
+    """精确查看单个任务详情。"""
+    db.init_db()
+    json_mode = resolve_json_mode(ctx, json_mode)
+
+    task, logs = _load_show_task_or_exit(ctx, task_id, json_mode)
+    payload = _task_show_payload(task, logs)
+    if json_mode:
+        emit_json_payload("show", ok=True, data=payload)
+        return
+
+    console = terminal_console()
+    _render_show_header(console, task)
+    _render_show_fields(task)
+    _render_show_body(task)
+    _render_show_logs(console, task_id, logs, include_logs)
 
 
 # ── done ──────────────────────────────────────────────────────────────────────
