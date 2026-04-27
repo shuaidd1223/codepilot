@@ -27,10 +27,8 @@ def test_base_keywords_are_shared_by_both_contexts():
 
 
 def test_planner_list_keeps_bare_marker_words_out_of_inspect_keywords():
-    """Inspect signals can legitimately cite code comment markers, so bare
-    ``todo`` must NOT be a filler keyword there. The planner stage can
-    afford to be stricter since user-supplied requirements rarely contain
-    bare English placeholders."""
+    """Inspect signals can legitimately cite code comment markers, so the
+    inspect keyword list must stay looser than the planner one."""
     assert "todo" in PLANNER_FILLER_KEYWORDS
     assert "placeholder" in PLANNER_FILLER_KEYWORDS
     assert "todo" not in INSPECT_FILLER_KEYWORDS
@@ -52,8 +50,7 @@ def test_looks_generic_unrelated_text_is_false():
 
 
 def test_inspect_filler_does_not_fire_on_legitimate_marker_reference():
-    """A candidate title citing ``TODO`` should not be treated as filler
-    when it points at a concrete code marker."""
+    """A concrete code-marker reference should not be treated as filler."""
     text = "修复 foo.py:42 的 TODO 标记引用"
     assert looks_generic(text, INSPECT_FILLER_KEYWORDS) is False
 
@@ -193,7 +190,7 @@ def test_planner_quality_gate_accepts_concrete_task():
 
 
 def test_inspect_filter_keeps_real_marker_reference_with_grounded_evidence():
-    """Regression check: the inspect filter keeps legitimate marker
+    """Regression check: the inspect filter keeps grounded marker
     references after the refactor routes it through task_quality."""
     signal_results = [
         inspect_cmd.InspectSignalResult(

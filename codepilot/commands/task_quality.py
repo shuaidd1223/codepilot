@@ -9,10 +9,9 @@ This module centralizes:
 
 * the baseline filler vocabulary (Chinese + obvious English)
 * a planner-specific extension (can be stricter because user-provided
-  task titles are unlikely to contain bare English markers like "todo")
-* an inspect-specific extension (deliberately avoids bare marker words like
-  "todo" / "placeholder" because those appear legitimately in inspect's
-  signal references)
+  task titles are unlikely to contain bare English placeholder markers)
+* an inspect-specific extension (deliberately avoids bare marker words
+  because those appear legitimately in inspect's signal references)
 * ``looks_generic(text, keywords)`` — case-insensitive substring check
 * ``evidence_grounded_in(evidence, tokens)`` — cheap two-way substring
   match with a minimum token length, shared by inspect's signal check
@@ -61,8 +60,8 @@ PLANNER_FILLER_KEYWORDS: tuple[str, ...] = BASE_FILLER_KEYWORDS + (
 
 
 # Inspect-specific: the inspector's signals legitimately reference code
-# markers, so we must NOT treat bare "todo" as filler. We also tighten some
-# Chinese phrases to avoid false positives on real fixes.
+# markers, so we must NOT treat bare marker words as filler. We also tighten
+# some Chinese phrases to avoid false positives on real fixes.
 INSPECT_FILLER_KEYWORDS: tuple[str, ...] = BASE_FILLER_KEYWORDS + (
     "占位任务",
 )
