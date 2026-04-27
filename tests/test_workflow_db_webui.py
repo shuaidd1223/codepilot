@@ -29,6 +29,49 @@ from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
 
 
+def _valid_import_task_content(title: str) -> str:
+    return f"""# {title}
+
+## Task Goal
+
+验证批量导入任务内容能被正确落库。
+
+## In Scope
+
+- 补齐导入动作测试
+
+## Out of Scope
+
+- 不修改执行器
+
+## Forbidden (Hard Boundary)
+
+- 不改数据库结构
+
+## Files In Scope
+
+- `codepilot/webapp/action_task_ops.py`
+
+## Planning Evidence
+
+来自批量导入动作回归测试。
+
+## Acceptance Criteria
+
+- [ ] 导入后任务正文完整
+
+## Verification Matrix
+
+| AC | Command | Expected | Evidence |
+| :--- | :--- | :--- | :--- |
+| AC1 | `pytest tests/test_workflow_db_webui.py` | 导入动作通过 | pytest |
+
+## Reviewer Checkpoints
+
+- 检查模板章节完整
+"""
+
+
 def test_init_db_infers_preversioned_schema_and_only_runs_missing_migrations(tmp_path, monkeypatch):
     db_path = tmp_path / "legacy.db"
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(db_path))
@@ -559,6 +602,41 @@ def test_webui_dashboard_task_sort_matches_display_rules(tmp_path, monkeypatch):
     payload = webui_mod.dashboard_payload("demo")
     ordered_ids = [item["id"] for item in payload["tasks"]]
     assert ordered_ids == [backlog_p0["id"], backlog_p1["id"], done_late["id"], done_early["id"]]
+
+
+def test_import_tasks_action_normalizes_legacy_content_and_depends_fields(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    upstream = db.create_task("demo", "upstream", content=_valid_import_task_content("upstream"), agent="codex")
+
+    result = webui_mod.import_tasks_action(
+        "demo",
+        [
+            {
+                "name": "import task 1",
+                "description": _valid_import_task_content("import task 1"),
+                "depends": [upstream["id"], upstream["id"], 0, "bad"],
+            },
+            {
+                "title": "import task 2",
+                "body": _valid_import_task_content("import task 2"),
+                "dependsOn": f"{upstream['id']}, {upstream['id']}, 0, bad",
+            },
+        ],
+    )
+
+    assert result["ok"] is True
+    assert result["count"] == 2
+    assert result["tasks"][0]["title"] == "import task 1"
+    assert result["tasks"][1]["title"] == "import task 2"
+
+    imported_first = db.get_task(result["tasks"][0]["id"])
+    imported_second = db.get_task(result["tasks"][1]["id"])
+    assert json.loads(imported_first["depends_on"]) == [upstream["id"]]
+    assert json.loads(imported_second["depends_on"]) == [upstream["id"]]
 
 
 def test_webui_requirement_list_sort_matches_display_rules(tmp_path, monkeypatch):

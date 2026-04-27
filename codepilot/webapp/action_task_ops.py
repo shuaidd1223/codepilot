@@ -291,77 +291,94 @@ def _normalize_batch_depends(raw_value) -> list[int] | None:
     return normalized or None
 
 
-def import_tasks_action(project: str, items: list[dict]) -> dict:
-    db.init_db()
-    project_info = db.get_project(project)
-    if not project_info:
-        raise RuntimeError(f"项目 '{project}' 不存在。")
-    if not isinstance(items, list) or not items:
-        raise RuntimeError("items 必须是非空 JSON 数组。")
-
+def _batch_import_schema_constraints() -> tuple[list[str], set[str]]:
     schema = task_template_schema()
     validation = schema.get("validation") or {}
-    placeholder_names = [
+    return [
         str(item.get("name") or "").strip()
         for item in (schema.get("placeholders") or [])
         if isinstance(item, dict)
-    ]
-    allowed_priorities = {
+    ], {
         str(item).upper()
         for item in (validation.get("priority_values") or ["P0", "P1", "P2", "P3"])
     }
 
+
+def _extract_batch_depends_value(raw: dict):
+    if "depends" in raw:
+        return raw.get("depends")
+    if "depends_on" in raw:
+        return raw.get("depends_on")
+    return raw.get("dependsOn")
+
+
+def _normalize_batch_import_item(
+    raw: object,
+    *,
+    index: int,
+    placeholder_names: list[str],
+    allowed_priorities: set[str],
+) -> tuple[dict | None, list[str]]:
+    if not isinstance(raw, dict):
+        return None, [f"第 {index} 项必须是对象。"]
+
+    title = " ".join(str(raw.get("title") or raw.get("name") or "").split())
+    if not title:
+        return None, [f"第 {index} 项缺少 title。"]
+
+    content = _extract_batch_task_content(raw)
+    if not content.strip():
+        return None, [f"第 {index} 项《{title}》缺少 content。"]
+
+    errors: list[str] = []
+    missing = missing_task_template_sections(content)
+    if missing:
+        errors.append(f"第 {index} 项《{title}》缺少关键章节：{', '.join(missing)}。")
+
+    leftovers = unreplaced_task_template_placeholders(
+        content,
+        placeholder_names=placeholder_names,
+    )
+    if leftovers:
+        errors.append(f"第 {index} 项《{title}》仍包含未替换占位符：{', '.join(leftovers)}。")
+
+    normalized_priority = str(raw.get("priority") or "P2").upper()
+    if normalized_priority not in allowed_priorities:
+        errors.append(f"第 {index} 项《{title}》优先级无效：{normalized_priority}。")
+
+    return {
+        "title": title,
+        "content": content,
+        "priority": normalized_priority,
+        "agent": raw.get("agent"),
+        "depends_on": _normalize_batch_depends(_extract_batch_depends_value(raw)),
+    }, errors
+
+
+def _normalize_batch_import_items(items: list[dict]) -> list[dict]:
+    if not isinstance(items, list) or not items:
+        raise RuntimeError("items 必须是非空 JSON 数组。")
+
+    placeholder_names, allowed_priorities = _batch_import_schema_constraints()
     normalized_items: list[dict] = []
     validation_errors: list[str] = []
     for index, raw in enumerate(items, 1):
-        if not isinstance(raw, dict):
-            validation_errors.append(f"第 {index} 项必须是对象。")
-            continue
-        title = " ".join(str(raw.get("title") or raw.get("name") or "").split())
-        if not title:
-            validation_errors.append(f"第 {index} 项缺少 title。")
-            continue
-        content = _extract_batch_task_content(raw)
-        if not content.strip():
-            validation_errors.append(f"第 {index} 项《{title}》缺少 content。")
-            continue
-        missing = missing_task_template_sections(content)
-        if missing:
-            validation_errors.append(
-                f"第 {index} 项《{title}》缺少关键章节：{', '.join(missing)}。"
-            )
-        leftovers = unreplaced_task_template_placeholders(
-            content,
+        normalized_item, item_errors = _normalize_batch_import_item(
+            raw,
+            index=index,
             placeholder_names=placeholder_names,
+            allowed_priorities=allowed_priorities,
         )
-        if leftovers:
-            validation_errors.append(
-                f"第 {index} 项《{title}》仍包含未替换占位符：{', '.join(leftovers)}。"
-            )
-        normalized_priority = str(raw.get("priority") or "P2").upper()
-        if normalized_priority not in allowed_priorities:
-            validation_errors.append(
-                f"第 {index} 项《{title}》优先级无效：{normalized_priority}。"
-            )
-        normalized_items.append(
-            {
-                "title": title,
-                "content": content,
-                "priority": normalized_priority,
-                "agent": raw.get("agent"),
-                "depends_on": _normalize_batch_depends(
-                    raw.get("depends")
-                    if "depends" in raw
-                    else raw.get("depends_on")
-                    if "depends_on" in raw
-                    else raw.get("dependsOn")
-                ),
-            }
-        )
+        validation_errors.extend(item_errors)
+        if normalized_item is not None:
+            normalized_items.append(normalized_item)
 
     if validation_errors:
         raise RuntimeError(" ".join(validation_errors))
+    return normalized_items
 
+
+def _create_batch_import_tasks(project: str, normalized_items: list[dict]) -> list[dict]:
     created: list[dict] = []
     for item in normalized_items:
         task = create_task_action(
@@ -376,6 +393,18 @@ def import_tasks_action(project: str, items: list[dict]) -> dict:
             updated = db.update_task(task["id"], depends_on=item["depends_on"])
             task = _task_payload(updated or db.get_task(task["id"]))
         created.append(task)
+    return created
+
+
+def import_tasks_action(project: str, items: list[dict]) -> dict:
+    db.init_db()
+    project_info = db.get_project(project)
+    if not project_info:
+        raise RuntimeError(f"项目 '{project}' 不存在。")
+
+    normalized_items = _normalize_batch_import_items(items)
+
+    created = _create_batch_import_tasks(project, normalized_items)
 
     _append_event(
         f"批量导入 {len(created)} 个任务。",
