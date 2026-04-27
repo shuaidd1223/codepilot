@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+from codepilot.core.task_template import missing_task_template_sections
 from codepilot.commands import inspect as inspect_cmd
 
 
@@ -272,10 +274,57 @@ def test_build_content_surfaces_evidence_and_effort():
         "evidence": "signal 3: codepilot/foo.py:42",
         "effort": "small",
     })
+    assert "Agent | codex" in content
+    assert "Priority | P3" in content
     assert "kind=bug" in content
     assert "effort=small" in content
-    assert "## 信号证据" in content
+    assert "## Planning Evidence" in content
+    assert "## Reviewer Checkpoints" in content
     assert "codepilot/foo.py:42" in content
+    assert missing_task_template_sections(content) == []
+
+
+def test_materialize_inspection_output_writes_task_template_content(tmp_path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda project_name: set())
+
+    def fake_create_task(**kwargs):
+        captured.update(kwargs)
+        return {"id": 1, **kwargs}
+
+    monkeypatch.setattr(inspect_cmd.db, "create_task", fake_create_task)
+
+    created, skipped = inspect_cmd._materialize_inspection_output(
+        [
+            {
+                "title": "修复 foo.py 的超时 TODO",
+                "goal": "处理 codepilot/foo.py:42 的 TODO。",
+                "priority": "P1",
+                "rationale": "TODO 指向明确行。",
+                "kind": "bug",
+                "evidence": "signal 3: codepilot/foo.py:42",
+                "effort": "small",
+            }
+        ],
+        max_new_tasks=1,
+        project_name="demo",
+        project_path=Path(tmp_path),
+        priority="P3",
+        agent="claude-sonnet",
+        dry_run=False,
+    )
+
+    assert len(created) == 1
+    assert skipped == []
+    assert captured["agent"] == "claude-sonnet"
+    assert captured["priority"] == "P1"
+    content = str(captured["content"])
+    assert "Agent | claude-sonnet" in content
+    assert "Priority | P1" in content
+    assert "## Task Goal" in content
+    assert "## Planning Evidence" in content
+    assert missing_task_template_sections(content) == []
 
 
 def test_emit_inspection_result_maps_error_into_contract(monkeypatch):

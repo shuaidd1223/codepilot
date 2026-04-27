@@ -591,6 +591,154 @@ def test_review_failure_prompt_omits_block_when_verdict_empty():
     assert "明确引用" not in prompt
 
 
+def test_review_failure_fallback_uses_legacy_retry_path():
+    from codepilot.commands import run_failure_triage as triage_mod
+
+    captured: dict[str, object] = {}
+
+    def fake_handle_failure(task, error_message, *, stop_on_failure=False):
+        captured["task"] = task
+        captured["error_message"] = error_message
+        captured["stop_on_failure"] = stop_on_failure
+        return {"id": task["id"], "status": "backlog"}, False
+
+    result = triage_mod._fallback_review_failure_result(
+        {"id": 7},
+        "review failed",
+        mark_task_failed_fn=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not mark failed")),
+        handle_failure_fn=fake_handle_failure,
+        retry_on_failure=True,
+        stop_on_failure=False,
+    )
+
+    assert result == {
+        "updated": {"id": 7, "status": "backlog"},
+        "error_message": "review failed",
+        "decision": None,
+        "should_stop": False,
+    }
+    assert captured["error_message"] == "review failed"
+    assert captured["stop_on_failure"] is False
+
+
+def test_override_review_failure_discard_decision_promotes_to_retry():
+    from codepilot.commands import run_failure_triage as triage_mod
+    from codepilot.commands.reviewer_output import ReviewerVerdict
+
+    decision = {
+        "action": "discard",
+        "matched_task_id": None,
+        "rationale": "",
+        "merged_note": "drop it",
+    }
+    verdict = ReviewerVerdict(
+        verdict="fail",
+        blockers=["缺少 serializer.py"],
+        advisory=[],
+        ac_checks=[{"id": "AC3", "status": "fail", "reason": "导出列表不完整"}],
+        source="json",
+    )
+
+    overridden = triage_mod._override_review_failure_discard_decision(
+        decision,
+        reviewer_verdict=verdict,
+        review_output="VERDICT: FAIL",
+        error_message="review 未通过",
+    )
+
+    assert overridden["action"] == "retry_with_hint"
+    assert overridden["overridden_from"] == "discard"
+    assert overridden["override_reason"] == "reviewer_actionable_failure"
+    assert "serializer.py" in overridden["retry_hint"]
+
+
+def test_apply_retry_with_hint_decision_marks_failed_when_retry_disabled():
+    from codepilot.commands import run_failure_triage as triage_mod
+    from codepilot.commands.reviewer_output import ReviewerVerdict
+
+    task = {"id": 3, "content": "原始任务"}
+    decision = {
+        "action": "retry_with_hint",
+        "rationale": "按 reviewer 修",
+        "retry_hint": "补上缺失分支",
+        "overridden_from": "discard",
+    }
+    verdict = ReviewerVerdict(verdict="fail", blockers=["补测试"], source="json")
+    captured: dict[str, object] = {}
+
+    def fake_mark_failed(task_arg, err):
+        captured["error"] = err
+        return {"id": task_arg["id"], "status": "failed", "error_message": err}
+
+    result = triage_mod._apply_retry_with_hint_decision(
+        task,
+        "review failed",
+        decision=decision,
+        reviewer_verdict=verdict,
+        mark_task_failed_fn=fake_mark_failed,
+        handle_failure_fn=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not retry")),
+        db_module=None,
+        retry_on_failure=False,
+        stop_on_failure=True,
+    )
+
+    assert result["updated"]["status"] == "failed"
+    assert result["should_stop"] is True
+    assert "已禁用自动重试" in result["error_message"]
+    assert "reviewer 有明确修复点" in captured["error"]
+
+
+def test_apply_replan_decision_creates_followup_task():
+    from codepilot.commands import run_failure_triage as triage_mod
+
+    task = {
+        "id": 12,
+        "project": "demo",
+        "title": "旧任务",
+        "agent": "dual",
+        "priority": "P1",
+        "project_path": "/tmp/demo",
+        "max_retries": 4,
+    }
+    decision = {
+        "action": "replan",
+        "rationale": "需要拆分",
+        "replan_title": "新拆分任务",
+        "replan_content": (
+            "# 新拆分任务\n\n## Task Goal\n重做拆分。\n\n## In Scope\n- triage.py\n\n"
+            "## Out of Scope\n- UI\n\n## Forbidden (Hard Boundary)\n- 不扩 scope\n\n"
+            "## Files In Scope\n- triage.py\n\n## Planning Evidence\n- 来源 review\n\n"
+            "## Acceptance Criteria\n- [ ] 可单测\n\n## Verification Matrix\n"
+            "| AC | 命令 | 期望 | 证据 |\n| --- | --- | --- | --- |\n\n"
+            "## Reviewer Checkpoints\n- 检查 helper 边界\n"
+        ),
+    }
+    created: dict[str, object] = {}
+
+    class FakeDB:
+        def create_task(self, project, title, **kwargs):
+            created["project"] = project
+            created["title"] = title
+            created["kwargs"] = kwargs
+            return {"id": 99, "title": title}
+
+    result = triage_mod._apply_replan_decision(
+        task,
+        "review failed",
+        decision=decision,
+        rationale="需要拆分",
+        mark_task_failed_fn=lambda task_arg, err: {"id": task_arg["id"], "status": "failed", "error_message": err},
+        db_module=FakeDB(),
+        terminal_should_stop=True,
+    )
+
+    assert created["project"] == "demo"
+    assert created["title"] == "新拆分任务"
+    assert result["decision"]["created_task_id"] == 99
+    assert "已转成新任务 #99" in result["error_message"]
+    assert result["should_stop"] is True
+
+
 def test_review_failure_evidence_parses_review_output_for_prompt(tmp_path, monkeypatch):
     """End-to-end: _collect_review_failure_evidence must parse review_output
     and feed structured blockers into the prompt builder."""

@@ -16,6 +16,7 @@ from codepilot.ai_support.service import (
     _run_api_provider,
     _run_claude_schema_prompt,
     _run_codex_schema_prompt,
+    build_task_markdown_from_plan,
     normalize_agent_name,
 )
 from codepilot.commands.add import _resolve_project_strict
@@ -25,6 +26,7 @@ from codepilot.core.config import load_project_config, resolve_planner
 from codepilot.core.output import echo
 from codepilot.core.paths import global_storage_root
 from codepilot.core.runtime import is_process_alive, stop_process_tree
+from codepilot.core.task_template import missing_task_template_sections
 
 INSPECT_STATE_DIR = global_storage_root() / "inspect"
 SKIPPED_SIGNAL = "（跳过）"
@@ -564,7 +566,17 @@ def _materialize_inspection_output(
         if key in existing_keys:
             skipped.append({"title": title, "reason": "duplicate"})
             continue
-        content = _build_content(item)
+        content = _build_content(item, agent=agent, default_priority=priority)
+        missing_sections = missing_task_template_sections(content)
+        if missing_sections:
+            skipped.append(
+                {
+                    "title": title,
+                    "reason": "template_noncompliant",
+                    "missing_sections": missing_sections,
+                }
+            )
+            continue
         if dry_run:
             created.append({"title": title, "goal": goal, "priority": item.get("priority") or priority})
             continue
@@ -670,35 +682,46 @@ def run_inspection(
     }
 
 
-def _build_content(item: dict) -> str:
+def _build_content(item: dict, *, agent: str = "codex", default_priority: str = "P3") -> str:
     kind = item.get("kind") or "chore"
     effort = (item.get("effort") or "small").strip() or "small"
     rationale = (item.get("rationale") or "").strip()
     goal = (item.get("goal") or "").strip()
     evidence = (item.get("evidence") or "").strip()
-    return "\n".join(
-        [
-            f"# {item.get('title','').strip()}",
-            "",
-            f"> 由 `codepilot inspect` 自动建议（kind={kind}, effort={effort}）",
-            "",
-            "## 任务目标",
-            "",
-            goal or "（待补充）",
-            "",
-            "## 动机",
-            "",
-            rationale or "（待补充）",
-            "",
-            "## 信号证据",
-            "",
-            evidence or "（未提供，建议复核后再执行）",
-            "",
-            "## 备注",
-            "",
-            "- 这是自动巡检产生的候选任务，执行前请人工确认方向。",
-        ]
-    )
+    task_spec = {
+        "title": (item.get("title") or "").strip(),
+        "agent": agent,
+        "priority": (item.get("priority") or "").strip() or default_priority,
+        "goal": goal or "根据巡检信号完成针对性处理，并消除对应风险。",
+        "acceptance_criteria": [
+            "规划证据里的信号已经被实际处理，并能说明对应改动。",
+            "改动范围与本任务目标一致，没有扩散到无关模块。",
+        ],
+        "builder_notes": [
+            f"优先按巡检建议执行最小闭环改动（kind={kind}, effort={effort}）。",
+            rationale or "结合信号内容确认具体处理路径，再开始实现。",
+        ],
+        "reviewer_notes": [
+            "逐项核对 Planning Evidence 是否被真实引用到改动与验证里。",
+            "确认实现没有超出本次巡检建议的目标与边界。",
+        ],
+        "files": [],
+        "notes": [
+            f"由 `codepilot inspect` 自动建议（kind={kind}, effort={effort}）。",
+            "执行前请人工确认方向与优先级。",
+        ] + ([f"补充背景：{rationale}"] if rationale else []),
+        "forbidden": [
+            "不要因为巡检建议而顺手做无关重构或范围外修补。",
+        ],
+        "not_in_scope": [
+            "与当前巡检信号无直接关系的模块、文档、部署流程。",
+        ],
+        "evidence": evidence or "（未提供规划依据，建议人工复核）",
+        "risk_level": "medium",
+        "scope_budget": f"inspect:{effort}",
+        "depends_on_indices": [],
+    }
+    return build_task_markdown_from_plan(task_spec)
 
 
 def _print_result(result: dict, dry_run: bool) -> None:
