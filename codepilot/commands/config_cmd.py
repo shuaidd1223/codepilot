@@ -94,6 +94,7 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
     classifier = data.get("classifier") if isinstance(data.get("classifier"), dict) else {}
     inspect = data.get("inspect") if isinstance(data.get("inspect"), dict) else {}
     notifications = data.get("notifications") if isinstance(data.get("notifications"), dict) else {}
+    feishu_bot = data.get("feishu_bot") if isinstance(data.get("feishu_bot"), dict) else {}
 
     signals = inspect.get("signals", ["git_log", "failed_tasks", "todos"])
     if not isinstance(signals, (list, tuple)) or not all(isinstance(item, str) for item in signals):
@@ -170,6 +171,14 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
             "webhook_secret": _string(notifications.get("webhook_secret"), ""),
             "enabled": _bool(notifications.get("enabled"), False),
         },
+        "feishu_bot": {
+            "enabled": _bool(feishu_bot.get("enabled"), False),
+            "app_id": _string(feishu_bot.get("app_id"), ""),
+            "app_secret": _string(feishu_bot.get("app_secret"), ""),
+            "node_command": _string(feishu_bot.get("node_command"), "node"),
+            "default_project": _string(feishu_bot.get("default_project"), ""),
+            "command_prefix": _string(feishu_bot.get("command_prefix"), ""),
+        },
     }
 
     providers = data.get("providers") if isinstance(data.get("providers"), dict) else {}
@@ -214,6 +223,9 @@ SECTION_COMMENTS: dict[str, list[str]] = {
     ],
     "notifications": [
         "通知配置。enabled=false 时 webhook_url 会被保留但不会发送。",
+    ],
+    "feishu_bot": [
+        "飞书企业应用长连接机器人配置。运行时使用官方 Node SDK，不依赖 lark-cli。",
     ],
 }
 
@@ -263,6 +275,12 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("notifications", "provider"): ["auto / feishu / wecom / generic。建议飞书显式写 feishu。"],
     ("notifications", "webhook_secret"): ["飞书机器人签名密钥；未开启签名校验时留空。"],
     ("notifications", "enabled"): ["是否发送通知。"],
+    ("feishu_bot", "enabled"): ["是否启用飞书企业应用长连接机器人。"],
+    ("feishu_bot", "app_id"): ["飞书企业应用 App ID。"],
+    ("feishu_bot", "app_secret"): ["飞书企业应用 App Secret。"],
+    ("feishu_bot", "node_command"): ["Node.js 命令名或完整路径；默认 node。"],
+    ("feishu_bot", "default_project"): ["未显式指定项目时默认操作的项目名。"],
+    ("feishu_bot", "command_prefix"): ["可选命令前缀，例如 cp；留空则直接识别 help/tasks/stop 等命令。"],
 }
 
 PROVIDER_EXAMPLES: dict[str, dict[str, Any]] = {
@@ -379,6 +397,7 @@ def render_agents_toml(canonical: dict[str, Any]) -> str:
             _emit_provider_section(lines, name, values)
 
     _emit_section(lines, "notifications", canonical["notifications"])
+    _emit_section(lines, "feishu_bot", canonical["feishu_bot"])
     return "\n".join(lines).rstrip() + "\n"
 
 

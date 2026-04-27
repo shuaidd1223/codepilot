@@ -17,3 +17,5 @@ dist/
 .workbuddy/
 tasks.db
 .claude/
+node_modules/
+package-lock.json

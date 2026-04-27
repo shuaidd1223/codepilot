@@ -161,6 +161,7 @@ class AgentsConfig:
     classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     inspect: InspectConfig = field(default_factory=InspectConfig)
     notifications: dict = field(default_factory=dict)
+    feishu_bot: dict = field(default_factory=dict)
 
     # AI Providers 配置
     providers: dict[str, ProviderAPIConfig] = field(default_factory=dict)
@@ -181,6 +182,12 @@ class AgentsConfig:
     webhook_provider: str = "auto"
     webhook_secret: str = ""
     notifications_enabled: bool = False
+    feishu_bot_enabled: bool = False
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+    feishu_node_command: str = "node"
+    feishu_default_project: str = ""
+    feishu_command_prefix: str = ""
     config_file_path: Optional[str] = None
 
     @classmethod
@@ -193,6 +200,7 @@ class AgentsConfig:
         classifier = data.get("classifier", {})
         inspect = data.get("inspect", {})
         notifications = data.get("notifications", {})
+        feishu_bot = data.get("feishu_bot", {})
         shell = data.get("shell", {})
         providers = data.get("providers", {})
 
@@ -261,6 +269,7 @@ class AgentsConfig:
                 priority=inspect.get("priority", "P3"),
             ),
             notifications=notifications,
+            feishu_bot=feishu_bot,
             providers=providers_config,
             # 兼容字段
             project_name=proj.get("name", ""),
@@ -278,6 +287,12 @@ class AgentsConfig:
             webhook_provider=str(notifications.get("provider", "auto") or "auto"),
             webhook_secret=notifications.get("webhook_secret", ""),
             notifications_enabled=notifications.get("enabled", False),
+            feishu_bot_enabled=bool(feishu_bot.get("enabled", False)),
+            feishu_app_id=str(feishu_bot.get("app_id", "") or ""),
+            feishu_app_secret=str(feishu_bot.get("app_secret", "") or ""),
+            feishu_node_command=str(feishu_bot.get("node_command", "node") or "node"),
+            feishu_default_project=str(feishu_bot.get("default_project", "") or ""),
+            feishu_command_prefix=str(feishu_bot.get("command_prefix", "") or ""),
             config_file_path=config_file_path,
         )
 
@@ -848,6 +863,15 @@ provider = "auto"
 # 飞书机器人签名密钥（未开启签名校验时留空）
 webhook_secret = ""
 enabled = false
+
+[feishu_bot]
+# 飞书企业应用长连接机器人（本地可用，无需公网回调）
+enabled = false
+app_id = ""
+app_secret = ""
+node_command = "node"
+default_project = ""
+command_prefix = ""
 """
 
 
@@ -888,5 +912,13 @@ webhook_url = ""
 provider = "auto"
 webhook_secret = ""
 enabled = false
+
+[feishu_bot]
+enabled = false
+app_id = ""
+app_secret = ""
+node_command = "node"
+default_project = ""
+command_prefix = ""
 """
 

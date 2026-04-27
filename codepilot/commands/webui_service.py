@@ -20,6 +20,7 @@ import click
 
 from codepilot.storage import database as db
 from codepilot.commands.daemon import start_daemon_service
+from codepilot.commands.feishu import ensure_service_running_if_enabled
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import global_storage_root
 from codepilot.core.runtime import is_process_alive, stop_process_tree
@@ -255,6 +256,7 @@ def start_cmd(host: str, port: int, open_browser: bool, start_daemon: bool, proj
         echo("[dim]如果需要重启：codepilot ui restart[/dim]")
         if start_daemon:
             _ensure_daemon_started(project)
+        _ensure_feishu_started()
         return
 
     # Clean up stale state
@@ -289,6 +291,7 @@ def start_cmd(host: str, port: int, open_browser: bool, start_daemon: bool, proj
 
     if start_daemon:
         _ensure_daemon_started(project)
+    _ensure_feishu_started()
 
     if open_browser:
         try:
@@ -310,6 +313,19 @@ def _ensure_daemon_started(project: str = "") -> None:
         echo(f"[green]项目 {project} 任务执行服务已后台启动[/green]  PID={result.get('pid')}")
     else:
         echo(f"[dim]项目 {project} 任务执行服务已在运行[/dim]  PID={result.get('pid')}")
+
+
+def _ensure_feishu_started() -> None:
+    try:
+        result = ensure_service_running_if_enabled()
+    except Exception as exc:
+        echo(f"[yellow]飞书服务自动启动失败：{safe(exc)}[/yellow]")
+        return
+    if result.get("error"):
+        echo(f"[yellow]飞书服务自动启动失败：{result['error']}[/yellow]")
+        return
+    if result.get("started"):
+        echo(f"[green]飞书服务已后台启动[/green]  PID={result.get('pid')}")
 
 
 @webui.command("stop")

@@ -14,6 +14,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from codepilot.storage import database as db
+from codepilot.commands.feishu import ensure_service_running_if_enabled
 from codepilot.commands.run import run_backlog
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import _slugify_project_name, global_storage_root
@@ -449,12 +450,26 @@ def daemon(
     try:
         if enable_ui:
             _ensure_ui_service_process(ui_port)
+        _ensure_feishu_service()
         _run_loop(project, interval, verbose, shell, executor, auto_commit, max_concurrent)
     except KeyboardInterrupt:
         echo()
         echo("[yellow]守护进程收到停止信号，退出[/yellow]")
     finally:
         _release_lock(project)
+
+
+def _ensure_feishu_service() -> None:
+    try:
+        result = ensure_service_running_if_enabled()
+    except Exception as exc:
+        echo(f"[yellow]飞书服务自动启动失败：{safe(exc)}[/yellow]")
+        return
+    if result.get("error"):
+        echo(f"[yellow]飞书服务自动启动失败：{result['error']}[/yellow]")
+        return
+    if result.get("started"):
+        echo(f"[green]飞书服务已后台启动[/green]  PID={result.get('pid')}")
 
 
 def _run_loop(

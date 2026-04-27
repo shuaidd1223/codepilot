@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import click
 
+from codepilot.commands.feishu import ensure_service_running_if_enabled
 from codepilot.commands.webui_service import logs_cmd, restart_cmd, start_cmd, status_cmd, stop_cmd
 from codepilot.core.output import echo
 from codepilot.webapp.server import start_ui_server
@@ -11,6 +12,12 @@ from codepilot.webapp.server import start_ui_server
 
 def _serve_foreground(*, host: str, port: int, open_browser: bool) -> None:
     """Run the Web UI HTTP server in foreground."""
+    feishu = ensure_service_running_if_enabled()
+    if feishu.get("error"):
+        echo(f"[yellow]飞书服务自动启动失败：{feishu['error']}[/yellow]")
+    elif feishu.get("started"):
+        echo(f"[dim]飞书服务已自动启动，PID={feishu.get('pid')}[/dim]")
+
     try:
         server = start_ui_server(host=host, port=port, open_browser=open_browser)
     except OSError as exc:
