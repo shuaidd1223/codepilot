@@ -26,7 +26,7 @@ def test_base_keywords_are_shared_by_both_contexts():
         assert keyword in INSPECT_FILLER_KEYWORDS
 
 
-def test_planner_list_has_bare_todo_placeholder_but_inspect_does_not():
+def test_planner_list_keeps_bare_marker_words_out_of_inspect_keywords():
     """Inspect's signals legitimately reference real TODO markers in code, so
     bare "todo" must NOT be a filler keyword there. The planner stage can
     afford to be stricter since user-supplied requirements rarely contain
@@ -127,8 +127,8 @@ def test_planner_quality_blocking_messages_only_fire_when_all_tasks_fail_same_ga
 
 
 def test_planner_quality_gate_flags_shared_filler_keywords():
-    """Placeholder-like titles from the shared vocabulary should trip the
-    advisory flag in _evaluate_planning_quality."""
+    """Shared filler vocabulary should trip the advisory flag in
+    _evaluate_planning_quality."""
     breakdown = {
         "tasks": [
             {
@@ -142,8 +142,8 @@ def test_planner_quality_gate_flags_shared_filler_keywords():
     }
     blocking, advisory = aw._evaluate_planning_quality("demo", breakdown)
     assert any("placeholder-like" in msg for msg in advisory)
-    # Not literal blocking because only 1 task AND we require ALL tasks to be
-    # placeholder for that to fire. Matches pre-refactor behavior.
+    # Blocking is expected here because the single produced task also means
+    # "all tasks" are placeholder-like. Matches pre-refactor behavior.
     assert blocking, "all-placeholder breakdown should escalate to blocking"
 
 
