@@ -139,6 +139,60 @@ def _match_choice_tokens(question: dict, raw_text: str) -> tuple[list[str], str]
     return matched_ids, normalize_text(" ".join(unmatched))
 
 
+def _answer_item_lookup(raw_answers: Optional[list[Any]]) -> tuple[dict[str, dict], list[dict], bool]:
+    answers_by_qid: dict[str, dict] = {}
+    answers_in_order: list[dict] = []
+    allow_positional_lookup = True
+    for item in raw_answers or []:
+        if not isinstance(item, dict):
+            continue
+        answers_in_order.append(item)
+        qid = normalize_text(item.get("question_id") or item.get("id"))
+        if qid:
+            allow_positional_lookup = False
+            answers_by_qid[qid] = item
+    return answers_by_qid, answers_in_order, allow_positional_lookup
+
+
+def _single_question_answer_item(question: dict, raw_answer_text: str) -> Optional[dict]:
+    if not raw_answer_text:
+        return None
+    if question["type"] == "text":
+        return {"free_text": raw_answer_text}
+    selected, free_text = _match_choice_tokens(question, raw_answer_text)
+    return {"selected_option_ids": selected, "free_text": free_text}
+
+
+def _extract_answer_free_text(item: dict) -> str:
+    return normalize_text(
+        item.get("free_text") or item.get("text") or item.get("answer") or item.get("value")
+    )
+
+
+def _extract_answer_selected_ids(item: dict) -> list[str]:
+    raw_selected = item.get("selected_option_ids") or item.get("selected_ids") or []
+    if isinstance(raw_selected, str):
+        raw_selected = _tokenize_choice_input(raw_selected)
+    if not isinstance(raw_selected, list):
+        raw_selected = []
+    return [normalize_text(value) for value in raw_selected if normalize_text(value)]
+
+
+def _normalize_answer_payload(question: dict, item: dict) -> tuple[list[str], str]:
+    free_text = _extract_answer_free_text(item)
+    selected_option_ids = _extract_answer_selected_ids(item)
+    if question["type"] in {"single", "multi"} and not selected_option_ids and free_text:
+        matched_ids, unmatched = _match_choice_tokens(question, free_text)
+        if matched_ids:
+            selected_option_ids = matched_ids
+            free_text = unmatched
+    if question["type"] == "single":
+        selected_option_ids = selected_option_ids[:1]
+        if question.get("allow_free_text") and free_text:
+            selected_option_ids = []
+    return selected_option_ids, free_text
+
+
 def build_clarification_answer_entry(
     question: dict,
     *,
@@ -194,51 +248,19 @@ def normalize_clarification_answers(
         return []
 
     rows: list[dict] = []
-    answers_by_qid: dict[str, dict] = {}
-    answers_in_order: list[dict] = []
-    has_keyed_answers = False
-    for item in raw_answers or []:
-        if not isinstance(item, dict):
-            continue
-        answers_in_order.append(item)
-        qid = normalize_text(item.get("question_id") or item.get("id"))
-        if qid:
-            has_keyed_answers = True
-            answers_by_qid[qid] = item
-
+    answers_by_qid, answers_in_order, allow_positional_lookup = _answer_item_lookup(raw_answers)
     raw_answer_text = normalize_text(answer_text)
-    for idx, question in enumerate(normalized_questions, 1):
+    question_count = len(normalized_questions)
+    for idx, question in enumerate(normalized_questions):
         item = answers_by_qid.get(question["id"])
-        if item is None and not has_keyed_answers and idx - 1 < len(answers_in_order):
-            item = answers_in_order[idx - 1]
+        if item is None and allow_positional_lookup and idx < len(answers_in_order):
+            item = answers_in_order[idx]
         if item is None:
-            if raw_answer_text and len(normalized_questions) == 1:
-                if question["type"] == "text":
-                    item = {"free_text": raw_answer_text}
-                else:
-                    selected, free_text = _match_choice_tokens(question, raw_answer_text)
-                    item = {"selected_option_ids": selected, "free_text": free_text}
-            else:
+            item = _single_question_answer_item(question, raw_answer_text) if question_count == 1 else None
+            if item is None:
                 continue
 
-        free_text = normalize_text(
-            item.get("free_text") or item.get("text") or item.get("answer") or item.get("value")
-        )
-        raw_selected = item.get("selected_option_ids") or item.get("selected_ids") or []
-        if isinstance(raw_selected, str):
-            raw_selected = _tokenize_choice_input(raw_selected)
-        if not isinstance(raw_selected, list):
-            raw_selected = []
-        selected_option_ids = [normalize_text(value) for value in raw_selected if normalize_text(value)]
-        if question["type"] in {"single", "multi"} and not selected_option_ids and free_text:
-            matched_ids, unmatched = _match_choice_tokens(question, free_text)
-            if matched_ids:
-                selected_option_ids = matched_ids
-                free_text = unmatched
-        if question["type"] == "single":
-            selected_option_ids = selected_option_ids[:1]
-            if question.get("allow_free_text") and free_text:
-                selected_option_ids = []
+        selected_option_ids, free_text = _normalize_answer_payload(question, item)
         row = build_clarification_answer_entry(
             question,
             selected_option_ids=selected_option_ids,

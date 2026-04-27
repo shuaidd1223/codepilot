@@ -92,6 +92,28 @@ def test_normalize_clarification_answers_does_not_positionally_reuse_keyed_parti
     }]
 
 
+def test_normalize_clarification_answers_single_choice_can_parse_raw_answer_text():
+    question = _q(
+        "先覆盖哪个入口?",
+        qid="entry",
+        qtype="single",
+        options=[("web", "Web UI"), ("cli", "CLI")],
+        allow_free_text=True,
+    )
+
+    answers = normalize_clarification_answers([question], answer_text="2")
+
+    assert answers == [{
+        "question_id": "entry",
+        "question_text": "先覆盖哪个入口?",
+        "type": "single",
+        "selected_option_ids": ["cli"],
+        "selected_option_labels": ["CLI"],
+        "free_text": "",
+        "answer_text": "CLI",
+    }]
+
+
 def test_build_clarification_summaries_skip_empty_rows_and_accept_raw_input():
     question = _q(
         "覆盖范围?",
