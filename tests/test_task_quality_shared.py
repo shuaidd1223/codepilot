@@ -11,9 +11,12 @@ from codepilot.commands import inspect as inspect_cmd
 from codepilot.commands.task_quality import (
     BASE_FILLER_KEYWORDS,
     INSPECT_FILLER_KEYWORDS,
+    PlannerQualitySummary,
     PLANNER_FILLER_KEYWORDS,
     evidence_grounded_in,
+    evaluate_planner_task,
     looks_generic,
+    planner_quality_blocking_messages,
 )
 
 
@@ -79,6 +82,45 @@ def test_evidence_grounded_in_ignores_trivial_short_tokens():
 def test_evidence_grounded_in_empty_inputs_are_false():
     assert evidence_grounded_in("", {"signal 3"}) is False
     assert evidence_grounded_in("signal 3", set()) is False
+
+
+def test_evaluate_planner_task_reports_missing_fields_and_placeholder_state():
+    advisory, summary = evaluate_planner_task(
+        {
+            "title": "placeholder task",
+            "goal": "待补充",
+            "acceptance_criteria": [],
+            "files": [],
+            "evidence": "",
+        },
+        index=2,
+    )
+    assert any("Task 2 looks placeholder-like" in msg for msg in advisory)
+    assert any("Task 2 is missing `acceptance_criteria` entries." == msg for msg in advisory)
+    assert summary.total_tasks == 1
+    assert summary.placeholder_like_tasks == 1
+    assert summary.ac_missing_count == 1
+    assert summary.files_missing_count == 1
+    assert summary.evidence_missing_count == 1
+
+
+def test_planner_quality_blocking_messages_only_fire_when_all_tasks_fail_same_gate():
+    blocking = planner_quality_blocking_messages(
+        PlannerQualitySummary(
+            total_tasks=2,
+            placeholder_like_tasks=2,
+            title_missing_count=1,
+            goal_missing_count=0,
+            ac_missing_count=2,
+            files_missing_count=1,
+            evidence_missing_count=2,
+        )
+    )
+    assert "All tasks look placeholder-like and lack concrete deliverables." in blocking
+    assert "All tasks are missing `acceptance_criteria` entries." in blocking
+    assert any("fabricating tasks" in msg for msg in blocking)
+    assert "All tasks are missing `title`." not in blocking
+    assert "All tasks are missing `files` entries." not in blocking
 
 
 # ─── planner quality gate uses the shared list ───────────────────────────────

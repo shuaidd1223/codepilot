@@ -697,98 +697,11 @@ def _list_existing_open_tasks(project_name: str) -> list[dict]:
     ]
 
 
-from codepilot.commands.task_quality import (
-    PLANNER_FILLER_KEYWORDS as _QUALITY_GENERIC_KEYWORDS,
-    looks_generic as _looks_generic,
-)
+from codepilot.commands.task_quality import evaluate_planning_breakdown as _evaluate_planning_breakdown
 
 
 def _evaluate_planning_quality(title: str, breakdown: dict) -> tuple[list[str], list[str]]:
-    """Rough structural checks only (format/template), no semantic hard gates."""
-    tasks = breakdown.get("tasks") or []
-    if not isinstance(tasks, list) or not tasks:
-        return ["No executable tasks were produced."], []
-
-    repair_signals: list[str] = []
-    advisory: list[str] = []
-    placeholder_like_tasks = 0
-    title_missing_count = 0
-    goal_missing_count = 0
-    ac_missing_count = 0
-    files_missing_count = 0
-    evidence_missing_count = 0
-
-    for idx, task in enumerate(tasks, 1):
-        if not isinstance(task, dict):
-            repair_signals.append(f"Task {idx} is not an object.")
-            continue
-
-        task_title = str(task.get("title") or "").strip()
-        goal = str(task.get("goal") or "").strip()
-        acceptance_raw = task.get("acceptance_criteria")
-        files_raw = task.get("files")
-        acceptance = [
-            str(item).strip()
-            for item in (acceptance_raw if isinstance(acceptance_raw, list) else [])
-            if str(item).strip()
-        ]
-        files = [
-            str(path).strip()
-            for path in (files_raw if isinstance(files_raw, list) else [])
-            if str(path).strip()
-        ]
-
-        if not task_title:
-            title_missing_count += 1
-            advisory.append(f"Task {idx} is missing `title`.")
-
-        if not goal:
-            goal_missing_count += 1
-            advisory.append(f"Task {idx} is missing `goal`.")
-
-        if _looks_generic(" ".join([task_title, goal]), _QUALITY_GENERIC_KEYWORDS):
-            placeholder_like_tasks += 1
-            advisory.append(f"Task {idx} looks placeholder-like: `{task_title or 'unnamed task'}`.")
-
-        if not acceptance:
-            ac_missing_count += 1
-            advisory.append(f"Task {idx} is missing `acceptance_criteria` entries.")
-
-        if not files:
-            files_missing_count += 1
-            advisory.append(f"Task {idx} is missing `files` entries.")
-
-        evidence = str(task.get("evidence") or "").strip()
-        if not evidence:
-            evidence_missing_count += 1
-            advisory.append(
-                f"Task {idx} has empty `evidence` — planner should cite a recon "
-                "finding / file / existing task."
-            )
-
-    should_split = breakdown.get("should_split")
-    if isinstance(should_split, bool):
-        if should_split and len(tasks) <= 1:
-            advisory.append("`should_split=true` but only one task was produced.")
-        if (not should_split) and len(tasks) > 1:
-            advisory.append("`should_split=false` but multiple tasks were produced.")
-
-    # Trigger automatic re-plan only for obvious template/format failures.
-    if placeholder_like_tasks == len(tasks):
-        repair_signals.append("All tasks look placeholder-like and lack concrete deliverables.")
-    if title_missing_count == len(tasks):
-        repair_signals.append("All tasks are missing `title`.")
-    if goal_missing_count == len(tasks):
-        repair_signals.append("All tasks are missing `goal`.")
-    if ac_missing_count == len(tasks):
-        repair_signals.append("All tasks are missing `acceptance_criteria` entries.")
-    if files_missing_count == len(tasks):
-        repair_signals.append("All tasks are missing `files` entries.")
-    if evidence_missing_count == len(tasks):
-        repair_signals.append(
-            "All tasks have empty `evidence` — planner appears to be fabricating tasks."
-        )
-    return repair_signals, advisory
+    return _evaluate_planning_breakdown(title, breakdown)
 
 
 def _render_quality_feedback(blocking: list[str], advisory: list[str], *, limit: int = 8) -> str:
