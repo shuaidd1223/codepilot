@@ -385,6 +385,111 @@ def _cleanup_worktree_leftovers(
         echo(f"[dim]任务 #{task_id} worktree 遗留进程已清理（PID={','.join(str(p) for p in killed)}）[/dim]")
 
 
+def _cleanup_failed_task_worktree(
+    *,
+    task_id: int,
+    project_path: Path,
+    worktree_path: Path | str | None,
+    task_branch: str,
+    same_as_main: bool,
+) -> None:
+    """Best-effort cleanup for dedicated task worktrees."""
+    if not task_branch or same_as_main or not worktree_path:
+        return
+    try:
+        _git_cleanup_task_worktree(
+            project_path,
+            worktree_path=worktree_path,
+            task_branch=task_branch,
+            keep_branch=False,
+        )
+        echo(f"[dim]任务 #{task_id} worktree 与分支 {task_branch} 已自动清理[/dim]")
+    except Exception as exc:
+        echo(
+            f"[yellow]任务 #{task_id} worktree/分支自动清理失败: {safe(exc)}[/yellow]"
+        )
+
+
+def _checkout_base_after_failed_task(
+    *,
+    task_id: int,
+    project_path: Path,
+    task_branch: str,
+    base_branch: str,
+    same_as_main: bool,
+    abandon_dirty_branch: bool,
+) -> str:
+    """Return the current branch after best-effort checkout recovery."""
+    current_after_checkout = ""
+    try:
+        current = _git_current_branch(project_path) or ""
+        current_after_checkout = current
+        if current and current != base_branch and not _git_has_changes(project_path):
+            _git_checkout(project_path, base_branch)
+            current_after_checkout = base_branch
+            echo(f"[dim]主仓库已切回 {base_branch}[/dim]")
+        elif (
+            abandon_dirty_branch
+            and task_branch
+            and same_as_main
+            and current == task_branch
+            and _git_has_changes(project_path)
+        ):
+            reset_code, reset_output = _run_command(["git", "reset", "--hard"], cwd=project_path, timeout=120)
+            clean_code, clean_output = _run_command(["git", "clean", "-fd"], cwd=project_path, timeout=120)
+            if reset_code != 0 or clean_code != 0:
+                echo(
+                    f"[yellow]任务 #{task_id} 分支 {task_branch} 终态清理失败: "
+                    f"{safe((reset_output or clean_output)[:300])}[/yellow]"
+                )
+                return current_after_checkout
+            _git_checkout(project_path, base_branch)
+            current_after_checkout = base_branch
+            echo(
+                f"[dim]任务 #{task_id} 分支 {task_branch} 的未合并改动已按终态决策丢弃，主仓库已切回 {base_branch}[/dim]"
+            )
+    except Exception as exc:
+        echo(f"[yellow]切回 base_branch={base_branch} 失败: {safe(exc)}[/yellow]")
+    return current_after_checkout
+
+
+def _cleanup_failed_task_branch(
+    *,
+    task_id: int,
+    project_path: Path,
+    task_branch: str,
+    base_branch: str,
+    same_as_main: bool,
+    current_after_checkout: str,
+) -> None:
+    """Delete leftover task branch in branch-mode once HEAD is back on base."""
+    if not task_branch or task_branch == base_branch or not same_as_main:
+        return
+    if current_after_checkout != base_branch:
+        echo(
+            f"[yellow]任务 #{task_id} 分支 {task_branch} 暂未清理：HEAD 仍在 "
+            f"{current_after_checkout or '(未知)'}（工作区可能有未提交改动），"
+            "请手工 `git switch <base> && git branch -D <branch>`。[/yellow]"
+        )
+        return
+    try:
+        if _git_local_branch_exists(project_path, task_branch):
+            code, output = _run_command(
+                ["git", "branch", "-D", task_branch],
+                cwd=project_path,
+                timeout=60,
+            )
+            if code == 0:
+                echo(f"[dim]任务分支 {task_branch} 已自动清理[/dim]")
+            else:
+                echo(
+                    f"[yellow]删除任务分支 {task_branch} 失败 (exit={code}): "
+                    f"{safe(output[:200])}[/yellow]"
+                )
+    except Exception as exc:
+        echo(f"[yellow]删除任务分支 {task_branch} 异常: {safe(exc)}[/yellow]")
+
+
 def _finalize_failed_task_workspace(
     *,
     task_id: int,
@@ -444,19 +549,13 @@ def _finalize_failed_task_workspace(
     # worktree 模式：删独立 worktree（顺带删任务分支，git worktree remove
     # 之后 -D branch）。branch 模式（任务直接在主仓里切分支）这一步不会
     # 命中，留给下面"切回 base + 删孤儿分支"两步处理。
-    if branch and not same_as_main and worktree_path:
-        try:
-            _git_cleanup_task_worktree(
-                pp,
-                worktree_path=worktree_path,
-                task_branch=branch,
-                keep_branch=False,
-            )
-            echo(f"[dim]任务 #{task_id} worktree 与分支 {branch} 已自动清理[/dim]")
-        except Exception as exc:
-            echo(
-                f"[yellow]任务 #{task_id} worktree/分支自动清理失败: {safe(exc)}[/yellow]"
-            )
+    _cleanup_failed_task_worktree(
+        task_id=task_id,
+        project_path=pp,
+        worktree_path=worktree_path,
+        task_branch=branch,
+        same_as_main=same_as_main,
+    )
 
     base = (base_branch or "").strip()
     if not base:
@@ -476,68 +575,27 @@ def _finalize_failed_task_workspace(
     # 真的回到了 base —— 如果没回到（脏工作区 / checkout 抛异常），删分支
     # 必须跳过，否则会撞上"git refused to delete the currently checked-out
     # branch" 留一堆 yellow warning + 分支照样残留。
-    current_after_checkout = ""
-    try:
-        current = _git_current_branch(pp) or ""
-        current_after_checkout = current
-        if current and current != base and not _git_has_changes(pp):
-            _git_checkout(pp, base)
-            current_after_checkout = base
-            echo(f"[dim]主仓库已切回 {base}[/dim]")
-        elif (
-            abandon_dirty_branch
-            and branch
-            and same_as_main
-            and current == branch
-            and _git_has_changes(pp)
-        ):
-            reset_code, reset_output = _run_command(["git", "reset", "--hard"], cwd=pp, timeout=120)
-            clean_code, clean_output = _run_command(["git", "clean", "-fd"], cwd=pp, timeout=120)
-            if reset_code != 0 or clean_code != 0:
-                echo(
-                    f"[yellow]任务 #{task_id} 分支 {branch} 终态清理失败: "
-                    f"{safe((reset_output or clean_output)[:300])}[/yellow]"
-                )
-                return
-            _git_checkout(pp, base)
-            current_after_checkout = base
-            echo(f"[dim]任务 #{task_id} 分支 {branch} 的未合并改动已按终态决策丢弃，主仓库已切回 {base}[/dim]")
-    except Exception as exc:
-        echo(f"[yellow]切回 base_branch={base} 失败: {safe(exc)}[/yellow]")
-        return
+    current_after_checkout = _checkout_base_after_failed_task(
+        task_id=task_id,
+        project_path=pp,
+        task_branch=branch,
+        base_branch=base,
+        same_as_main=same_as_main,
+        abandon_dirty_branch=abandon_dirty_branch,
+    )
 
     # branch 模式（同主仓 worktree）下，任务分支仍残留在本地分支列表里 —
     # 必须显式删掉，否则下一轮 _git_prepare_task_branch 会因 "branch already
     # exists / used by worktree" 卡住。worktree 模式上面已经 -D 过了，这里
     # 保险性二次检查；不会重复删。
-    if branch and branch != base and same_as_main:
-        # 关键守卫：HEAD 必须真的已经在 base 才能 -D。否则（脏工作区跳过了
-        # checkout / checkout 失败）当前分支就是任务分支，git 会拒删。
-        # retry 路径显式留下分支；terminal 路径可通过 abandon_dirty_branch
-        # 在上面先丢弃改动再回 base。
-        if current_after_checkout != base:
-            echo(
-                f"[yellow]任务 #{task_id} 分支 {branch} 暂未清理：HEAD 仍在 "
-                f"{current_after_checkout or '(未知)'}（工作区可能有未提交改动），"
-                "请手工 `git switch <base> && git branch -D <branch>`。[/yellow]"
-            )
-            return
-        try:
-            if _git_local_branch_exists(pp, branch):
-                code, output = _run_command(
-                    ["git", "branch", "-D", branch],
-                    cwd=pp,
-                    timeout=60,
-                )
-                if code == 0:
-                    echo(f"[dim]任务分支 {branch} 已自动清理[/dim]")
-                else:
-                    echo(
-                        f"[yellow]删除任务分支 {branch} 失败 (exit={code}): "
-                        f"{safe(output[:200])}[/yellow]"
-                    )
-        except Exception as exc:
-            echo(f"[yellow]删除任务分支 {branch} 异常: {safe(exc)}[/yellow]")
+    _cleanup_failed_task_branch(
+        task_id=task_id,
+        project_path=pp,
+        task_branch=branch,
+        base_branch=base,
+        same_as_main=same_as_main,
+        current_after_checkout=current_after_checkout,
+    )
 
 
 def _tail_lines(text: str, max_lines: int = 12) -> list[str]:

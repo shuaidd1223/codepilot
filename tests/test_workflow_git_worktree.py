@@ -1192,3 +1192,32 @@ def test_finalize_failed_task_workspace_skips_branch_delete_when_head_not_on_bas
         f"expected zero branch-delete attempts when HEAD stays on task branch, got {branch_delete_attempts}"
     )
 
+
+def test_finalize_failed_task_workspace_abandons_dirty_branch_on_terminal_failure(tmp_path):
+    """终态失败允许丢弃 branch 模式下的半成品并回到 base。"""
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    base_branch = _git_init_repo(project_path)
+
+    branch = run_cmd._git_prepare_task_branch(
+        project_path,
+        task_id=123,
+        title="terminal dirty branch",
+        base_branch=base_branch,
+    )
+    assert branch
+    (project_path / "scratch.txt").write_text("discard me\n", encoding="utf-8")
+
+    run_cmd._finalize_failed_task_workspace(
+        task_id=123,
+        project_path=project_path,
+        worktree_path=project_path,
+        task_branch=branch,
+        base_branch=base_branch,
+        abandon_dirty_branch=True,
+    )
+
+    assert run_cmd._git_current_branch(project_path) == base_branch
+    assert run_cmd._git_local_branch_exists(project_path, branch) is False
+    assert (project_path / "scratch.txt").exists() is False
+
