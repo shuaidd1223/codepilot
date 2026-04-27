@@ -58,8 +58,8 @@ PLANNER_FILLER_KEYWORDS: tuple[str, ...] = BASE_FILLER_KEYWORDS + (
 )
 
 
-# Inspect-specific: the inspector's signals LEGITIMATELY reference TODO
-# markers in code, so we must NOT treat bare "todo" as filler. We also
+# Inspect-specific: the inspector's signals legitimately reference
+# task-marker comments in code, so we must NOT treat bare "todo" as filler. We also
 # tighten some Chinese phrases to avoid false positives on real fixes.
 INSPECT_FILLER_KEYWORDS: tuple[str, ...] = BASE_FILLER_KEYWORDS + (
     "占位任务",
