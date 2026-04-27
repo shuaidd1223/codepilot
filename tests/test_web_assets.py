@@ -65,7 +65,7 @@ def test_sidebar_category_toggle_uses_project_scoped_accordion():
 
     assert "this.cp.toggleCategory(project, cat);" in sidebar
     assert "const CATEGORY_VIEWS = ['sessions', 'tasks', 'jobs'];" in app_state
-    assert "function _openProjectCategory(project, view)" in app_state
+    assert "function openProjectCategory(project, view)" in app_state
 
 
 def test_sidebar_task_leaf_includes_quick_actions():
@@ -101,6 +101,10 @@ def test_web_ui_bootstrap_wires_app_state_boundary_before_mount():
     index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
     app = Path("codepilot/web/app.js").read_text(encoding="utf-8")
 
+    assert "<script src=\"/static/boundaries/AppFeedbackBoundary.js\"></script>" in index_html
+    assert "<script src=\"/static/boundaries/AppClarifyBoundary.js\"></script>" in index_html
+    assert "<script src=\"/static/boundaries/AppSessionBoundary.js\"></script>" in index_html
+    assert "<script src=\"/static/boundaries/AppSubmissionBoundary.js\"></script>" in index_html
     assert "<script src=\"/static/boundaries/AppStateBoundary.js\"></script>" in index_html
     assert "setup: CP.AppStateBoundary.setup," in app
 
@@ -150,16 +154,18 @@ def test_web_ui_wires_plugin_diff_assets():
 
 
 def test_web_ui_action_protocol_exposes_scoped_pending_keys():
+    feedback_boundary = Path("codepilot/web/boundaries/AppFeedbackBoundary.js").read_text(encoding="utf-8")
     app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
 
-    assert "const ACTION_KEYS = Object.freeze({" in app_state
-    assert "GOAL_SUBMIT: 'goal.submit'" in app_state
-    assert "COMPOSER_SUBMIT: 'composer.submit'" in app_state
-    assert "SESSION_SEND: 'session.send'" in app_state
-    assert "SESSION_DELETE: 'session.delete'" in app_state
-    assert "SESSION_CLARIFY_REPLY: 'session.clarify.reply'" in app_state
-    assert "SESSION_CLARIFY_CANCEL: 'session.clarify.cancel'" in app_state
-    assert "isActionPending: (actionKey) => _isActionPending(actionKey)" in app_state
+    assert "const ACTION_KEYS = Object.freeze({" in feedback_boundary
+    assert "GOAL_SUBMIT: 'goal.submit'" in feedback_boundary
+    assert "COMPOSER_SUBMIT: 'composer.submit'" in feedback_boundary
+    assert "SESSION_SEND: 'session.send'" in feedback_boundary
+    assert "SESSION_DELETE: 'session.delete'" in feedback_boundary
+    assert "SESSION_CLARIFY_REPLY: 'session.clarify.reply'" in feedback_boundary
+    assert "SESSION_CLARIFY_CANCEL: 'session.clarify.cancel'" in feedback_boundary
+    assert "const feedbackBoundary = CP.createAppFeedbackBoundary({ state });" in app_state
+    assert "isActionPending: (actionKey) => isActionPending(actionKey)," in app_state
     assert "ACTION_KEYS," in app_state
 
 
@@ -185,9 +191,13 @@ def test_web_ui_wires_structured_clarification_fields_and_cancel_actions():
     goal = Path("codepilot/web/components/GoalInput.js").read_text(encoding="utf-8")
     composer = Path("codepilot/web/components/Composer.js").read_text(encoding="utf-8")
     chat = Path("codepilot/web/components/ChatView.js").read_text(encoding="utf-8")
+    clarify_boundary = Path("codepilot/web/boundaries/AppClarifyBoundary.js").read_text(encoding="utf-8")
+    session_boundary = Path("codepilot/web/boundaries/AppSessionBoundary.js").read_text(encoding="utf-8")
     app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
 
     assert "<script src=\"/static/components/ClarifyFields.js\"></script>" in index_html
+    assert "<script src=\"/static/boundaries/AppClarifyBoundary.js\"></script>" in index_html
+    assert "<script src=\"/static/boundaries/AppSessionBoundary.js\"></script>" in index_html
     assert "CP.normalizeClarifyQuestion" in utils
     assert "CP.createClarifyAnswerState" in utils
     assert "CP.exportClarifyAnswers" in utils
@@ -195,11 +205,12 @@ def test_web_ui_wires_structured_clarification_fields_and_cancel_actions():
     assert "<cp-clarify-fields" in goal
     assert "<cp-clarify-fields" in composer
     assert "<cp-clarify-fields" in chat
-    assert "cancelGoalClarify" in app_state
-    assert "cancelComposerClarify" in app_state
-    assert "cancelSessionClarify" in app_state
-    assert "_legacyClarifyQuestionsFromMessage" in app_state
-    assert "legacy_q${questions.length + 1}" in app_state
+    assert "cancelGoalClarify" in clarify_boundary
+    assert "cancelComposerClarify" in clarify_boundary
+    assert "cancelSessionClarify" in session_boundary
+    assert "function legacyClarifyQuestionsFromMessage(message)" in clarify_boundary
+    assert "legacy_q${questions.length + 1}" in clarify_boundary
+    assert "const clarifyBoundary = CP.createAppClarifyBoundary({ state, pushToast });" in app_state
 
 
 def test_clarify_fields_scope_radio_groups_and_single_free_text_override():
