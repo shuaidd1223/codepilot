@@ -249,6 +249,15 @@ class _ChatLoopDispatchContext:
     safe: object
 
 
+@dataclass(frozen=True)
+class _ParsedChatCommand:
+    """Normalized local command resolved from natural-language routing."""
+
+    raw: str
+    parts: list[str]
+    verb: str
+
+
 _CHAT_INTENT_LABELS = {
     "question": "正在检索上下文并回答",
     "task": "正在评估并执行任务",
@@ -278,6 +287,49 @@ def _inline_click_output(command, args: list[str]) -> str:
     if result.exit_code != 0:
         raise RuntimeError(output or "命令执行失败。")
     return output
+
+
+def _parse_chat_command(command_text: str) -> _ParsedChatCommand:
+    normalized = " ".join(str(command_text or "").strip().split())
+    if not normalized:
+        raise RuntimeError("空命令。")
+    parts = normalized.split()
+    return _ParsedChatCommand(raw=normalized, parts=parts, verb=parts[0].lower())
+
+
+def _project_arg_or_active(parts: list[str], runtime: _ChatRuntime) -> str:
+    return parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
+
+
+def _emit_chat_message(message: str) -> str:
+    click.echo(message)
+    return message
+
+
+def _execute_inline_chat_command(command, args: list[str]) -> str:
+    output = _inline_click_output(command, args)
+    click.echo(output)
+    return output
+
+
+def _switch_chat_project(runtime: _ChatRuntime, project_name: str, *, echo) -> str:
+    runtime.project_info = runtime.shell.resolve_project_for_prompt(project_name)
+    runtime.effective = runtime.shell._resolve_effective_options(
+        runtime.project_info,
+        planner=runtime.planner_opt,
+        executor=runtime.executor_opt,
+        auto_commit=runtime.auto_commit_opt,
+        max_tasks=runtime.max_tasks_opt,
+        max_retries=runtime.max_retries_opt,
+    )
+    runtime.default_agent = runtime.shell._resolve_task_agent(
+        runtime.project_info,
+        runtime.default_agent,
+        runtime.effective["executor"],
+    )
+    message = f"已切换到项目 {runtime.project_info['name']}"
+    echo(f"[green][OK] {message}[/green]")
+    return message
 
 
 def _render_chat_projects_summary() -> str:
@@ -339,55 +391,26 @@ def _render_chat_sessions(project_name: str) -> str:
     return "\n".join(lines)
 
 
-def _execute_chat_command(command_text: str, runtime: _ChatRuntime, *, echo) -> str:
-    from codepilot.commands import status as status_mod
-    from codepilot.commands import tasks as tasks_mod
+def _run_catalog_chat_command(command: _ParsedChatCommand, runtime: _ChatRuntime, *, echo) -> str | None:
+    if command.verb in {"projects", "global"}:
+        return _emit_chat_message(_render_chat_projects_summary())
+    return None
 
-    command_text = " ".join(str(command_text or "").strip().split())
-    if not command_text:
-        raise RuntimeError("空命令。")
-    parts = command_text.split()
-    verb = parts[0].lower()
 
-    if verb == "projects":
-        message = _render_chat_projects_summary()
-        click.echo(message)
-        return message
+def _run_project_switch_chat_command(command: _ParsedChatCommand, runtime: _ChatRuntime, *, echo) -> str | None:
+    if command.verb != "use":
+        return None
+    if len(command.parts) < 2:
+        raise RuntimeError("缺少项目名。")
+    return _switch_chat_project(runtime, command.parts[1], echo=echo)
 
-    if verb == "global":
-        message = _render_chat_projects_summary()
-        click.echo(message)
-        return message
 
-    if verb == "use":
-        if len(parts) < 2:
-            raise RuntimeError("缺少项目名。")
-        runtime.project_info = runtime.shell.resolve_project_for_prompt(parts[1])
-        runtime.effective = runtime.shell._resolve_effective_options(
-            runtime.project_info,
-            planner=runtime.planner_opt,
-            executor=runtime.executor_opt,
-            auto_commit=runtime.auto_commit_opt,
-            max_tasks=runtime.max_tasks_opt,
-            max_retries=runtime.max_retries_opt,
-        )
-        runtime.default_agent = runtime.shell._resolve_task_agent(
-            runtime.project_info,
-            runtime.default_agent,
-            runtime.effective["executor"],
-        )
-        message = f"已切换到项目 {runtime.project_info['name']}"
-        echo(f"[green][OK] {message}[/green]")
-        return message
+def _run_project_view_chat_command(command: _ParsedChatCommand, runtime: _ChatRuntime, *, echo) -> str | None:
+    if command.verb == "overview":
+        return _emit_chat_message(_render_chat_overview(_project_arg_or_active(command.parts, runtime)))
 
-    if verb == "overview":
-        project_name = parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
-        message = _render_chat_overview(project_name)
-        click.echo(message)
-        return message
-
-    if verb == "tasks":
-        project_name = parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
+    if command.verb == "tasks":
+        project_name = _project_arg_or_active(command.parts, runtime)
         runtime.shell.render_project_dashboard(
             project_name,
             verbose=False,
@@ -396,73 +419,77 @@ def _execute_chat_command(command_text: str, runtime: _ChatRuntime, *, echo) -> 
         )
         return f"已显示 {project_name} 任务面板"
 
-    if verb in {"requirements", "sessions"}:
-        project_name = parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
-        message = _render_chat_sessions(project_name)
-        click.echo(message)
-        return message
+    if command.verb in {"requirements", "sessions"}:
+        return _emit_chat_message(_render_chat_sessions(_project_arg_or_active(command.parts, runtime)))
 
-    if verb == "services":
-        project_name = parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
-        message = _render_chat_services(project_name)
-        click.echo(message)
-        return message
+    if command.verb == "services":
+        return _emit_chat_message(_render_chat_services(_project_arg_or_active(command.parts, runtime)))
 
-    if verb in {"daemon", "inspect"}:
-        action = parts[1].lower() if len(parts) > 1 else "status"
-        project_name = parts[2] if len(parts) > 2 else _active_chat_project_name(runtime)
-        service_name = "tasks" if verb == "daemon" else "inspect"
-        result = project_service_action(project_name, service_name, action)
-        status = result.get("status") or {}
-        message = (
-            f"{project_name} {('任务执行服务' if service_name == 'tasks' else '巡检服务')}: "
-            f"{result.get('message') or '-'} / {'运行中' if status.get('running') else '未运行'} / pid={status.get('pid') or 0}"
-        )
-        click.echo(message)
-        return message
+    return None
 
-    if verb == "detail":
-        output = _inline_click_output(tasks_mod.show, [parts[1]])
-        click.echo(output)
-        return output
 
-    if verb == "logs":
-        output = _inline_click_output(tasks_mod.logs, [parts[1]])
-        click.echo(output)
-        return output
+def _run_service_chat_command(command: _ParsedChatCommand, runtime: _ChatRuntime, *, echo) -> str | None:
+    if command.verb not in {"daemon", "inspect"}:
+        return None
 
-    if verb == "retry":
-        output = _inline_click_output(tasks_mod.retry, [parts[1]])
-        click.echo(output)
-        return output
+    action = command.parts[1].lower() if len(command.parts) > 1 else "status"
+    project_name = command.parts[2] if len(command.parts) > 2 else _active_chat_project_name(runtime)
+    service_name = "tasks" if command.verb == "daemon" else "inspect"
+    result = project_service_action(project_name, service_name, action)
+    status = result.get("status") or {}
+    service_label = "任务执行服务" if service_name == "tasks" else "巡检服务"
+    message = (
+        f"{project_name} {service_label}: "
+        f"{result.get('message') or '-'} / {'运行中' if status.get('running') else '未运行'} / pid={status.get('pid') or 0}"
+    )
+    return _emit_chat_message(message)
 
-    if verb == "stop":
-        output = _inline_click_output(tasks_mod.stop, [parts[1]])
-        click.echo(output)
-        return output
 
-    if verb == "cancel":
-        output = _inline_click_output(tasks_mod.cancel, parts[1:])
-        click.echo(output)
-        return output
+def _run_task_proxy_chat_command(command: _ParsedChatCommand, runtime: _ChatRuntime, *, echo) -> str | None:
+    from codepilot.commands import status as status_mod
+    from codepilot.commands import tasks as tasks_mod
 
-    if verb == "archive":
-        output = _inline_click_output(tasks_mod.archive, parts[1:])
-        click.echo(output)
-        return output
+    single_id_commands = {
+        "detail": tasks_mod.show,
+        "logs": tasks_mod.logs,
+        "retry": tasks_mod.retry,
+        "stop": tasks_mod.stop,
+    }
+    if command.verb in single_id_commands:
+        return _execute_inline_chat_command(single_id_commands[command.verb], [command.parts[1]])
 
-    if verb == "delete":
-        output = _inline_click_output(tasks_mod.rm, [*parts[1:], "-f"])
-        click.echo(output)
-        return output
+    multi_id_commands = {
+        "cancel": tasks_mod.cancel,
+        "archive": tasks_mod.archive,
+    }
+    if command.verb in multi_id_commands:
+        return _execute_inline_chat_command(multi_id_commands[command.verb], command.parts[1:])
 
-    if verb == "status":
-        project_name = parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
-        output = _inline_click_output(status_mod.status, ["-p", project_name])
-        click.echo(output)
-        return output
+    if command.verb == "delete":
+        return _execute_inline_chat_command(tasks_mod.rm, [*command.parts[1:], "-f"])
 
-    raise RuntimeError(f"未支持的自然语言操作: {command_text}")
+    if command.verb == "status":
+        return _execute_inline_chat_command(status_mod.status, ["-p", _project_arg_or_active(command.parts, runtime)])
+
+    return None
+
+
+_CHAT_COMMAND_HANDLERS: tuple[Callable[..., str | None], ...] = (
+    _run_catalog_chat_command,
+    _run_project_switch_chat_command,
+    _run_project_view_chat_command,
+    _run_service_chat_command,
+    _run_task_proxy_chat_command,
+)
+
+
+def _execute_chat_command(command_text: str, runtime: _ChatRuntime, *, echo) -> str:
+    command = _parse_chat_command(command_text)
+    for handler in _CHAT_COMMAND_HANDLERS:
+        result = handler(command, runtime, echo=echo)
+        if result is not None:
+            return result
+    raise RuntimeError(f"未支持的自然语言操作: {command.raw}")
 
 
 def _dispatch_chat_natural_language_command(
