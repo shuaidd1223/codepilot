@@ -27,6 +27,13 @@ def _emit_progress(message: str, get_progress_callback: Callable[[], Callable[[s
         pass
 
 
+def _format_waiting_progress(provider_name: str, *, elapsed: float, idle: float, timeout: int) -> str:
+    return (
+        f"{provider_name} 正在规划：已等待 {int(elapsed)}s，"
+        f"最近 {int(idle)}s 无新输出；超过 {timeout}s 无输出会自动终止。"
+    )
+
+
 def kill_process_tree(pid: int) -> None:
     """Kill a process and all its children. Works on Windows and Unix."""
     if platform.system().lower() == "windows":
@@ -143,6 +150,7 @@ def run_claude_schema_prompt(
             stderr=subprocess_module.PIPE,
             **planner_process_group_kwargs_fn(),
         )
+        _emit_progress(f"{provider.name} 规划进程已启动 PID={process.pid}", get_progress_callback)
 
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
@@ -174,6 +182,7 @@ def run_claude_schema_prompt(
         started = _time.monotonic()
         hard_cap = max(timeout * 10, 1800)
         stall_warned = False
+        next_heartbeat_at = started + 10
         while True:
             exit_code = process.poll()
             if exit_code is not None:
@@ -200,6 +209,13 @@ def run_claude_schema_prompt(
                 _emit_progress(msg, get_progress_callback)
             elif idle < 5 and stall_warned:
                 stall_warned = False
+
+            if now >= next_heartbeat_at:
+                _emit_progress(
+                    _format_waiting_progress(provider.name, elapsed=elapsed, idle=idle, timeout=timeout),
+                    get_progress_callback,
+                )
+                next_heartbeat_at = now + 10
 
             _time.sleep(0.5)
 
@@ -302,6 +318,7 @@ def run_codex_schema_prompt(
             if process.stdin:
                 process.stdin.write(prompt.encode("utf-8"))
                 process.stdin.close()
+            _emit_progress(f"Codex 规划进程已启动 PID={process.pid}", get_progress_callback)
 
             stdout_chunks: list[str] = []
             stderr_chunks: list[str] = []
@@ -336,6 +353,7 @@ def run_codex_schema_prompt(
             started = _time.monotonic()
             hard_cap = max(timeout * 10, 1800)
             stall_warned = False
+            next_heartbeat_at = started + 10
             while True:
                 exit_code = process.poll()
                 if exit_code is not None:
@@ -362,6 +380,13 @@ def run_codex_schema_prompt(
                     _emit_progress(msg, get_progress_callback)
                 elif idle < 5 and stall_warned:
                     stall_warned = False
+
+                if now >= next_heartbeat_at:
+                    _emit_progress(
+                        _format_waiting_progress("Codex", elapsed=elapsed, idle=idle, timeout=timeout),
+                        get_progress_callback,
+                    )
+                    next_heartbeat_at = now + 10
 
                 _time.sleep(0.5)
 

@@ -2163,7 +2163,7 @@ def _submit_requirement_from_feishu(
                 project_name,
                 answer_text,
                 execute=True,
-                run_async=False,
+                run_async=True,
                 task_source=f"feishu:{chat_id}" if chat_id else "feishu",
                 qa_history=pending.get("qa_history") if isinstance(pending.get("qa_history"), list) else [],
                 original_title=str(pending.get("original_title") or ""),
@@ -2193,7 +2193,7 @@ def _submit_requirement_from_feishu(
             project_name,
             content,
             execute=True,
-            run_async=False,
+            run_async=True,
             task_source=f"feishu:{chat_id}" if chat_id else "feishu",
         )
     if result.get("intent") == "clarify":

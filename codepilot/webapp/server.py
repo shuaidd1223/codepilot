@@ -41,6 +41,7 @@ from codepilot.webapp.actions import (  # noqa: F401 (re-export)
     _job_result_summary,
     _next_job_id,
     _update_job,
+    cancel_job_action,
     create_project_action,
     create_session_action,
     create_task_action,
@@ -59,6 +60,7 @@ from codepilot.webapp.actions import (  # noqa: F401 (re-export)
     promote_task_action,
     project_service_action,
     retry_task_action,
+    retry_job_action,
     send_session_message_action,
     split_task_action,
     stop_task_action,
@@ -87,6 +89,7 @@ _UI_LOCK = threading.Lock()
 _UI_JOB_SEQ = 0
 _UI_JOBS: dict[int, dict] = {}
 _UI_EVENTS: list[dict] = []
+_UI_STARTED_AT = _now_iso()
 
 
 # ── Static web assets ────────────────────────────────────────────────────────
@@ -548,6 +551,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }
         return action_handlers[action](task_id)
 
+    def _dispatch_post_job_action(self, path: str) -> dict | None:
+        match = re.fullmatch(r"/api/jobs/(\d+)/(cancel|retry)", path)
+        if not match:
+            return None
+        job_id = int(match.group(1))
+        action = match.group(2)
+        action_handlers: dict[str, Callable[[int], dict]] = {
+            "cancel": cancel_job_action,
+            "retry": retry_job_action,
+        }
+        return action_handlers[action](job_id)
+
     def _dispatch_post_project_service(self, path: str) -> dict | None:
         match = re.fullmatch(r"/api/projects/([^/]+)/(tasks|inspect)/(start|stop|status)", path)
         if not match:
@@ -573,6 +588,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _dispatch_post_pattern(self, path: str, get_body: Callable[[], dict]) -> dict | None:
         """Handle regex POST routes; return ``None`` if unmatched."""
         payload = self._dispatch_post_task_action(path)
+        if payload is not None:
+            return payload
+        payload = self._dispatch_post_job_action(path)
         if payload is not None:
             return payload
         payload = self._dispatch_post_project_service(path)

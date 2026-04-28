@@ -95,6 +95,52 @@ def test_daemon_stop_requests_graceful_polling_stop(tmp_path, monkeypatch):
     assert state["status"] == "stopping"
 
 
+def test_daemon_stop_requested_refreshes_service_state_cache(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    db.register_project("demo", str(tmp_path))
+    db.upsert_service_state(
+        "daemon",
+        "demo",
+        pid=7654,
+        status="running",
+        log_path="D:/tmp/daemon.log",
+        meta={"project": "demo", "started_at": "2026-01-01T00:00:00"},
+    )
+    assert db.get_service_state("daemon", "demo")["status"] == "running"
+    with db.get_write_conn() as conn:
+        conn.execute(
+            "UPDATE service_states SET status = 'stopping' WHERE service = 'daemon' AND scope = 'demo'"
+        )
+
+    assert daemon_cmd._stop_requested("demo") is True
+
+
+def test_daemon_heartbeat_preserves_external_stop_request(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    db.register_project("demo", str(tmp_path))
+    db.upsert_service_state(
+        "daemon",
+        "demo",
+        pid=7654,
+        status="running",
+        log_path="D:/tmp/daemon.log",
+        meta={"project": "demo", "started_at": "2026-01-01T00:00:00"},
+    )
+    assert db.get_service_state("daemon", "demo")["status"] == "running"
+    with db.get_write_conn() as conn:
+        conn.execute(
+            "UPDATE service_states SET status = 'stopping' WHERE service = 'daemon' AND scope = 'demo'"
+        )
+
+    daemon_cmd._tick_heartbeat("demo")
+
+    assert db.get_service_state("daemon", "demo")["status"] == "stopping"
+
+
 def test_request_daemon_service_start_uses_external_launcher(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))

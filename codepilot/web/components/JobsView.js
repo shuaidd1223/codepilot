@@ -47,6 +47,18 @@ CP.Components.JobsView = Vue.defineComponent({
     },
   },
   methods: {
+    canCancel(job) {
+      return job && this.$cp.isJobActive(job) && !job.cancel_requested;
+    },
+    canRetry(job) {
+      return job && !this.$cp.isJobActive(job);
+    },
+    jobAction(job, action) {
+      this.cp.jobAction(job, action);
+    },
+    jobActionPending(job, action) {
+      return !!(job && this.cp.isActionPending(`${this.cp.ACTION_KEYS.JOB_ACTION}:${job.id}:${action}`));
+    },
     loadMore() {
       this.visibleCount += this.pageSize;
     },
@@ -58,7 +70,7 @@ CP.Components.JobsView = Vue.defineComponent({
     <div class="view">
       <div>
         <h2 class="view-title">需求</h2>
-        <div class="muted tiny">由用户自然语言拆分成的需求（最多保留最近若干条）</div>
+        <div class="muted tiny">由用户自然语言拆分成的需求（保留最近 200 条历史记录）</div>
       </div>
       <div v-if="!jobs.length" class="empty pad">还没有需求，从项目概览提交一条试试</div>
       <div v-else class="cards-grid">
@@ -72,6 +84,14 @@ CP.Components.JobsView = Vue.defineComponent({
           </div>
           <div class="muted tiny">创建: {{ $cp.fmtTime(j.created_at) }} · planner: {{ j.planner || '-' }} · agent: {{ j.agent || 'auto' }}</div>
           <div v-if="j.summary || j.error" class="tiny">{{ j.summary || j.error }}</div>
+          <div class="item-actions">
+            <button v-if="canCancel(j)" class="btn btn-danger btn-sm" :disabled="jobActionPending(j, 'cancel')" @click.stop="jobAction(j, 'cancel')">
+              {{ jobActionPending(j, 'cancel') ? '停止中' : '停止' }}
+            </button>
+            <button v-if="canRetry(j)" class="btn btn-outline btn-sm" :disabled="jobActionPending(j, 'retry')" @click.stop="jobAction(j, 'retry')">
+              {{ jobActionPending(j, 'retry') ? '重试中' : '重试' }}
+            </button>
+          </div>
         </button>
       </div>
       <div v-if="hasMore || canCollapse" class="list-load-more">

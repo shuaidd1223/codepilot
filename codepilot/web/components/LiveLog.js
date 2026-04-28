@@ -136,9 +136,11 @@ CP.Components.LiveLog = Vue.defineComponent({
       return !!group.defaultOpen;
     },
     onGroupToggle(group, ev) {
+      const open = !!(ev && ev.target && ev.target.open);
+      if (this.groupOpen && this.groupOpen[group.key] === open) return;
       this.groupOpen = {
         ...(this.groupOpen || {}),
-        [group.key]: !!(ev && ev.target && ev.target.open),
+        [group.key]: open,
       };
     },
   },

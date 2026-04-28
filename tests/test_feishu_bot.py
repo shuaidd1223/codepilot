@@ -1055,6 +1055,10 @@ def test_submit_goal_action_without_webui_server_uses_fallback_ui_state(tmp_path
         "run_requirement_workflow",
         lambda **kwargs: {"tasks": [], "run": {"done": 0, "failed": 0}, "summary": "ok"},
     )
+    monkeypatch.setattr(
+        "codepilot.webapp.action_requirements._start_requirement_job_process",
+        lambda job_id, project_info: type("Proc", (), {"pid": 4321})(),
+    )
 
     result = web_actions.submit_goal_action("demo", "帮我整理任务说明", category="requirement")
 

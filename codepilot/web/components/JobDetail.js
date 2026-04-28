@@ -13,6 +13,26 @@ CP.Components.JobDetail = Vue.defineComponent({
       if (!this.job) return [];
       return this.cp.liveEventsForJob(this.job.id);
     },
+    canCancel() {
+      return this.job && this.$cp.isJobActive(this.job) && !this.job.cancel_requested;
+    },
+    canRetry() {
+      return this.job && !this.$cp.isJobActive(this.job);
+    },
+    cancelPending() {
+      return this.job && this.cp.isActionPending(`${this.cp.ACTION_KEYS.JOB_ACTION}:${this.job.id}:cancel`);
+    },
+    retryPending() {
+      return this.job && this.cp.isActionPending(`${this.cp.ACTION_KEYS.JOB_ACTION}:${this.job.id}:retry`);
+    },
+  },
+  methods: {
+    cancelJob() {
+      if (this.job) this.cp.jobAction(this.job, 'cancel');
+    },
+    retryJob() {
+      if (this.job) this.cp.jobAction(this.job, 'retry');
+    },
   },
   template: `
     <div class="view">
@@ -29,6 +49,14 @@ CP.Components.JobDetail = Vue.defineComponent({
             <cp-chip>{{ job.priority || '-' }}</cp-chip>
             <cp-chip>{{ job.agent || 'auto' }}</cp-chip>
             <cp-chip>{{ job.planner || '-' }}</cp-chip>
+          </div>
+          <div class="detail-actions">
+            <button v-if="canCancel" class="btn btn-danger btn-sm" :disabled="cancelPending" @click="cancelJob">
+              {{ cancelPending ? '停止中' : '停止' }}
+            </button>
+            <button v-if="canRetry" class="btn btn-outline btn-sm" :disabled="retryPending" @click="retryJob">
+              {{ retryPending ? '重试中' : '重试' }}
+            </button>
           </div>
         </div>
         <div class="card-body task-detail task-detail-body">

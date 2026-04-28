@@ -12,6 +12,7 @@ from typing import Callable
 
 import click
 
+from codepilot.core import progress_bus
 from codepilot.commands.task_quality import evaluate_planning_breakdown as _evaluate_planning_breakdown
 from codepilot.storage import database as db
 
@@ -41,6 +42,19 @@ def generate_task_breakdown_via_shell(shell, **kwargs):
     if supports_parse_flag:
         return planner_fn(parse_result=False, **kwargs)
     return planner_fn(**kwargs)
+
+
+def _emit_planning_progress(message: str, *, stage: str = "planner", level: str = "info", extra: dict | None = None) -> None:
+    try:
+        progress_bus.emit(
+            stage=stage,
+            message=message,
+            level=level,
+            event_type="planning",
+            extra={"phase_kind": stage, **dict(extra or {})},
+        )
+    except Exception:
+        pass
 
 
 def fallback_single_task_breakdown(*, title: str, priority: str, exc: Exception) -> dict:
@@ -144,9 +158,24 @@ def plan_requirement_breakdown(
 
     planning_text = "正在用 {planner} 侦察项目 → 拆分任务，请稍候..." if two_stage_enabled else "正在用 {planner} 规划任务，请稍候..."
     echo(f"[dim]  {planning_text.format(planner=planner)}[/dim]")
+    _emit_planning_progress(
+        planning_text.format(planner=planner),
+        stage="planner",
+        extra={"planner": planner, "two_stage": bool(two_stage_enabled)},
+    )
     existing_tasks = list_existing_open_tasks(project_name)
+    _emit_planning_progress(
+        f"已读取当前项目未完成任务 {len(existing_tasks)} 个，用于避免重复规划。",
+        stage="planner",
+        extra={"open_task_count": len(existing_tasks)},
+    )
 
     def _plan_once(active_planner: str, requirement_text: str) -> dict:
+        _emit_planning_progress(
+            f"开始调用 {active_planner} 生成任务拆分。",
+            stage="planner",
+            extra={"planner": active_planner},
+        )
         raw_breakdown = generate_task_breakdown_via_shell(
             shell,
             title=requirement_text,
@@ -156,6 +185,11 @@ def plan_requirement_breakdown(
             config_ref=config_ref,
             two_stage=two_stage_enabled,
             existing_tasks=existing_tasks,
+        )
+        _emit_planning_progress(
+            "规划器已返回结构化结果，正在解析和校验任务拆分。",
+            stage="planner",
+            extra={"planner": active_planner},
         )
         return shell.parse_automation_planner_result(
             raw_breakdown,
@@ -170,9 +204,23 @@ def plan_requirement_breakdown(
         if not blocking:
             if advisory:
                 echo(f"[yellow]规划质量提醒：{len(advisory)} 个可优化项（继续执行当前规划）[/yellow]")
+                _emit_planning_progress(
+                    f"规划质量检查完成：有 {len(advisory)} 个可优化项，继续采用当前规划。",
+                    stage="planner",
+                    level="warning",
+                    extra={"advisory_count": len(advisory)},
+                )
+            else:
+                _emit_planning_progress("规划质量检查通过。", stage="planner")
             return first
 
         echo(f"[yellow]规划质量检查发现 {len(blocking)} 个阻塞问题，自动触发一次重规划...[/yellow]")
+        _emit_planning_progress(
+            f"规划质量检查发现 {len(blocking)} 个阻塞问题，自动触发一次重规划。",
+            stage="planner",
+            level="warning",
+            extra={"blocking_count": len(blocking), "advisory_count": len(advisory)},
+        )
         feedback = render_quality_feedback(blocking, advisory)
         corrected_title = (
             f"{title}\n\n"
@@ -189,20 +237,44 @@ def plan_requirement_breakdown(
                     f"[yellow]重规划后仍有 {len(second_blocking)} 个阻塞问题，"
                     "但已优于首轮结果，继续采用重规划版本。[/yellow]"
                 )
+                _emit_planning_progress(
+                    f"重规划后仍有 {len(second_blocking)} 个阻塞问题，但已优于首轮结果。",
+                    stage="planner",
+                    level="warning",
+                    extra={"blocking_count": len(second_blocking)},
+                )
             elif second_advisory:
                 echo(
                     f"[yellow]重规划已消除阻塞问题，仍有 {len(second_advisory)} 个可优化项。[/yellow]"
                 )
+                _emit_planning_progress(
+                    f"重规划已消除阻塞问题，仍有 {len(second_advisory)} 个可优化项。",
+                    stage="planner",
+                    level="warning",
+                    extra={"advisory_count": len(second_advisory)},
+                )
+            else:
+                _emit_planning_progress("重规划已消除阻塞问题。", stage="planner")
             return second
 
         echo(
             "[yellow]自动重规划未明显改善，本轮沿用首轮结果；"
             "建议后续补充更明确的需求边界。[/yellow]"
         )
+        _emit_planning_progress(
+            "自动重规划未明显改善，本轮沿用首轮结果。",
+            stage="planner",
+            level="warning",
+        )
         return first
 
     def _codex_single_task_fallback(exc: Exception) -> dict:
         echo("[yellow]Codex 规划没有及时完成，已降级为单任务直接执行。[/yellow]")
+        _emit_planning_progress(
+            f"Codex 规划没有及时完成，降级为单任务执行：{exc}",
+            stage="planner",
+            level="warning",
+        )
         breakdown = fallback_single_task_breakdown(title=title, priority=priority, exc=exc)
         return shell.parse_automation_planner_result(
             breakdown,
@@ -220,11 +292,21 @@ def plan_requirement_breakdown(
 
         if is_claude_family_planner(planner, normalize_agent_name=normalize_agent_name):
             echo("[yellow]Claude 规划失败，正在重试一次...[/yellow]")
+            _emit_planning_progress(
+                "Claude 规划失败，正在重试一次。",
+                stage="planner",
+                level="warning",
+            )
             try:
                 return _plan_with_quality_repair(planner)
             except Exception as retry_exc:
                 echo("[yellow]Claude 规划仍失败，已回退到 codex 继续规划。[/yellow]")
                 echo(f"[dim]  Claude 原始原因：{retry_exc}[/dim]")
+                _emit_planning_progress(
+                    f"Claude 规划仍失败，回退到 Codex：{retry_exc}",
+                    stage="planner",
+                    level="warning",
+                )
                 try:
                     return _plan_with_quality_repair("codex")
                 except Exception as codex_exc:
@@ -291,6 +373,11 @@ def create_tasks_from_breakdown(
             project_path=project_path,
             max_retries=max_retries,
             source=task_source or "user",
+        )
+        _emit_planning_progress(
+            f"已创建任务 #{task['id']}：{task['title']}",
+            stage="planner",
+            extra={"task_id": task["id"]},
         )
         created_tasks.append(task)
         created_ids_by_index.append(task["id"])

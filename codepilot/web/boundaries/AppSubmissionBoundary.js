@@ -280,6 +280,30 @@ CP.createAppSubmissionBoundary = (options = {}) => {
     }
   }
 
+  async function jobAction(job, action) {
+    if (!job || !job.id || !action) return;
+    if (action === 'cancel') {
+      const ok = await confirmDialog({
+        title: '停止需求',
+        message: `确定要停止需求 #${job.id} 吗？\n如果底层 AI 调用正在进行，会在本轮调用返回后停止后续创建和执行。`,
+        confirmText: '停止',
+        cancelText: '取消',
+        tone: 'danger',
+      });
+      if (!ok) return;
+    }
+    const key = `${ACTION_KEYS.JOB_ACTION}:${job.id}:${action}`;
+    await runScopedAction(key, async () => {
+      try {
+        const out = await CP.api.post(`/api/jobs/${job.id}/${action}`, {});
+        pushToast(out.message || '操作完成', action === 'cancel' ? 'warning' : 'success');
+        await loadDashboard();
+      } catch (err) {
+        pushToast(err.message, 'error');
+      }
+    });
+  }
+
   return {
     submitGoal,
     submitComposer,
@@ -289,5 +313,6 @@ CP.createAppSubmissionBoundary = (options = {}) => {
     submitProject,
     deleteProject,
     projectService,
+    jobAction,
   };
 };

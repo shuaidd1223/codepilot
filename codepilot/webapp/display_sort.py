@@ -17,7 +17,7 @@ TASK_STATUS_ORDER = {
 
 _PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 _DONE_JOB_STATUSES = {"succeeded", "attention", "failed", "done", "cancelled"}
-_ACTIVE_JOB_STATUS_ORDER = {"running": 0, "planning": 1, "queued": 2}
+_ACTIVE_JOB_STATUS_ORDER = {"running": 0, "planning": 1, "cancelling": 2, "queued": 3}
 _ZERO_DT = (0, 0, 0, 0, 0, 0, 0)
 
 

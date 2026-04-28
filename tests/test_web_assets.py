@@ -187,6 +187,27 @@ def test_web_ui_action_protocol_exposes_scoped_pending_keys():
     assert "ACTION_KEYS," in app_state
 
 
+def test_web_ui_wires_requirement_job_actions_and_filtered_events():
+    feedback_boundary = Path("codepilot/web/boundaries/AppFeedbackBoundary.js").read_text(encoding="utf-8")
+    submission_boundary = Path("codepilot/web/boundaries/AppSubmissionBoundary.js").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+    job_detail = Path("codepilot/web/components/JobDetail.js").read_text(encoding="utf-8")
+    jobs_view = Path("codepilot/web/components/JobsView.js").read_text(encoding="utf-8")
+    utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
+
+    assert "JOB_ACTION: 'job.action'" in feedback_boundary
+    assert "async function jobAction(job, action)" in submission_boundary
+    assert "/api/jobs/${job.id}/${action}" in submission_boundary
+    assert "jobAction," in app_state
+    assert "const liveEventsForJob = (jobId) => {" in app_state
+    assert "kind === 'job_log'" in app_state
+    assert "scheduleRefresh();" not in app_state.split("state.liveEvents.push(event);", 2)[-1].split("const taskId", 1)[0]
+    assert "canCancel()" in job_detail
+    assert "@click=\"cancelJob\"" in job_detail
+    assert "@click.stop=\"jobAction(j, 'retry')\"" in jobs_view
+    assert "cancelling: '停止中'" in utils
+
+
 def test_form_components_use_scoped_action_pending_instead_of_global_sending():
     goal = Path("codepilot/web/components/GoalInput.js").read_text(encoding="utf-8")
     composer = Path("codepilot/web/components/Composer.js").read_text(encoding="utf-8")

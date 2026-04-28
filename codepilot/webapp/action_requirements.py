@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import sys
+import re
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 from codepilot.storage import database as db
@@ -25,19 +28,28 @@ from codepilot.webapp.action_state import (
     _GOAL_MAX_BYTES,
     _MAX_JOB_LOG_LINES,
     _append_event,
+    _get_job,
     _emit_ui_state_event,
     _effective_planner,
     _extract_job_task_ids,
+    _is_job_cancel_requested,
     _next_job_id,
     _normalize_goal_category,
     _shell,
     _update_job,
+    cancel_ui_job,
 )
 from codepilot.webapp.payloads import _now_iso, _task_payload
 
 
+_PLANNER_PID_RE = re.compile(r"\bPID=(\d+)\b")
+
+
 def _actions():
-    return sys.modules["codepilot.webapp.actions"]
+    module = sys.modules.get("codepilot.webapp.actions")
+    if module is None:
+        from codepilot.webapp import actions as module
+    return module
 
 
 def _format_numbered_questions(questions: list[dict]) -> str:
@@ -86,6 +98,52 @@ def _request_task_service_start(project: str) -> tuple[dict | None, str]:
         return request_daemon_service_start(project), ""
     except Exception as exc:
         return None, str(exc)
+
+
+def _append_requirement_job_log(job_id: int, line: str, *, project: str | None = None) -> None:
+    shell = _shell()
+    payload = {"id": int(job_id), "line": line, "updated_at": _now_iso()}
+    persisted = _get_job(int(job_id))
+    with shell._UI_LOCK:
+        job = shell._UI_JOBS.get(int(job_id))
+        if job is None:
+            job = dict(persisted or {"id": int(job_id)})
+            shell._UI_JOBS[int(job_id)] = job
+        job_log = job.setdefault("log", [])
+        if isinstance(job_log, list):
+            job_log.append(line)
+            if len(job_log) > _MAX_JOB_LOG_LINES:
+                del job_log[:-_MAX_JOB_LOG_LINES]
+        planner_pids = job.setdefault("planner_pids", [])
+        if isinstance(planner_pids, list) and "规划进程已启动" in line:
+            for match in _PLANNER_PID_RE.finditer(line):
+                try:
+                    pid = int(match.group(1))
+                except Exception:
+                    continue
+                if pid > 0 and pid not in planner_pids:
+                    planner_pids.append(pid)
+        job["updated_at"] = _now_iso()
+        payload["updated_at"] = job["updated_at"]
+        snapshot = dict(job)
+    _update_job(int(job_id), **snapshot)
+    _emit_ui_state_event("job_log", project=project or str(snapshot.get("project") or ""), payload=payload)
+
+
+def _start_requirement_job_process(job_id: int, project_info: dict) -> subprocess.Popen:
+    from codepilot.core.runtime import no_window_kwargs
+
+    project_path = str(project_info.get("path") or "").strip()
+    cwd = project_path if project_path and Path(project_path).exists() else None
+    cmd = [sys.executable, "-m", "codepilot.cli", "requirement-worker", str(int(job_id))]
+    return subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **no_window_kwargs(new_process_group=True),
+    )
 
 
 @dataclass(frozen=True)
@@ -358,6 +416,171 @@ def _job_result_summary(result: dict, execute: bool) -> str:
     return " | ".join(parts)
 
 
+def run_requirement_job_worker(job_id: int) -> dict | None:
+    """Run one persisted requirement-planning job in this process."""
+    shell = _shell()
+    import codepilot.ai_support.service as _ai_module
+    from codepilot.core import progress_bus
+    import time
+
+    db.init_db()
+    job = _get_job(int(job_id))
+    if not job:
+        raise RuntimeError(f"需求 #{job_id} 不存在。")
+    request = job.get("request") if isinstance(job.get("request"), dict) else {}
+    project = str(request.get("project") or job.get("project") or "")
+    normalized_title = str(request.get("title") or job.get("title") or "").strip()
+    if not project or not normalized_title:
+        raise RuntimeError(f"需求 #{job_id} 缺少项目或标题。")
+    project_info = db.get_project(project)
+    if not project_info:
+        raise RuntimeError(f"项目 '{project}' 不存在。")
+
+    execute = bool(request.get("execute", True))
+    effective_planner = str(request.get("planner") or job.get("planner") or "codex")
+    agent = request.get("agent") or None
+    normalized_priority = str(request.get("priority") or job.get("priority") or "P2")
+    max_tasks = int(request.get("max_tasks") or 5)
+    executor = str(request.get("executor") or "auto")
+    auto_commit = bool(request.get("auto_commit", False))
+    max_retries = int(request.get("max_retries") or 3)
+    task_source = str(request.get("task_source") or "user")
+
+    def _append_job_log(line: str) -> None:
+        _append_requirement_job_log(int(job_id), line, project=project)
+
+    def _finalize_cancelled() -> dict | None:
+        current = _get_job(int(job_id)) or {}
+        if str(current.get("status") or "") == "cancelled" and current.get("finished_at"):
+            return current
+        _append_job_log("已按用户请求停止需求规划。")
+        updated = _update_job(
+            int(job_id),
+            status="cancelled",
+            phase="cancelled",
+            updated_at=_now_iso(),
+            finished_at=_now_iso(),
+            cancel_requested=True,
+            error="用户请求停止需求规划",
+        )
+        _append_event(f"需求 #{job_id} 已停止：{normalized_title}", level="warning", project=project)
+        return updated
+
+    if _is_job_cancel_requested(int(job_id)):
+        return _finalize_cancelled()
+    _update_job(int(job_id), status="running", phase="planning", updated_at=_now_iso())
+    _append_job_log(f"开始规划：{normalized_title}")
+    _append_job_log(f"使用规划器：{effective_planner}")
+    heartbeat_stop = _actions().threading.Event()
+
+    def _job_heartbeat() -> None:
+        started = time.monotonic()
+        while not heartbeat_stop.wait(15):
+            current = _get_job(int(job_id))
+            if not current:
+                return
+            if str(current.get("status") or "") not in {"running", "planning", "cancelling"}:
+                return
+            elapsed = int(time.monotonic() - started)
+            phase = str(current.get("phase") or "planning")
+            _append_job_log(
+                f"规划仍在进行：已等待 {elapsed}s，当前阶段 {phase}；"
+                "如果底层 AI 暂时没有输出，页面会继续保持心跳。"
+            )
+
+    heartbeat_thread = _actions().threading.Thread(
+        target=_job_heartbeat,
+        name=f"codepilot-requirement-job-heartbeat-{job_id}",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+
+    def _bus_listener(event: dict) -> None:
+        stage = event.get("stage") or "?"
+        message = event.get("message") or ""
+        extra = event.get("extra") or {}
+        if stage in {"ui-state", "job-log"} or extra.get("kind") in {"event", "job", "job_log"}:
+            return
+        if extra.get("task_log_stream"):
+            return
+        round_hint = ""
+        if "round" in extra and "round_total" in extra:
+            round_hint = f" (round {extra['round']}/{extra['round_total']})"
+        _append_job_log(f"[{stage}{round_hint}] {message}")
+
+    prev_callback = _ai_module._planner_progress_callback
+    _ai_module._planner_progress_callback = _append_job_log
+
+    try:
+        with progress_bus.subscription(_bus_listener):
+            try:
+                result = shell.run_requirement_workflow(
+                    project_info=db.get_project(project) or project_info,
+                    title=normalized_title,
+                    planner=effective_planner,
+                    task_agent=agent or None,
+                    priority=normalized_priority,
+                    max_tasks=max_tasks,
+                    execute=False,
+                    executor=executor,
+                    auto_commit=auto_commit,
+                    max_retries=max_retries,
+                    json_mode=False,
+                    task_source=task_source,
+                )
+                if _is_job_cancel_requested(int(job_id)):
+                    return _finalize_cancelled()
+                task_ids = [item["id"] for item in (result.get("tasks") or [])]
+                _append_job_log(f"规划完成，创建 {len(task_ids)} 个任务")
+                service_error = ""
+                if execute and task_ids:
+                    if _is_job_cancel_requested(int(job_id)):
+                        return _finalize_cancelled()
+                    service_status, service_error = _request_task_service_start(project)
+                    if service_error:
+                        _append_job_log(f"任务执行服务启动失败：{service_error}")
+                        result["run_service_error"] = service_error
+                    else:
+                        result["run_service"] = service_status or {}
+                        state = "已启动" if service_status and service_status.get("started") else "已在运行"
+                        _append_job_log(f"任务执行服务{state}，等待 daemon 领取 backlog")
+                status = "attention" if service_error else "succeeded"
+                updated = _update_job(
+                    int(job_id),
+                    status=status,
+                    phase="done" if status == "succeeded" else "attention",
+                    updated_at=_now_iso(),
+                    finished_at=_now_iso(),
+                    summary=_job_result_summary(result, execute),
+                    task_ids=task_ids,
+                    error=service_error,
+                )
+                _append_event(
+                    f"需求处理完成：{normalized_title}",
+                    level="warning" if status == "attention" else "info",
+                    project=project,
+                    task_id=task_ids[0] if task_ids else None,
+                )
+                return updated
+            except Exception as exc:
+                if _is_job_cancel_requested(int(job_id)):
+                    return _finalize_cancelled()
+                _append_job_log(f"失败：{exc}")
+                updated = _update_job(
+                    int(job_id),
+                    status="failed",
+                    phase="failed",
+                    updated_at=_now_iso(),
+                    finished_at=_now_iso(),
+                    error=str(exc),
+                )
+                _append_event(f"需求执行失败：{normalized_title} | {exc}", level="error", project=project)
+                return updated
+    finally:
+        heartbeat_stop.set()
+        _ai_module._planner_progress_callback = prev_callback
+
+
 def submit_requirement_action(
     project: str,
     title: str,
@@ -437,110 +660,86 @@ def submit_requirement_action(
             "finished_at": "",
             "summary": "",
             "error": "",
+            "cancel_requested": False,
+            "runner_pid": 0,
+            "planner_pids": [],
             "task_ids": [],
             "log": [],
+            "request": {
+                "project": project,
+                "title": normalized_title,
+                "execute": bool(execute),
+                "planner": effective_planner,
+                "agent": agent or None,
+                "priority": normalized_priority,
+                "max_tasks": int(max_tasks),
+                "executor": executor,
+                "auto_commit": bool(auto_commit),
+                "max_retries": int(max_retries),
+                "task_source": task_source or "user",
+            },
         }
+    _update_job(job_id)
     _append_event(f"收到需求：{normalized_title}", project=project)
 
-    def _append_job_log(line: str) -> None:
-        payload = {"id": job_id, "line": line, "updated_at": _now_iso()}
-        with shell._UI_LOCK:
-            job = shell._UI_JOBS.get(job_id)
-            if job:
-                job["log"].append(line)
-                if len(job["log"]) > _MAX_JOB_LOG_LINES:
-                    del job["log"][:-_MAX_JOB_LOG_LINES]
-                job["updated_at"] = _now_iso()
-                payload["updated_at"] = job["updated_at"]
-        _emit_ui_state_event("job_log", project=project, payload=payload)
-
-    def worker() -> None:
-        import codepilot.ai_support.service as _ai_module
-        from codepilot.core import progress_bus
-
-        _update_job(job_id, status="running", phase="planning", updated_at=_now_iso())
-        _append_job_log(f"开始规划：{normalized_title}")
-        _append_job_log(f"使用规划器：{effective_planner}")
-
-        def _bus_listener(event: dict) -> None:
-            stage = event.get("stage") or "?"
-            message = event.get("message") or ""
-            extra = event.get("extra") or {}
-            if extra.get("task_log_stream"):
-                return
-            round_hint = ""
-            if "round" in extra and "round_total" in extra:
-                round_hint = f" (round {extra['round']}/{extra['round_total']})"
-            _append_job_log(f"[{stage}{round_hint}] {message}")
-
-        prev_callback = _ai_module._planner_progress_callback
-        _ai_module._planner_progress_callback = _append_job_log
-
-        with progress_bus.subscription(_bus_listener):
-            try:
-                result = shell.run_requirement_workflow(
-                    project_info=db.get_project(project) or project_info,
-                    title=normalized_title,
-                    planner=effective_planner,
-                    task_agent=agent or None,
-                    priority=normalized_priority,
-                    max_tasks=max_tasks,
-                    execute=False,
-                    executor=executor,
-                    auto_commit=auto_commit,
-                    max_retries=max_retries,
-                    json_mode=False,
-                    task_source=task_source,
-                )
-                task_ids = [item["id"] for item in (result.get("tasks") or [])]
-                _append_job_log(f"规划完成，创建 {len(task_ids)} 个任务")
-                service_error = ""
-                if execute and task_ids:
-                    service_status, service_error = _request_task_service_start(project)
-                    if service_error:
-                        _append_job_log(f"任务执行服务启动失败：{service_error}")
-                        result["run_service_error"] = service_error
-                    else:
-                        result["run_service"] = service_status or {}
-                        state = "已启动" if service_status and service_status.get("started") else "已在运行"
-                        _append_job_log(f"任务执行服务{state}，等待 daemon 领取 backlog")
-                status = "attention" if service_error else "succeeded"
-                _update_job(
-                    job_id,
-                    status=status,
-                    phase="done" if status == "succeeded" else "attention",
-                    updated_at=_now_iso(),
-                    finished_at=_now_iso(),
-                    summary=_job_result_summary(result, execute),
-                    task_ids=task_ids,
-                    error=service_error,
-                )
-                _append_event(
-                    f"需求处理完成：{normalized_title}",
-                    level="warning" if status == "attention" else "info",
-                    project=project,
-                    task_id=task_ids[0] if task_ids else None,
-                )
-            except Exception as exc:
-                _append_job_log(f"失败：{exc}")
-                _update_job(
-                    job_id,
-                    status="failed",
-                    phase="failed",
-                    updated_at=_now_iso(),
-                    finished_at=_now_iso(),
-                    error=str(exc),
-                )
-                _append_event(f"需求执行失败：{normalized_title} | {exc}", level="error", project=project)
-            finally:
-                _ai_module._planner_progress_callback = prev_callback
-
     if run_async:
-        _actions().threading.Thread(target=worker, name=f"codepilot-ui-job-{job_id}", daemon=True).start()
+        try:
+            process = _start_requirement_job_process(job_id, project_info)
+        except Exception as exc:
+            _append_requirement_job_log(job_id, f"独立需求规划进程启动失败：{exc}", project=project)
+            _update_job(
+                job_id,
+                status="failed",
+                phase="failed",
+                updated_at=_now_iso(),
+                finished_at=_now_iso(),
+                error=f"独立需求规划进程启动失败：{exc}",
+            )
+        else:
+            _update_job(job_id, runner_pid=int(process.pid or 0), phase="queued", updated_at=_now_iso())
+            _append_requirement_job_log(job_id, f"独立需求规划工作进程已启动 PID={process.pid}", project=project)
     else:
-        worker()
+        run_requirement_job_worker(job_id)
 
     return {"ok": True, "message": f"需求已提交，后台任务 #{job_id} 已启动。", "job": dict(shell._UI_JOBS[job_id])}
+
+
+def cancel_job_action(job_id: int) -> dict:
+    updated = cancel_ui_job(int(job_id))
+    return {
+        "ok": True,
+        "message": f"需求 #{job_id} 已停止。",
+        "job": updated,
+    }
+
+
+def retry_job_action(job_id: int) -> dict:
+    job = _get_job(int(job_id))
+    if not job:
+        raise RuntimeError(f"需求 #{job_id} 不存在。")
+    if str(job.get("status") or "") in {"queued", "running", "planning", "cancelling"}:
+        raise RuntimeError(f"需求 #{job_id} 仍在处理中，不能重试。")
+    request = job.get("request") if isinstance(job.get("request"), dict) else {}
+    if not request:
+        raise RuntimeError(f"需求 #{job_id} 缺少可重试的原始参数。")
+    _append_event(
+        f"需求 #{job_id} 已发起重试：{request.get('title') or job.get('title') or ''}",
+        project=str(request.get("project") or job.get("project") or ""),
+    )
+    return submit_requirement_action(
+        str(request.get("project") or job.get("project") or ""),
+        str(request.get("title") or job.get("title") or ""),
+        execute=bool(request.get("execute", True)),
+        planner=str(request.get("planner") or job.get("planner") or "") or None,
+        agent=request.get("agent") or None,
+        priority=str(request.get("priority") or job.get("priority") or "P2"),
+        max_tasks=int(request.get("max_tasks") or 5),
+        executor=str(request.get("executor") or "auto"),
+        auto_commit=bool(request.get("auto_commit", False)),
+        max_retries=int(request.get("max_retries") or 3),
+        run_async=True,
+        clarify=False,
+    )
 
 
 def _dispatch_goal_command(ctx: _GoalDispatchContext) -> dict:

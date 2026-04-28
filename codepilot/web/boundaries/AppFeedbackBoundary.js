@@ -19,6 +19,7 @@ CP.createAppFeedbackBoundary = (options = {}) => {
     SESSION_DELETE: 'session.delete',
     SESSION_CLARIFY_REPLY: 'session.clarify.reply',
     SESSION_CLARIFY_CANCEL: 'session.clarify.cancel',
+    JOB_ACTION: 'job.action',
   });
 
   const refreshBlockingActions = new Set([

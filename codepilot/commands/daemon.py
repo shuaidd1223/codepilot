@@ -275,6 +275,10 @@ def stop_daemon_service(project: str | None = None) -> dict:
 
 
 def _stop_requested(project: str | None = None) -> bool:
+    try:
+        db._invalidate_service_state_caches()
+    except Exception:
+        pass
     state = db.get_service_state("daemon", _service_scope(project))
     if not state:
         return False
@@ -292,6 +296,10 @@ def _sleep_or_stop(project: str | None, seconds: int) -> bool:
 
 def _tick_heartbeat(project: str | None = None) -> None:
     """Refresh daemon heartbeat in ``service_states``."""
+    try:
+        db._invalidate_service_state_caches()
+    except Exception:
+        pass
     state = db.get_service_state("daemon", _service_scope(project))
     current_status = str((state or {}).get("status") or "").strip().lower()
     status = "stopping" if current_status == "stopping" else "running"

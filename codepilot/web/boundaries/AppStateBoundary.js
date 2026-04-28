@@ -424,6 +424,65 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       return ensureSubmissionBoundary().projectService(service, action);
     }
 
+    async function jobAction(job, action) {
+      return ensureSubmissionBoundary().jobAction(job, action);
+    }
+
+    function projectMatchesCurrent(project) {
+      return !project || !state.nav.project || project === state.nav.project;
+    }
+
+    function mergeJobPayload(payload) {
+      if (!payload || payload.id == null) return;
+      const id = Number(payload.id);
+      const idx = state.jobs.findIndex((job) => Number(job.id) === id);
+      if (idx >= 0) state.jobs[idx] = { ...state.jobs[idx], ...payload };
+      const bucket = state.jobsByProject[state.nav.project] || [];
+      const bucketIdx = bucket.findIndex((job) => Number(job.id) === id);
+      if (bucketIdx >= 0) bucket[bucketIdx] = { ...bucket[bucketIdx], ...payload };
+    }
+
+    function appendJobLogPayload(payload) {
+      if (!payload || payload.id == null || !payload.line) return;
+      const id = Number(payload.id);
+      const applyLine = (job) => {
+        const log = Array.isArray(job.log) ? job.log.slice() : [];
+        if (log[log.length - 1] !== payload.line) log.push(payload.line);
+        return {
+          ...job,
+          log: log.slice(-50),
+          updated_at: payload.updated_at || job.updated_at,
+        };
+      };
+      const idx = state.jobs.findIndex((job) => Number(job.id) === id);
+      if (idx >= 0) state.jobs[idx] = applyLine(state.jobs[idx]);
+      const bucket = state.jobsByProject[state.nav.project] || [];
+      const bucketIdx = bucket.findIndex((job) => Number(job.id) === id);
+      if (bucketIdx >= 0) bucket[bucketIdx] = applyLine(bucket[bucketIdx]);
+    }
+
+    function handleUiStateEvent(event) {
+      const extra = (event && event.extra) || {};
+      const kind = String(extra.kind || '');
+      const project = String(extra.project || '');
+      const payload = extra.payload || {};
+      if (!projectMatchesCurrent(project)) return true;
+      if (kind === 'job_log') {
+        appendJobLogPayload(payload);
+        return true;
+      }
+      if (kind === 'job') {
+        mergeJobPayload(payload);
+        scheduleRefresh();
+        return true;
+      }
+      if (kind === 'event') {
+        state.events = [payload, ...(state.events || [])].filter(Boolean).slice(0, 12);
+        return true;
+      }
+      return false;
+    }
+
     function runRefresh() {
       if (isRefreshBlocked()) return;
       loadDashboard();
@@ -461,6 +520,13 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
           state.daemonHealth = event.extra;
           return;
         }
+        if (event && (event.stage === 'ui-state' || event.stage === 'job-log') && handleUiStateEvent(event)) {
+          state.liveEvents.push(event);
+          if (state.liveEvents.length > LIVE_EVENTS_MAX) {
+            state.liveEvents.splice(0, state.liveEvents.length - LIVE_EVENTS_MAX);
+          }
+          return;
+        }
         if (event && event.stage === 'task-state') {
           const changes = (event.extra && Array.isArray(event.extra.changes)) ? event.extra.changes : [];
           scheduleRefresh({ immediate: true });
@@ -487,7 +553,6 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         if (state.liveEvents.length > LIVE_EVENTS_MAX) {
           state.liveEvents.splice(0, state.liveEvents.length - LIVE_EVENTS_MAX);
         }
-        scheduleRefresh();
         const taskId = state.nav.view === 'task' ? state.nav.id : null;
         if (taskId && (event.task_id === taskId || event.task_id == null)) {
           loadTaskLog(taskId);
@@ -620,7 +685,22 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       window.removeEventListener('hashchange', onHashChange);
     });
 
-    const liveEventsForJob = (_jobId) => state.liveEvents.slice();
+    const liveEventsForJob = (jobId) => {
+      const id = Number(jobId);
+      const job = state.jobs.find((item) => Number(item.id) === id) || {};
+      const taskIds = new Set((Array.isArray(job.task_ids) ? job.task_ids : []).map((value) => Number(value)));
+      return state.liveEvents.filter((event) => {
+        if (!event) return false;
+        const extra = event.extra || {};
+        const kind = String(extra.kind || '');
+        const payload = extra.payload || {};
+        if ((event.stage === 'job-log' || event.stage === 'ui-state') && (kind === 'job_log' || kind === 'job')) {
+          return Number(payload.id) === id;
+        }
+        if (event.task_id != null) return taskIds.has(Number(event.task_id));
+        return false;
+      });
+    };
 
     const liveEventsForTask = (taskId) => {
       if (!taskId) return [];
@@ -647,7 +727,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       taskAction, submitGoal, submitComposer, submitTaskBatch,
       taskBatchAction,
       toggleProjectForm, submitProject, deleteProject,
-      projectService,
+      projectService, jobAction,
       newSession, sendChat, deleteSession,
       submitClarifyAnswer,
       cancelGoalClarify, cancelComposerClarify, cancelSessionClarify,

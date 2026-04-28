@@ -498,6 +498,234 @@ def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeyp
     assert task["title"] == "让 Web UI 直接接收需求"
 
 
+def test_webui_requirement_jobs_survive_ui_state_reset(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path), default_mode="codex")
+
+    def fake_run_requirement_workflow(**kwargs):
+        task = db.create_task(
+            kwargs["project_info"]["name"],
+            kwargs["title"],
+            content="generated",
+            agent=kwargs.get("task_agent") or "codex",
+            priority=kwargs.get("priority") or "P2",
+            project_path=kwargs["project_info"]["path"],
+        )
+        return {"summary": "拆分完成", "tasks": [task]}
+
+    monkeypatch.setattr(webui_mod, "run_requirement_workflow", fake_run_requirement_workflow)
+    monkeypatch.setattr(
+        "codepilot.webapp.action_requirements._request_task_service_start",
+        lambda project: ({"running": True, "started": False, "pid": 7654}, ""),
+    )
+    monkeypatch.setattr(
+        "codepilot.webapp.actions.clarify_requirement",
+        lambda title, **kw: {"status": "ready", "refined_title": title},
+    )
+
+    result = webui_mod.submit_requirement_action(
+        "demo",
+        "持久保留需求历史",
+        execute=False,
+        planner="codex",
+        run_async=False,
+    )
+    job_id = result["job"]["id"]
+
+    with webui_mod._UI_LOCK:
+        webui_mod._UI_JOBS.clear()
+        webui_mod._UI_JOB_SEQ = 0
+
+    jobs = webui_mod.list_ui_jobs("demo")
+
+    assert [job["id"] for job in jobs] == [job_id]
+    assert jobs[0]["title"] == "持久保留需求历史"
+    assert jobs[0]["status"] == "succeeded"
+    assert webui_mod._UI_JOB_SEQ >= job_id
+
+
+def test_webui_marks_persisted_active_jobs_stale_after_restart(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path), default_mode="codex")
+
+    db.upsert_service_state(
+        "webui_job",
+        "7",
+        status="running",
+        meta={
+            "id": 7,
+            "project": "demo",
+            "title": "旧规划线程",
+            "status": "running",
+            "phase": "planning",
+            "priority": "P1",
+            "created_at": "2026-04-29T00:01:00",
+            "updated_at": "2026-04-29T00:01:10",
+            "finished_at": "",
+            "task_ids": [],
+            "log": [],
+            "request": {"project": "demo", "title": "旧规划线程"},
+        },
+    )
+    with webui_mod._UI_LOCK:
+        webui_mod._UI_JOBS.clear()
+        webui_mod._UI_JOB_SEQ = 0
+    original_started_at = getattr(webui_mod, "_UI_STARTED_AT", "")
+    webui_mod._UI_STARTED_AT = "2026-04-29T00:02:00"
+    try:
+        jobs = webui_mod.list_ui_jobs("demo")
+    finally:
+        webui_mod._UI_STARTED_AT = original_started_at
+
+    assert jobs[0]["id"] == 7
+    assert jobs[0]["status"] == "failed"
+    assert "需求规划进程已不存在" in jobs[0]["error"]
+    assert jobs[0]["finished_at"]
+    assert jobs[0]["log"]
+
+
+def test_webui_keeps_live_independent_requirement_job_after_restart(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path), default_mode="codex")
+    monkeypatch.setattr("codepilot.webapp.action_state.is_process_alive", lambda pid: int(pid or 0) == 2468)
+
+    db.upsert_service_state(
+        "webui_job",
+        "8",
+        status="running",
+        meta={
+            "id": 8,
+            "project": "demo",
+            "title": "独立规划进程",
+            "status": "running",
+            "phase": "planning",
+            "priority": "P2",
+            "created_at": "2026-04-29T00:01:00",
+            "updated_at": "2026-04-29T00:01:10",
+            "finished_at": "",
+            "runner_pid": 2468,
+            "task_ids": [],
+            "log": ["独立需求规划工作进程已启动 PID=2468"],
+            "request": {"project": "demo", "title": "独立规划进程"},
+        },
+    )
+    with webui_mod._UI_LOCK:
+        webui_mod._UI_JOBS.clear()
+        webui_mod._UI_JOB_SEQ = 0
+    original_started_at = getattr(webui_mod, "_UI_STARTED_AT", "")
+    webui_mod._UI_STARTED_AT = "2026-04-29T00:02:00"
+    try:
+        jobs = webui_mod.list_ui_jobs("demo")
+    finally:
+        webui_mod._UI_STARTED_AT = original_started_at
+
+    assert jobs[0]["id"] == 8
+    assert jobs[0]["status"] == "running"
+    assert jobs[0]["runner_pid"] == 2468
+    assert not jobs[0]["finished_at"]
+
+
+def test_webui_requirement_job_cancel_and_retry_actions(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path), default_mode="codex")
+
+    with webui_mod._UI_LOCK:
+        webui_mod._UI_JOBS.clear()
+        webui_mod._UI_JOB_SEQ = 20
+        webui_mod._UI_JOBS[20] = {
+            "id": 20,
+            "project": "demo",
+            "title": "可停止需求",
+            "status": "running",
+            "phase": "planning",
+            "priority": "P2",
+            "created_at": "2026-04-29T10:00:00",
+            "updated_at": "2026-04-29T10:00:00",
+            "finished_at": "",
+            "runner_pid": 1234,
+            "planner_pids": [5678],
+            "task_ids": [],
+            "log": [],
+        }
+        webui_mod._UI_JOBS[21] = {
+            "id": 21,
+            "project": "demo",
+            "title": "可重试需求",
+            "status": "failed",
+            "phase": "failed",
+            "priority": "P1",
+            "created_at": "2026-04-29T10:00:00",
+            "updated_at": "2026-04-29T10:02:00",
+            "finished_at": "2026-04-29T10:02:00",
+            "task_ids": [],
+            "log": [],
+            "request": {
+                "project": "demo",
+                "title": "可重试需求",
+                "execute": True,
+                "planner": "codex",
+                "agent": None,
+                "priority": "P1",
+                "max_tasks": 3,
+                "executor": "auto",
+                "auto_commit": False,
+                "max_retries": 2,
+            },
+        }
+
+    killed: list[int] = []
+    monkeypatch.setattr(
+        "codepilot.webapp.action_state.stop_process_tree",
+        lambda pid, wait_seconds=3: killed.append(pid) or True,
+    )
+
+    cancelled = webui_mod.cancel_job_action(20)
+    assert cancelled["ok"] is True
+    assert cancelled["job"]["status"] == "cancelled"
+    assert cancelled["job"]["cancel_requested"] is True
+    assert cancelled["job"]["finished_at"]
+    assert killed == [1234, 5678]
+
+    calls: list[dict] = []
+
+    def fake_submit_requirement_action(project, title, **kwargs):
+        calls.append({"project": project, "title": title, **kwargs})
+        return {"ok": True, "message": "retry submitted", "job": {"id": 22}}
+
+    monkeypatch.setattr(
+        "codepilot.webapp.action_requirements.submit_requirement_action",
+        fake_submit_requirement_action,
+    )
+
+    retried = webui_mod.retry_job_action(21)
+
+    assert retried["ok"] is True
+    assert calls == [
+        {
+            "project": "demo",
+            "title": "可重试需求",
+            "execute": True,
+            "planner": "codex",
+            "agent": None,
+            "priority": "P1",
+            "max_tasks": 3,
+            "executor": "auto",
+            "auto_commit": False,
+            "max_retries": 2,
+            "run_async": True,
+            "clarify": False,
+        }
+    ]
+
+
 def test_retry_command_rejects_running_task(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

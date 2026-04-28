@@ -878,19 +878,26 @@ def _chat_max_tasks_for_intent(runtime: _ChatRuntime, intent: str) -> int:
 
 
 def _run_chat_requirement_workflow(runtime: _ChatRuntime, *, title: str, intent: str) -> None:
-    shell = runtime.shell
-    shell.run_requirement_workflow(
-        project_info=runtime.project_info,
+    from codepilot.core.output import echo
+    from codepilot.webapp import actions as web_actions
+
+    result = web_actions.submit_requirement_action(
+        str(runtime.project_info.get("name") or ""),
         title=title,
         planner=runtime.effective["planner"],
-        task_agent=runtime.default_agent,
+        agent=runtime.default_agent,
         execute=runtime.default_execute,
         executor=runtime.effective["executor"],
         auto_commit=runtime.effective["auto_commit"],
         max_tasks=_chat_max_tasks_for_intent(runtime, intent),
         max_retries=runtime.effective["max_retries"],
-        quiet=True,
+        run_async=True,
+        clarify=False,
+        task_source="chat",
     )
+    job = result.get("job") if isinstance(result.get("job"), dict) else {}
+    job_id = job.get("id") or "-"
+    echo(f"[green][OK] 需求已提交到独立规划进程，后台任务 #{job_id}。[/green]")
 
 
 def _resolve_chat_turn_intent(ctx: _ChatMessageDispatchContext) -> str:
