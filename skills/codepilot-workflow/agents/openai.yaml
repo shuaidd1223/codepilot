@@ -1,7 +1,7 @@
 interface:
   display_name: "CodePilot Workflow"
-  short_description: "Run CodePilot requirement workflows via CLI."
-  default_prompt: "Use $codepilot-workflow to process a requirement, execute tasks, and report status and logs."
+  short_description: "Operate CodePilot tasks, questions, services, Feishu, webhooks, and releases."
+  default_prompt: "Use $codepilot-workflow to answer workflow questions, create explicit requirements or tasks, operate services, and report status, logs, and next steps."
 
 policy:
   allow_implicit_invocation: true

@@ -67,6 +67,8 @@ def command_manifest(
                 "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
                 "需要结构化结果时，优先使用 `status --json`、`task show --json`、`doctor --json`、`task find --json`、`ai manifest`。",
                 f"如果目标是提交一个自然语言需求，直接调用 `{command} \"需求文本\"` 或 `{command} go \"需求文本\"`。",
+                "在 chat、Web UI 会话和飞书自由文本里，疑似需求/任务不会自动执行；要创建工作请显式使用 `需求 <内容>` / `# <内容>` 或 `任务 <内容>` / `! <内容>`。",
+                "如果用户是在询问项目、任务数量、完成度、失败任务、运行中任务或服务状态，优先按 `question` 处理，CodePilot 会读取本地项目与任务数据辅助回答。",
                 f"如果目标是发布产物，优先调用 `{_cmd(command, 'binary prepare --version <版本号>')}`。",
                 f"如果任务处于运行中，先用 `{_cmd(command, 'status -p <项目名> -v')}` 查看阶段，再决定是否 `task logs` 或 `task stop`。",
                 f"如果任务失败或被取消，且需要重新排队，使用 `{_cmd(command, 'task retry <task_id>')}`。",
@@ -102,6 +104,11 @@ def command_manifest(
                 "format": "json",
                 "purpose": "获取任务模板字段 schema 与批量导入格式，用于外部 AI 规划后投递任务。",
             },
+            {
+                "command": _cmd(command, "feishu handle-event"),
+                "format": "json",
+                "purpose": "飞书长连接 worker 内部入口：从 stdin 读取事件 payload，并输出干净 JSON 回复。",
+            },
         ],
         "commands": [
             {
@@ -117,6 +124,27 @@ def command_manifest(
                 "purpose": "提交一个自然语言需求，让 CodePilot 自动判断是否拆分并按配置执行。",
                 "when_to_use": "其他 AI 想把高层目标交给 CodePilot 自己执行时。",
                 "examples": [f'{command} "修复任务重试逻辑并补测试"'],
+            },
+            {
+                "name": "go",
+                "syntax": _cmd(command, "go <需求或问题> [--project <项目名>]"),
+                "purpose": "显式自然语言入口：可回答问题，也可把明确需求/任务进入规划或执行。",
+                "when_to_use": "需要避免被 shell 顶层命令解析影响，或希望显式传入项目、规划器、执行器选项时。",
+                "examples": [
+                    _cmd(command, 'go "当前项目有多少任务，完成了多少" -p codepilot-dev'),
+                    _cmd(command, 'go "修复任务重试逻辑并补测试" -p codepilot-dev'),
+                ],
+            },
+            {
+                "name": "chat",
+                "syntax": _cmd(command, "chat [-p <项目名>] [--no-ui]"),
+                "purpose": "启动持续自然语言会话，支持问答、命令和显式需求/任务提交。",
+                "when_to_use": "需要连续追问项目状态或处理澄清流程时。自由文本疑似需求会先要求确认；创建需求用 `需求 <内容>` 或 `# <内容>`，创建单步任务用 `任务 <内容>` 或 `! <内容>`。",
+                "examples": [
+                    _cmd(command, "chat -p codepilot-dev"),
+                    "在 chat 中输入：需求 优化飞书任务面板",
+                    "在 chat 中输入：? 当前有多少任务，完成了多少",
+                ],
             },
             {
                 "name": "status",
@@ -217,6 +245,25 @@ def command_manifest(
                 ],
             },
             {
+                "name": "webhook",
+                "syntax": _cmd(command, "webhook [--host 127.0.0.1] [--port 8765]"),
+                "purpose": "启动轻量 HTTP Webhook 服务，接收外部系统任务投递；任务状态通知支持 Feishu interactive 卡片、企业微信和 generic JSON。",
+                "when_to_use": "外部系统需要通过 POST /tasks 写入 backlog，或项目配置了通知 webhook 时。",
+                "examples": [_cmd(command, "webhook --host 127.0.0.1 --port 8765")],
+            },
+            {
+                "name": "feishu",
+                "syntax": _cmd(command, "feishu <start|status|logs|stop|run|handle-event>"),
+                "purpose": "管理飞书企业应用长连接机器人，支持项目选择、状态/任务卡片、需求会话、任务控制和富文本回复。",
+                "when_to_use": "希望在飞书中查看项目状态、问答、提交显式需求、控制任务或接收通知时。",
+                "examples": [
+                    _cmd(command, "feishu start"),
+                    _cmd(command, "feishu status"),
+                    _cmd(command, "feishu logs --tail 100"),
+                    _cmd(command, "feishu stop"),
+                ],
+            },
+            {
                 "name": "binary_prepare",
                 "syntax": _cmd(command, "binary prepare --version <版本号>"),
                 "purpose": "更新版本号、构建当前平台、生成发布目录并自动校验。",
@@ -264,6 +311,15 @@ def command_manifest(
                     _cmd(command, "status -p <项目名> -v"),
                     _cmd(command, "task show <task_id>"),
                     _cmd(command, "task logs <task_id>"),
+                ],
+            },
+            {
+                "name": "在会话或飞书中安全区分问答与创建工作",
+                "steps": [
+                    "普通提问：直接输入 `当前有多少任务，完成了多少` 或使用 `? 当前项目状态怎么样`",
+                    "创建需求：输入 `需求 <内容>` 或 `# <内容>`",
+                    "创建单步任务：输入 `任务 <内容>` 或 `! <内容>`",
+                    "疑似需求但缺少显式前缀时，CodePilot 只返回确认提示，不会直接执行。",
                 ],
             },
             {
@@ -333,6 +389,8 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 4. 看到任务处于 `in_progress` 时，先查 `status -v` 和 `task logs`，不要盲目重复触发 `run`。
 5. 任务失败或取消后，如需人工重新排队，使用 `{_cmd(command, "task retry <task_id>")}`。
 6. 准备发布包时，优先使用 `{_cmd(command, "binary prepare --version <版本号>")}`。
+7. 在 `chat`、Web UI 会话和飞书自由文本中，疑似需求/任务不会直接执行；创建工作必须显式输入 `需求 <内容>` / `# <内容>` 或 `任务 <内容>` / `! <内容>`。
+8. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态这类问题应作为问答处理；CodePilot 会优先读取本地运行数据。
 
 ## 推荐命令
 
@@ -427,6 +485,31 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 {_cmd(command, "ui")}
 ```
 
+### 11. 交互会话的显式前缀
+
+`chat`、Web UI 会话和飞书自由文本会优先保护执行边界：疑似需求/任务没有显式前缀时，只返回确认提示，不会创建任务。
+
+```text
+? 当前项目状态怎么样
+问题 当前有多少任务，完成了多少
+需求 优化飞书任务面板
+# 修复任务通知卡片样式
+任务 重跑失败任务 12
+! 修复一个明确的小问题
+```
+
+### 12. 飞书与 Webhook
+
+```bash
+{_cmd(command, "feishu start")}
+{_cmd(command, "feishu status")}
+{_cmd(command, "feishu logs --tail 100")}
+{_cmd(command, "feishu stop")}
+{_cmd(command, "webhook --host 127.0.0.1 --port 8765")}
+```
+
+飞书通知优先使用 interactive 卡片或富文本 post；Webhook 飞书签名仍使用 `webhook_secret`。
+
 ## 结构化接口
 
 ### 命令清单 JSON
@@ -476,6 +559,9 @@ def ai_prompt_text(*, command_name: str = "codepilot") -> str:
     return (
         "你正在调用 CodePilot 这个本地 CLI。优先使用非交互命令。"
         f"提交需求时直接用 `{command} \"需求文本\"`。"
+        "在 chat、Web UI 会话和飞书自由文本里，疑似需求/任务不会直接执行；"
+        "要创建需求用 `需求 <内容>` 或 `# <内容>`，要创建单步任务用 `任务 <内容>` 或 `! <内容>`；"
+        "项目状态、任务数量、完成度、失败任务、运行中任务和服务状态问题应作为问答处理。"
         "如果你必须自己写任务（不走规划器），必须按 task-template 提供完整 content，"
         f"先用 `{_cmd(command, 'ai template --format json')}` 拿 schema 再投递；"
         "没有 --no-ai / --allow-empty 这种占位通道，缺章节直接拒。"
@@ -696,7 +782,7 @@ def task_template_guide_markdown(*, command_name: str = "codepilot") -> str:
 ## 相关命令
 
 - `{_cmd(command, 'ai template')}` — 输出原始 task-template.md
-- `{_cmd(command, 'ai template --json')}` — 输出本 schema 的机器可读版本
+- `{_cmd(command, 'ai template --format json')}` — 输出本 schema 的机器可读版本
 - `{_cmd(command, 'ai manifest')}` — 完整命令清单
 """
 

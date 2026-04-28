@@ -10,6 +10,8 @@
 4. 看到任务处于 `in_progress` 时，先查 `status -v` 和 `task logs`，不要盲目重复触发 `run`。
 5. 任务失败或取消后，如需人工重新排队，使用 `codepilot task retry <task_id>`。
 6. 准备发布包时，优先使用 `codepilot binary prepare --version <版本号>`。
+7. 在 `chat`、Web UI 会话和飞书自由文本中，疑似需求/任务不会直接执行；创建工作必须显式输入 `需求 <内容>` / `# <内容>` 或 `任务 <内容>` / `! <内容>`。
+8. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态这类问题应作为问答处理；CodePilot 会优先读取本地运行数据。
 
 ## 推荐命令
 
@@ -103,6 +105,31 @@ codepilot binary verify
 ```bash
 codepilot ui
 ```
+
+### 11. 交互会话的显式前缀
+
+`chat`、Web UI 会话和飞书自由文本会优先保护执行边界：疑似需求/任务没有显式前缀时，只返回确认提示，不会创建任务。
+
+```text
+? 当前项目状态怎么样
+问题 当前有多少任务，完成了多少
+需求 优化飞书任务面板
+# 修复任务通知卡片样式
+任务 重跑失败任务 12
+! 修复一个明确的小问题
+```
+
+### 12. 飞书与 Webhook
+
+```bash
+codepilot feishu start
+codepilot feishu status
+codepilot feishu logs --tail 100
+codepilot feishu stop
+codepilot webhook --host 127.0.0.1 --port 8765
+```
+
+飞书通知优先使用 interactive 卡片或富文本 post；Webhook 飞书签名仍使用 `webhook_secret`。
 
 ## 结构化接口
 
