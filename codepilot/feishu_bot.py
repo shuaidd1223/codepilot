@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -129,6 +130,45 @@ def _status_label(status: str) -> str:
     }.get(str(status or ""), str(status or "-"))
 
 
+_TASK_PANEL_PAGE_SIZE = 8
+_TASK_STATUS_FILTER_ALIASES = {
+    "all": "all",
+    "active": "all",
+    "open": "all",
+    "全部": "all",
+    "全部任务": "all",
+    "全部状态": "all",
+    "backlog": "backlog",
+    "pending": "backlog",
+    "todo": "backlog",
+    "待执行": "backlog",
+    "待办": "backlog",
+    "in_progress": "in_progress",
+    "running": "in_progress",
+    "progress": "in_progress",
+    "执行中": "in_progress",
+    "进行中": "in_progress",
+    "done": "done",
+    "completed": "done",
+    "完成": "done",
+    "已完成": "done",
+    "failed": "failed",
+    "error": "failed",
+    "失败": "failed",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+    "cancel": "cancelled",
+    "stopped": "cancelled",
+    "取消": "cancelled",
+    "已取消": "cancelled",
+    "archived": "archived",
+    "archive": "archived",
+    "归档": "archived",
+    "已归档": "archived",
+}
+_TASK_STATUS_FILTER_ORDER = ("all", "in_progress", "backlog", "failed", "cancelled", "done", "archived")
+
+
 def _md_block(content: str) -> dict[str, Any]:
     return {"tag": "div", "text": {"tag": "lark_md", "content": str(content or "").strip()}}
 
@@ -227,6 +267,79 @@ def _service_mark(status: dict[str, Any]) -> str:
     if status.get("running"):
         return "[OK] 运行中"
     return "[-] 未运行"
+
+
+def _task_filter_label(status_filter: str) -> str:
+    normalized = str(status_filter or "all").strip().lower() or "all"
+    if normalized == "all":
+        return "全部"
+    return _status_label(normalized)
+
+
+def _normalize_task_status_filter(raw: str) -> str:
+    value = str(raw or "").strip().lower()
+    if not value:
+        return "all"
+    normalized = _TASK_STATUS_FILTER_ALIASES.get(value)
+    if normalized:
+        return normalized
+    allowed = " / ".join(_task_filter_label(item) for item in _TASK_STATUS_FILTER_ORDER)
+    raise RuntimeError(f"不支持的状态筛选 `{raw}`。可用值：{allowed}。")
+
+
+def _parse_positive_page(raw: str) -> int:
+    try:
+        page = int(str(raw or "").strip())
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("页码必须是正整数。") from exc
+    if page <= 0:
+        raise RuntimeError("页码必须大于 0。")
+    return page
+
+
+def _build_tasks_command(project_name: str, *, status_filter: str = "all", page: int = 1) -> str:
+    command = f"tasks {project_name}".strip()
+    normalized_status = _normalize_task_status_filter(status_filter)
+    command += f" status={normalized_status}"
+    if int(page or 1) > 1:
+        command += f" page={int(page)}"
+    return command
+
+
+def _parse_tasks_command_args(tokens: list[str], *, default_project: str = "") -> tuple[str, str, int]:
+    project_tokens: list[str] = []
+    status_filter = "all"
+    page = 1
+
+    for token in tokens:
+        text = str(token or "").strip()
+        if not text:
+            continue
+        lower = text.lower()
+        if "=" in text:
+            key, value = text.split("=", 1)
+            key = key.strip().lower()
+            value = value.strip()
+            if key in {"status", "state", "filter", "状态", "筛选"}:
+                status_filter = _normalize_task_status_filter(value)
+                continue
+            if key in {"page", "p", "页", "页码"}:
+                page = _parse_positive_page(value)
+                continue
+        if lower in _TASK_STATUS_FILTER_ALIASES:
+            status_filter = _normalize_task_status_filter(text)
+            continue
+        if re.fullmatch(r"\d+", text):
+            page = _parse_positive_page(text)
+            continue
+        project_tokens.append(text)
+
+    if len(project_tokens) > 1:
+        raise RuntimeError(
+            "tasks 命令参数过多。请使用 `tasks <project> status=<状态> page=<页码>`。"
+        )
+    project_name = _resolve_project(project_tokens[0] if project_tokens else "", default_project=default_project)
+    return project_name, status_filter, page
 
 
 def _phase_label(phase: str) -> str:
@@ -330,18 +443,43 @@ def _card_commands(kind: str, *, project: str = "", task_id: int | None = None) 
     return []
 
 
-def _task_list_commands(tasks: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    if not tasks:
-        return _card_commands("tasks")
-    task_id = int(tasks[0]["id"])
-    return [
-        (f"detail {task_id}", "查看首个任务"),
-        (f"logs {task_id}", "查看日志"),
-        (f"stop {task_id}", "停止执行"),
-        (f"retry {task_id}", "重试任务"),
-        (f"cancel {task_id}", "取消任务"),
-        (f"delete {task_id}", "删除任务"),
-    ]
+def _task_list_commands(
+    tasks: list[dict[str, Any]],
+    *,
+    project_name: str,
+    status_filter: str,
+    page: int,
+    total_pages: int,
+) -> list[tuple[str, str]]:
+    commands: list[tuple[str, str]] = []
+    if tasks:
+        task_id = int(tasks[0]["id"])
+        commands.extend(
+            [
+                (f"detail {task_id}", "查看首个任务"),
+                (f"logs {task_id}", "查看日志"),
+                (f"stop {task_id}", "停止执行"),
+                (f"retry {task_id}", "重试任务"),
+                (f"cancel {task_id}", "取消任务"),
+                (f"archive {task_id}", "归档任务"),
+                (f"delete {task_id}", "删除任务"),
+            ]
+        )
+    if page > 1:
+        commands.append((_build_tasks_command(project_name, status_filter=status_filter, page=page - 1), "上一页"))
+    if page < total_pages:
+        commands.append((_build_tasks_command(project_name, status_filter=status_filter, page=page + 1), "下一页"))
+
+    for quick_filter in ("all", "in_progress", "backlog", "failed", "done"):
+        if quick_filter == status_filter:
+            continue
+        commands.append(
+            (_build_tasks_command(project_name, status_filter=quick_filter, page=1), f"看{_task_filter_label(quick_filter)}")
+        )
+
+    if not commands:
+        commands = _card_commands("tasks")
+    return commands[:10]
 
 
 def _card(
@@ -384,6 +522,7 @@ def _help_note(prefix: str) -> str:
     lead = f"{prefix} " if prefix else ""
     return (
         f"命令示例: {lead}global | {lead}use demo | {lead}overview | {lead}tasks | {lead}requirements | "
+        f"{lead}tasks demo status=failed page=2 | "
         f"{lead}需求 优化任务面板 | {lead}答 先做飞书入口 | "
         f"{lead}req new 优化飞书任务卡片 | {lead}ask 帮我梳理一下最近需求 | "
         f"{lead}session reply 12 先做飞书入口 | "
@@ -1194,19 +1333,34 @@ def build_overview_card(project_name: str, *, prefix: str = "") -> dict[str, Any
     return _card(f"CodePilot 项目总览 · {project_name}", blocks, template="wathet", subtitle="项目路径、任务统计和服务状态。")
 
 
-def build_tasks_card(project_name: str, *, prefix: str = "") -> dict[str, Any]:
+def build_tasks_card(project_name: str, *, prefix: str = "", status_filter: str = "all", page: int = 1) -> dict[str, Any]:
     project = db.get_project(project_name)
     if project is None:
         raise RuntimeError(f"项目 '{project_name}' 未注册。")
+
+    normalized_status = _normalize_task_status_filter(status_filter)
+    page_size = _TASK_PANEL_PAGE_SIZE
+    requested_page = max(1, int(page or 1))
     stats = db.get_task_stats(project_name)
-    raw_tasks = [task for task in sort_tasks_for_display(db.list_tasks(project=project_name)) if str(task.get("status") or "") != "archived"]
-    tasks = [_task_payload(task) for task in raw_tasks[:8]]
+    visible_tasks = sort_tasks_for_display(db.list_tasks(project=project_name))
+    if normalized_status == "all":
+        raw_tasks = [task for task in visible_tasks if str(task.get("status") or "") != "archived"]
+    else:
+        raw_tasks = [task for task in visible_tasks if str(task.get("status") or "") == normalized_status]
+    total_filtered = len(raw_tasks)
+    total_pages = max(1, math.ceil(total_filtered / page_size)) if total_filtered else 1
+    current_page = min(requested_page, total_pages)
+    page_start = (current_page - 1) * page_size
+    tasks = [_task_payload(task) for task in raw_tasks[page_start:page_start + page_size]]
     blocks: list[str | dict[str, Any]] = [
-        *_section_note("任务概览", "优先看执行中、失败和待执行任务。"),
+        *_section_note("任务概览", "支持按状态筛选，并按页查看任务。"),
         *_column_panels(
             [
                 f"**项目**\n`{project_name}`",
                 f"**任务总数**\n`{_task_count(project_name)}`",
+                f"**当前筛选**\n`{_task_filter_label(normalized_status)}`",
+                f"**筛选命中**\n`{total_filtered}`",
+                f"**当前页**\n`{current_page}/{total_pages}`",
                 f"**待执行**\n`{int(stats.get('backlog', 0))}`",
                 f"**执行中**\n`{int(stats.get('in_progress', 0))}`",
                 f"**失败**\n`{int(stats.get('failed', 0))}`",
@@ -1216,7 +1370,12 @@ def build_tasks_card(project_name: str, *, prefix: str = "") -> dict[str, Any]:
     ]
     if tasks:
         blocks.append(_hr())
-        blocks.extend(_section_note("最近任务", "每条任务都带下一步可复制命令。"))
+        blocks.extend(
+            _section_note(
+                "任务列表",
+                f"第 {current_page} 页，每页 {page_size} 条。每条任务都带下一步可复制命令。",
+            )
+        )
         for task in tasks:
             runtime = f" / {task['runtime']}" if task.get("runtime") else ""
             latest = str(task.get("latest") or "").strip().replace("\n", " ")
@@ -1237,13 +1396,24 @@ def build_tasks_card(project_name: str, *, prefix: str = "") -> dict[str, Any]:
         if blocks and blocks[-1].get("tag") == "hr":
             blocks.pop()
     else:
-        blocks.extend([_section("最近任务"), _plain_block("当前没有可展示的任务。")])
-    blocks.extend(_command_panel(prefix, _task_list_commands(tasks)))
+        blocks.extend([_section("任务列表"), _plain_block("当前筛选下没有可展示的任务。")])
+    blocks.extend(
+        _command_panel(
+            prefix,
+            _task_list_commands(
+                tasks,
+                project_name=project_name,
+                status_filter=normalized_status,
+                page=current_page,
+                total_pages=total_pages,
+            ),
+        )
+    )
     return _card(
         f"CodePilot 任务面板 · {project_name}",
         blocks,
         template="turquoise",
-        subtitle="任务列表按当前优先级和状态排序展示。",
+        subtitle="任务列表按当前优先级和状态排序展示，支持状态筛选和分页。",
     )
 
 
@@ -2406,8 +2576,18 @@ def handle_command_text(
     if verb in {"projects", "ls"}:
         return _reply_card(build_projects_card(prefix=cfg.command_prefix, default_project=_active_project(cfg, chat_id)))
     if verb in {"tasks", "panel"}:
-        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=_active_project(cfg, chat_id))
-        return _reply_card(build_tasks_card(project_name, prefix=cfg.command_prefix))
+        project_name, status_filter, page = _parse_tasks_command_args(
+            parts[1:],
+            default_project=_active_project(cfg, chat_id),
+        )
+        return _reply_card(
+            build_tasks_card(
+                project_name,
+                prefix=cfg.command_prefix,
+                status_filter=status_filter,
+                page=page,
+            )
+        )
     if verb in {"requirements", "sessions", "jobs"}:
         project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=_active_project(cfg, chat_id))
         return _reply_card(build_sessions_card(project_name, prefix=cfg.command_prefix))

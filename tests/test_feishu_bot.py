@@ -50,7 +50,83 @@ def test_feishu_tasks_card_lists_project_tasks(tmp_path, monkeypatch):
     assert "stop 1" in payload
     assert "delete 1" in payload
     assert "下一步命令" in payload
-    assert "最近任务" in payload
+    assert "任务列表" in payload
+
+
+def test_feishu_tasks_card_supports_status_filter(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    backlog = db.create_task(
+        project="demo",
+        title="待执行任务",
+        content="只应出现在 backlog 视图",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+    done = db.create_task(
+        project="demo",
+        title="已完成任务",
+        content="只应出现在 done 视图",
+        agent="dual",
+        priority="P1",
+        project_path=str(project_path),
+    )
+    db.update_task(done["id"], status="done", completed_at=datetime.now().isoformat())
+    reply = handle_command_text("tasks demo status=done")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "当前筛选" in payload
+    assert "已完成" in payload
+    assert "已完成任务" in payload
+    assert "待执行任务" not in payload
+    assert "tasks demo status=all" in payload
+    assert f"detail {done['id']}" in payload
+    assert f"detail {backlog['id']}" not in payload
+
+
+def test_feishu_tasks_card_supports_pagination(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    for idx in range(1, 10):
+        db.create_task(
+            project="demo",
+            title=f"分页任务 {idx:02d}",
+            content="验证分页",
+            agent="dual",
+            priority="P2",
+            project_path=str(project_path),
+        )
+
+    reply = handle_command_text("tasks demo status=backlog page=2")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "当前页" in payload
+    assert "2/2" in payload
+    assert "分页任务 09" in payload
+    assert "分页任务 01" not in payload
+    assert "上一页" in payload
+    assert "tasks demo status=backlog" in payload
+    assert "下一页" not in payload
+
+
+def test_feishu_tasks_card_empty_filter_result(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    db.create_task(
+        project="demo",
+        title="普通任务",
+        content="没有归档任务",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+
+    reply = handle_command_text("tasks demo archived")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "当前筛选下没有可展示的任务" in payload
+    assert "tasks demo status=all" in payload
 
 
 def test_feishu_status_command_works_without_webui_server(tmp_path, monkeypatch):
