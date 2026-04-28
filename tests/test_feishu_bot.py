@@ -4,6 +4,8 @@ import json
 import os
 import sys
 
+import pytest
+
 from codepilot.commands import feishu as feishu_cmd
 from codepilot.feishu_bot import build_task_event_card, handle_command_text, notify_feishu_task_event
 from codepilot.storage import database as db
@@ -506,6 +508,106 @@ def test_feishu_plain_text_without_active_project_prompts_project_choice(tmp_pat
     assert reply["type"] == "interactive"
     assert "先确认你要在哪个项目里继续" in payload
     assert "回复数字继续" in payload
+
+
+def test_feishu_req_new_creates_requirement_session_with_context_commands(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    planned = []
+
+    monkeypatch.setattr(
+        "codepilot.webapp.actions.assess_requirement_for_planning",
+        lambda title, **kwargs: {"status": "ready", "refined_title": title},
+    )
+
+    def fake_submit(project, text, **kwargs):
+        planned.append({"project": project, "text": text, "kwargs": kwargs})
+        return {"ok": True, "message": "queued", "job": {"task_ids": [21]}}
+
+    monkeypatch.setattr("codepilot.webapp.actions.submit_requirement_action", fake_submit)
+
+    reply = handle_command_text("req new 优化飞书任务卡片", chat_id="chat-session-new")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+    sessions = db.list_sessions(project="demo")
+
+    assert reply["type"] == "interactive"
+    assert len(sessions) == 1
+    assert planned[0]["project"] == "demo"
+    assert planned[0]["text"] == "优化飞书任务卡片"
+    assert "session reply 1 <text>" in payload
+    assert "detail 21" in payload
+    assert "logs 21" in payload
+    assert "daemon start" not in payload
+
+
+def test_feishu_req_new_clarify_card_uses_session_reply_command(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "codepilot.webapp.actions.assess_requirement_for_planning",
+        lambda title, **kwargs: {
+            "status": "needs_clarification",
+            "questions": [{"id": "q1", "type": "text", "text": "先做哪个入口?", "options": []}],
+            "qa_history": [],
+        },
+    )
+
+    reply = handle_command_text("req new 优化控制入口", chat_id="chat-session-clarify")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "需求会话待继续" in payload
+    assert "先做哪个入口" in payload
+    assert "session reply 1 <你的补充信息>" in payload
+    assert "答 <内容>" not in payload
+
+
+def test_feishu_session_reply_continues_pending_session(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "codepilot.webapp.actions.assess_requirement_for_planning",
+        lambda title, **kwargs: {
+            "status": "needs_clarification",
+            "questions": [{"id": "q1", "type": "text", "text": "先做哪个入口?", "options": []}],
+            "qa_history": [],
+        },
+    )
+    first = handle_command_text("req new 优化控制入口", chat_id="chat-session-reply")
+    assert first["type"] == "interactive"
+
+    planned = []
+
+    monkeypatch.setattr(
+        "codepilot.webapp.actions.continue_pending_clarification",
+        lambda *args, **kwargs: {"status": "ready", "refined_title": "优化控制入口 / 先做飞书"},
+    )
+
+    def fake_submit(project, text, **kwargs):
+        planned.append({"project": project, "text": text, "kwargs": kwargs})
+        return {"ok": True, "message": "queued", "job": {"task_ids": [31]}}
+
+    monkeypatch.setattr("codepilot.webapp.actions.submit_requirement_action", fake_submit)
+
+    reply = handle_command_text("session reply 1 先做飞书", chat_id="chat-session-reply")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+    messages = db.list_session_messages(1)
+
+    assert reply["type"] == "interactive"
+    assert planned[0]["project"] == "demo"
+    assert planned[0]["text"] == "优化控制入口 / 先做飞书"
+    assert len(messages) == 4
+    assert "需求会话已提交" in payload
+    assert "优化控制入口 / 先做飞书" in payload
+    assert "detail 31" in payload
+    assert "logs 31" in payload
+
+
+def test_feishu_session_reply_validates_args_and_missing_session(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="请提供会话 ID 和内容"):
+        handle_command_text("session reply 12")
+
+    with pytest.raises(RuntimeError, match="会话 #999 不存在"):
+        handle_command_text("session reply 999 先做飞书")
 
 
 def test_ensure_feishu_service_running_if_enabled_returns_disabled_when_config_off(monkeypatch):

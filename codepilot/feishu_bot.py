@@ -299,6 +299,8 @@ def _card_commands(kind: str, *, project: str = "", task_id: int | None = None) 
         ]
     if kind == "sessions":
         return [
+            ("req new <text>", "新建需求会话"),
+            ("ask <text>", "新建会话"),
             ("session <id>", "会话详情"),
             ("requirements", "刷新会话"),
             ("tasks", "任务列表"),
@@ -378,6 +380,8 @@ def _help_note(prefix: str) -> str:
     return (
         f"命令示例: {lead}global | {lead}use demo | {lead}overview | {lead}tasks | {lead}requirements | "
         f"{lead}需求 优化任务面板 | {lead}答 先做飞书入口 | "
+        f"{lead}req new 优化飞书任务卡片 | {lead}ask 帮我梳理一下最近需求 | "
+        f"{lead}session reply 12 先做飞书入口 | "
         f"{lead}detail 123 | {lead}logs 123 | {lead}stop 123 | {lead}retry 123 | "
         f"{lead}cancel 12 13 | {lead}archive 20,21 | {lead}delete 30 31 | "
         f"{lead}daemon status | {lead}inspect status"
@@ -649,6 +653,8 @@ def build_help_card(*, prefix: str = "", error: str = "") -> dict[str, Any]:
                     f"**需求会话**\n{_cmd(prefix, 'requirements')}",
                     f"**提交需求**\n{_cmd(prefix, '需求 <内容>')}",
                     f"**回复澄清**\n{_cmd(prefix, '答 <内容>')}",
+                    f"**会话建需求**\n{_cmd(prefix, 'req new <内容>')}",
+                    f"**会话继续**\n{_cmd(prefix, 'session reply <id> <内容>')}",
                 ],
                 background="default",
             ),
@@ -1029,11 +1035,149 @@ def build_sessions_card(project_name: str, *, prefix: str = "") -> dict[str, Any
     )
 
 
+def _message_task_ids(message: dict[str, Any]) -> list[int]:
+    raw = message.get("task_ids")
+    if isinstance(raw, list):
+        values = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            parsed = []
+        values = parsed if isinstance(parsed, list) else []
+    else:
+        values = []
+    task_ids: list[int] = []
+    seen: set[int] = set()
+    for item in values:
+        try:
+            task_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if task_id <= 0 or task_id in seen:
+            continue
+        seen.add(task_id)
+        task_ids.append(task_id)
+    return task_ids
+
+
+def _session_related_task_ids(messages: list[dict[str, Any]], *, limit: int = 4) -> list[int]:
+    related: list[int] = []
+    seen: set[int] = set()
+    for message in reversed(messages):
+        for task_id in _message_task_ids(message):
+            if task_id in seen:
+                continue
+            seen.add(task_id)
+            related.append(task_id)
+            if len(related) >= max(1, int(limit or 1)):
+                return related
+    return related
+
+
+def _session_followup_commands(session_id: int, *, related_task_ids: list[int] | None = None) -> list[tuple[str, str]]:
+    commands: list[tuple[str, str]] = [
+        (f"session reply {session_id} <text>", "继续会话"),
+        (f"session {session_id}", "刷新会话"),
+    ]
+    task_ids = related_task_ids or []
+    if task_ids:
+        commands.extend(
+            [
+                (f"detail {task_ids[0]}", "查看任务"),
+                (f"logs {task_ids[0]}", "查看日志"),
+            ]
+        )
+    else:
+        commands.append(("tasks", "任务列表"))
+    commands.extend(
+        [
+            ("requirements", "返回会话列表"),
+            ("overview", "项目总览"),
+        ]
+    )
+    return commands
+
+
+def build_session_result_card(
+    session_id: int,
+    user_text: str,
+    result: dict[str, Any],
+    *,
+    prefix: str = "",
+) -> dict[str, Any]:
+    session = db.get_session(session_id)
+    if not session:
+        raise RuntimeError(f"会话 #{session_id} 不存在。")
+    messages = db.list_session_messages(session_id)
+    intent = str(result.get("intent") or "info").strip().lower() or "info"
+    task_ids = []
+    raw_task_ids = result.get("task_ids")
+    if isinstance(raw_task_ids, list):
+        for item in raw_task_ids:
+            try:
+                task_id = int(item)
+            except (TypeError, ValueError):
+                continue
+            if task_id > 0:
+                task_ids.append(task_id)
+    if not task_ids:
+        task_ids = _session_related_task_ids(messages)
+    state_label = {
+        "clarify": "等待你继续",
+        "requirement": "已进入规划",
+        "task": "已进入规划",
+        "question": "已回复",
+        "command": "命令提示",
+        "info": "会话提示",
+    }.get(intent, "会话已更新")
+    message = str(result.get("message") or "").strip() or "未获得回复"
+    blocks: list[str | dict[str, Any]] = [
+        _section("会话结果"),
+        *_column_panels(
+            [
+                f"**项目**\n`{session.get('project') or '-'}`",
+                f"**会话**\n`#{session_id}`",
+                f"**状态**\n`{state_label}`",
+                f"**消息数**\n`{len(messages)}`",
+            ]
+        ),
+        _section("你的输入"),
+        _plain_block(str(user_text or "").strip()[:700]),
+        _section("系统回复"),
+        _plain_block(message[:1200]),
+    ]
+    refined_title = str(result.get("refined_title") or "").strip()
+    if refined_title:
+        blocks.extend([_section("当前规划标题"), _plain_block(refined_title[:500])])
+    if intent == "clarify":
+        questions = result.get("questions") if isinstance(result.get("questions"), list) else []
+        if questions:
+            blocks.extend(_code_block(_question_lines(questions), title="请继续回复"))
+        blocks.append(_note(f"继续请发送：session reply {session_id} <你的补充信息>"))
+    if task_ids:
+        task_text = "、".join(f"#{task_id}" for task_id in task_ids)
+        blocks.extend([_section("相关任务"), _plain_block(task_text)])
+    blocks.extend(_command_panel(prefix, _session_followup_commands(session_id, related_task_ids=task_ids)))
+    title = {
+        "clarify": f"需求会话待继续 · #{session_id}",
+        "requirement": f"需求会话已提交 · #{session_id}",
+        "task": f"需求会话已提交 · #{session_id}",
+        "question": f"需求会话已回复 · #{session_id}",
+        "command": f"需求会话提示 · #{session_id}",
+        "info": f"需求会话提示 · #{session_id}",
+    }.get(intent, f"需求会话已更新 · #{session_id}")
+    template = "orange" if intent in {"clarify", "info"} else ("green" if intent in {"requirement", "task"} else "blue")
+    return _card(title, blocks, template=template, subtitle="需求会话的最新回复和最相关的继续命令。")
+
+
 def build_session_card(session_id: int, *, prefix: str = "") -> dict[str, Any]:
     session = db.get_session(session_id)
     if not session:
         raise RuntimeError(f"会话 #{session_id} 不存在。")
     messages = db.list_session_messages(session_id)
+    related_task_ids = _session_related_task_ids(messages)
+    pending_reply = bool(messages and str(messages[-1].get("role") or "") == "assistant" and str(messages[-1].get("intent") or "") == "clarify")
     blocks: list[str | dict[str, Any]] = [
         *_section_note("会话状态", "最近消息在下方展示。"),
         *_column_panels(
@@ -1047,16 +1191,20 @@ def build_session_card(session_id: int, *, prefix: str = "") -> dict[str, Any]:
         _section("标题"),
         _plain_block(session.get("title") or "新会话"),
     ]
+    if pending_reply:
+        blocks.append(_note(f"当前会话正在等待补充信息。继续请发送：session reply {session_id} <你的补充信息>"))
     if messages:
         lines: list[str] = []
         for message in messages[-6:]:
             role = str(message.get("role") or "-")
             content = " ".join(str(message.get("content") or "").split())
-            task_ids = str(message.get("task_ids") or "").strip()
-            extra = f" / tasks {task_ids}" if task_ids and task_ids != "[]" else ""
+            message_task_ids = _message_task_ids(message)
+            extra = f" / tasks {' '.join(f'#{task_id}' for task_id in message_task_ids)}" if message_task_ids else ""
             lines.append(f"- **{role}**：{content[:100]}{extra}")
         blocks.extend([_section("最近消息"), _md_block("\n".join(lines))])
-    blocks.extend(_command_panel(prefix, _card_commands("session")))
+    if related_task_ids:
+        blocks.extend([_section("相关任务"), _plain_block("、".join(f"#{task_id}" for task_id in related_task_ids))])
+    blocks.extend(_command_panel(prefix, _session_followup_commands(session_id, related_task_ids=related_task_ids)))
     return _card(f"需求会话详情 · #{session_id}", blocks, template="violet", subtitle="需求会话的状态和最近消息。")
 
 
@@ -1525,6 +1673,57 @@ def _submit_requirement_from_feishu(
     return _reply_card(build_requirement_result_card(project_name, content, result, prefix=cfg.command_prefix))
 
 
+def _start_session_from_feishu(
+    project_name: str,
+    user_text: str,
+    *,
+    category: str = "requirement",
+    chat_id: str = "",
+    prefix: str = "",
+) -> dict[str, Any]:
+    content = str(user_text or "").strip()
+    if not content:
+        raise RuntimeError("输入不能为空。")
+    from codepilot.webapp import server as _web_server  # noqa: F401 - initializes Web UI action state module
+    from codepilot.webapp import actions as web_actions
+
+    session_result = web_actions.create_session_action(project_name, title=content[:40] or "新会话")
+    session = session_result.get("session") if isinstance(session_result.get("session"), dict) else {}
+    session_id = int(session.get("id") or 0)
+    if session_id <= 0:
+        raise RuntimeError("创建需求会话失败。")
+    result = web_actions.send_session_message_action(session_id, content, category=category)
+    if chat_id and project_name:
+        _save_chat_project(chat_id, project_name)
+    _clear_pending_requirement(chat_id)
+    _clear_pending_goal_text(chat_id)
+    return _reply_card(build_session_result_card(session_id, content, result, prefix=prefix))
+
+
+def _continue_session_from_feishu(
+    session_id: int,
+    user_text: str,
+    *,
+    chat_id: str = "",
+    prefix: str = "",
+) -> dict[str, Any]:
+    content = str(user_text or "").strip()
+    if not content:
+        raise RuntimeError("输入不能为空。")
+    from codepilot.webapp import server as _web_server  # noqa: F401 - initializes Web UI action state module
+    from codepilot.webapp import actions as web_actions
+
+    session = db.get_session(session_id)
+    if not session:
+        raise RuntimeError(f"会话 #{session_id} 不存在。")
+    result = web_actions.send_session_message_action(session_id, content, category="auto")
+    if chat_id and str(session.get("project") or "").strip():
+        _save_chat_project(chat_id, str(session.get("project") or "").strip())
+    _clear_pending_requirement(chat_id)
+    _clear_pending_goal_text(chat_id)
+    return _reply_card(build_session_result_card(session_id, content, result, prefix=prefix))
+
+
 def _feishu_notify_script() -> Path:
     return Path(__file__).resolve().parent / "feishu_notify.mjs"
 
@@ -1933,6 +2132,33 @@ def handle_command_text(
     if verb in {"requirements", "sessions", "jobs"}:
         project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=_active_project(cfg, chat_id))
         return _reply_card(build_sessions_card(project_name, prefix=cfg.command_prefix))
+    if verb == "req":
+        if len(parts) > 1 and parts[1].lower() == "new":
+            requirement_text = command_text.split(None, 2)[2].strip() if len(parts) > 2 else ""
+        else:
+            requirement_text = command_text[len(parts[0]):].strip()
+        if not requirement_text:
+            raise RuntimeError("请在命令后写需求内容，例如 `req new 优化飞书任务卡片`。")
+        project_name = _resolve_project("", default_project=_active_project(cfg, chat_id))
+        return _start_session_from_feishu(
+            project_name,
+            requirement_text,
+            category="requirement",
+            chat_id=chat_id,
+            prefix=cfg.command_prefix,
+        )
+    if verb == "ask":
+        user_text = command_text[len(parts[0]):].strip()
+        if not user_text:
+            raise RuntimeError("请在命令后写内容，例如 `ask 帮我梳理一下最近需求`。")
+        project_name = _resolve_project("", default_project=_active_project(cfg, chat_id))
+        return _start_session_from_feishu(
+            project_name,
+            user_text,
+            category="auto",
+            chat_id=chat_id,
+            prefix=cfg.command_prefix,
+        )
     if verb in {"需求", "requirement", "plan", "new", "goal"}:
         requirement_text = command_text[len(parts[0]):].strip()
         if not requirement_text:
@@ -1960,6 +2186,19 @@ def handle_command_text(
             continue_pending=True,
         )
     if verb in {"session", "req", "job"}:
+        if verb == "session" and len(parts) > 1 and parts[1].lower() in {"reply", "continue"}:
+            if len(parts) < 4:
+                raise RuntimeError("请提供会话 ID 和内容，例如 `session reply 12 先做飞书入口`。")
+            session_id = _parse_task_id(parts[2])
+            reply_text = command_text.split(None, 3)[3].strip() if len(parts) > 3 else ""
+            if not reply_text:
+                raise RuntimeError("请提供会话回复内容，例如 `session reply 12 先做飞书入口`。")
+            return _continue_session_from_feishu(
+                session_id,
+                reply_text,
+                chat_id=chat_id,
+                prefix=cfg.command_prefix,
+            )
         if len(parts) < 2:
             raise RuntimeError("请提供会话 ID，例如 `session 12`。")
         return _reply_card(build_session_card(_parse_task_id(parts[1]), prefix=cfg.command_prefix))
