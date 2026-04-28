@@ -48,6 +48,13 @@ class FeishuBotConfig:
     command_prefix: str = ""
 
 
+@dataclass(frozen=True)
+class _CommandContext:
+    cfg: FeishuBotConfig
+    config_path: Path | None = None
+    chat_id: str = ""
+
+
 _CHAT_CONTEXT_SERVICE = "feishu_chat"
 _CHAT_CONTEXT_PREFIX = "chat:"
 _NOTIFY_DEDUPE_SERVICE = "feishu_notify"
@@ -2568,21 +2575,9 @@ def build_batch_task_action_card(action: str, result: dict[str, Any], *, prefix:
     )
 
 
-def handle_command_text(
-    text: str,
-    *,
-    config_path: Path | None = None,
-    chat_id: str = "",
-    _normalized_command_text: str | None = None,
-    _allow_nl: bool = True,
-) -> dict[str, Any]:
-    db.init_db()
-    cfg = load_feishu_bot_config(config_path)
-    command_text = _normalized_command_text
-    if command_text is None:
-        command_text = _normalize_command_text(text, cfg.command_prefix)
-    if command_text is None:
-        return {"type": "ignore"}
+def _handle_pending_command_choice(command_text: str, context: _CommandContext) -> dict[str, Any] | None:
+    cfg = context.cfg
+    chat_id = context.chat_id
     pending_options = _load_pending_action_options(chat_id)
     selected = pick_command_option(command_text, pending_options)
     if selected:
@@ -2599,7 +2594,7 @@ def handle_command_text(
             )
         return handle_command_text(
             selected_command,
-            config_path=config_path,
+            config_path=context.config_path,
             chat_id=chat_id,
             _normalized_command_text=selected_command,
             _allow_nl=False,
@@ -2609,11 +2604,12 @@ def handle_command_text(
     if pending_options:
         _clear_pending_action_options(chat_id)
         _clear_pending_goal_text(chat_id)
-    parts = command_text.split()
-    if not parts:
-        return _reply_card(build_help_card(prefix=cfg.command_prefix))
+    return None
 
-    verb = parts[0].lower()
+
+def _handle_control_command(verb: str, parts: list[str], context: _CommandContext) -> dict[str, Any] | None:
+    cfg = context.cfg
+    chat_id = context.chat_id
     if verb == "confirm":
         if len(parts) < 2:
             raise RuntimeError("请提供确认口令，例如 `confirm ABC123`。")
@@ -2628,6 +2624,18 @@ def handle_command_text(
         return _reply_card(
             build_global_status_card(prefix=cfg.command_prefix, default_project=_active_project(cfg, chat_id))
         )
+    return None
+
+
+def _handle_project_command(
+    verb: str,
+    parts: list[str],
+    command_text: str,
+    context: _CommandContext,
+) -> dict[str, Any] | None:
+    cfg = context.cfg
+    chat_id = context.chat_id
+    active_project = _active_project(cfg, chat_id)
     if verb == "project" and len(parts) > 1:
         subcommand = parts[1].lower()
         if subcommand in {"add", "register"}:
@@ -2644,7 +2652,7 @@ def handle_command_text(
             return _reply_card(build_project_registered_card(result, prefix=cfg.command_prefix))
         if subcommand in {"info", "show"}:
             try:
-                project_name = _resolve_project(parts[2] if len(parts) > 2 else "", default_project=_active_project(cfg, chat_id))
+                project_name = _resolve_project(parts[2] if len(parts) > 2 else "", default_project=active_project)
                 return _reply_card(build_project_info_card(project_name, prefix=cfg.command_prefix))
             except Exception as exc:
                 return _reply_card(build_project_command_error_card("项目信息不可用", str(exc), prefix=cfg.command_prefix))
@@ -2652,46 +2660,53 @@ def handle_command_text(
             if len(parts) < 3:
                 raise RuntimeError("请提供项目名，例如 `project delete demo`。")
             try:
-                project_name = _resolve_project(parts[2], default_project=_active_project(cfg, chat_id))
+                project_name = _resolve_project(parts[2], default_project=active_project)
                 pending = _pending_project_delete_confirm(project_name, command_text=command_text, chat_id=chat_id)
             except Exception as exc:
                 return _reply_card(build_project_command_error_card("项目删除不可用", str(exc), prefix=cfg.command_prefix))
             _save_pending_confirm(chat_id, pending)
             return _reply_card(build_pending_confirm_card(pending, prefix=cfg.command_prefix))
-    if verb in {"use", "project"}:
-        if len(parts) < 2:
-            active = _active_project(cfg, chat_id)
-            if active:
-                return _reply_card(build_overview_card(active, prefix=cfg.command_prefix))
-            return _reply_card(build_projects_card(prefix=cfg.command_prefix, default_project=active))
-        project_name = _resolve_project(parts[1], default_project=_active_project(cfg, chat_id))
-        if chat_id:
-            _save_chat_project(chat_id, project_name)
-        return _reply_card(
-            _card(
-                f"已切换项目 · {project_name}",
-                [
-                    _field_block(
-                        [
-                            _field(f"**当前项目**\n`{project_name}`"),
-                            _field("**会话状态**\n`已进入项目`"),
-                        ]
-                    ),
-                    *_command_panel(cfg.command_prefix, _card_commands("project", project=project_name)),
-                ],
-                template="green",
-            )
+    if verb not in {"use", "project"}:
+        return None
+    if len(parts) < 2:
+        if active_project:
+            return _reply_card(build_overview_card(active_project, prefix=cfg.command_prefix))
+        return _reply_card(build_projects_card(prefix=cfg.command_prefix, default_project=active_project))
+    project_name = _resolve_project(parts[1], default_project=active_project)
+    if chat_id:
+        _save_chat_project(chat_id, project_name)
+    return _reply_card(
+        _card(
+            f"已切换项目 · {project_name}",
+            [
+                _field_block(
+                    [
+                        _field(f"**当前项目**\n`{project_name}`"),
+                        _field("**会话状态**\n`已进入项目`"),
+                    ]
+                ),
+                *_command_panel(cfg.command_prefix, _card_commands("project", project=project_name)),
+            ],
+            template="green",
         )
+    )
+
+
+def _handle_project_view_command(
+    verb: str,
+    parts: list[str],
+    context: _CommandContext,
+) -> dict[str, Any] | None:
+    cfg = context.cfg
+    chat_id = context.chat_id
+    active_project = _active_project(cfg, chat_id)
     if verb in {"overview", "ov"}:
-        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=active_project)
         return _reply_card(build_overview_card(project_name, prefix=cfg.command_prefix))
     if verb in {"projects", "ls"}:
-        return _reply_card(build_projects_card(prefix=cfg.command_prefix, default_project=_active_project(cfg, chat_id)))
+        return _reply_card(build_projects_card(prefix=cfg.command_prefix, default_project=active_project))
     if verb in {"tasks", "panel"}:
-        project_name, status_filter, page = _parse_tasks_command_args(
-            parts[1:],
-            default_project=_active_project(cfg, chat_id),
-        )
+        project_name, status_filter, page = _parse_tasks_command_args(parts[1:], default_project=active_project)
         return _reply_card(
             build_tasks_card(
                 project_name,
@@ -2701,8 +2716,20 @@ def handle_command_text(
             )
         )
     if verb in {"requirements", "sessions", "jobs"}:
-        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=active_project)
         return _reply_card(build_sessions_card(project_name, prefix=cfg.command_prefix))
+    return None
+
+
+def _handle_requirement_command(
+    verb: str,
+    parts: list[str],
+    command_text: str,
+    context: _CommandContext,
+) -> dict[str, Any] | None:
+    cfg = context.cfg
+    chat_id = context.chat_id
+    active_project = _active_project(cfg, chat_id)
     if verb == "req":
         if len(parts) > 1 and parts[1].lower() == "new":
             requirement_text = command_text.split(None, 2)[2].strip() if len(parts) > 2 else ""
@@ -2710,7 +2737,7 @@ def handle_command_text(
             requirement_text = command_text[len(parts[0]):].strip()
         if not requirement_text:
             raise RuntimeError("请在命令后写需求内容，例如 `req new 优化飞书任务卡片`。")
-        project_name = _resolve_project("", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project("", default_project=active_project)
         return _start_session_from_feishu(
             project_name,
             requirement_text,
@@ -2722,7 +2749,7 @@ def handle_command_text(
         user_text = command_text[len(parts[0]):].strip()
         if not user_text:
             raise RuntimeError("请在命令后写内容，例如 `ask 帮我梳理一下最近需求`。")
-        project_name = _resolve_project("", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project("", default_project=active_project)
         return _start_session_from_feishu(
             project_name,
             user_text,
@@ -2734,7 +2761,7 @@ def handle_command_text(
         requirement_text = command_text[len(parts[0]):].strip()
         if not requirement_text:
             raise RuntimeError("请在命令后写需求内容，例如 `需求 优化任务面板状态展示`。")
-        project_name = _resolve_project("", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project("", default_project=active_project)
         return _submit_requirement_from_feishu(
             project_name,
             requirement_text,
@@ -2746,7 +2773,7 @@ def handle_command_text(
         answer_text = command_text[len(parts[0]):].strip()
         if not answer_text:
             raise RuntimeError("请在命令后写补充答案，例如 `答 先做飞书控制入口`。")
-        project_name = _resolve_project("", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project("", default_project=active_project)
         if not _load_pending_requirement(chat_id, project_name):
             raise RuntimeError("当前没有等待补充的需求。请先发送 `需求 <内容>`。")
         return _submit_requirement_from_feishu(
@@ -2756,23 +2783,34 @@ def handle_command_text(
             chat_id=chat_id,
             continue_pending=True,
         )
-    if verb in {"session", "req", "job"}:
-        if verb == "session" and len(parts) > 1 and parts[1].lower() in {"reply", "continue"}:
-            if len(parts) < 4:
-                raise RuntimeError("请提供会话 ID 和内容，例如 `session reply 12 先做飞书入口`。")
-            session_id = _parse_task_id(parts[2])
-            reply_text = command_text.split(None, 3)[3].strip() if len(parts) > 3 else ""
-            if not reply_text:
-                raise RuntimeError("请提供会话回复内容，例如 `session reply 12 先做飞书入口`。")
-            return _continue_session_from_feishu(
-                session_id,
-                reply_text,
-                chat_id=chat_id,
-                prefix=cfg.command_prefix,
-            )
-        if len(parts) < 2:
-            raise RuntimeError("请提供会话 ID，例如 `session 12`。")
-        return _reply_card(build_session_card(_parse_task_id(parts[1]), prefix=cfg.command_prefix))
+    if verb not in {"session", "job"}:
+        return None
+    if verb == "session" and len(parts) > 1 and parts[1].lower() in {"reply", "continue"}:
+        if len(parts) < 4:
+            raise RuntimeError("请提供会话 ID 和内容，例如 `session reply 12 先做飞书入口`。")
+        session_id = _parse_task_id(parts[2])
+        reply_text = command_text.split(None, 3)[3].strip() if len(parts) > 3 else ""
+        if not reply_text:
+            raise RuntimeError("请提供会话回复内容，例如 `session reply 12 先做飞书入口`。")
+        return _continue_session_from_feishu(
+            session_id,
+            reply_text,
+            chat_id=chat_id,
+            prefix=cfg.command_prefix,
+        )
+    if len(parts) < 2:
+        raise RuntimeError("请提供会话 ID，例如 `session 12`。")
+    return _reply_card(build_session_card(_parse_task_id(parts[1]), prefix=cfg.command_prefix))
+
+
+def _handle_task_command(
+    verb: str,
+    parts: list[str],
+    command_text: str,
+    context: _CommandContext,
+) -> dict[str, Any] | None:
+    cfg = context.cfg
+    chat_id = context.chat_id
     if verb in {"detail", "task", "show"}:
         if len(parts) < 2:
             raise RuntimeError("请提供任务 ID，例如 `detail 123`。")
@@ -2824,13 +2862,20 @@ def handle_command_text(
         task_id = _parse_task_id(parts[1])
         retry_task_action(task_id)
         return _reply_card(build_task_card(task_id, prefix=cfg.command_prefix, title_prefix="任务已重试"))
+    return None
+
+
+def _handle_service_command(verb: str, parts: list[str], context: _CommandContext) -> dict[str, Any] | None:
+    cfg = context.cfg
+    chat_id = context.chat_id
+    active_project = _active_project(cfg, chat_id)
     if verb in {"run", "start"}:
-        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=active_project)
         result = project_service_action(project_name, "tasks", "start")
         return _reply_card(build_service_card(project_name, result, prefix=cfg.command_prefix, title="任务执行服务已启动"))
     if verb in {"daemon", "worker"}:
         action = parts[1].lower() if len(parts) > 1 else "status"
-        project_name = _resolve_project(parts[2] if len(parts) > 2 else "", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project(parts[2] if len(parts) > 2 else "", default_project=active_project)
         result = project_service_action(project_name, "tasks", action)
         title = {
             "start": "任务轮询已启动",
@@ -2840,7 +2885,7 @@ def handle_command_text(
         return _reply_card(build_service_card(project_name, result, prefix=cfg.command_prefix, title=title))
     if verb == "inspect":
         action = parts[1].lower() if len(parts) > 1 else "status"
-        project_name = _resolve_project(parts[2] if len(parts) > 2 else "", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project(parts[2] if len(parts) > 2 else "", default_project=active_project)
         result = project_service_action(project_name, "inspect", action)
         title = {
             "start": "巡检服务已启动",
@@ -2851,73 +2896,146 @@ def handle_command_text(
     if verb in {"services", "service"}:
         if len(parts) > 1 and parts[1].lower() in {"all", "global"}:
             return _reply_card(
-                build_global_status_card(prefix=cfg.command_prefix, default_project=_active_project(cfg, chat_id))
+                build_global_status_card(prefix=cfg.command_prefix, default_project=active_project)
             )
-        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=active_project)
         return _reply_card(build_services_card(project_name, prefix=cfg.command_prefix))
     if verb == "status":
         if len(parts) > 1 and parts[1].lower() in {"all", "global"}:
             return _reply_card(
-                build_global_status_card(prefix=cfg.command_prefix, default_project=_active_project(cfg, chat_id))
+                build_global_status_card(prefix=cfg.command_prefix, default_project=active_project)
             )
-        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=_active_project(cfg, chat_id))
+        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=active_project)
         result = project_service_action(project_name, "tasks", "status")
         return _reply_card(build_service_card(project_name, result, prefix=cfg.command_prefix, title="任务执行服务状态"))
+    return None
 
-    if _allow_nl:
-        active_project = _active_project(cfg, chat_id)
-        resolved = resolve_natural_language_command(command_text, active_project=active_project)
-        if resolved.get("status") == "options":
-            options = list(resolved.get("options") or [])
-            _save_pending_action_options(chat_id, options)
-            return _reply_card(build_choice_card(str(resolved.get("message") or "请确认操作"), options, prefix=cfg.command_prefix))
-        if resolved.get("status") == "match":
-            _clear_pending_action_options(chat_id)
-            return handle_command_text(
-                str(resolved.get("command") or ""),
-                config_path=config_path,
-                chat_id=chat_id,
-                _normalized_command_text=str(resolved.get("command") or ""),
-                _allow_nl=False,
-            )
 
-        goal = infer_goal_from_text(command_text, active_project=active_project)
-        if goal and goal.get("status") == "options":
-            options = list(goal.get("options") or [])
-            _save_pending_action_options(chat_id, options)
-            _save_pending_goal_text(chat_id, command_text)
-            return _reply_card(build_choice_card(str(goal.get("message") or "请确认项目"), options, prefix=cfg.command_prefix))
-        if goal and goal.get("project"):
-            return _submit_goal_from_feishu(
-                str(goal.get("project") or "").strip(),
-                str(goal.get("text") or "").strip(),
-                chat_id=chat_id,
-                prefix=cfg.command_prefix,
-            )
+def _handle_natural_language_command(
+    command_text: str,
+    context: _CommandContext,
+    *,
+    allow_nl: bool,
+) -> dict[str, Any] | None:
+    if not allow_nl:
+        return None
+    cfg = context.cfg
+    chat_id = context.chat_id
+    active_project = _active_project(cfg, chat_id)
+    resolved = resolve_natural_language_command(command_text, active_project=active_project)
+    if resolved.get("status") == "options":
+        options = list(resolved.get("options") or [])
+        _save_pending_action_options(chat_id, options)
+        return _reply_card(build_choice_card(str(resolved.get("message") or "请确认操作"), options, prefix=cfg.command_prefix))
+    if resolved.get("status") == "match":
+        _clear_pending_action_options(chat_id)
+        command = str(resolved.get("command") or "")
+        return handle_command_text(
+            command,
+            config_path=context.config_path,
+            chat_id=chat_id,
+            _normalized_command_text=command,
+            _allow_nl=False,
+        )
 
-        fallback_project = active_project
-        if not fallback_project:
-            projects = db.list_projects()
-            if len(projects) == 1:
-                fallback_project = str(projects[0].get("name") or "").strip()
-            elif len(projects) > 1:
-                options = [
-                    {"command": f"use {str(project.get('name') or '').strip()}", "label": f"在项目 {str(project.get('name') or '').strip()} 中继续"}
-                    for project in projects[:4]
-                    if str(project.get("name") or "").strip()
-                ]
-                if options:
-                    _save_pending_action_options(chat_id, options)
-                    _save_pending_goal_text(chat_id, command_text)
-                    return _reply_card(build_choice_card("这条消息会按 chat 处理。先确认你要在哪个项目里继续：", options, prefix=cfg.command_prefix))
-        if fallback_project:
-            return _submit_goal_from_feishu(
-                fallback_project,
-                command_text,
-                chat_id=chat_id,
-                prefix=cfg.command_prefix,
-            )
+    goal = infer_goal_from_text(command_text, active_project=active_project)
+    if goal and goal.get("status") == "options":
+        options = list(goal.get("options") or [])
+        _save_pending_action_options(chat_id, options)
+        _save_pending_goal_text(chat_id, command_text)
+        return _reply_card(build_choice_card(str(goal.get("message") or "请确认项目"), options, prefix=cfg.command_prefix))
+    if goal and goal.get("project"):
+        return _submit_goal_from_feishu(
+            str(goal.get("project") or "").strip(),
+            str(goal.get("text") or "").strip(),
+            chat_id=chat_id,
+            prefix=cfg.command_prefix,
+        )
 
+    fallback_project = active_project
+    if not fallback_project:
+        projects = db.list_projects()
+        if len(projects) == 1:
+            fallback_project = str(projects[0].get("name") or "").strip()
+        elif len(projects) > 1:
+            options = [
+                {
+                    "command": f"use {str(project.get('name') or '').strip()}",
+                    "label": f"在项目 {str(project.get('name') or '').strip()} 中继续",
+                }
+                for project in projects[:4]
+                if str(project.get("name") or "").strip()
+            ]
+            if options:
+                _save_pending_action_options(chat_id, options)
+                _save_pending_goal_text(chat_id, command_text)
+                return _reply_card(
+                    build_choice_card(
+                        "这条消息会按 chat 处理。先确认你要在哪个项目里继续：",
+                        options,
+                        prefix=cfg.command_prefix,
+                    )
+                )
+    if fallback_project:
+        return _submit_goal_from_feishu(
+            fallback_project,
+            command_text,
+            chat_id=chat_id,
+            prefix=cfg.command_prefix,
+        )
+    return None
+
+
+def _dispatch_command_text(
+    command_text: str,
+    parts: list[str],
+    context: _CommandContext,
+    *,
+    allow_nl: bool,
+) -> dict[str, Any] | None:
+    verb = parts[0].lower()
+    reply = _handle_control_command(verb, parts, context)
+    if reply is not None:
+        return reply
+    for handler, needs_command_text in (
+        (_handle_project_command, True),
+        (_handle_project_view_command, False),
+        (_handle_requirement_command, True),
+        (_handle_task_command, True),
+        (_handle_service_command, False),
+    ):
+        reply = handler(verb, parts, command_text, context) if needs_command_text else handler(verb, parts, context)
+        if reply is not None:
+            return reply
+    return _handle_natural_language_command(command_text, context, allow_nl=allow_nl)
+
+
+def handle_command_text(
+    text: str,
+    *,
+    config_path: Path | None = None,
+    chat_id: str = "",
+    _normalized_command_text: str | None = None,
+    _allow_nl: bool = True,
+) -> dict[str, Any]:
+    db.init_db()
+    cfg = load_feishu_bot_config(config_path)
+    context = _CommandContext(cfg=cfg, config_path=config_path, chat_id=chat_id)
+    command_text = _normalized_command_text
+    if command_text is None:
+        command_text = _normalize_command_text(text, cfg.command_prefix)
+    if command_text is None:
+        return {"type": "ignore"}
+    pending_reply = _handle_pending_command_choice(command_text, context)
+    if pending_reply is not None:
+        return pending_reply
+
+    parts = command_text.split()
+    if not parts:
+        return _reply_card(build_help_card(prefix=cfg.command_prefix))
+    reply = _dispatch_command_text(command_text, parts, context, allow_nl=_allow_nl)
+    if reply is not None:
+        return reply
     return _reply_card(build_help_card(prefix=cfg.command_prefix, error=f"`{command_text}`"))
 
 

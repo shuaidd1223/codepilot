@@ -147,6 +147,29 @@ def test_feishu_status_command_works_without_webui_server(tmp_path, monkeypatch)
     assert "未运行" in payload
 
 
+def test_feishu_service_commands_dispatch_by_service_type(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    calls = []
+
+    def fake_project_service_action(project, service, action):
+        calls.append({"project": project, "service": service, "action": action})
+        return {"status": {"running": action == "start", "pid": 123, "started_at": "", "log": ""}, "message": "ok"}
+
+    monkeypatch.setattr("codepilot.feishu_bot.project_service_action", fake_project_service_action)
+
+    daemon_reply = handle_command_text("daemon stop demo")
+    inspect_reply = handle_command_text("inspect start demo")
+    daemon_payload = json.dumps(daemon_reply["card"], ensure_ascii=False)
+    inspect_payload = json.dumps(inspect_reply["card"], ensure_ascii=False)
+
+    assert calls == [
+        {"project": "demo", "service": "tasks", "action": "stop"},
+        {"project": "demo", "service": "inspect", "action": "start"},
+    ]
+    assert "任务轮询停止请求" in daemon_payload
+    assert "巡检服务已启动" in inspect_payload
+
+
 def test_feishu_use_project_sets_chat_context(tmp_path, monkeypatch):
     project_path = _setup_project(tmp_path, monkeypatch)
     db.create_task(
@@ -638,6 +661,39 @@ def test_feishu_natural_language_delete_uses_numbered_choice(tmp_path, monkeypat
     assert "confirm" in second_payload
     assert "任务已删除" in third_payload
     assert db.get_task(first["id"]) is None
+
+
+def test_feishu_pending_choice_out_of_range_keeps_options(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    db.create_task(
+        project="demo",
+        title="待选择删除任务",
+        content="验证数字越界不会清空待选项",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+    db.create_task(
+        project="demo",
+        title="另一个待选择任务",
+        content="验证数字越界不会清空待选项",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+
+    handle_command_text("use demo", chat_id="chat-nl-out-of-range")
+    first_reply = handle_command_text("删除任务", chat_id="chat-nl-out-of-range")
+    invalid_reply = handle_command_text("9", chat_id="chat-nl-out-of-range")
+    valid_reply = handle_command_text("1", chat_id="chat-nl-out-of-range")
+    first_payload = json.dumps(first_reply["card"], ensure_ascii=False)
+    invalid_payload = json.dumps(invalid_reply["card"], ensure_ascii=False)
+    valid_payload = json.dumps(valid_reply["card"], ensure_ascii=False)
+
+    assert "请确认操作" in first_payload
+    assert "可选项超出范围" in invalid_payload
+    assert "回复数字继续" in invalid_payload
+    assert "敏感操作待确认" in valid_payload
 
 
 def test_feishu_cancel_confirm_token_keeps_task_unchanged(tmp_path, monkeypatch):
