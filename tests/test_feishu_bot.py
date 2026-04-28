@@ -10,7 +10,13 @@ import pytest
 from click.testing import CliRunner
 
 from codepilot.commands import feishu as feishu_cmd
-from codepilot.feishu_bot import build_task_event_card, handle_command_text, handle_event_payload, notify_feishu_task_event
+from codepilot.feishu_bot import (
+    build_batch_task_action_card,
+    build_task_event_card,
+    handle_command_text,
+    handle_event_payload,
+    notify_feishu_task_event,
+)
 from codepilot.storage import database as db
 
 
@@ -613,6 +619,67 @@ def test_feishu_batch_delete_task_command_reports_partial_failures(tmp_path, mon
     assert "失败 1" in second_payload
     assert db.get_task(deletable["id"]) is None
     assert db.get_task(blocked["id"])["status"] == "in_progress"
+
+
+def test_build_batch_task_action_card_contract_for_partial_failure():
+    card = build_batch_task_action_card(
+        "archive",
+        {
+            "total": 3,
+            "success_count": 2,
+            "failed_count": 1,
+            "message": "批量archive完成：成功 2，失败 1。",
+            "succeeded": [
+                {"task_id": 11, "message": "任务 #11 已归档。", "task": {"id": 11}},
+                {"task_id": 12, "message": "任务 #12 已归档。", "task": {"id": 12}},
+            ],
+            "failed": [{"task_id": 13, "error": "任务 #13 正在执行中，不能归档。"}],
+        },
+        prefix="/cp",
+    )
+    payload = json.dumps(card, ensure_ascii=False)
+
+    assert card["header"]["template"] == "orange"
+    assert card["header"]["title"]["content"] == "批量归档完成"
+    assert "飞书已执行批量任务操作，并返回逐项结果。" in payload
+    assert "**操作**" in payload
+    assert "`批量归档`" in payload
+    assert "**总计**" in payload
+    assert "`3`" in payload
+    assert "成功任务" in payload
+    assert "- `#11` 任务 #11 已归档。" in payload
+    assert "失败任务" in payload
+    assert "- `#13` 任务 #13 正在执行中，不能归档。" in payload
+    assert "`/cp detail 11`" in payload
+    assert "`/cp logs 11`" in payload
+    assert "`/cp tasks`" in payload
+
+
+def test_build_batch_task_action_card_delete_omits_detail_commands_and_limits_rows():
+    succeeded = [
+        {"task_id": task_id, "message": f"任务 #{task_id} 已删除。", "deleted_task_id": task_id}
+        for task_id in range(1, 11)
+    ]
+    card = build_batch_task_action_card(
+        "delete",
+        {
+            "total": 10,
+            "success_count": 10,
+            "failed_count": 0,
+            "message": "批量delete完成：共 10 个任务。",
+            "succeeded": succeeded,
+            "failed": [],
+        },
+    )
+    payload = json.dumps(card, ensure_ascii=False)
+
+    assert card["header"]["template"] == "green"
+    assert card["header"]["title"]["content"] == "批量删除完成"
+    assert "`tasks`" in payload
+    assert "`detail 1`" not in payload
+    assert "`logs 1`" not in payload
+    assert "- `#8` 任务 #8 已删除。" in payload
+    assert "- `#9` 任务 #9 已删除。" not in payload
 
 
 def test_feishu_natural_language_status_routes_to_project_overview(tmp_path, monkeypatch):
