@@ -63,6 +63,16 @@ class CommandOption:
     label: str
 
 
+@dataclass(frozen=True)
+class _CommandRouteContext:
+    content: str
+    active_project: str
+    project_name: str
+    project_matches: list[str]
+    task_ids: list[int]
+    requirement_like: bool
+
+
 def _normalize_text(text: str) -> str:
     return " ".join(str(text or "").strip().split())
 
@@ -309,65 +319,27 @@ def format_numbered_options(message: str, options: list[dict[str, Any]] | list[C
     return "\n".join(line for line in lines if line)
 
 
-def resolve_natural_language_command(text: str, *, active_project: str = "") -> dict[str, Any]:
-    content = _normalize_text(text)
-    if not content:
-        return _build_result("no_match")
-
-    lowered = content.lower()
+def _build_route_context(content: str, *, active_project: str = "") -> _CommandRouteContext:
     project_name, project_matches = _project_target(content, active_project=active_project)
-    task_ids = _extract_task_ids(content)
-    requirement_like = _contains_any(content, _REQUIREMENT_WORDS)
+    return _CommandRouteContext(
+        content=content,
+        active_project=str(active_project or "").strip(),
+        project_name=project_name,
+        project_matches=project_matches,
+        task_ids=_extract_task_ids(content),
+        requirement_like=_contains_any(content, _REQUIREMENT_WORDS),
+    )
 
-    if _contains_any(content, ("项目列表", "项目清单", "有哪些项目", "所有项目")):
-        return _build_result("match", command="projects", label="查看项目清单")
 
-    if _contains_any(content, ("全局状态", "整体状态", "全部状态", "所有项目状态")):
-        return _build_result("match", command="global", label="查看全局状态")
+def _service_action_from_text(content: str) -> str:
+    if _contains_any(content, ("开始", "启动", "开启", "运行")):
+        return "start"
+    if _contains_any(content, ("停止", "关闭", "停掉", "结束")):
+        return "stop"
+    return "status"
 
-    if _contains_any(content, ("切换到", "切到", "进入", "使用")) and "项目" in content:
-        if project_name:
-            return _build_result("match", command=f"use {project_name}", label=f"切换到项目 {project_name}")
-        options = _project_options("use", active_project=active_project, label_prefix="切换到项目 ")
-        if options:
-            return _format_options("你是想切换到哪个项目？", options)
 
-    if _contains_any(content, ("巡检", "检查服务")):
-        action = "status"
-        if _contains_any(content, ("开始", "启动", "开启", "运行")):
-            action = "start"
-        elif _contains_any(content, ("停止", "关闭", "停掉", "结束")):
-            action = "stop"
-        if project_name:
-            return _build_result("match", command=f"inspect {action} {project_name}", label=f"{action} 巡检服务")
-        if len(project_matches) > 1:
-            options = _project_options(f"inspect {action}", active_project=active_project, label_prefix="巡检项目 ")
-            return _format_options("你是想操作哪个项目的巡检服务？", options)
-        default_project = _resolve_default_project(active_project)
-        if default_project:
-            return _build_result("match", command=f"inspect {action} {default_project}", label=f"{action} 巡检服务")
-        options = _project_options(f"inspect {action}", active_project=active_project, label_prefix="巡检项目 ")
-        if options:
-            return _format_options("你是想操作哪个项目的巡检服务？", options)
-
-    if _contains_any(content, ("任务执行", "任务运行", "任务轮询", "执行服务", "运行服务", "任务级运行")):
-        action = "status"
-        if _contains_any(content, ("开始", "启动", "开启", "运行")):
-            action = "start"
-        elif _contains_any(content, ("停止", "关闭", "停掉", "结束")):
-            action = "stop"
-        if project_name:
-            return _build_result("match", command=f"daemon {action} {project_name}", label=f"{action} 任务执行服务")
-        if len(project_matches) > 1:
-            options = _project_options(f"daemon {action}", active_project=active_project, label_prefix="任务执行服务 ")
-            return _format_options("你是想操作哪个项目的任务执行服务？", options)
-        default_project = _resolve_default_project(active_project)
-        if default_project:
-            return _build_result("match", command=f"daemon {action} {default_project}", label=f"{action} 任务执行服务")
-        options = _project_options(f"daemon {action}", active_project=active_project, label_prefix="任务执行服务 ")
-        if options:
-            return _format_options("你是想操作哪个项目的任务执行服务？", options)
-
+def _detect_task_action(content: str) -> str | None:
     task_action_map = (
         ("logs", ("日志", "log", "输出")),
         ("detail", ("详情", "详细", "内容", "信息")),
@@ -377,71 +349,208 @@ def resolve_natural_language_command(text: str, *, active_project: str = "") -> 
         ("archive", ("归档",)),
         ("delete", ("删除", "删掉", "移除")),
     )
-    if "任务" in content or task_ids:
-        for action, keywords in task_action_map:
-            if not _contains_any(content, keywords):
-                continue
-            if task_ids:
-                if action == "delete" and len(task_ids) > 1:
-                    return _build_result(
-                        "match",
-                        command="delete " + " ".join(str(task_id) for task_id in task_ids),
-                        label="批量删除任务",
-                    )
-                if action == "cancel" and len(task_ids) > 1:
-                    return _build_result(
-                        "match",
-                        command="cancel " + " ".join(str(task_id) for task_id in task_ids),
-                        label="批量取消任务",
-                    )
-                if action == "archive" and len(task_ids) > 1:
-                    return _build_result(
-                        "match",
-                        command="archive " + " ".join(str(task_id) for task_id in task_ids),
-                        label="批量归档任务",
-                    )
-                return _build_result(
-                    "match",
-                    command=f"{action} {task_ids[0]}",
-                    label=f"{action} 任务 #{task_ids[0]}",
-                )
+    for action, keywords in task_action_map:
+        if _contains_any(content, keywords):
+            return action
+    return None
 
-            options = _task_command_options(action, project=project_name or _resolve_default_project(active_project))
-            if options:
-                return _format_options("我需要具体任务 ID，你是指下面哪一个？", options)
 
-    if (not requirement_like) and _contains_any(content, ("任务列表", "任务面板", "看任务", "任务情况", "任务状态", "做完了没有", "完成了没有")):
-        if project_name:
-            return _build_result("match", command=f"tasks {project_name}", label=f"查看 {project_name} 任务")
-        if len(project_matches) > 1:
-            options = _project_options("tasks", active_project=active_project, label_prefix="查看任务 ")
-            return _format_options("你是想看哪个项目的任务？", options)
-        default_project = _resolve_default_project(active_project)
-        if default_project:
-            return _build_result("match", command=f"tasks {default_project}", label=f"查看 {default_project} 任务")
-        options = _project_options("tasks", active_project=active_project, label_prefix="查看任务 ")
-        if options:
-            return _format_options("你是想看哪个项目的任务？", options)
+def _task_ids_command(action: str, task_ids: list[int]) -> dict[str, Any] | None:
+    if not task_ids:
+        return None
+    if action == "delete" and len(task_ids) > 1:
+        return _build_result(
+            "match",
+            command="delete " + " ".join(str(task_id) for task_id in task_ids),
+            label="批量删除任务",
+        )
+    if action == "cancel" and len(task_ids) > 1:
+        return _build_result(
+            "match",
+            command="cancel " + " ".join(str(task_id) for task_id in task_ids),
+            label="批量取消任务",
+        )
+    if action == "archive" and len(task_ids) > 1:
+        return _build_result(
+            "match",
+            command="archive " + " ".join(str(task_id) for task_id in task_ids),
+            label="批量归档任务",
+        )
+    return _build_result(
+        "match",
+        command=f"{action} {task_ids[0]}",
+        label=f"{action} 任务 #{task_ids[0]}",
+    )
 
-    if (not requirement_like) and _contains_any(content, ("服务状态", "服务情况", "服务列表")):
-        if project_name:
-            return _build_result("match", command=f"services {project_name}", label=f"查看 {project_name} 服务状态")
-        if len(project_matches) > 1:
-            options = _project_options("services", active_project=active_project, label_prefix="查看服务 ")
-            return _format_options("你是想看哪个项目的服务状态？", options)
-        default_project = _resolve_default_project(active_project)
-        if default_project:
-            return _build_result("match", command=f"services {default_project}", label=f"查看 {default_project} 服务状态")
 
-    if (not requirement_like) and _contains_any(content, ("项目状态", "项目概览", "项目总览", "运行状态", "看状态", "查看状态", "状态")):
-        if project_name:
-            return _build_result("match", command=f"overview {project_name}", label=f"查看 {project_name} 项目状态")
-        if len(project_matches) > 1:
-            options = _project_options("overview", active_project=active_project, label_prefix="查看项目状态 ")
-            return _format_options("你是想看哪个项目的状态？", options)
-        default_project = _resolve_default_project(active_project)
-        if default_project and _contains_any(content, ("当前项目", "这个项目", "本项目", "运行状态", "看状态", "查看状态")):
-            return _build_result("match", command=f"overview {default_project}", label=f"查看 {default_project} 项目状态")
+def _resolve_catalog_command(ctx: _CommandRouteContext) -> dict[str, Any] | None:
+    if _contains_any(ctx.content, ("项目列表", "项目清单", "有哪些项目", "所有项目")):
+        return _build_result("match", command="projects", label="查看项目清单")
+
+    if _contains_any(ctx.content, ("全局状态", "整体状态", "全部状态", "所有项目状态")):
+        return _build_result("match", command="global", label="查看全局状态")
+    return None
+
+
+def _resolve_project_switch_command(ctx: _CommandRouteContext) -> dict[str, Any] | None:
+    if not (_contains_any(ctx.content, ("切换到", "切到", "进入", "使用")) and "项目" in ctx.content):
+        return None
+    if ctx.project_name:
+        return _build_result("match", command=f"use {ctx.project_name}", label=f"切换到项目 {ctx.project_name}")
+    options = _project_options("use", active_project=ctx.active_project, label_prefix="切换到项目 ")
+    if options:
+        return _format_options("你是想切换到哪个项目？", options)
+    return None
+
+
+def _resolve_service_control_command(
+    ctx: _CommandRouteContext,
+    *,
+    trigger_keywords: tuple[str, ...],
+    command_name: str,
+    label_subject: str,
+    option_label_prefix: str,
+    option_message: str,
+) -> dict[str, Any] | None:
+    if not _contains_any(ctx.content, trigger_keywords):
+        return None
+
+    action = _service_action_from_text(ctx.content)
+    if ctx.project_name:
+        return _build_result("match", command=f"{command_name} {action} {ctx.project_name}", label=f"{action} {label_subject}")
+    if len(ctx.project_matches) > 1:
+        options = _project_options(
+            f"{command_name} {action}",
+            active_project=ctx.active_project,
+            label_prefix=option_label_prefix,
+        )
+        return _format_options(option_message, options)
+    default_project = _resolve_default_project(ctx.active_project)
+    if default_project:
+        return _build_result("match", command=f"{command_name} {action} {default_project}", label=f"{action} {label_subject}")
+    options = _project_options(
+        f"{command_name} {action}",
+        active_project=ctx.active_project,
+        label_prefix=option_label_prefix,
+    )
+    if options:
+        return _format_options(option_message, options)
+    return None
+
+
+def _resolve_inspect_command(ctx: _CommandRouteContext) -> dict[str, Any] | None:
+    return _resolve_service_control_command(
+        ctx,
+        trigger_keywords=("巡检", "检查服务"),
+        command_name="inspect",
+        label_subject="巡检服务",
+        option_label_prefix="巡检项目 ",
+        option_message="你是想操作哪个项目的巡检服务？",
+    )
+
+
+def _resolve_daemon_command(ctx: _CommandRouteContext) -> dict[str, Any] | None:
+    return _resolve_service_control_command(
+        ctx,
+        trigger_keywords=("任务执行", "任务运行", "任务轮询", "执行服务", "运行服务", "任务级运行"),
+        command_name="daemon",
+        label_subject="任务执行服务",
+        option_label_prefix="任务执行服务 ",
+        option_message="你是想操作哪个项目的任务执行服务？",
+    )
+
+
+def _resolve_task_action_command(ctx: _CommandRouteContext) -> dict[str, Any] | None:
+    if "任务" not in ctx.content and not ctx.task_ids:
+        return None
+
+    action = _detect_task_action(ctx.content)
+    if not action:
+        return None
+
+    command = _task_ids_command(action, ctx.task_ids)
+    if command:
+        return command
+
+    options = _task_command_options(action, project=ctx.project_name or _resolve_default_project(ctx.active_project))
+    if options:
+        return _format_options("我需要具体任务 ID，你是指下面哪一个？", options)
+    return None
+
+
+def _resolve_task_list_command(ctx: _CommandRouteContext) -> dict[str, Any] | None:
+    if ctx.requirement_like or not _contains_any(
+        ctx.content,
+        ("任务列表", "任务面板", "看任务", "任务情况", "任务状态", "做完了没有", "完成了没有"),
+    ):
+        return None
+
+    if ctx.project_name:
+        return _build_result("match", command=f"tasks {ctx.project_name}", label=f"查看 {ctx.project_name} 任务")
+    if len(ctx.project_matches) > 1:
+        options = _project_options("tasks", active_project=ctx.active_project, label_prefix="查看任务 ")
+        return _format_options("你是想看哪个项目的任务？", options)
+    default_project = _resolve_default_project(ctx.active_project)
+    if default_project:
+        return _build_result("match", command=f"tasks {default_project}", label=f"查看 {default_project} 任务")
+    options = _project_options("tasks", active_project=ctx.active_project, label_prefix="查看任务 ")
+    if options:
+        return _format_options("你是想看哪个项目的任务？", options)
+    return None
+
+
+def _resolve_service_status_query(ctx: _CommandRouteContext) -> dict[str, Any] | None:
+    if ctx.requirement_like or not _contains_any(ctx.content, ("服务状态", "服务情况", "服务列表")):
+        return None
+
+    if ctx.project_name:
+        return _build_result("match", command=f"services {ctx.project_name}", label=f"查看 {ctx.project_name} 服务状态")
+    if len(ctx.project_matches) > 1:
+        options = _project_options("services", active_project=ctx.active_project, label_prefix="查看服务 ")
+        return _format_options("你是想看哪个项目的服务状态？", options)
+    default_project = _resolve_default_project(ctx.active_project)
+    if default_project:
+        return _build_result("match", command=f"services {default_project}", label=f"查看 {default_project} 服务状态")
+    return None
+
+
+def _resolve_project_status_query(ctx: _CommandRouteContext) -> dict[str, Any] | None:
+    if ctx.requirement_like or not _contains_any(
+        ctx.content,
+        ("项目状态", "项目概览", "项目总览", "运行状态", "看状态", "查看状态", "状态"),
+    ):
+        return None
+
+    if ctx.project_name:
+        return _build_result("match", command=f"overview {ctx.project_name}", label=f"查看 {ctx.project_name} 项目状态")
+    if len(ctx.project_matches) > 1:
+        options = _project_options("overview", active_project=ctx.active_project, label_prefix="查看项目状态 ")
+        return _format_options("你是想看哪个项目的状态？", options)
+    default_project = _resolve_default_project(ctx.active_project)
+    if default_project and _contains_any(ctx.content, ("当前项目", "这个项目", "本项目", "运行状态", "看状态", "查看状态")):
+        return _build_result("match", command=f"overview {default_project}", label=f"查看 {default_project} 项目状态")
+    return None
+
+
+def resolve_natural_language_command(text: str, *, active_project: str = "") -> dict[str, Any]:
+    content = _normalize_text(text)
+    if not content:
+        return _build_result("no_match")
+
+    ctx = _build_route_context(content, active_project=active_project)
+    for resolver in (
+        _resolve_catalog_command,
+        _resolve_project_switch_command,
+        _resolve_inspect_command,
+        _resolve_daemon_command,
+        _resolve_task_action_command,
+        _resolve_task_list_command,
+        _resolve_service_status_query,
+        _resolve_project_status_query,
+    ):
+        result = resolver(ctx)
+        if result:
+            return result
 
     return _build_result("no_match")
 
