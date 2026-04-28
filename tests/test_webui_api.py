@@ -178,6 +178,27 @@ def test_daemon_health_without_project_aggregates_project_scoped_service_states(
     assert payload["reason"] == ""
 
 
+def test_task_state_snapshot_detects_cross_process_status_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "cross process task", agent="codex")
+
+    before_key, before = webui_mod._task_state_snapshot("demo")
+    db.update_task(task["id"], status="in_progress", run_phase="builder")
+    after_key, after = webui_mod._task_state_snapshot("demo")
+
+    assert before_key != after_key
+    changes = webui_mod._task_state_changes(before, after)
+    assert len(changes) == 1
+    assert changes[0]["task"]["id"] == task["id"]
+    assert changes[0]["before"]["status"] == "backlog"
+    assert changes[0]["task"]["status"] == "in_progress"
+    assert changes[0]["task"]["run_phase"] == "builder"
+
+
 def test_projects_endpoint_lists_registered_project(ui_server):
     status, body = _get(f"{ui_server}/api/projects")
     assert status == 200

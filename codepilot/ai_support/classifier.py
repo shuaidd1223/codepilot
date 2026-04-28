@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from codepilot.ai_support.gateway_options import _resolve_gateway_options
+from codepilot.ai_support.intent_classifier import classify_intent_with_rules
 from codepilot.ai_support.intent_rules import (
     INTENT_PROMPT,
     INTENT_SCHEMA,
@@ -24,7 +26,7 @@ from codepilot.ai_support.intent_rules import (
     _question_mentions_task_totals,
     _question_mentions_tool_usage,
 )
-from codepilot.ai_support.providers import _collect_project_context
+from codepilot.ai_support.question_answering import answer_question_with_runtime
 from codepilot.ai_support.question_runtime import (
     QUESTION_LOOKUP_PLAN_SCHEMA,
     _add_question_lookup,
@@ -72,35 +74,6 @@ from codepilot.ai_support.question_runtime import (
 from codepilot.gateway.types import GatewayCallOptions
 
 
-def _resolve_gateway_options(
-    *,
-    gateway_options: Optional[GatewayCallOptions],
-    classifier_provider: str,
-    classifier_model: str,
-    api_key: Optional[str],
-    base_url: Optional[str],
-    project_path: str,
-    config_ref: str,
-    planner: str,
-    timeout: int,
-) -> GatewayCallOptions:
-    """Merge explicit kwargs with an optional shared gateway context object."""
-    shared = gateway_options
-    effective_timeout = timeout
-    if shared is not None and shared.timeout:
-        effective_timeout = int(shared.timeout)
-    return GatewayCallOptions(
-        classifier_provider=(shared.classifier_provider if shared else "") or classifier_provider,
-        classifier_model=(shared.classifier_model if shared else "") or classifier_model,
-        api_key=shared.api_key if shared and shared.api_key is not None else api_key,
-        base_url=shared.base_url if shared and shared.base_url is not None else base_url,
-        project_path=(shared.project_path if shared else "") or project_path,
-        config_ref=(shared.config_ref if shared else "") or config_ref,
-        planner=planner,
-        timeout=effective_timeout,
-    )
-
-
 def classify_intent(
     text: str,
     project_path: str = "",
@@ -119,59 +92,19 @@ def classify_intent(
       2. Unified AI gateway: configured API provider, then local CLI fallback.
       3. On any failure, default to 'requirement' (preserves prior behavior).
     """
-    text = text.strip()
-    if not text:
-        return {"intent": "requirement", "reason": "空输入", "source": "default"}
-
-    guess = _heuristic_intent(text)
-    if guess:
-        return {"intent": guess, "reason": "启发式规则命中", "source": "heuristic"}
-
-    valid_intents = {"question", "task", "requirement", "command"}
-
-    from codepilot.gateway.service import call_structured_prompt
-
-    shared_options = _resolve_gateway_options(
-        gateway_options=gateway_options,
+    return classify_intent_with_rules(
+        text,
+        project_path=project_path,
         classifier_provider=classifier_provider,
         classifier_model=classifier_model,
+        timeout=timeout,
         api_key=api_key,
         base_url=base_url,
-        project_path=project_path,
         config_ref=config_ref,
-        planner="claude",
-        timeout=timeout,
+        gateway_options=gateway_options,
+        heuristic_intent=_heuristic_intent,
+        looks_like_codepilot_command=_looks_like_codepilot_command,
     )
-    from codepilot.core import progress_bus
-
-    with progress_bus.llm_context(stage="planner", label="意图分类"):
-        response = call_structured_prompt(
-            prompt=INTENT_PROMPT.format(text=text),
-            schema=INTENT_SCHEMA,
-            # Classification is latency-sensitive; keep claude as CLI fallback family.
-            options=shared_options,
-        )
-
-    if response.ok and response.payload:
-        intent = response.payload.get("intent")
-        if intent in valid_intents:
-            if intent == "command" and not _looks_like_codepilot_command(text):
-                return {
-                    "intent": "requirement",
-                    "reason": "命令防误判兜底：输入不符合 codepilot 命令形态",
-                    "source": "guardrail",
-                }
-            return {
-                "intent": intent,
-                "reason": response.payload.get("reason", ""),
-                "source": response.source,
-            }
-
-    return {
-        "intent": "requirement",
-        "reason": f"分类失败，默认当作需求处理（{response.error or '未知原因'}）",
-        "source": "default",
-    }
 
 
 def answer_question_via_api(
@@ -190,80 +123,15 @@ def answer_question_via_api(
     Routes through :mod:`codepilot.gateway` so API / CLI fallback and
     key-resolution behaviour stay consistent with ``classify_intent``.
     """
-    local_answer = _local_tool_question_answer(question)
-    if local_answer:
-        return local_answer
-
-    context = _collect_project_context(project_path, query_text=question)
-    history_block = ""
-    if history:
-        lines = []
-        for turn in history[-10:]:  # 最多保留最近 10 轮
-            lines.append(f"用户: {turn['user']}")
-            if turn.get("assistant"):
-                lines.append(f"助手: {turn['assistant'][:300]}")
-        history_block = "\n## 对话历史\n" + "\n".join(lines) + "\n"
-
-    from codepilot.gateway.service import call_text_prompt
-
-    shared_options = _resolve_gateway_options(
-        gateway_options=gateway_options,
-        classifier_provider=provider_key,
-        classifier_model=model_override,
+    return answer_question_with_runtime(
+        provider_key,
+        question,
+        project_path=project_path,
+        model_override=model_override,
         api_key=api_key,
         base_url=base_url,
-        project_path=project_path,
+        history=history,
         config_ref=config_ref,
-        planner="claude",
-        timeout=120,
+        gateway_options=gateway_options,
+        has_local_question_answer_agent=_has_local_question_answer_agent,
     )
-    has_remote_capability = _provider_has_remote_answer_capability(provider_key, api_key, base_url)
-    has_local_agent = _has_local_question_answer_agent()
-    runtime_bundle: dict = {}
-    try:
-        runtime_bundle = _question_runtime_bundle(
-            question,
-            options=shared_options,
-            project_path=shared_options.project_path or project_path,
-            allow_model_planner=has_remote_capability,
-        )
-    except Exception:
-        runtime_bundle = {}
-
-    local_runtime_answer = _render_runtime_lookup_answer(question, runtime_bundle)
-    general_local_answer = _local_general_question_answer(
-        question,
-        project_path=shared_options.project_path or project_path,
-    )
-    if local_runtime_answer and not has_remote_capability and not has_local_agent:
-        return local_runtime_answer
-    if general_local_answer and not has_remote_capability and not has_local_agent:
-        return general_local_answer
-    from codepilot.core import progress_bus
-
-    runtime_data_block = _question_runtime_bundle_json(runtime_bundle)
-    runtime_data_section = (
-        f"\n## 本地取数结果\n{runtime_data_block}\n"
-        if runtime_data_block
-        else ""
-    )
-    prompt_header = _question_prompt_header(shared_options.project_path or project_path)
-    with progress_bus.llm_context(stage="system", label="问题回答"):
-        response = call_text_prompt(
-            prompt=(
-                f"{prompt_header}"
-                "请基于下面的项目上下文、必要时的本地取数结果和对话历史，用简洁中文直接回答用户问题。"
-                "如果已经给了本地取数结果，优先使用这些确定数据，不要忽略。"
-                "不要只回复“我不确定”。\n\n"
-                f"## 项目上下文\n{context}\n"
-                f"{history_block}"
-                f"{runtime_data_section}"
-                f"## 用户问题\n{question}"
-            ),
-            options=shared_options,
-        )
-    if response.ok and response.text:
-        return response.text
-    if local_runtime_answer:
-        return local_runtime_answer
-    return general_local_answer if general_local_answer else ""

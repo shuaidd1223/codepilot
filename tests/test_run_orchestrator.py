@@ -109,7 +109,7 @@ def test_run_backlog_does_not_repeat_same_preflight_skip_notification(tmp_path, 
     assert [item["event"] for item in notifications] == ["preflight_skip"]
 
 
-def test_notify_task_event_routes_generic_progress_without_feishu_for_user_source(tmp_path, monkeypatch):
+def test_notify_task_event_routes_generic_progress_and_project_feishu_for_user_source(tmp_path, monkeypatch):
     project_path = tmp_path / "project"
     project_path.mkdir()
     context = run_orchestrator_mod._RunContext(
@@ -142,7 +142,8 @@ def test_notify_task_event_routes_generic_progress_without_feishu_for_user_sourc
     )
 
     assert [item["event"] for item in generic_events] == ["phase_start"]
-    assert feishu_events == []
+    assert [item["event"] for item in feishu_events] == ["phase_start"]
+    assert feishu_events[0]["chat_ids"] is None
 
 
 def test_notify_task_event_routes_feishu_origin_to_source_chat(tmp_path, monkeypatch):

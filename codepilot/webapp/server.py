@@ -88,6 +88,58 @@ _UI_JOBS: dict[int, dict] = {}
 _UI_EVENTS: list[dict] = []
 
 
+def _task_state_snapshot(project: str | None) -> tuple[tuple, dict[int, dict]]:
+    tasks = db.list_tasks(project=project) if project else db.list_tasks()
+    rows: list[tuple] = []
+    by_id: dict[int, dict] = {}
+    for task in tasks:
+        try:
+            task_id = int(task.get("id") or 0)
+        except Exception:
+            task_id = 0
+        if task_id <= 0:
+            continue
+        item = {
+            "id": task_id,
+            "title": str(task.get("title") or ""),
+            "project": str(task.get("project") or ""),
+            "status": str(task.get("status") or ""),
+            "run_phase": str(task.get("run_phase") or ""),
+            "completed_at": str(task.get("completed_at") or ""),
+            "error_message": str(task.get("error_message") or ""),
+        }
+        by_id[task_id] = item
+        rows.append(
+            (
+                item["id"],
+                item["project"],
+                item["status"],
+                item["run_phase"],
+                item["completed_at"],
+                item["error_message"],
+            )
+        )
+    return tuple(sorted(rows)), by_id
+
+
+def _task_state_changes(previous: dict[int, dict], current: dict[int, dict]) -> list[dict]:
+    changes: list[dict] = []
+    for task_id, item in current.items():
+        before = previous.get(task_id)
+        if before is None:
+            changes.append({"type": "created", "task": item})
+            continue
+        if any(
+            str(before.get(field) or "") != str(item.get(field) or "")
+            for field in ("status", "run_phase", "completed_at", "error_message")
+        ):
+            changes.append({"type": "updated", "before": before, "task": item})
+    for task_id, item in previous.items():
+        if task_id not in current:
+            changes.append({"type": "deleted", "task": item})
+    return changes
+
+
 # ── Static web assets ────────────────────────────────────────────────────────
 _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -281,10 +333,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 int((int(extra.get("stale_seconds") or 0)) // 10),
             )
 
+        def _task_state_event(changes: list[dict]) -> dict:
+            first = changes[0].get("task") if changes else {}
+            try:
+                task_id = int((first or {}).get("id") or 0) or None
+            except Exception:
+                task_id = None
+            return {
+                "timestamp": _now_iso(),
+                "task_id": task_id,
+                "stage": "task-state",
+                "level": "info",
+                "message": "任务状态已更新",
+                "extra": {
+                    "project": health_project or "",
+                    "changes": changes[:20],
+                    "changed_task_ids": [
+                        int(change.get("task", {}).get("id") or 0)
+                        for change in changes
+                        if int(change.get("task", {}).get("id") or 0) > 0
+                    ],
+                },
+            }
+
         token, replay_events = progress_bus.subscribe_with_backlog(_enqueue_event, after_id=last_event_id)
         last_keepalive = time.monotonic()
         last_health_check = 0.0
         last_health_key: tuple | None = None
+        last_task_state_check = 0.0
+        last_task_state_key, last_task_state_by_id = _task_state_snapshot(health_project)
         try:
             # Replay buffered progress first when the client reconnects with a
             # last-seen event id. This closes gaps from transient disconnects.
@@ -325,6 +402,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if key != last_health_key:
                         last_health_key = key
                         if not _write_event_frame(health):
+                            break
+                        last_keepalive = now
+
+                if now - last_task_state_check >= 2.0:
+                    last_task_state_check = now
+                    task_state_key, task_state_by_id = _task_state_snapshot(health_project)
+                    if task_state_key != last_task_state_key:
+                        changes = _task_state_changes(last_task_state_by_id, task_state_by_id)
+                        last_task_state_key = task_state_key
+                        last_task_state_by_id = task_state_by_id
+                        if changes and not _write_event_frame(_task_state_event(changes)):
                             break
                         last_keepalive = now
 

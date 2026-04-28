@@ -239,26 +239,25 @@ def _notify_task_event(
         except Exception:
             pass
 
-    # Feishu only receives task execution progress for tasks that originated
-    # from a Feishu chat. Requirement-planning progress is handled at the
-    # Feishu command entrypoint so non-Feishu requirements are not broadcast.
-    if feishu_chat_id:
-        try:
-            runner.notify_feishu_task_event(
-                project_name=str(context.project.get("name") or task.get("project") or ""),
-                project_path=str(context.project_path),
-                task_id=int(task["id"]),
-                task_title=str(task.get("title") or ""),
-                event=event,
-                phase=phase,
-                level=level,
-                message=message,
-                status=status,
-                summary=summary,
-                chat_ids=[feishu_chat_id],
-            )
-        except Exception:
-            pass
+    # Feishu app notifications are proactive project notifications. Feishu-
+    # originated tasks are routed back to the source chat; other sources use
+    # the project's known notification chats.
+    try:
+        runner.notify_feishu_task_event(
+            project_name=str(context.project.get("name") or task.get("project") or ""),
+            project_path=str(context.project_path),
+            task_id=int(task["id"]),
+            task_title=str(task.get("title") or ""),
+            event=event,
+            phase=phase,
+            level=level,
+            message=message,
+            status=status,
+            summary=summary,
+            chat_ids=[feishu_chat_id] if feishu_chat_id else None,
+        )
+    except Exception:
+        pass
 
 
 def _notify_progress_event(context: _RunContext, task: dict, event: dict) -> None:

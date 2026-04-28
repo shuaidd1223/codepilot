@@ -461,6 +461,28 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
           state.daemonHealth = event.extra;
           return;
         }
+        if (event && event.stage === 'task-state') {
+          const changes = (event.extra && Array.isArray(event.extra.changes)) ? event.extra.changes : [];
+          scheduleRefresh({ immediate: true });
+          const taskId = state.nav.view === 'task' ? state.nav.id : null;
+          if (taskId) {
+            const ids = (event.extra && Array.isArray(event.extra.changed_task_ids)) ? event.extra.changed_task_ids : [];
+            if (!ids.length || ids.some((id) => Number(id) === Number(taskId))) {
+              loadTaskDetail({ silent: true });
+              loadTaskLog(taskId);
+            }
+          }
+          changes.forEach((change) => {
+            const task = change && change.task ? change.task : {};
+            const status = String(task.status || '');
+            const title = String(task.title || '').trim();
+            if (status === 'done') pushToast(`任务已完成：${title || ('#' + task.id)}`, 'success');
+            else if (status === 'failed') pushToast(`任务失败：${title || ('#' + task.id)}`, 'error');
+            else if (status === 'cancelled') pushToast(`任务已取消：${title || ('#' + task.id)}`, 'warning');
+            else if (status === 'in_progress') pushToast(`任务开始执行：${title || ('#' + task.id)}`, 'info');
+          });
+          return;
+        }
         state.liveEvents.push(event);
         if (state.liveEvents.length > LIVE_EVENTS_MAX) {
           state.liveEvents.splice(0, state.liveEvents.length - LIVE_EVENTS_MAX);
