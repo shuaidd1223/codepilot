@@ -12,6 +12,7 @@ def _init_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
     db.init_db()
+    monkeypatch.setattr(run_orchestrator_mod, "_publish_web_task_event", lambda *args, **kwargs: None)
     webui_mod._UI_JOBS.clear()
     webui_mod._UI_EVENTS.clear()
     webui_mod._UI_JOB_SEQ = 0
@@ -109,7 +110,7 @@ def test_run_backlog_does_not_repeat_same_preflight_skip_notification(tmp_path, 
     assert [item["event"] for item in notifications] == ["preflight_skip"]
 
 
-def test_notify_task_event_routes_generic_progress_and_project_feishu_for_user_source(tmp_path, monkeypatch):
+def test_notify_task_event_routes_generic_progress_without_feishu_for_user_source(tmp_path, monkeypatch):
     project_path = tmp_path / "project"
     project_path.mkdir()
     context = run_orchestrator_mod._RunContext(
@@ -125,6 +126,12 @@ def test_notify_task_event_routes_generic_progress_and_project_feishu_for_user_s
     )
     generic_events: list[dict] = []
     feishu_events: list[dict] = []
+    web_events: list[dict] = []
+    monkeypatch.setattr(
+        run_orchestrator_mod,
+        "_publish_web_task_event",
+        lambda *args, **kwargs: web_events.append(kwargs),
+    )
     monkeypatch.setattr(run_cmd, "notify_task_event", lambda *args, **kwargs: generic_events.append(kwargs) or True)
     monkeypatch.setattr(
         run_cmd,
@@ -142,8 +149,8 @@ def test_notify_task_event_routes_generic_progress_and_project_feishu_for_user_s
     )
 
     assert [item["event"] for item in generic_events] == ["phase_start"]
-    assert [item["event"] for item in feishu_events] == ["phase_start"]
-    assert feishu_events[0]["chat_ids"] is None
+    assert [item["event"] for item in web_events] == ["phase_start"]
+    assert feishu_events == []
 
 
 def test_notify_task_event_routes_feishu_origin_to_source_chat(tmp_path, monkeypatch):
@@ -162,6 +169,12 @@ def test_notify_task_event_routes_feishu_origin_to_source_chat(tmp_path, monkeyp
     )
     generic_events: list[dict] = []
     feishu_events: list[dict] = []
+    web_events: list[dict] = []
+    monkeypatch.setattr(
+        run_orchestrator_mod,
+        "_publish_web_task_event",
+        lambda *args, **kwargs: web_events.append(kwargs),
+    )
     monkeypatch.setattr(run_cmd, "notify_task_event", lambda *args, **kwargs: generic_events.append(kwargs) or True)
     monkeypatch.setattr(
         run_cmd,
@@ -179,7 +192,53 @@ def test_notify_task_event_routes_feishu_origin_to_source_chat(tmp_path, monkeyp
     )
 
     assert [item["event"] for item in generic_events] == ["phase_end"]
+    assert [item["event"] for item in web_events] == ["phase_end"]
     assert [item["chat_ids"] for item in feishu_events] == [["chat-source"]]
+
+
+def test_progress_event_forwards_task_log_stream_without_external_status_notification(tmp_path, monkeypatch):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    context = run_orchestrator_mod._RunContext(
+        project={"name": "demo", "path": str(project_path)},
+        project_path=project_path,
+        config=None,
+        base_branch="dev",
+        shell_info=object(),
+        executor="builtin",
+        max_review_rounds=2,
+        per_task_branch_enabled=False,
+        task_workspace="branch",
+    )
+    web_progress_events: list[dict] = []
+    external_events: list[dict] = []
+    monkeypatch.setattr(
+        run_orchestrator_mod,
+        "_publish_web_progress_event",
+        lambda event: web_progress_events.append(event),
+    )
+    monkeypatch.setattr(run_cmd, "notify_task_event", lambda *args, **kwargs: external_events.append(kwargs) or True)
+
+    run_orchestrator_mod._notify_progress_event(
+        context,
+        {"id": 11, "title": "streaming task"},
+        {
+            "task_id": 11,
+            "stage": "builder",
+            "level": "info",
+            "message": "",
+            "extra": {
+                "task_log_stream": True,
+                "task_log_chunk": "hello",
+                "task_log_start": 0,
+                "task_log_end": 5,
+            },
+        },
+    )
+
+    assert len(web_progress_events) == 1
+    assert web_progress_events[0]["extra"]["task_log_stream"] is True
+    assert external_events == []
 
 
 def test_run_backlog_continues_after_requeued_failure_without_reselecting_same_task(tmp_path, monkeypatch):

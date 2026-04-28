@@ -47,6 +47,27 @@ def _append_event(message: str, *, level: str = "info", project: str | None = No
     with shell._UI_LOCK:
         shell._UI_EVENTS.append(entry)
         del shell._UI_EVENTS[:-_MAX_EVENTS]
+    _emit_ui_state_event("event", project=project, task_id=task_id, payload=entry)
+
+
+def _emit_ui_state_event(kind: str, *, project: str | None = None, task_id: int | None = None, payload: dict | None = None) -> None:
+    try:
+        from codepilot.core import progress_bus
+
+        progress_bus.emit(
+            stage="ui-state",
+            message=str((payload or {}).get("message") or kind),
+            task_id=task_id,
+            level=str((payload or {}).get("level") or "info"),
+            event_type=str(kind or "updated"),
+            extra={
+                "kind": str(kind or "updated"),
+                "project": project or "",
+                "payload": dict(payload or {}),
+            },
+        )
+    except Exception:
+        pass
 
 
 def _normalize_goal_category(category: str | None) -> str:
@@ -81,7 +102,18 @@ def _update_job(job_id: int, **fields) -> dict:
     with shell._UI_LOCK:
         job = shell._UI_JOBS.setdefault(job_id, {"id": job_id})
         job.update(fields)
-        return dict(job)
+        snapshot = dict(job)
+    _emit_ui_state_event(
+        "job",
+        project=str(snapshot.get("project") or ""),
+        payload={
+            "id": int(job_id),
+            "status": snapshot.get("status"),
+            "phase": snapshot.get("phase"),
+            "updated_at": snapshot.get("updated_at"),
+        },
+    )
+    return snapshot
 
 
 def list_ui_jobs(project: str | None = None) -> list[dict]:

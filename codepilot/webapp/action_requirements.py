@@ -25,6 +25,7 @@ from codepilot.webapp.action_state import (
     _GOAL_MAX_BYTES,
     _MAX_JOB_LOG_LINES,
     _append_event,
+    _emit_ui_state_event,
     _effective_planner,
     _extract_job_task_ids,
     _next_job_id,
@@ -442,6 +443,7 @@ def submit_requirement_action(
     _append_event(f"收到需求：{normalized_title}", project=project)
 
     def _append_job_log(line: str) -> None:
+        payload = {"id": job_id, "line": line, "updated_at": _now_iso()}
         with shell._UI_LOCK:
             job = shell._UI_JOBS.get(job_id)
             if job:
@@ -449,6 +451,8 @@ def submit_requirement_action(
                 if len(job["log"]) > _MAX_JOB_LOG_LINES:
                     del job["log"][:-_MAX_JOB_LOG_LINES]
                 job["updated_at"] = _now_iso()
+                payload["updated_at"] = job["updated_at"]
+        _emit_ui_state_event("job_log", project=project, payload=payload)
 
     def worker() -> None:
         import codepilot.ai_support.service as _ai_module

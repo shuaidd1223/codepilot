@@ -207,6 +207,51 @@ def _task_feishu_chat_id(task: dict) -> str:
     return source.split(":", 1)[1].strip()
 
 
+def _publish_web_task_event(
+    context: _RunContext,
+    task: dict,
+    *,
+    event: str,
+    phase: str = "",
+    level: str = "info",
+    message: str = "",
+    status: str = "",
+    summary: str = "",
+) -> None:
+    try:
+        from codepilot.core.web_events import publish_task_state_event
+
+        publish_task_state_event(
+            project=str(context.project.get("name") or task.get("project") or ""),
+            task=task,
+            event=event,
+            phase=phase,
+            level=level,
+            message=message,
+            status=status,
+            summary=summary,
+        )
+    except Exception:
+        pass
+
+
+def _publish_web_progress_event(event: dict) -> None:
+    try:
+        from codepilot.core.web_events import publish_web_event
+
+        payload = {
+            "task_id": event.get("task_id"),
+            "stage": str(event.get("stage") or "system"),
+            "type": str(event.get("type") or ""),
+            "level": str(event.get("level") or "info"),
+            "message": str(event.get("message") or ""),
+            "extra": dict(event.get("extra") or {}),
+        }
+        publish_web_event(payload)
+    except Exception:
+        pass
+
+
 def _notify_task_event(
     context: _RunContext,
     task: dict,
@@ -220,6 +265,16 @@ def _notify_task_event(
 ) -> None:
     runner = _runner_module()
     feishu_chat_id = _task_feishu_chat_id(task)
+    _publish_web_task_event(
+        context,
+        task,
+        event=event,
+        phase=phase,
+        level=level,
+        message=message,
+        status=status,
+        summary=summary,
+    )
     # Web / external UI notifications are global progress telemetry: they do
     # not depend on who created the task. Terminal states are covered by the
     # legacy status notifier to avoid duplicate external-webhook messages.
@@ -239,25 +294,26 @@ def _notify_task_event(
         except Exception:
             pass
 
-    # Feishu app notifications are proactive project notifications. Feishu-
-    # originated tasks are routed back to the source chat; other sources use
-    # the project's known notification chats.
-    try:
-        runner.notify_feishu_task_event(
-            project_name=str(context.project.get("name") or task.get("project") or ""),
-            project_path=str(context.project_path),
-            task_id=int(task["id"]),
-            task_title=str(task.get("title") or ""),
-            event=event,
-            phase=phase,
-            level=level,
-            message=message,
-            status=status,
-            summary=summary,
-            chat_ids=[feishu_chat_id] if feishu_chat_id else None,
-        )
-    except Exception:
-        pass
+    # Feishu only receives task execution progress for tasks that originated
+    # from a Feishu chat. Requirement-planning progress is handled at the
+    # Feishu command entrypoint so non-Feishu requirements are not broadcast.
+    if feishu_chat_id:
+        try:
+            runner.notify_feishu_task_event(
+                project_name=str(context.project.get("name") or task.get("project") or ""),
+                project_path=str(context.project_path),
+                task_id=int(task["id"]),
+                task_title=str(task.get("title") or ""),
+                event=event,
+                phase=phase,
+                level=level,
+                message=message,
+                status=status,
+                summary=summary,
+                chat_ids=[feishu_chat_id],
+            )
+        except Exception:
+            pass
 
 
 def _notify_progress_event(context: _RunContext, task: dict, event: dict) -> None:
@@ -266,6 +322,7 @@ def _notify_progress_event(context: _RunContext, task: dict, event: dict) -> Non
             return
     except Exception:
         return
+    _publish_web_progress_event(event)
     event_type = str(event.get("type") or "").strip()
     if event_type not in {"phase_start", "phase_end", "error", "phase_retry"}:
         return

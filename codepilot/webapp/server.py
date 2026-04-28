@@ -19,6 +19,7 @@ imports (``from codepilot.webapp.server import submit_requirement_action``,
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import webbrowser
@@ -86,58 +87,6 @@ _UI_LOCK = threading.Lock()
 _UI_JOB_SEQ = 0
 _UI_JOBS: dict[int, dict] = {}
 _UI_EVENTS: list[dict] = []
-
-
-def _task_state_snapshot(project: str | None) -> tuple[tuple, dict[int, dict]]:
-    tasks = db.list_tasks(project=project) if project else db.list_tasks()
-    rows: list[tuple] = []
-    by_id: dict[int, dict] = {}
-    for task in tasks:
-        try:
-            task_id = int(task.get("id") or 0)
-        except Exception:
-            task_id = 0
-        if task_id <= 0:
-            continue
-        item = {
-            "id": task_id,
-            "title": str(task.get("title") or ""),
-            "project": str(task.get("project") or ""),
-            "status": str(task.get("status") or ""),
-            "run_phase": str(task.get("run_phase") or ""),
-            "completed_at": str(task.get("completed_at") or ""),
-            "error_message": str(task.get("error_message") or ""),
-        }
-        by_id[task_id] = item
-        rows.append(
-            (
-                item["id"],
-                item["project"],
-                item["status"],
-                item["run_phase"],
-                item["completed_at"],
-                item["error_message"],
-            )
-        )
-    return tuple(sorted(rows)), by_id
-
-
-def _task_state_changes(previous: dict[int, dict], current: dict[int, dict]) -> list[dict]:
-    changes: list[dict] = []
-    for task_id, item in current.items():
-        before = previous.get(task_id)
-        if before is None:
-            changes.append({"type": "created", "task": item})
-            continue
-        if any(
-            str(before.get(field) or "") != str(item.get(field) or "")
-            for field in ("status", "run_phase", "completed_at", "error_message")
-        ):
-            changes.append({"type": "updated", "before": before, "task": item})
-    for task_id, item in previous.items():
-        if task_id not in current:
-            changes.append({"type": "deleted", "task": item})
-    return changes
 
 
 # ── Static web assets ────────────────────────────────────────────────────────
@@ -218,6 +167,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as exc:
             raise RuntimeError("请求体不是合法 JSON。") from exc
 
+    def _handle_post_internal_event(self, body: dict) -> dict:
+        remote_host = str((self.client_address or ("", 0))[0] or "")
+        if remote_host not in {"127.0.0.1", "::1", "localhost"}:
+            raise RuntimeError("internal event endpoint only accepts local requests")
+        stage = str(body.get("stage") or "").strip()
+        if not stage:
+            raise RuntimeError("event.stage is required")
+        message = str(body.get("message") or "")
+        level = str(body.get("level") or "info")
+        event_type = str(body.get("type") or "").strip() or None
+        extra = body.get("extra") if isinstance(body.get("extra"), dict) else {}
+        try:
+            task_id = int(body.get("task_id")) if body.get("task_id") is not None else None
+        except Exception:
+            task_id = None
+
+        from codepilot.core import progress_bus
+
+        progress_bus.emit(
+            stage=stage,
+            message=message,
+            task_id=task_id,
+            level=level,
+            event_type=event_type,
+            extra=extra,
+        )
+        return {"ok": True}
+
     def _stream_progress_events(self) -> None:
         """GET /api/events/stream — SSE endpoint backed by :mod:`progress_bus`.
 
@@ -228,10 +205,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         are sent every 15s so intermediate proxies keep the connection alive;
         disconnects tear down the subscription.
 
-        Daemon health is piggy-backed onto the same stream: we poll the
-        local heartbeat file every 2s and push a ``stage=daemon-health``
-        event whenever the state changes (alive ↔ stale ↔ dead). That way
-        the Web UI banner reacts in ~2s without a separate polling timer.
+        Task state changes from independent processes are posted to
+        ``/internal/events`` and then relayed through this same stream. Daemon
+        health is piggy-backed onto the stream with a lightweight heartbeat
+        check, independent from task state delivery.
         """
         from collections import deque
         import time
@@ -333,35 +310,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 int((int(extra.get("stale_seconds") or 0)) // 10),
             )
 
-        def _task_state_event(changes: list[dict]) -> dict:
-            first = changes[0].get("task") if changes else {}
-            try:
-                task_id = int((first or {}).get("id") or 0) or None
-            except Exception:
-                task_id = None
-            return {
-                "timestamp": _now_iso(),
-                "task_id": task_id,
-                "stage": "task-state",
-                "level": "info",
-                "message": "任务状态已更新",
-                "extra": {
-                    "project": health_project or "",
-                    "changes": changes[:20],
-                    "changed_task_ids": [
-                        int(change.get("task", {}).get("id") or 0)
-                        for change in changes
-                        if int(change.get("task", {}).get("id") or 0) > 0
-                    ],
-                },
-            }
-
         token, replay_events = progress_bus.subscribe_with_backlog(_enqueue_event, after_id=last_event_id)
         last_keepalive = time.monotonic()
         last_health_check = 0.0
         last_health_key: tuple | None = None
-        last_task_state_check = 0.0
-        last_task_state_key, last_task_state_by_id = _task_state_snapshot(health_project)
         try:
             # Replay buffered progress first when the client reconnects with a
             # last-seen event id. This closes gaps from transient disconnects.
@@ -402,17 +354,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if key != last_health_key:
                         last_health_key = key
                         if not _write_event_frame(health):
-                            break
-                        last_keepalive = now
-
-                if now - last_task_state_check >= 2.0:
-                    last_task_state_check = now
-                    task_state_key, task_state_by_id = _task_state_snapshot(health_project)
-                    if task_state_key != last_task_state_key:
-                        changes = _task_state_changes(last_task_state_by_id, task_state_by_id)
-                        last_task_state_key = task_state_key
-                        last_task_state_by_id = task_state_by_id
-                        if changes and not _write_event_frame(_task_state_event(changes)):
                             break
                         last_keepalive = now
 
@@ -576,6 +517,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _dispatch_post_exact(self, path: str, get_body: Callable[[], dict]) -> dict | None:
         """Handle POST endpoints with exact paths; return ``None`` if unmatched."""
         handlers: dict[str, Callable[[dict], dict]] = {
+            "/internal/events": self._handle_post_internal_event,
             "/api/goal": self._handle_post_goal,
             "/api/projects": self._handle_post_projects,
             "/api/tasks": self._handle_post_tasks,
@@ -695,8 +637,26 @@ def start_ui_server(
 ) -> ThreadingHTTPServer:
     db.init_db()
     server = ThreadingHTTPServer((host, port), DashboardHandler)
+    bound_host, bound_port = server.server_address
+    try:
+        db.upsert_service_state(
+            "webui",
+            "_global",
+            pid=os.getpid(),
+            status="running",
+            log_path="",
+            heartbeat_at=_now_iso(),
+            meta={
+                "pid": os.getpid(),
+                "host": str(bound_host or host),
+                "port": int(bound_port),
+                "started_at": _now_iso(),
+            },
+        )
+    except Exception:
+        pass
     if open_browser:
         opener = browser_opener or webbrowser.open
-        threading.Timer(0.3, lambda: opener(f"http://{host}:{port}/")).start()
+        threading.Timer(0.3, lambda: opener(f"http://{bound_host}:{bound_port}/")).start()
     return server
 

@@ -11,6 +11,8 @@ import pytest
 from codepilot.storage import database as db
 from codepilot.commands import daemon as daemon_cmd
 from codepilot.commands import inspect as inspect_cmd
+from codepilot.core import progress_bus
+from codepilot.core.web_events import publish_task_state_event
 from codepilot.webapp import server as webui_mod
 from codepilot.core import runtime as runtime_mod
 from codepilot.webapp.payloads import daemon_health_payload
@@ -178,25 +180,80 @@ def test_daemon_health_without_project_aggregates_project_scoped_service_states(
     assert payload["reason"] == ""
 
 
-def test_task_state_snapshot_detects_cross_process_status_changes(tmp_path, monkeypatch):
-    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
-    db.init_db()
-    project_path = tmp_path / "project"
-    project_path.mkdir()
-    db.register_project("demo", str(project_path))
+def test_internal_event_endpoint_publishes_task_state_event(ui_server):
+    progress_bus.clear_subscribers_for_tests()
+    events: list[dict] = []
+    token = progress_bus.subscribe(lambda event: events.append(event))
+    try:
+        status, body = _post(
+            f"{ui_server}/internal/events",
+            {
+                "stage": "task-state",
+                "type": "started",
+                "task_id": 123,
+                "level": "info",
+                "message": "started",
+                "extra": {
+                    "project": "demo",
+                    "changed_task_ids": [123],
+                    "changes": [{"type": "started", "task": {"id": 123, "status": "in_progress"}}],
+                },
+            },
+        )
+    finally:
+        progress_bus.unsubscribe(token)
+
+    assert status == 200
+    assert body["ok"] is True
+    assert len(events) == 1
+    assert events[0]["stage"] == "task-state"
+    assert events[0]["task_id"] == 123
+    assert events[0]["extra"]["changed_task_ids"] == [123]
+
+
+def test_publish_task_state_event_posts_to_registered_webui(ui_server):
+    progress_bus.clear_subscribers_for_tests()
     task = db.create_task("demo", "cross process task", agent="codex")
-
-    before_key, before = webui_mod._task_state_snapshot("demo")
     db.update_task(task["id"], status="in_progress", run_phase="builder")
-    after_key, after = webui_mod._task_state_snapshot("demo")
+    events: list[dict] = []
+    token = progress_bus.subscribe(lambda event: events.append(event))
+    try:
+        delivered = publish_task_state_event(
+            project="demo",
+            task=task,
+            event="started",
+            phase="builder",
+            status="in_progress",
+            message="任务进入执行队列",
+        )
+    finally:
+        progress_bus.unsubscribe(token)
 
-    assert before_key != after_key
-    changes = webui_mod._task_state_changes(before, after)
-    assert len(changes) == 1
-    assert changes[0]["task"]["id"] == task["id"]
-    assert changes[0]["before"]["status"] == "backlog"
-    assert changes[0]["task"]["status"] == "in_progress"
-    assert changes[0]["task"]["run_phase"] == "builder"
+    assert delivered is True
+    assert len(events) == 1
+    event = events[0]
+    assert event["stage"] == "task-state"
+    assert event["task_id"] == task["id"]
+    assert event["extra"]["project"] == "demo"
+    assert event["extra"]["changed_task_ids"] == [task["id"]]
+    assert event["extra"]["changes"][0]["task"]["status"] == "in_progress"
+    assert event["extra"]["changes"][0]["task"]["run_phase"] == "builder"
+
+
+def test_ui_state_mutations_emit_refresh_events(ui_server):
+    progress_bus.clear_subscribers_for_tests()
+    events: list[dict] = []
+    token = progress_bus.subscribe(lambda event: events.append(event))
+    try:
+        webui_mod._append_event("ui event refresh", project="demo")
+        webui_mod._update_job(77, project="demo", status="running", phase="planning")
+    finally:
+        progress_bus.unsubscribe(token)
+
+    assert [event["stage"] for event in events] == ["ui-state", "ui-state"]
+    assert [event["type"] for event in events] == ["event", "job"]
+    assert events[0]["extra"]["project"] == "demo"
+    assert events[1]["extra"]["payload"]["status"] == "running"
 
 
 def test_projects_endpoint_lists_registered_project(ui_server):
