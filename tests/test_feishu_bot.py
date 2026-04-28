@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -324,7 +325,7 @@ def test_feishu_task_notifications_dedupe_same_event(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_feishu_delete_task_command_returns_deleted_card(tmp_path, monkeypatch):
+def test_feishu_delete_task_command_requires_confirm_token(tmp_path, monkeypatch):
     project_path = _setup_project(tmp_path, monkeypatch)
     task = db.create_task(
         project="demo",
@@ -335,12 +336,20 @@ def test_feishu_delete_task_command_returns_deleted_card(tmp_path, monkeypatch):
         project_path=str(project_path),
     )
 
-    reply = handle_command_text(f"delete {task['id']}")
-    payload = json.dumps(reply["card"], ensure_ascii=False)
+    first = handle_command_text(f"delete {task['id']}", chat_id="chat-delete")
+    first_payload = json.dumps(first["card"], ensure_ascii=False)
+    pending = db.get_service_state("feishu_confirm", "chat-delete")
+    token = pending["meta"]["token"]
 
-    assert reply["type"] == "interactive"
-    assert "任务已删除" in payload
-    assert f"#{task['id']}" in payload
+    assert first["type"] == "interactive"
+    assert "敏感操作待确认" in first_payload
+    assert f"confirm {token}" in first_payload
+    assert db.get_task(task["id"]) is not None
+    second = handle_command_text(f"confirm {token}", chat_id="chat-delete")
+    second_payload = json.dumps(second["card"], ensure_ascii=False)
+    assert second["type"] == "interactive"
+    assert "任务已删除" in second_payload
+    assert f"#{task['id']}" in second_payload
     assert db.get_task(task["id"]) is None
 
 
@@ -424,12 +433,20 @@ def test_feishu_batch_delete_task_command_reports_partial_failures(tmp_path, mon
     db.update_task(deletable["id"], status="done")
     db.update_task(blocked["id"], status="in_progress")
 
-    reply = handle_command_text(f"delete {deletable['id']} {blocked['id']}")
-    payload = json.dumps(reply["card"], ensure_ascii=False)
+    first = handle_command_text(f"delete {deletable['id']} {blocked['id']}", chat_id="chat-batch-delete")
+    first_payload = json.dumps(first["card"], ensure_ascii=False)
+    pending = db.get_service_state("feishu_confirm", "chat-batch-delete")
+    token = pending["meta"]["token"]
 
-    assert reply["type"] == "interactive"
-    assert "批量删除完成" in payload
-    assert "失败 1" in payload
+    assert first["type"] == "interactive"
+    assert "敏感操作待确认" in first_payload
+    assert "批量删除 2 个任务" in first_payload
+    assert db.get_task(deletable["id"]) is not None
+    second = handle_command_text(f"confirm {token}", chat_id="chat-batch-delete")
+    second_payload = json.dumps(second["card"], ensure_ascii=False)
+    assert second["type"] == "interactive"
+    assert "批量删除完成" in second_payload
+    assert "失败 1" in second_payload
     assert db.get_task(deletable["id"]) is None
     assert db.get_task(blocked["id"])["status"] == "in_progress"
 
@@ -467,13 +484,97 @@ def test_feishu_natural_language_delete_uses_numbered_choice(tmp_path, monkeypat
     handle_command_text("use demo", chat_id="chat-nl-delete")
     first_reply = handle_command_text("删除任务", chat_id="chat-nl-delete")
     second_reply = handle_command_text("1", chat_id="chat-nl-delete")
+    pending = db.get_service_state("feishu_confirm", "chat-nl-delete")
+    token = pending["meta"]["token"]
+    third_reply = handle_command_text(f"confirm {token}", chat_id="chat-nl-delete")
     first_payload = json.dumps(first_reply["card"], ensure_ascii=False)
     second_payload = json.dumps(second_reply["card"], ensure_ascii=False)
+    third_payload = json.dumps(third_reply["card"], ensure_ascii=False)
 
     assert "请确认操作" in first_payload
     assert "回复数字继续" in first_payload
-    assert "任务已删除" in second_payload
+    assert "敏感操作待确认" in second_payload
+    assert "confirm" in second_payload
+    assert "任务已删除" in third_payload
     assert db.get_task(first["id"]) is None
+
+
+def test_feishu_cancel_confirm_token_keeps_task_unchanged(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    task = db.create_task(
+        project="demo",
+        title="取消确认测试任务",
+        content="验证 cancel confirm",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+
+    handle_command_text(f"delete {task['id']}", chat_id="chat-cancel-confirm")
+    pending = db.get_service_state("feishu_confirm", "chat-cancel-confirm")
+    token = pending["meta"]["token"]
+    reply = handle_command_text(f"cancel confirm {token}", chat_id="chat-cancel-confirm")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+    confirm_reply = handle_command_text(f"confirm {token}", chat_id="chat-cancel-confirm")
+    confirm_payload = json.dumps(confirm_reply["card"], ensure_ascii=False)
+
+    assert "确认已取消" in payload
+    assert db.get_task(task["id"]) is not None
+    assert "确认已失效" in confirm_payload
+    assert db.get_task(task["id"]) is not None
+
+
+def test_feishu_confirm_rejects_chat_mismatch_and_expired_token(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    task = db.create_task(
+        project="demo",
+        title="确认上下文测试任务",
+        content="验证 chat mismatch / expired",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+
+    handle_command_text(f"delete {task['id']}", chat_id="chat-a")
+    pending = db.get_service_state("feishu_confirm", "chat-a")
+    token = pending["meta"]["token"]
+
+    mismatch = handle_command_text(f"confirm {token}", chat_id="chat-b")
+    mismatch_payload = json.dumps(mismatch["card"], ensure_ascii=False)
+    assert "确认已失效" in mismatch_payload
+    assert db.get_task(task["id"]) is not None
+
+    pending["meta"]["expires_at"] = (datetime.now() - timedelta(seconds=5)).isoformat(timespec="seconds")
+    db.upsert_service_state("feishu_confirm", "chat-a", pid=0, status="pending", log_path="", meta=pending["meta"])
+    expired = handle_command_text(f"confirm {token}", chat_id="chat-a")
+    expired_payload = json.dumps(expired["card"], ensure_ascii=False)
+
+    assert "确认已失效" in expired_payload
+    assert db.get_task(task["id"]) is not None
+
+
+def test_feishu_project_delete_requires_confirm_token(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    db.create_task(
+        project="demo",
+        title="删除项目测试任务",
+        content="验证 project delete",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+
+    first = handle_command_text("project delete demo", chat_id="chat-project-delete")
+    first_payload = json.dumps(first["card"], ensure_ascii=False)
+    pending = db.get_service_state("feishu_confirm", "chat-project-delete")
+    token = pending["meta"]["token"]
+    second = handle_command_text(f"confirm {token}", chat_id="chat-project-delete")
+    second_payload = json.dumps(second["card"], ensure_ascii=False)
+
+    assert "敏感操作待确认" in first_payload
+    assert "工作目录不会被删除" in first_payload
+    assert "项目已删除" in second_payload
+    assert db.get_project("demo") is None
 
 
 def test_feishu_unknown_plain_text_defaults_to_chat_goal(tmp_path, monkeypatch):

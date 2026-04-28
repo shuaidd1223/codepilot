@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ from codepilot.webapp.action_task_ops import (
     archive_task_action,
     batch_task_action,
     cancel_task_action,
+    delete_project_action,
     delete_task_action,
     project_service_action,
     stop_task_action,
@@ -51,6 +52,9 @@ _NOTIFY_DEDUPE_SERVICE = "feishu_notify"
 _PENDING_REQUIREMENT_KEY = "pending_requirement"
 _PENDING_ACTION_OPTIONS_KEY = "pending_action_options"
 _PENDING_GOAL_TEXT_KEY = "pending_goal_text"
+_PENDING_CONFIRM_SERVICE = "feishu_confirm"
+_PENDING_CONFIRM_DIRECT_SCOPE = "__direct__"
+_PENDING_CONFIRM_TTL_SECONDS = 120
 
 
 def _chat_scope(chat_id: str) -> str:
@@ -267,6 +271,7 @@ def _card_commands(kind: str, *, project: str = "", task_id: int | None = None) 
             ("use <project>", "进入项目"),
             ("overview <project>", "项目总览"),
             ("tasks <project>", "任务面板"),
+            ("project delete <project>", "删除项目"),
             ("global", "全局状态"),
         ]
     if kind == "project":
@@ -480,6 +485,7 @@ def _save_chat_project(chat_id: str, project_name: str) -> None:
     meta.pop(_PENDING_ACTION_OPTIONS_KEY, None)
     meta.pop(_PENDING_GOAL_TEXT_KEY, None)
     _write_chat_meta(chat_id, meta)
+    _clear_pending_confirm(chat_id)
 
 
 def _now_iso() -> str:
@@ -627,6 +633,263 @@ def _clear_pending_goal_text(chat_id: str) -> None:
         _write_chat_meta(chat_id, meta)
 
 
+def _confirm_scope(chat_id: str) -> str:
+    raw = str(chat_id or "").strip()
+    return raw or _PENDING_CONFIRM_DIRECT_SCOPE
+
+
+def _parse_iso_datetime(raw: object) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _generate_confirm_token(chat_id: str, command_text: str) -> str:
+    seed = "|".join(
+        [
+            _confirm_scope(chat_id),
+            str(command_text or "").strip(),
+            _now_iso(),
+            str(os.getpid()),
+        ]
+    )
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:6].upper()
+
+
+def _load_pending_confirm(chat_id: str, *, allow_expired: bool = False) -> dict[str, Any] | None:
+    state = db.get_service_state(_PENDING_CONFIRM_SERVICE, _confirm_scope(chat_id))
+    meta = state.get("meta") if state and isinstance(state.get("meta"), dict) else {}
+    if not meta:
+        return None
+    token = str(meta.get("token") or "").strip().upper()
+    action = str(meta.get("action") or "").strip()
+    expires_at = _parse_iso_datetime(meta.get("expires_at"))
+    if not token or not action or expires_at is None:
+        db.clear_service_state(_PENDING_CONFIRM_SERVICE, _confirm_scope(chat_id))
+        return None
+    if not allow_expired and expires_at <= datetime.now():
+        db.clear_service_state(_PENDING_CONFIRM_SERVICE, _confirm_scope(chat_id))
+        return None
+    return dict(meta)
+
+
+def _save_pending_confirm(chat_id: str, pending: dict[str, Any]) -> dict[str, Any]:
+    token = str(pending.get("token") or "").strip().upper()
+    action = str(pending.get("action") or "").strip()
+    if not token or not action:
+        raise RuntimeError("确认上下文不完整。")
+    meta = dict(pending)
+    meta["token"] = token
+    meta["action"] = action
+    meta["scope"] = _confirm_scope(chat_id)
+    return db.upsert_service_state(
+        _PENDING_CONFIRM_SERVICE,
+        _confirm_scope(chat_id),
+        pid=0,
+        status="pending",
+        log_path="",
+        meta=meta,
+    )
+
+
+def _clear_pending_confirm(chat_id: str) -> bool:
+    return db.clear_service_state(_PENDING_CONFIRM_SERVICE, _confirm_scope(chat_id))
+
+
+def _task_confirm_lines(task_ids: list[int]) -> list[str]:
+    lines: list[str] = []
+    for task_id in task_ids:
+        task = db.get_task(task_id)
+        if not task:
+            raise RuntimeError(f"任务 #{task_id} 不存在。")
+        title = str(task.get("title") or "").strip() or f"任务 #{task_id}"
+        status = _status_label(str(task.get("status") or ""))
+        lines.append(f"- `#{task_id}` {title} / {status}")
+    return lines
+
+
+def _pending_delete_confirm(task_ids: list[int], *, command_text: str, chat_id: str) -> dict[str, Any]:
+    expires_at = datetime.now() + timedelta(seconds=_PENDING_CONFIRM_TTL_SECONDS)
+    return {
+        "token": _generate_confirm_token(chat_id, command_text),
+        "action": "delete_task_batch" if len(task_ids) > 1 else "delete_task",
+        "command": command_text,
+        "summary": f"批量删除 {len(task_ids)} 个任务" if len(task_ids) > 1 else f"删除任务 #{task_ids[0]}",
+        "task_ids": list(task_ids),
+        "details": _task_confirm_lines(task_ids),
+        "created_at": _now_iso(),
+        "expires_at": expires_at.isoformat(timespec="seconds"),
+    }
+
+
+def _pending_project_delete_confirm(project_name: str, *, command_text: str, chat_id: str) -> dict[str, Any]:
+    project = db.get_project(project_name)
+    if not project:
+        raise RuntimeError(f"项目 '{project_name}' 未注册。")
+    stats = db.get_task_stats(project_name)
+    expires_at = datetime.now() + timedelta(seconds=_PENDING_CONFIRM_TTL_SECONDS)
+    return {
+        "token": _generate_confirm_token(chat_id, command_text),
+        "action": "delete_project",
+        "command": command_text,
+        "summary": f"删除项目 {project_name}",
+        "project_name": project_name,
+        "details": [
+            f"- 项目：`{project_name}`",
+            f"- 路径：`{project['path']}`",
+            f"- 关联任务：`{int(stats.get('total') or 0)}`",
+            "- 工作目录不会被删除",
+        ],
+        "created_at": _now_iso(),
+        "expires_at": expires_at.isoformat(timespec="seconds"),
+    }
+
+
+def build_pending_confirm_card(pending: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
+    token = str(pending.get("token") or "").strip().upper()
+    expires_at = str(pending.get("expires_at") or "").strip() or "-"
+    detail_lines = pending.get("details") if isinstance(pending.get("details"), list) else []
+    blocks: list[str | dict[str, Any]] = [
+        *_section_note("请二次确认", "敏感操作不会立即执行，必须在当前飞书会话中再次确认。"),
+        _field_block(
+            [
+                _field(f"**操作**\n`{str(pending.get('summary') or '').strip() or '-'}`"),
+                _field(f"**确认口令**\n`{token}`"),
+                _field(f"**有效期**\n`{expires_at}`"),
+            ]
+        ),
+    ]
+    if detail_lines:
+        blocks.extend([*_section_note("影响范围"), _md_block("\n".join(str(item).strip() for item in detail_lines if str(item).strip()))])
+    blocks.extend(
+        _command_panel(
+            prefix,
+            [
+                (f"confirm {token}", "确认执行"),
+                (f"cancel confirm {token}", "取消本次确认"),
+            ],
+            title="确认命令",
+        )
+    )
+    return _card(
+        "敏感操作待确认",
+        blocks,
+        template="orange",
+        subtitle=f"确认口令 {token} 将在 {_PENDING_CONFIRM_TTL_SECONDS} 秒后失效。",
+    )
+
+
+def build_confirm_invalid_card(*, prefix: str = "", reason: str = "当前没有可执行的确认操作。") -> dict[str, Any]:
+    return _card(
+        "确认已失效",
+        [
+            _plain_block(reason),
+            _note("请重新发送原始敏感命令以生成新的确认口令。"),
+        ],
+        template="red",
+        subtitle="确认上下文不存在、已过期，或不属于当前飞书会话。",
+    )
+
+
+def build_confirm_cancelled_card(token: str, *, prefix: str = "") -> dict[str, Any]:
+    return _card(
+        f"确认已取消 · {token}",
+        [
+            _plain_block("本次敏感操作已取消，不会继续执行。"),
+            _note("如需继续，请重新发送原始敏感命令。"),
+        ],
+        template="grey",
+        subtitle="确认上下文已清理。",
+    )
+
+
+def build_project_deleted_card(result: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
+    project_name = str(result.get("project") or "").strip() or "-"
+    deleted_tasks = int(result.get("deleted_tasks") or 0)
+    path = str(result.get("path") or "").strip() or "-"
+    return _card(
+        f"项目已删除 · {project_name}",
+        [
+            _field_block(
+                [
+                    _field(f"**项目**\n`{project_name}`"),
+                    _field(f"**关联任务**\n`{deleted_tasks}`"),
+                    _field("**结果**\n`已删除注册记录`"),
+                ]
+            ),
+            _md_block(f"工作目录保留：`{path}`"),
+            *_command_panel(prefix, [("projects", "项目清单"), ("global", "全局状态")]),
+        ],
+        template="green",
+        subtitle="项目注册记录和关联任务/会话已删除。",
+    )
+
+
+def _execute_pending_confirm(pending: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
+    action = str(pending.get("action") or "").strip().lower()
+    if action == "delete_task":
+        task_ids = pending.get("task_ids") if isinstance(pending.get("task_ids"), list) else []
+        if len(task_ids) != 1:
+            raise RuntimeError("确认上下文损坏：缺少任务 ID。")
+        task_id = _parse_task_id(str(task_ids[0]))
+        delete_task_action(task_id)
+        return _reply_card(
+            _card(
+                f"任务已删除 · #{task_id}",
+                [
+                    _field_block(
+                        [
+                            _field(f"**任务 ID**\n`#{task_id}`"),
+                            _field("**结果**\n`已删除`"),
+                        ]
+                    ),
+                    *_command_panel(prefix, _card_commands("tasks")),
+                ],
+                template="green",
+            )
+        )
+    if action == "delete_task_batch":
+        task_ids = pending.get("task_ids") if isinstance(pending.get("task_ids"), list) else []
+        normalized = [_parse_task_id(str(item)) for item in task_ids]
+        return _reply_card(build_batch_task_action_card("delete", batch_task_action(normalized, "delete"), prefix=prefix))
+    if action == "delete_project":
+        project_name = str(pending.get("project_name") or "").strip()
+        if not project_name:
+            raise RuntimeError("确认上下文损坏：缺少项目名。")
+        return _reply_card(build_project_deleted_card(delete_project_action(project_name), prefix=prefix))
+    raise RuntimeError(f"未支持的确认动作：{action or '-'}。")
+
+
+def _confirm_pending_action(token: str, *, chat_id: str = "", prefix: str = "") -> dict[str, Any]:
+    pending = _load_pending_confirm(chat_id, allow_expired=True)
+    normalized = str(token or "").strip().upper()
+    if not pending:
+        return _reply_card(build_confirm_invalid_card(prefix=prefix))
+    if str(pending.get("token") or "").strip().upper() != normalized:
+        return _reply_card(build_confirm_invalid_card(prefix=prefix, reason="确认口令不匹配，请使用确认卡片里的命令。"))
+    expires_at = _parse_iso_datetime(pending.get("expires_at"))
+    if expires_at is None or expires_at <= datetime.now():
+        _clear_pending_confirm(chat_id)
+        return _reply_card(build_confirm_invalid_card(prefix=prefix))
+    _clear_pending_confirm(chat_id)
+    return _execute_pending_confirm(pending, prefix=prefix)
+
+
+def _cancel_pending_confirm(token: str, *, chat_id: str = "", prefix: str = "") -> dict[str, Any]:
+    pending = _load_pending_confirm(chat_id, allow_expired=True)
+    normalized = str(token or "").strip().upper()
+    if not pending:
+        return _reply_card(build_confirm_invalid_card(prefix=prefix))
+    if str(pending.get("token") or "").strip().upper() != normalized:
+        return _reply_card(build_confirm_invalid_card(prefix=prefix, reason="确认口令不匹配，无法取消当前确认。"))
+    _clear_pending_confirm(chat_id)
+    return _reply_card(build_confirm_cancelled_card(normalized, prefix=prefix))
+
+
 def _format_service_state(name: str, status: dict[str, Any]) -> str:
     state = _running_label(status)
     text = f"**{name}** `{state}` / PID `{status.get('pid') or 0}`"
@@ -648,6 +911,7 @@ def build_help_card(*, prefix: str = "", error: str = "") -> dict[str, Any]:
                     f"**全局状态**\n{_cmd(prefix, 'global')}",
                     f"**项目清单**\n{_cmd(prefix, 'projects')}",
                     f"**进入项目**\n{_cmd(prefix, 'use <project>')}",
+                    f"**删除项目**\n{_cmd(prefix, 'project delete <project>')}",
                     f"**项目总览**\n{_cmd(prefix, 'overview')}",
                     f"**任务面板**\n{_cmd(prefix, 'tasks')}",
                     f"**需求会话**\n{_cmd(prefix, 'requirements')}",
@@ -2091,12 +2355,27 @@ def handle_command_text(
         return _reply_card(build_help_card(prefix=cfg.command_prefix))
 
     verb = parts[0].lower()
+    if verb == "confirm":
+        if len(parts) < 2:
+            raise RuntimeError("请提供确认口令，例如 `confirm ABC123`。")
+        return _confirm_pending_action(parts[1], chat_id=chat_id, prefix=cfg.command_prefix)
+    if verb == "cancel" and len(parts) > 1 and parts[1].lower() == "confirm":
+        if len(parts) < 3:
+            raise RuntimeError("请提供确认口令，例如 `cancel confirm ABC123`。")
+        return _cancel_pending_confirm(parts[2], chat_id=chat_id, prefix=cfg.command_prefix)
     if verb in {"help", "h", "?"}:
         return _reply_card(build_help_card(prefix=cfg.command_prefix))
     if verb in {"global", "summary", "all"}:
         return _reply_card(
             build_global_status_card(prefix=cfg.command_prefix, default_project=_active_project(cfg, chat_id))
         )
+    if verb == "project" and len(parts) > 1 and parts[1].lower() in {"delete", "rm", "remove"}:
+        if len(parts) < 3:
+            raise RuntimeError("请提供项目名，例如 `project delete demo`。")
+        project_name = _resolve_project(parts[2], default_project=_active_project(cfg, chat_id))
+        pending = _pending_project_delete_confirm(project_name, command_text=command_text, chat_id=chat_id)
+        _save_pending_confirm(chat_id, pending)
+        return _reply_card(build_pending_confirm_card(pending, prefix=cfg.command_prefix))
     if verb in {"use", "project"}:
         if len(parts) < 2:
             active = _active_project(cfg, chat_id)
@@ -2244,31 +2523,9 @@ def handle_command_text(
         return _reply_card(build_task_card(task_id, prefix=cfg.command_prefix, title_prefix="任务已归档"))
     if verb in {"delete", "del", "rm"}:
         task_ids = _parse_task_ids(parts[1:], command_name="delete")
-        if len(task_ids) > 1:
-            return _reply_card(
-                build_batch_task_action_card(
-                    "delete",
-                    batch_task_action(task_ids, "delete"),
-                    prefix=cfg.command_prefix,
-                )
-            )
-        task_id = task_ids[0]
-        delete_task_action(task_id)
-        return _reply_card(
-            _card(
-                f"任务已删除 · #{task_id}",
-                [
-                    _field_block(
-                        [
-                            _field(f"**任务 ID**\n`#{task_id}`"),
-                            _field("**结果**\n`已删除`"),
-                        ]
-                    ),
-                    *_command_panel(cfg.command_prefix, _card_commands("tasks")),
-                ],
-                template="green",
-            )
-        )
+        pending = _pending_delete_confirm(task_ids, command_text=command_text, chat_id=chat_id)
+        _save_pending_confirm(chat_id, pending)
+        return _reply_card(build_pending_confirm_card(pending, prefix=cfg.command_prefix))
     if verb == "retry":
         if len(parts) < 2:
             raise RuntimeError("请提供任务 ID，例如 `retry 123`。")
