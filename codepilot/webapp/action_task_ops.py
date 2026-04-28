@@ -23,8 +23,37 @@ def create_project_action(path: str, *, name: str = "", no_config: bool = False)
     raw_path = (path or "").strip().strip('"')
     if not raw_path:
         raise RuntimeError("工作目录不能为空。")
-    result = initialize_project(Path(raw_path).expanduser(), name.strip() or None, no_config=no_config)
+    resolved_path = Path(raw_path).expanduser().resolve()
+    requested_name = (name or "").strip() or resolved_path.name
+    if not requested_name:
+        raise RuntimeError("项目名称不能为空。")
+
+    existing_by_name = db.get_project(requested_name)
+    existing_by_path = db.find_project_by_path(str(resolved_path))
+    if existing_by_path and Path(existing_by_path["path"]).resolve() != resolved_path:
+        existing_by_path = None
+    if existing_by_name and Path(existing_by_name["path"]).resolve() != resolved_path:
+        raise RuntimeError(
+            f"项目 '{requested_name}' 已注册到 `{existing_by_name['path']}`，不能再绑定到 `{resolved_path}`。"
+        )
+    if existing_by_path and str(existing_by_path.get("name") or "").strip() != requested_name:
+        raise RuntimeError(
+            f"路径 `{resolved_path}` 已注册为项目 '{existing_by_path['name']}'，不能重复登记为 '{requested_name}'。"
+        )
+
+    result = initialize_project(resolved_path, requested_name, no_config=no_config)
     project = result["project"]
+    config_file = result.get("config_file") or ""
+    if not result["created"] and not no_config and config_file:
+        project = db.register_project(
+            project["name"],
+            str(resolved_path),
+            base_branch=str(project.get("base_branch") or "dev"),
+            default_mode=str(project.get("default_mode") or "dual"),
+            worktree_base=project.get("worktree_base"),
+            config_file=config_file,
+        )
+        result["project"] = project
     action = "注册" if result["created"] else "更新"
     _append_event(f"{action}项目：{project['name']}", project=project["name"])
     return {
@@ -32,7 +61,7 @@ def create_project_action(path: str, *, name: str = "", no_config: bool = False)
         "created": bool(result["created"]),
         "message": f"项目 '{project['name']}' 已{action}。",
         "project": project,
-        "config_file": result.get("config_file") or "",
+        "config_file": config_file,
     }
 
 

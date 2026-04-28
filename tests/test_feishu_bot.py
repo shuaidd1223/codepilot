@@ -4,11 +4,12 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from codepilot.commands import feishu as feishu_cmd
-from codepilot.feishu_bot import build_task_event_card, handle_command_text, notify_feishu_task_event
+from codepilot.feishu_bot import build_task_event_card, handle_command_text, handle_event_payload, notify_feishu_task_event
 from codepilot.storage import database as db
 
 
@@ -651,6 +652,87 @@ def test_feishu_project_delete_requires_confirm_token(tmp_path, monkeypatch):
     assert "工作目录不会被删除" in first_payload
     assert "项目已删除" in second_payload
     assert db.get_project("demo") is None
+    assert project_path.exists()
+
+
+def test_feishu_project_info_card_shows_path_stats_and_service_state(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    done = db.create_task(
+        project="demo",
+        title="已完成项目任务",
+        content="验证项目信息卡片",
+        agent="dual",
+        priority="P1",
+        project_path=str(project_path),
+    )
+    db.update_task(done["id"], status="done", completed_at=datetime.now().isoformat())
+
+    reply = handle_command_text("project info demo")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+    registered_path = db.get_project("demo")["path"].replace("\\", "\\\\")
+
+    assert reply["type"] == "interactive"
+    assert "CodePilot 项目信息" in payload
+    assert registered_path in payload
+    assert "任务总数" in payload
+    assert "完成" in payload
+    assert "任务轮询" in payload
+    assert "未运行" in payload
+    assert "project delete demo" in payload
+    assert "detail <id>" not in payload
+    assert "logs <id>" not in payload
+
+
+def test_feishu_project_add_registers_and_refreshes_project_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    project_path = tmp_path / "my project"
+    project_path.mkdir()
+
+    created = handle_command_text(f'project add remote "{project_path}"', chat_id="chat-project-add")
+    created_payload = json.dumps(created["card"], ensure_ascii=False)
+    project = db.get_project("remote")
+
+    assert created["type"] == "interactive"
+    assert "项目已注册" in created_payload
+    assert project is not None
+    assert project["path"] == str(project_path.resolve())
+    assert Path(project["config_file"]).exists()
+
+    config_file = project["config_file"]
+    db.register_project("remote", str(project_path.resolve()), config_file=None)
+    updated = handle_command_text(f'project add remote "{project_path}"', chat_id="chat-project-add")
+    updated_payload = json.dumps(updated["card"], ensure_ascii=False)
+    refreshed = db.get_project("remote")
+
+    assert "项目已更新" in updated_payload
+    assert refreshed["config_file"] == config_file
+
+
+def test_feishu_project_commands_return_clear_error_cards(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    another_path = tmp_path / "another"
+    another_path.mkdir()
+    missing_path = tmp_path / "missing"
+
+    invalid = handle_command_text(f'project add bad "{missing_path}"')
+    duplicate = handle_command_text(f'project add demo "{another_path}"')
+    missing = handle_command_text("project info missing-project")
+    invalid_payload = json.dumps(invalid["card"], ensure_ascii=False)
+    duplicate_payload = json.dumps(duplicate["card"], ensure_ascii=False)
+    missing_payload = json.dumps(missing["card"], ensure_ascii=False)
+
+    assert invalid["type"] == "interactive"
+    assert "项目注册失败" in invalid_payload
+    assert "不存在或不是目录" in invalid_payload
+
+    assert duplicate["type"] == "interactive"
+    assert "项目注册失败" in duplicate_payload
+    assert "已注册到" in duplicate_payload
+
+    assert missing["type"] == "interactive"
+    assert "项目信息不可用" in missing_payload
+    assert "未注册" in missing_payload
 
 
 def test_feishu_unknown_plain_text_defaults_to_chat_goal(tmp_path, monkeypatch):
@@ -685,6 +767,27 @@ def test_feishu_plain_text_without_active_project_prompts_project_choice(tmp_pat
     assert reply["type"] == "interactive"
     assert "先确认你要在哪个项目里继续" in payload
     assert "回复数字继续" in payload
+
+
+def test_feishu_event_payload_dedupes_same_message_id(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    calls = []
+
+    monkeypatch.setattr(
+        "codepilot.feishu_bot.handle_command_text",
+        lambda text, **kwargs: calls.append({"text": text, "kwargs": kwargs}) or {
+            "type": "text",
+            "text": "ok",
+        },
+    )
+
+    payload = {"chat_id": "chat-dup", "message_id": "msg-1", "text": "hello"}
+    first = handle_event_payload(payload)
+    second = handle_event_payload(payload)
+
+    assert first["type"] == "text"
+    assert second == {"type": "ignore"}
+    assert calls == [{"text": "hello", "kwargs": {"config_path": None, "chat_id": "chat-dup"}}]
 
 
 def test_feishu_req_new_creates_requirement_session_with_context_commands(tmp_path, monkeypatch):

@@ -162,6 +162,16 @@ def test_classify_intent_defaults_to_requirement_on_failure(monkeypatch):
     assert result["source"] == "default"
 
 
+def test_answer_question_for_tool_commands_uses_local_manifest_answer():
+    from codepilot.ai_support.service import answer_question_via_api
+
+    answer = answer_question_via_api(provider_key="", question="当前工具有哪些命令")
+
+    assert "当前工具常用命令有这些" in answer
+    assert "ai manifest" in answer
+    assert "status" in answer
+
+
 def test_classify_intent_falls_back_to_cli_when_api_key_missing(monkeypatch, tmp_path):
     """Configured API without a key should still route through CLI fallback."""
     from codepilot.ai_support import classifier as classifier_mod
@@ -361,6 +371,17 @@ def test_chat_natural_language_delete_uses_numbered_choice(tmp_path, monkeypatch
     assert result.exit_code == 0
     assert "回复数字继续" in result.output
     assert db.get_task(first["id"]) is None
+
+
+def test_chat_tool_command_question_uses_local_manifest_answer(tmp_path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat", "--no-ui"], input="当前工具有哪些命令\n/exit\n")
+
+    assert result.exit_code == 0
+    assert "当前工具常用命令有这些" in result.output
+    assert "ai manifest" in result.output
 
 
 

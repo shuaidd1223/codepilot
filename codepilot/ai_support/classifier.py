@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from codepilot.ai_support.agent_support import command_manifest, runtime_command_name
 from codepilot.gateway.types import GatewayCallOptions
 from codepilot.ai_support.providers import _collect_project_context
 from codepilot.prompts import load_prompt as _load_prompt
@@ -105,6 +106,72 @@ def _looks_like_codepilot_command(text: str) -> bool:
         "发布", "打包", "构建二进制",
     )
     return any(kw in t for kw in command_keywords)
+
+
+def _local_tool_question_answer(question: str) -> str:
+    """Return a deterministic local answer for tool-self questions."""
+    text = (question or "").strip()
+    if not text:
+        return ""
+    normalized = re.sub(r"\s+", "", text.lower())
+
+    command_keywords = (
+        "有哪些命令",
+        "命令清单",
+        "工具命令",
+        "当前工具",
+        "怎么用这个工具",
+        "如何使用这个工具",
+        "有哪些功能",
+        "支持哪些命令",
+    )
+    if not any(keyword in normalized for keyword in command_keywords):
+        return ""
+
+    manifest = command_manifest(command_name=runtime_command_name())
+    command_name = str(manifest.get("command_name") or "codepilot").strip()
+    commands = list(manifest.get("commands") or [])
+    workflows = list(manifest.get("workflows") or [])
+
+    focus_names = [
+        "goal",
+        "status",
+        "show",
+        "logs",
+        "stop",
+        "retry",
+        "run",
+        "daemon",
+        "inspect",
+        "ui",
+        "doctor",
+        "binary_prepare",
+    ]
+    by_name = {str(item.get("name") or ""): item for item in commands if isinstance(item, dict)}
+    picked = [by_name[name] for name in focus_names if name in by_name]
+    if not picked:
+        picked = [item for item in commands[:10] if isinstance(item, dict)]
+
+    lines = ["当前工具常用命令有这些："]
+    for item in picked:
+        syntax = str(item.get("syntax") or "").strip()
+        purpose = str(item.get("purpose") or "").strip()
+        if syntax:
+            lines.append(f"- `{syntax}`：{purpose}")
+
+    if workflows:
+        first = workflows[0] if isinstance(workflows[0], dict) else {}
+        steps = first.get("steps") if isinstance(first.get("steps"), list) else []
+        if steps:
+            lines.append("")
+            lines.append("最常见的用法是：")
+            for step in steps[:4]:
+                lines.append(f"- `{str(step).strip()}`")
+
+    lines.append("")
+    lines.append(f"想看完整机器可读命令清单，执行 `{command_name} ai manifest`。")
+    lines.append(f"想看 AI 使用手册，执行 `{command_name} ai guide`。")
+    return "\n".join(lines)
 
 
 def _resolve_gateway_options(
@@ -225,6 +292,10 @@ def answer_question_via_api(
     Routes through :mod:`codepilot.ai_gateway` so API / CLI fallback and
     key-resolution behaviour stay consistent with ``classify_intent``.
     """
+    local_answer = _local_tool_question_answer(question)
+    if local_answer:
+        return local_answer
+
     context = _collect_project_context(project_path, query_text=question)
     history_block = ""
     if history:

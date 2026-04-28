@@ -115,6 +115,41 @@ def upsert_service_state_row(
     )
 
 
+def insert_service_state_row_if_absent(
+    conn: sqlite3.Connection,
+    ensure_schema: Callable[[sqlite3.Connection], None],
+    *,
+    service: str,
+    scope: str = "",
+    pid: Optional[int] = None,
+    status: str = "running",
+    log_path: Optional[str] = None,
+    heartbeat_at: str,
+    meta_json: str,
+    updated_at: str,
+) -> bool:
+    ensure_schema(conn)
+    normalized_scope = _normalize_service_scope(scope)
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO service_states
+            (service, scope, pid, status, log_path, heartbeat_at, meta, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            service,
+            normalized_scope,
+            pid,
+            status,
+            log_path,
+            heartbeat_at,
+            meta_json,
+            updated_at,
+        ),
+    )
+    return cur.rowcount > 0
+
+
 def delete_service_state_row(
     conn: sqlite3.Connection,
     ensure_schema: Callable[[sqlite3.Connection], None],

@@ -45,6 +45,7 @@ from codepilot.storage.service_state_store import (
     _service_row_to_dict,
     delete_service_state_row as _delete_service_state_row,
     fetch_service_state as _fetch_service_state,
+    insert_service_state_row_if_absent as _insert_service_state_row_if_absent,
     query_service_states as _query_service_states,
     upsert_service_state_row as _upsert_service_state_row,
 )
@@ -721,6 +722,37 @@ def upsert_service_state(
     _invalidate_service_state_caches()
     state = get_service_state(service, normalized_scope)
     return state or {}
+
+
+def claim_service_state(
+    service: str,
+    scope: str = "",
+    *,
+    pid: Optional[int] = None,
+    status: str = "running",
+    log_path: Optional[str] = None,
+    heartbeat_at: Optional[str] = None,
+    meta: Optional[dict] = None,
+) -> bool:
+    """Atomically create one service-state row; return False when it already exists."""
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    normalized_scope = _normalize_service_scope(scope)
+    with get_write_conn() as conn:
+        claimed = _insert_service_state_row_if_absent(
+            conn,
+            _ensure_service_states_schema,
+            service=service,
+            scope=normalized_scope,
+            pid=pid,
+            status=status,
+            log_path=log_path,
+            heartbeat_at=heartbeat_at or now_iso,
+            meta_json=json.dumps(meta or {}, ensure_ascii=False),
+            updated_at=now_iso,
+        )
+    if claimed:
+        _invalidate_service_state_caches()
+    return claimed
 
 
 def touch_service_state(

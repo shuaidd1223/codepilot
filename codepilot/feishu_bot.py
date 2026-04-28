@@ -28,6 +28,7 @@ from codepilot.webapp.action_task_ops import (
     archive_task_action,
     batch_task_action,
     cancel_task_action,
+    create_project_action,
     delete_project_action,
     delete_task_action,
     project_service_action,
@@ -50,6 +51,7 @@ class FeishuBotConfig:
 _CHAT_CONTEXT_SERVICE = "feishu_chat"
 _CHAT_CONTEXT_PREFIX = "chat:"
 _NOTIFY_DEDUPE_SERVICE = "feishu_notify"
+_INBOUND_DEDUPE_SERVICE = "feishu_inbound_msg"
 _PENDING_REQUIREMENT_KEY = "pending_requirement"
 _PENDING_ACTION_OPTIONS_KEY = "pending_action_options"
 _PENDING_GOAL_TEXT_KEY = "pending_goal_text"
@@ -384,8 +386,19 @@ def _card_commands(kind: str, *, project: str = "", task_id: int | None = None) 
             ("use <project>", "进入项目"),
             ("overview <project>", "项目总览"),
             ("tasks <project>", "任务面板"),
+            ("project info <project>", "项目信息"),
             ("project delete <project>", "删除项目"),
             ("global", "全局状态"),
+        ]
+    if kind == "project_manage":
+        target = project or "<project>"
+        return [
+            (f"project info {target}", "项目信息"),
+            (f"use {target}", "进入项目"),
+            (f"tasks {target}", "任务面板"),
+            (f"services {target}", "服务状态"),
+            (f"project delete {target}", "删除项目"),
+            ("projects", "项目清单"),
         ]
     if kind == "project":
         target = project or "<project>"
@@ -521,7 +534,8 @@ def _reply_card(card: dict[str, Any]) -> dict[str, Any]:
 def _help_note(prefix: str) -> str:
     lead = f"{prefix} " if prefix else ""
     return (
-        f"命令示例: {lead}global | {lead}use demo | {lead}overview | {lead}tasks | {lead}requirements | "
+        f"命令示例: {lead}global | {lead}use demo | {lead}project info demo | {lead}project add demo D:\\work\\demo | "
+        f"{lead}overview | {lead}tasks | {lead}requirements | "
         f"{lead}tasks demo status=failed page=2 | "
         f"{lead}需求 优化任务面板 | {lead}答 先做飞书入口 | "
         f"{lead}req new 优化飞书任务卡片 | {lead}ask 帮我梳理一下最近需求 | "
@@ -968,6 +982,26 @@ def build_project_deleted_card(result: dict[str, Any], *, prefix: str = "") -> d
     )
 
 
+def build_project_command_error_card(
+    title: str,
+    error: str,
+    *,
+    prefix: str = "",
+    commands: list[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    fallback_commands = commands or [("projects", "项目清单"), ("global", "全局状态"), ("help", "命令帮助")]
+    return _card(
+        title,
+        [
+            _plain_block(str(error or "").strip() or "项目命令执行失败。"),
+            _note("只会管理本机已存在的项目目录；不会删除工作目录，也不会浏览远程文件系统。"),
+            *_command_panel(prefix, fallback_commands),
+        ],
+        template="red",
+        subtitle="项目管理命令未执行成功。",
+    )
+
+
 def _execute_pending_confirm(pending: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
     action = str(pending.get("action") or "").strip().lower()
     if action == "delete_task":
@@ -1050,6 +1084,8 @@ def build_help_card(*, prefix: str = "", error: str = "") -> dict[str, Any]:
                     f"**全局状态**\n{_cmd(prefix, 'global')}",
                     f"**项目清单**\n{_cmd(prefix, 'projects')}",
                     f"**进入项目**\n{_cmd(prefix, 'use <project>')}",
+                    f"**注册项目**\n{_cmd(prefix, 'project add <name> <path>')}",
+                    f"**项目信息**\n{_cmd(prefix, 'project info <project>')}",
                     f"**删除项目**\n{_cmd(prefix, 'project delete <project>')}",
                     f"**项目总览**\n{_cmd(prefix, 'overview')}",
                     f"**任务面板**\n{_cmd(prefix, 'tasks')}",
@@ -1302,18 +1338,19 @@ def build_global_status_card(*, prefix: str = "", default_project: str = "") -> 
     return _card("CodePilot 全局状态", blocks, template="blue", subtitle="全局运行状态、核心服务和每个项目的执行状态。")
 
 
-def build_overview_card(project_name: str, *, prefix: str = "") -> dict[str, Any]:
+def _project_status_blocks(project_name: str) -> list[str | dict[str, Any]]:
     project = db.get_project(project_name)
     if project is None:
         raise RuntimeError(f"项目 '{project_name}' 未注册。")
     stats = db.get_task_stats(project_name)
     daemon_status = _project_service_status(project_name, "tasks")
     inspect_status = _project_service_status(project_name, "inspect")
-    blocks: list[str | dict[str, Any]] = [
+    return [
         _field_block(
             [
                 _field(f"**项目**\n`{project_name}`"),
                 _field(f"**路径**\n`{project.get('path') or ''}`", is_short=False),
+                _field(f"**配置**\n`{project.get('config_file') or '-'}`", is_short=False),
                 _field(f"**任务总数**\n`{_task_count(project_name)}`"),
                 _field(f"**会话总数**\n`{_session_count(project_name)}`"),
                 *_count_fields(stats),
@@ -1329,6 +1366,46 @@ def build_overview_card(project_name: str, *, prefix: str = "") -> dict[str, Any
             ]
         ),
     ]
+
+
+def build_project_info_card(project_name: str, *, prefix: str = "") -> dict[str, Any]:
+    blocks = _project_status_blocks(project_name)
+    blocks.extend(_command_panel(prefix, _card_commands("project_manage", project=project_name)))
+    return _card(
+        f"CodePilot 项目信息 · {project_name}",
+        blocks,
+        template="wathet",
+        subtitle="项目路径、任务统计和服务状态。",
+    )
+
+
+def build_project_registered_card(result: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
+    project = result.get("project") if isinstance(result.get("project"), dict) else {}
+    project_name = str(project.get("name") or "").strip()
+    action = "已注册" if result.get("created") else "已更新"
+    config_file = str(result.get("config_file") or project.get("config_file") or "").strip() or "-"
+    blocks: list[str | dict[str, Any]] = [
+        _field_block(
+            [
+                _field(f"**项目**\n`{project_name or '-'}`"),
+                _field(f"**结果**\n`{action}`"),
+                _field(f"**配置文件**\n`{config_file}`", is_short=False),
+            ]
+        ),
+        _hr(),
+        *_project_status_blocks(project_name),
+    ]
+    blocks.extend(_command_panel(prefix, _card_commands("project_manage", project=project_name)))
+    return _card(
+        f"项目{action} · {project_name}",
+        blocks,
+        template="green",
+        subtitle="项目登记已写入本机数据库；不会操作远程目录。",
+    )
+
+
+def build_overview_card(project_name: str, *, prefix: str = "") -> dict[str, Any]:
+    blocks = _project_status_blocks(project_name)
     blocks.extend(_command_panel(prefix, _card_commands("project", project=project_name)))
     return _card(f"CodePilot 项目总览 · {project_name}", blocks, template="wathet", subtitle="项目路径、任务统计和服务状态。")
 
@@ -2539,13 +2616,36 @@ def handle_command_text(
         return _reply_card(
             build_global_status_card(prefix=cfg.command_prefix, default_project=_active_project(cfg, chat_id))
         )
-    if verb == "project" and len(parts) > 1 and parts[1].lower() in {"delete", "rm", "remove"}:
-        if len(parts) < 3:
-            raise RuntimeError("请提供项目名，例如 `project delete demo`。")
-        project_name = _resolve_project(parts[2], default_project=_active_project(cfg, chat_id))
-        pending = _pending_project_delete_confirm(project_name, command_text=command_text, chat_id=chat_id)
-        _save_pending_confirm(chat_id, pending)
-        return _reply_card(build_pending_confirm_card(pending, prefix=cfg.command_prefix))
+    if verb == "project" and len(parts) > 1:
+        subcommand = parts[1].lower()
+        if subcommand in {"add", "register"}:
+            if len(parts) < 4:
+                raise RuntimeError("请提供项目名和路径，例如 `project add demo D:\\work\\demo`。")
+            project_name = parts[2].strip()
+            project_path = command_text.split(None, 3)[3].strip() if len(parts) > 3 else ""
+            try:
+                result = create_project_action(project_path, name=project_name)
+            except Exception as exc:
+                return _reply_card(build_project_command_error_card("项目注册失败", str(exc), prefix=cfg.command_prefix))
+            if chat_id:
+                _save_chat_project(chat_id, str(result.get("project", {}).get("name") or project_name).strip())
+            return _reply_card(build_project_registered_card(result, prefix=cfg.command_prefix))
+        if subcommand in {"info", "show"}:
+            try:
+                project_name = _resolve_project(parts[2] if len(parts) > 2 else "", default_project=_active_project(cfg, chat_id))
+                return _reply_card(build_project_info_card(project_name, prefix=cfg.command_prefix))
+            except Exception as exc:
+                return _reply_card(build_project_command_error_card("项目信息不可用", str(exc), prefix=cfg.command_prefix))
+        if subcommand in {"delete", "rm", "remove"}:
+            if len(parts) < 3:
+                raise RuntimeError("请提供项目名，例如 `project delete demo`。")
+            try:
+                project_name = _resolve_project(parts[2], default_project=_active_project(cfg, chat_id))
+                pending = _pending_project_delete_confirm(project_name, command_text=command_text, chat_id=chat_id)
+            except Exception as exc:
+                return _reply_card(build_project_command_error_card("项目删除不可用", str(exc), prefix=cfg.command_prefix))
+            _save_pending_confirm(chat_id, pending)
+            return _reply_card(build_pending_confirm_card(pending, prefix=cfg.command_prefix))
     if verb in {"use", "project"}:
         if len(parts) < 2:
             active = _active_project(cfg, chat_id)
@@ -2810,14 +2910,49 @@ def handle_command_text(
 
 
 def handle_event_payload(payload: dict[str, Any], *, config_path: Path | None = None) -> dict[str, Any]:
+    chat_id = str(payload.get("chat_id") or "")
+    message_id = str(payload.get("message_id") or "").strip()
+    claimed = True
+    if message_id:
+        claimed = db.claim_service_state(
+            _INBOUND_DEDUPE_SERVICE,
+            message_id,
+            pid=0,
+            status="processing",
+            log_path="",
+            meta={
+                "chat_id": chat_id,
+                "text": str(payload.get("text") or "")[:200],
+                "received_at": _now_iso(),
+            },
+        )
+    if not claimed:
+        return {"type": "ignore"}
+
     try:
-        _touch_chat_seen(str(payload.get("chat_id") or ""))
-        return handle_command_text(
+        _touch_chat_seen(chat_id)
+        reply = handle_command_text(
             str(payload.get("text") or ""),
             config_path=config_path,
-            chat_id=str(payload.get("chat_id") or ""),
+            chat_id=chat_id,
         )
+        if message_id:
+            db.upsert_service_state(
+                _INBOUND_DEDUPE_SERVICE,
+                message_id,
+                pid=0,
+                status="done",
+                log_path="",
+                meta={
+                    "chat_id": chat_id,
+                    "text": str(payload.get("text") or "")[:200],
+                    "handled_at": _now_iso(),
+                },
+            )
+        return reply
     except Exception as exc:
+        if message_id:
+            db.clear_service_state(_INBOUND_DEDUPE_SERVICE, message_id)
         cfg = load_feishu_bot_config(config_path)
         return _reply_card(
             _card(
