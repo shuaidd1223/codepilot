@@ -48,6 +48,44 @@ def test_inspect_command_starts_detached_by_default(tmp_path, monkeypatch):
     assert state["pid"] == 8765
 
 
+def test_request_inspect_service_start_uses_external_launcher(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    project_path = tmp_path / "demo"
+    project_path.mkdir()
+    db.init_db()
+    db.register_project("demo", str(project_path))
+
+    calls = []
+
+    def fake_spawn(cmd, *, log_file):
+        calls.append((cmd, log_file))
+        db.upsert_service_state(
+            "inspect",
+            "demo",
+            pid=8765,
+            status="running",
+            log_path=str(log_file),
+            meta={"project": "demo", "started_at": "2026-01-01T00:00:00"},
+        )
+        return 2468
+
+    monkeypatch.setattr(inspect_cmd, "_spawn_detached_command_via_launcher", fake_spawn)
+    monkeypatch.setattr(inspect_cmd, "is_process_alive", lambda pid: int(pid) == 8765)
+    monkeypatch.setattr(inspect_cmd.time, "sleep", lambda _: None)
+
+    result = inspect_cmd.request_inspect_service_start("demo", wait_seconds=1)
+
+    assert result["running"] is True
+    assert result["started"] is True
+    assert result["pid"] == 8765
+    assert result["launcher_pid"] == 2468
+    assert calls
+    cmd = calls[0][0]
+    assert cmd[:4] == [inspect_cmd.sys.executable, "-m", "codepilot", "inspect"]
+    assert cmd[-2:] == ["--project", "demo"]
+
+
 def test_inspect_status_reads_existing_service(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))

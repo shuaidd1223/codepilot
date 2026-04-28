@@ -311,22 +311,10 @@ def test_webui_retry_and_promote_actions_update_task_state(tmp_path, monkeypatch
     db.register_project("demo", str(project_path))
     task = db.create_task("demo", "task A", agent="codex", priority="P2", max_retries=3)
     db.update_task(task["id"], status="failed", retry_count=2, error_message="boom")
-    run_calls: list[dict] = []
-
-    class _ImmediateThread:
-        def __init__(self, *, target, name=None, daemon=None):
-            self._target = target
-
-        def start(self):
-            self._target()
-
+    service_calls: list[str] = []
     monkeypatch.setattr(
-        "codepilot.webapp.actions.threading.Thread",
-        _ImmediateThread,
-    )
-    monkeypatch.setattr(
-        "codepilot.commands.run.run_backlog",
-        lambda project, **kwargs: run_calls.append({"project": project, **kwargs}) or {"processed": 1},
+        "codepilot.webapp.action_requirements._request_task_service_start",
+        lambda project: (service_calls.append(project) or {"running": True, "started": True, "pid": 7654}, ""),
     )
 
     retried = webui_mod.retry_task_action(task["id"])
@@ -334,16 +322,16 @@ def test_webui_retry_and_promote_actions_update_task_state(tmp_path, monkeypatch
     assert retried["ok"] is True
     assert current["status"] == "backlog"
     assert current["retry_count"] == 0
-    assert run_calls[0]["project"] == "demo"
-    assert run_calls[0]["auto_commit"] is False
+    assert service_calls[0] == "demo"
+    assert retried["service"]["pid"] == 7654
 
     promoted = webui_mod.promote_task_action(task["id"])
     current = db.get_task(task["id"])
     assert promoted["ok"] is True
     assert current["status"] == "backlog"
     assert current["priority"] == "P0"
-    assert run_calls[1]["project"] == "demo"
-    assert run_calls[1]["auto_commit"] is False
+    assert service_calls[1] == "demo"
+    assert promoted["service"]["pid"] == 7654
 
 
 def test_webui_cancel_archive_delete_actions_follow_status_rules(tmp_path, monkeypatch):
@@ -464,6 +452,7 @@ def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeyp
     db.register_project("demo", str(project_path), default_mode="codex")
 
     def fake_run_requirement_workflow(**kwargs):
+        assert kwargs["execute"] is False
         task = db.create_task(
             kwargs["project_info"]["name"],
             kwargs["title"],
@@ -476,10 +465,14 @@ def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeyp
         return {
             "summary": "拆分完成",
             "tasks": [task],
-            "run": {"done": 1, "failed": 0, "requeued": 0},
         }
 
     monkeypatch.setattr(webui_mod, "run_requirement_workflow", fake_run_requirement_workflow)
+    service_calls: list[str] = []
+    monkeypatch.setattr(
+        "codepilot.webapp.action_requirements._request_task_service_start",
+        lambda project: (service_calls.append(project) or {"running": True, "started": True, "pid": 7654}, ""),
+    )
     monkeypatch.setattr(
         "codepilot.webapp.actions.clarify_requirement",
         lambda title, **kw: {"status": "ready", "refined_title": title},
@@ -499,6 +492,8 @@ def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeyp
     assert jobs
     assert jobs[0]["status"] == "succeeded"
     assert jobs[0]["task_ids"]
+    assert service_calls == ["demo"]
+    assert "任务执行服务已启动" in jobs[0]["summary"]
     task = db.get_task(jobs[0]["task_ids"][0])
     assert task["title"] == "让 Web UI 直接接收需求"
 

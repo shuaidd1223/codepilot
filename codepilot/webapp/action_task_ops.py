@@ -101,9 +101,9 @@ def project_service_action(project: str, service: str, action: str) -> dict:
         raise RuntimeError("操作只支持 start / stop / status。")
 
     if service == "tasks":
-        from codepilot.commands.daemon import daemon_service_status, start_daemon_service, stop_daemon_service
+        from codepilot.commands.daemon import daemon_service_status, request_daemon_service_start, stop_daemon_service
         if action == "start":
-            result = start_daemon_service(project=project_name)
+            result = request_daemon_service_start(project_name)
             msg = "任务执行服务已启动" if result.get("started") else "任务执行服务已在运行"
         elif action == "stop":
             result = stop_daemon_service(project_name)
@@ -115,9 +115,9 @@ def project_service_action(project: str, service: str, action: str) -> dict:
             result = daemon_service_status(project_name)
             msg = "任务执行服务状态已刷新"
     else:
-        from codepilot.commands.inspect import inspect_service_status, start_inspect_service, stop_inspect_service
+        from codepilot.commands.inspect import inspect_service_status, request_inspect_service_start, stop_inspect_service
         if action == "start":
-            result = start_inspect_service(project_name)
+            result = request_inspect_service_start(project_name)
             msg = "巡检服务已启动" if result.get("started") else "巡检服务已在运行"
         elif action == "stop":
             result = stop_inspect_service(project_name)

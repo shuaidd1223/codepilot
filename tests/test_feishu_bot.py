@@ -1201,3 +1201,24 @@ def test_ensure_feishu_service_running_if_enabled_starts_detached_worker(monkeyp
     assert result["running"] is True
     assert result["started"] is True
     assert result["pid"] == 4321
+
+
+def test_feishu_spawn_detached_uses_external_launcher(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(feishu_cmd, "STATE_DIR", tmp_path / "feishu")
+    monkeypatch.setattr(feishu_cmd, "LOG_FILE", tmp_path / "feishu.log")
+    monkeypatch.setattr(feishu_cmd, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        feishu_cmd,
+        "spawn_detached_command_via_launcher",
+        lambda cmd, *, log_file, cwd=None: calls.append((cmd, log_file, cwd)) or 4321,
+    )
+
+    proc = feishu_cmd._spawn_detached()
+
+    assert proc.pid == 4321
+    assert calls
+    cmd, log_file, cwd = calls[0]
+    assert cmd == [feishu_cmd.sys.executable, "-m", "codepilot", "feishu", "run"]
+    assert log_file == tmp_path / "feishu.log"
+    assert cwd == tmp_path

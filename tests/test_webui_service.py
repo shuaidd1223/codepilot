@@ -12,7 +12,7 @@ def _isolate_state(tmp_path, monkeypatch):
     state_dir = tmp_path / ".codepilot"
     monkeypatch.setattr(svc, "STATE_DIR", state_dir)
     monkeypatch.setattr(svc, "LOG_FILE", state_dir / "webui.log")
-    monkeypatch.setattr(svc, "start_daemon_service", lambda project="": {"started": False, "pid": 2468, "project": project})
+    monkeypatch.setattr(svc, "request_daemon_service_start", lambda project="": {"started": False, "pid": 2468, "project": project})
     monkeypatch.setattr(svc, "_listening_service_pids", lambda: [])
     return state_dir
 
@@ -109,7 +109,7 @@ def test_webui_start_ensures_daemon_service(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(svc, "_spawn_detached", lambda host, port: _FakeProc())
     monkeypatch.setattr(svc.time, "sleep", lambda _: None)
-    monkeypatch.setattr(svc, "start_daemon_service", lambda project="": calls.append(project) or {"started": True, "pid": 8765})
+    monkeypatch.setattr(svc, "request_daemon_service_start", lambda project="": calls.append(project) or {"started": True, "pid": 8765})
 
     result = CliRunner().invoke(svc.webui, ["start", "--no-open", "-p", "demo"])
 

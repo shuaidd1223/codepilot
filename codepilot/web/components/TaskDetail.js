@@ -162,9 +162,6 @@ CP.Components.TaskDetail = Vue.defineComponent({
               </div>
               <div class="task-phase-next">{{ $cp.taskPhaseProgress(task).nextLabel }}</div>
             </div>
-            <div class="task-phase-track">
-              <span class="task-phase-fill" :style="{ width: $cp.taskPhaseProgress(task).percent + '%' }"></span>
-            </div>
             <div class="task-phase-steps">
               <span v-for="step in $cp.taskPhaseProgress(task).steps"
                     :key="step.key"

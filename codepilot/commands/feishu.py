@@ -17,6 +17,7 @@ import click
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import global_storage_root
 from codepilot.core.runtime import is_process_alive, stop_process_tree
+from codepilot.core.service_launcher import DetachedProcessHandle, append_log_header, spawn_detached_command_via_launcher
 from codepilot.feishu_bot import handle_event_payload, load_feishu_bot_config, validate_feishu_bot_config
 from codepilot.storage import database as db
 
@@ -193,27 +194,12 @@ def _check_runtime_ready() -> None:
         ) from exc
 
 
-def _spawn_detached() -> subprocess.Popen:
+def _spawn_detached() -> DetachedProcessHandle:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    log_fp = open(LOG_FILE, "ab")
-    try:
-        log_fp.write(f"\n--- start {_now_iso()} ---\n".encode("utf-8"))
-        log_fp.flush()
-    except Exception:
-        pass
+    append_log_header(LOG_FILE, f"\n--- start {_now_iso()} ---\n")
     cmd = [sys.executable, "-m", "codepilot", "feishu", "run"]
-    kwargs: dict[str, object] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": log_fp,
-        "stderr": log_fp,
-        "close_fds": True,
-        "cwd": str(_repo_root()),
-    }
-    if os.name == "nt":
-        kwargs["creationflags"] = 0x00000008 | 0x00000200
-    else:
-        kwargs["start_new_session"] = True
-    return subprocess.Popen(cmd, **kwargs)
+    pid = spawn_detached_command_via_launcher(cmd, log_file=LOG_FILE, cwd=_repo_root())
+    return DetachedProcessHandle(pid)
 
 
 def _spawn_worker() -> subprocess.Popen:

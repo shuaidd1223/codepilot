@@ -19,7 +19,7 @@ from pathlib import Path
 import click
 
 from codepilot.storage import database as db
-from codepilot.commands.daemon import start_daemon_service
+from codepilot.commands.daemon import request_daemon_service_start
 from codepilot.commands.feishu import ensure_service_running_if_enabled
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import global_storage_root
@@ -305,7 +305,7 @@ def _ensure_daemon_started(project: str = "") -> None:
         echo("[dim]未指定 --project，跳过任务执行服务自动启动；可在 Web UI 项目页单独启动。[/dim]")
         return
     try:
-        result = start_daemon_service(project=project)
+        result = request_daemon_service_start(project)
     except Exception as exc:
         echo(f"[yellow]Daemon 后台启动失败：{safe(exc)}[/yellow]")
         return

@@ -578,6 +578,51 @@ p { margin: 0; }
   border-color: color-mix(in srgb, var(--phase-accent) 35%, hsl(var(--border)));
   box-shadow: var(--shadow-sm);
 }
+.task-phase-progress-detail .task-phase-steps {
+  grid-template-columns: repeat(5, minmax(56px, 1fr));
+  gap: 0;
+  padding: 4px 2px 0;
+}
+.task-phase-progress-detail .task-phase-step {
+  position: relative;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 4px;
+  text-align: center;
+  white-space: normal;
+  line-height: 1.2;
+}
+.task-phase-progress-detail .task-phase-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: calc(50% + 10px);
+  width: calc(100% - 20px);
+  height: 2px;
+  border-radius: 999px;
+  background: hsl(var(--border));
+}
+.task-phase-progress-detail .task-phase-step.state-done::after {
+  background: color-mix(in srgb, var(--phase-accent) 72%, hsl(var(--border)));
+}
+.task-phase-progress-detail .task-phase-dot {
+  position: relative;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  border: 3px solid hsl(var(--card));
+  box-shadow: 0 0 0 1px hsl(var(--border));
+}
+.task-phase-progress-detail .task-phase-step.state-current .task-phase-dot,
+.task-phase-progress-detail .task-phase-step.state-waiting .task-phase-dot {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--phase-accent) 38%, transparent);
+}
+.task-phase-progress-detail .task-phase-step.state-failed .task-phase-dot {
+  box-shadow: 0 0 0 2px hsl(var(--destructive) / .24);
+}
 .task-phase-progress-head {
   display: flex;
   align-items: center;

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -26,6 +27,7 @@ from codepilot.core.config import load_project_config, resolve_planner
 from codepilot.core.output import echo
 from codepilot.core.paths import global_storage_root
 from codepilot.core.runtime import is_process_alive, stop_process_tree
+from codepilot.core.service_launcher import append_log_header, spawn_detached_command_via_launcher as _spawn_detached_command_via_launcher
 from codepilot.core.task_template import missing_task_template_sections
 
 INSPECT_STATE_DIR = global_storage_root() / "inspect"
@@ -130,6 +132,39 @@ def start_inspect_service(
     effective_planner = planner or (resolve_planner(cfg, "inspect") if cfg else "codex")
     _write_inspect_meta(project, proc.pid, interval=effective_interval, planner=effective_planner, agent=agent)
     return {"running": True, "started": True, "pid": proc.pid, "project": project, "log": str(_service_log_path(project))}
+
+
+def request_inspect_service_start(
+    project: str,
+    *,
+    wait_seconds: float = 10.0,
+) -> dict:
+    """Request inspect startup from a short-lived external CLI process."""
+    if not project:
+        raise RuntimeError("启动巡检必须指定项目。")
+    existing = inspect_service_status(project)
+    if existing["running"]:
+        existing["started"] = False
+        return existing
+
+    log_file = _service_log_path(project)
+    append_log_header(log_file, f"\n--- request-start {_now_iso()} project={project} via cli ---\n")
+    cmd = [sys.executable, "-m", "codepilot", "inspect", "--project", project]
+    launcher_pid = _spawn_detached_command_via_launcher(cmd, log_file=log_file)
+
+    deadline = time.monotonic() + max(float(wait_seconds), 0.0)
+    last_status = inspect_service_status(project)
+    while time.monotonic() < deadline:
+        last_status = inspect_service_status(project)
+        if last_status["running"]:
+            last_status["started"] = True
+            last_status["launcher_pid"] = launcher_pid
+            return last_status
+        time.sleep(0.2)
+
+    last_status["started"] = False
+    last_status["launcher_pid"] = launcher_pid
+    raise RuntimeError(f"巡检启动请求已发出，但 {wait_seconds:g}s 内未进入运行状态。")
 
 
 def stop_inspect_service(project: str) -> dict:

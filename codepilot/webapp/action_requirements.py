@@ -78,6 +78,15 @@ def _submit_requirement_from_message(
     return result, reply, _extract_job_task_ids(result)
 
 
+def _request_task_service_start(project: str) -> tuple[dict | None, str]:
+    try:
+        from codepilot.commands.daemon import request_daemon_service_start
+
+        return request_daemon_service_start(project), ""
+    except Exception as exc:
+        return None, str(exc)
+
+
 @dataclass(frozen=True)
 class _GoalDispatchContext:
     project: str
@@ -216,7 +225,7 @@ def _goal_clarify_payload(*, seed_title: str, questions: list[dict], qa_history:
 
 
 def retry_task_action(task_id: int) -> dict:
-    """Retry a task and immediately kick one backlog pass in background."""
+    """Retry a task and ask the independent daemon to pick it up."""
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -227,36 +236,31 @@ def retry_task_action(task_id: int) -> dict:
         raise RuntimeError(f"任务 #{task_id} 已完成，不能直接重试。")
     updated = db.reset_task_for_retry(task_id)
     project_name = task["project"]
-    _append_event(f"任务 #{task_id} 已重试，后台开始执行…", project=project_name, task_id=task_id)
-
-    def _run_worker() -> None:
-        try:
-            from codepilot.commands.run import run_backlog
-
-            run_backlog(project_name, once=True, limit=1, quiet=True, auto_commit=False)
-        except Exception as exc:
-            _append_event(
-                f"任务 #{task_id} 后台执行失败：{exc}",
-                level="error",
-                project=project_name,
-                task_id=task_id,
-            )
-
-    _actions().threading.Thread(
-        target=_run_worker,
-        name=f"codepilot-ui-retry-{task_id}",
-        daemon=True,
-    ).start()
+    service_status, service_error = _request_task_service_start(project_name)
+    if service_error:
+        _append_event(
+            f"任务 #{task_id} 已重试，但任务执行服务启动失败：{service_error}",
+            level="error",
+            project=project_name,
+            task_id=task_id,
+        )
+        message = f"任务 #{task_id} 已重试，但任务执行服务启动失败：{service_error}"
+    else:
+        suffix = "已启动" if service_status and service_status.get("started") else "已在运行"
+        _append_event(f"任务 #{task_id} 已重试，任务执行服务{suffix}。", project=project_name, task_id=task_id)
+        message = f"任务 #{task_id} 已重试，任务执行服务{suffix}。"
 
     return {
         "ok": True,
-        "message": f"任务 #{task_id} 已重试，后台开始执行。",
+        "message": message,
         "task": _task_payload(updated),
+        "service": service_status,
+        "service_error": service_error,
     }
 
 
 def promote_task_action(task_id: int) -> dict:
-    """Promote a task to P0 and kick one backlog pass in background."""
+    """Promote a task to P0 and ask the independent daemon to pick it up."""
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -269,31 +273,26 @@ def promote_task_action(task_id: int) -> dict:
         task = db.reset_task_for_retry(task_id, reset_retry_count=False)
     updated = db.update_task(task_id, priority="P0", status="backlog")
     project_name = task["project"]
-    _append_event(f"任务 #{task_id} 已插队到 P0，后台开始执行…", project=project_name, task_id=task_id)
-
-    def _run_worker() -> None:
-        try:
-            from codepilot.commands.run import run_backlog
-
-            run_backlog(project_name, once=True, limit=1, quiet=True, auto_commit=False)
-        except Exception as exc:
-            _append_event(
-                f"任务 #{task_id} 后台执行失败：{exc}",
-                level="error",
-                project=project_name,
-                task_id=task_id,
-            )
-
-    _actions().threading.Thread(
-        target=_run_worker,
-        name=f"codepilot-ui-promote-{task_id}",
-        daemon=True,
-    ).start()
+    service_status, service_error = _request_task_service_start(project_name)
+    if service_error:
+        _append_event(
+            f"任务 #{task_id} 已插队到 P0，但任务执行服务启动失败：{service_error}",
+            level="error",
+            project=project_name,
+            task_id=task_id,
+        )
+        message = f"任务 #{task_id} 已提升到 P0，但任务执行服务启动失败：{service_error}"
+    else:
+        suffix = "已启动" if service_status and service_status.get("started") else "已在运行"
+        _append_event(f"任务 #{task_id} 已插队到 P0，任务执行服务{suffix}。", project=project_name, task_id=task_id)
+        message = f"任务 #{task_id} 已提升到 P0，任务执行服务{suffix}。"
 
     return {
         "ok": True,
-        "message": f"任务 #{task_id} 已提升到 P0 并开始执行。",
+        "message": message,
         "task": _task_payload(updated),
+        "service": service_status,
+        "service_error": service_error,
     }
 
 
@@ -349,6 +348,12 @@ def _job_result_summary(result: dict, execute: bool) -> str:
     run_stats = result.get("run") or {}
     if execute and run_stats:
         parts.append(f"执行结果: done={run_stats.get('done', 0)} failed={run_stats.get('failed', 0)} requeued={run_stats.get('requeued', 0)}")
+    run_service = result.get("run_service") or {}
+    if execute and run_service:
+        state = "已启动" if run_service.get("started") else "已在运行"
+        parts.append(f"任务执行服务{state}")
+    if execute and result.get("run_service_error"):
+        parts.append(f"任务执行服务启动失败: {result['run_service_error']}")
     return " | ".join(parts)
 
 
@@ -476,7 +481,7 @@ def submit_requirement_action(
                     task_agent=agent or None,
                     priority=normalized_priority,
                     max_tasks=max_tasks,
-                    execute=execute,
+                    execute=False,
                     executor=executor,
                     auto_commit=auto_commit,
                     max_retries=max_retries,
@@ -484,11 +489,18 @@ def submit_requirement_action(
                     task_source=task_source,
                 )
                 task_ids = [item["id"] for item in (result.get("tasks") or [])]
-                run_stats = result.get("run") or {}
-                status = "attention" if execute and run_stats.get("failed") else "succeeded"
                 _append_job_log(f"规划完成，创建 {len(task_ids)} 个任务")
-                if execute and run_stats:
-                    _append_job_log(f"执行结果: done={run_stats.get('done', 0)} failed={run_stats.get('failed', 0)}")
+                service_error = ""
+                if execute and task_ids:
+                    service_status, service_error = _request_task_service_start(project)
+                    if service_error:
+                        _append_job_log(f"任务执行服务启动失败：{service_error}")
+                        result["run_service_error"] = service_error
+                    else:
+                        result["run_service"] = service_status or {}
+                        state = "已启动" if service_status and service_status.get("started") else "已在运行"
+                        _append_job_log(f"任务执行服务{state}，等待 daemon 领取 backlog")
+                status = "attention" if service_error else "succeeded"
                 _update_job(
                     job_id,
                     status=status,
@@ -497,7 +509,7 @@ def submit_requirement_action(
                     finished_at=_now_iso(),
                     summary=_job_result_summary(result, execute),
                     task_ids=task_ids,
-                    error="",
+                    error=service_error,
                 )
                 _append_event(
                     f"需求处理完成：{normalized_title}",

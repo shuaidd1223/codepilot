@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Callable
 
+from codepilot.core.service_launcher import DetachedProcessHandle, append_log_header, spawn_detached_command_via_launcher
 from codepilot.core.paths import _slugify_project_name, global_storage_root
 
 INSPECT_STATE_DIR = global_storage_root() / "inspect"
@@ -89,15 +88,9 @@ def spawn_detached_inspect(
     interval: int | None,
     state_dir: Path = INSPECT_STATE_DIR,
     now_iso_fn: Callable[[], str],
-) -> subprocess.Popen:
+) -> DetachedProcessHandle:
     log_file = service_log_path(project, state_dir=state_dir)
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    log_fp = open(log_file, "ab")
-    try:
-        log_fp.write(f"\n--- start {now_iso_fn()} project={project} ---\n".encode("utf-8"))
-        log_fp.flush()
-    except Exception:
-        pass
+    append_log_header(log_file, f"\n--- start {now_iso_fn()} project={project} ---\n")
 
     cmd = [
         sys.executable,
@@ -119,15 +112,6 @@ def spawn_detached_inspect(
     if interval is not None:
         cmd.extend(["--interval", str(interval)])
 
-    popen_kwargs = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": log_fp,
-        "stderr": log_fp,
-        "close_fds": True,
-    }
-    if os.name == "nt":
-        popen_kwargs["creationflags"] = 0x00000008 | 0x00000200
-    else:
-        popen_kwargs["start_new_session"] = True
-    return subprocess.Popen(cmd, **popen_kwargs)
+    pid = spawn_detached_command_via_launcher(cmd, log_file=log_file)
+    return DetachedProcessHandle(pid)
 

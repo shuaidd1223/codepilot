@@ -19,6 +19,12 @@ from codepilot.commands.run import run_backlog
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import _slugify_project_name, global_storage_root
 from codepilot.core.runtime import is_process_alive, reap_stalled_tasks
+from codepilot.core.service_launcher import (
+    CREATE_NEW_PROCESS_GROUP,
+    DETACHED_PROCESS,
+    append_log_header,
+    spawn_detached_command_via_launcher as _spawn_detached_command_via_launcher,
+)
 from codepilot.core.text_decode import decode_subprocess_text
 
 
@@ -159,7 +165,7 @@ def _spawn_detached_daemon(
         "close_fds": True,
     }
     if os.name == "nt":
-        popen_kwargs["creationflags"] = 0x00000008 | 0x00000200
+        popen_kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
     return subprocess.Popen(cmd, **popen_kwargs)
@@ -208,6 +214,44 @@ def start_daemon_service(
         "started_at": _now_iso(),
         "log": str(_service_log_path(project)),
     }
+
+
+def request_daemon_service_start(
+    project: str,
+    *,
+    wait_seconds: float = 10.0,
+) -> dict:
+    """Request daemon startup from a short-lived external CLI process.
+
+    Web UI uses this path so the daemon is not created by the Web UI server
+    process. `codepilot ui restart` can still kill the Web UI process tree
+    without also killing an independently launched project daemon.
+    """
+    if not project:
+        raise RuntimeError("启动 daemon 必须指定项目。")
+    existing = daemon_service_status(project)
+    if existing["running"]:
+        existing["started"] = False
+        return existing
+
+    log_file = _service_log_path(project)
+    append_log_header(log_file, f"\n--- request-start {_now_iso()} project={project} via cli ---\n")
+    cmd = [sys.executable, "-m", "codepilot", "daemon", "--project", project]
+    launcher_pid = _spawn_detached_command_via_launcher(cmd, log_file=log_file)
+
+    deadline = time.monotonic() + max(float(wait_seconds), 0.0)
+    last_status = daemon_service_status(project)
+    while time.monotonic() < deadline:
+        last_status = daemon_service_status(project)
+        if last_status["running"]:
+            last_status["started"] = True
+            last_status["launcher_pid"] = launcher_pid
+            return last_status
+        time.sleep(0.2)
+
+    last_status["started"] = False
+    last_status["launcher_pid"] = launcher_pid
+    raise RuntimeError(f"daemon 启动请求已发出，但 {wait_seconds:g}s 内未进入运行状态。")
 
 
 def stop_daemon_service(project: str | None = None) -> dict:

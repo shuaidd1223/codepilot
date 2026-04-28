@@ -10,6 +10,7 @@ import pytest
 
 from codepilot.storage import database as db
 from codepilot.commands import daemon as daemon_cmd
+from codepilot.commands import inspect as inspect_cmd
 from codepilot.webapp import server as webui_mod
 from codepilot.core import runtime as runtime_mod
 from codepilot.webapp.payloads import daemon_health_payload
@@ -453,6 +454,42 @@ def test_project_task_service_stop_requests_graceful_polling_stop(ui_server, mon
     assert body["ok"] is True
     assert body["status"]["stop_requested"] is True
     assert "当前任务完成后" in body["message"]
+
+
+def test_project_task_service_start_requests_external_daemon_launcher(ui_server, monkeypatch):
+    calls = []
+
+    def fake_request_start(project: str):
+        calls.append(project)
+        return {"running": True, "started": True, "pid": 8765, "project": project}
+
+    monkeypatch.setattr(daemon_cmd, "request_daemon_service_start", fake_request_start)
+
+    status, body = _post(f"{ui_server}/api/projects/demo/tasks/start", {})
+
+    assert status == 200
+    assert calls == ["demo"]
+    assert body["ok"] is True
+    assert body["status"]["pid"] == 8765
+    assert "任务执行服务已启动" in body["message"]
+
+
+def test_project_inspect_service_start_requests_external_launcher(ui_server, monkeypatch):
+    calls = []
+
+    def fake_request_start(project: str):
+        calls.append(project)
+        return {"running": True, "started": True, "pid": 8766, "project": project}
+
+    monkeypatch.setattr(inspect_cmd, "request_inspect_service_start", fake_request_start)
+
+    status, body = _post(f"{ui_server}/api/projects/demo/inspect/start", {})
+
+    assert status == 200
+    assert calls == ["demo"]
+    assert body["ok"] is True
+    assert body["status"]["pid"] == 8766
+    assert "巡检服务已启动" in body["message"]
 
 
 # ─── POST /api/tasks/:id/retry ──────────────────────────────────────────────
