@@ -85,6 +85,59 @@ def _supported_provider(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def _load_toml_dict(path: Path) -> dict[str, Any]:
+    try:
+        with open(path, "rb") as handle:
+            import tomllib
+
+            data = tomllib.load(handle)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _canonical_secrets(data: dict[str, Any]) -> dict[str, Any]:
+    canonical: dict[str, Any] = {"providers": {}, "feishu_bot": {}}
+
+    providers = data.get("providers") if isinstance(data.get("providers"), dict) else {}
+    for name in sorted(providers):
+        cfg = providers.get(name)
+        if not isinstance(cfg, dict):
+            continue
+        api_key = str(cfg.get("api_key", "") or "").strip()
+        if api_key:
+            canonical["providers"][str(name)] = {"api_key": api_key}
+
+    feishu_bot = data.get("feishu_bot") if isinstance(data.get("feishu_bot"), dict) else {}
+    app_secret = str(feishu_bot.get("app_secret", "") or "").strip()
+    if app_secret:
+        canonical["feishu_bot"] = {"app_secret": app_secret}
+
+    return canonical
+
+
+def _extract_sync_secrets(data: dict[str, Any]) -> dict[str, Any]:
+    feishu_bot = data.get("feishu_bot") if isinstance(data.get("feishu_bot"), dict) else {}
+    app_secret = str(feishu_bot.get("app_secret", "") or "").strip()
+    if not app_secret:
+        return {}
+    return {"feishu_bot": {"app_secret": app_secret}}
+
+
+def _merge_secret_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for key in set(base) | set(override):
+        base_value = base.get(key)
+        override_value = override.get(key)
+        if isinstance(base_value, dict) and isinstance(override_value, dict):
+            merged[key] = _merge_secret_dicts(base_value, override_value)
+        elif key in override:
+            merged[key] = override_value
+        else:
+            merged[key] = base_value
+    return merged
+
+
 def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, Any]:
     project = data.get("project") if isinstance(data.get("project"), dict) else {}
     shell = data.get("shell") if isinstance(data.get("shell"), dict) else {}
@@ -226,6 +279,7 @@ SECTION_COMMENTS: dict[str, list[str]] = {
     ],
     "feishu_bot": [
         "飞书企业应用长连接机器人配置。运行时使用官方 Node SDK，不依赖 lark-cli。",
+        f"敏感字段建议放到同目录 {config_mod.SECRETS_FILENAME}，运行时会自动覆盖。",
     ],
 }
 
@@ -277,7 +331,13 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("notifications", "enabled"): ["是否发送通知。"],
     ("feishu_bot", "enabled"): ["是否启用飞书企业应用长连接机器人。"],
     ("feishu_bot", "app_id"): ["飞书企业应用 App ID。"],
-    ("feishu_bot", "app_secret"): ["飞书企业应用 App Secret。"],
+    (
+        "feishu_bot",
+        "app_secret",
+    ): [
+        f"飞书企业应用 App Secret。敏感字段，建议写到同目录 {config_mod.SECRETS_FILENAME}。",
+        "这里保持空字符串即可；运行时会自动从 secrets 覆盖。",
+    ],
     ("feishu_bot", "node_command"): ["Node.js 命令名或完整路径；默认 node。"],
     ("feishu_bot", "default_project"): ["未显式指定项目时默认操作的项目名。"],
     ("feishu_bot", "command_prefix"): ["可选命令前缀，例如 cp；留空则直接识别 help/tasks/stop 等命令。"],
@@ -401,6 +461,38 @@ def render_agents_toml(canonical: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_secrets_toml(canonical: dict[str, Any]) -> str:
+    providers = canonical.get("providers", {}) if isinstance(canonical.get("providers"), dict) else {}
+    feishu_bot = canonical.get("feishu_bot", {}) if isinstance(canonical.get("feishu_bot"), dict) else {}
+    if not providers and not feishu_bot:
+        return ""
+
+    lines: list[str] = [
+        "# CodePilot secrets override file",
+        f"# Keep this file out of version control. Default name: {config_mod.SECRETS_FILENAME}",
+        "",
+    ]
+
+    if providers:
+        lines.append("[providers]")
+        lines.append("")
+        for name, values in providers.items():
+            api_key = str(values.get("api_key", "") or "").strip()
+            if not api_key:
+                continue
+            lines.append(f"[providers.{name}]")
+            lines.append(f"api_key = {_toml_value(api_key)}")
+            lines.append("")
+
+    app_secret = str(feishu_bot.get("app_secret", "") or "").strip()
+    if app_secret:
+        lines.append("[feishu_bot]")
+        lines.append(f"app_secret = {_toml_value(app_secret)}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _resolve_config_target(path: Path | None, *, use_global: bool = False) -> Path:
     if use_global:
         return config_mod.resolve_global_config_path()
@@ -443,7 +535,20 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
 
     project_name = config_path.parent.name
     canonical = _canonical_config(data, project_name=project_name)
+    sync_secrets = _extract_sync_secrets(data)
+    existing_secrets = _canonical_secrets(_load_toml_dict(config_path.parent / config_mod.SECRETS_FILENAME))
+    existing_feishu_secret = ""
+    existing_feishu = existing_secrets.get("feishu_bot")
+    if isinstance(existing_feishu, dict):
+        existing_feishu_secret = str(existing_feishu.get("app_secret", "") or "").strip()
+    if isinstance(canonical.get("feishu_bot"), dict):
+        canonical["feishu_bot"]["app_secret"] = ""
     content = render_agents_toml(canonical)
+    write_secrets = bool(sync_secrets) and not existing_feishu_secret
+    secrets_content = ""
+    if write_secrets:
+        merged_secrets = _merge_secret_dicts(existing_secrets, sync_secrets)
+        secrets_content = render_secrets_toml(merged_secrets)
 
     if dry_run:
         click.echo(content, nl=False)
@@ -451,5 +556,10 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(content, encoding="utf-8")
+    if write_secrets and secrets_content:
+        secrets_path = config_path.parent / config_mod.SECRETS_FILENAME
+        secrets_path.write_text(secrets_content, encoding="utf-8")
     click.echo(f"已同步配置: {config_path}")
+    if write_secrets:
+        click.echo(f"已迁移飞书 App Secret 到: {config_path.parent / config_mod.SECRETS_FILENAME}")
 

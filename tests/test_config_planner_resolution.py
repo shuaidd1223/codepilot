@@ -10,6 +10,7 @@ from codepilot.cli import main
 from codepilot.commands import inspect as inspect_cmd
 from codepilot.core.config import (
     GLOBAL_CONFIG_PATH_ENV,
+    SECRETS_FILENAME,
     AgentsConfig,
     load_project_config,
     resolve_planner,
@@ -192,6 +193,75 @@ provider = "deepseek"
     assert parsed["providers"]["deepseek"]["api_key"] == ""
     assert parsed["providers"]["deepseek"]["model"] == ""
     assert parsed["providers"]["deepseek"]["base_url"] == ""
+
+
+def test_config_sync_moves_inline_feishu_app_secret_to_sibling_secrets_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    project = tmp_path / "demo"
+    project.mkdir()
+    _write(
+        project / "AGENTS.toml",
+        """
+[feishu_bot]
+enabled = true
+app_id = "cli-demo"
+app_secret = "feishu-inline-secret"
+node_command = "node"
+""".strip(),
+    )
+
+    result = CliRunner().invoke(main, ["config", "sync", str(project)])
+
+    assert result.exit_code == 0, result.output
+
+    import tomllib
+
+    agents_data = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
+    secrets_data = tomllib.loads((project / SECRETS_FILENAME).read_text(encoding="utf-8"))
+
+    assert agents_data["feishu_bot"]["enabled"] is True
+    assert agents_data["feishu_bot"]["app_id"] == "cli-demo"
+    assert agents_data["feishu_bot"]["app_secret"] == ""
+    assert ".codepilot.secrets.toml" in (project / "AGENTS.toml").read_text(encoding="utf-8")
+    assert secrets_data["feishu_bot"]["app_secret"] == "feishu-inline-secret"
+
+
+def test_config_sync_keeps_existing_feishu_secret_file_value(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    project = tmp_path / "demo"
+    project.mkdir()
+    _write(
+        project / "AGENTS.toml",
+        """
+[feishu_bot]
+enabled = true
+app_id = "cli-demo"
+app_secret = "stale-inline-secret"
+""".strip(),
+    )
+    _write(
+        project / SECRETS_FILENAME,
+        """
+[providers.openai-gpt4o]
+api_key = "sk-existing"
+
+[feishu_bot]
+app_secret = "feishu-from-secrets"
+""".strip(),
+    )
+
+    result = CliRunner().invoke(main, ["config", "sync", str(project)])
+
+    assert result.exit_code == 0, result.output
+
+    import tomllib
+
+    secrets_data = tomllib.loads((project / SECRETS_FILENAME).read_text(encoding="utf-8"))
+    agents_data = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
+
+    assert agents_data["feishu_bot"]["app_secret"] == ""
+    assert secrets_data["feishu_bot"]["app_secret"] == "feishu-from-secrets"
+    assert secrets_data["providers"]["openai-gpt4o"]["api_key"] == "sk-existing"
 
 
 def test_load_project_config_accepts_registered_project_config_file(tmp_path, monkeypatch):
