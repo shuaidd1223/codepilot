@@ -493,6 +493,13 @@ def project_summary(project: dict, *, job_count: int | None = None) -> dict:
     live in in-memory shell state (``_UI_JOBS``) — the dashboard entry point
     injects it so we don't pull the shell import from every call site."""
     stats = db.get_task_stats(project["name"])
+    stats = {
+        **stats,
+        "total": sum(
+            int(stats.get(key) or 0)
+            for key in ("backlog", "in_progress", "done", "failed", "cancelled")
+        ),
+    }
     tasks = _sorted_tasks(db.list_tasks(project=project["name"]))
     live = next((task for task in tasks if task["status"] == "in_progress"), None)
     session_count = len(db.list_sessions(project=project["name"]))

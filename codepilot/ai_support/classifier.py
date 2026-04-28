@@ -494,127 +494,177 @@ def _resolve_question_runtime_plan(
     return _heuristic_question_runtime_plan(question, project_path=project_path)
 
 
-def _execute_question_runtime_lookups(plan: dict, *, project_path: str = "") -> dict:
-    lookups = plan.get("lookups") if isinstance(plan.get("lookups"), list) else []
-    scope = str(plan.get("project_scope") or "current").strip().lower()
-    current_project = _resolve_question_project(project_path)
-    projects = db.list_projects()
+def _question_runtime_lookup_requests(plan: dict) -> list[dict]:
+    raw_lookups = plan.get("lookups") if isinstance(plan.get("lookups"), list) else []
+    requests: list[dict] = []
+    for raw in raw_lookups[:4]:
+        if not isinstance(raw, dict):
+            continue
+        tool = str(raw.get("tool") or "").strip()
+        if not tool:
+            continue
+        requests.append(
+            {
+                "tool": tool,
+                "limit": _runtime_lookup_limit(raw.get("limit")),
+                "status": str(raw.get("status") or "all").strip().lower(),
+            }
+        )
+    return requests
 
-    result: dict[str, object] = {
+
+def _runtime_lookup_limit(value: object) -> int:
+    try:
+        limit = int(value or 5)
+    except (TypeError, ValueError):
+        return 5
+    return max(1, min(limit, 20))
+
+
+def _project_identity(project: dict) -> dict:
+    return {
+        "name": str(project.get("name") or ""),
+        "path": str(project.get("path") or ""),
+    }
+
+
+def _empty_runtime_lookup_result(scope: str, current_project: Optional[dict]) -> dict:
+    return {
         "scope": scope,
-        "current_project": {
-            "name": str(current_project.get("name") or ""),
-            "path": str(current_project.get("path") or ""),
-        } if current_project else None,
+        "current_project": _project_identity(current_project) if current_project else None,
         "projects": [],
         "lookups": [],
         "notes": [],
     }
 
+
+def _runtime_lookup_target_projects(
+    scope: str,
+    *,
+    current_project: Optional[dict],
+    projects: list[dict],
+    result: dict,
+) -> list[dict]:
     if scope == "all":
-        target_projects = projects
-    elif current_project:
-        target_projects = [current_project]
-    else:
-        target_projects = []
-        if scope == "current":
-            result["notes"] = ["当前没有可确认的项目上下文。"]
+        return projects
+    if current_project:
+        return [current_project]
+    if scope == "current":
+        result["notes"] = ["当前没有可确认的项目上下文。"]
+    return []
 
-    if any(str(item.get("tool") or "") == "project_list" for item in lookups):
-        result["projects"] = [
+
+def _task_lookup_item(task: dict, fields: tuple[str, ...]) -> dict:
+    item = {
+        "id": int(task.get("id") or 0),
+        "title": str(task.get("title") or ""),
+    }
+    for field in fields:
+        item[field] = str(task.get(field) or "")
+    return item
+
+
+def _task_lookup_items(tasks: list[dict], *, limit: int, fields: tuple[str, ...]) -> list[dict]:
+    return [_task_lookup_item(task, fields) for task in tasks[:limit]]
+
+
+def _task_stats_lookup_items(snapshots: list[dict]) -> list[dict]:
+    return [{"project": snapshot["name"], "stats": snapshot["stats"]} for snapshot in snapshots]
+
+
+def _task_list_lookup_items(snapshots: list[dict], *, status: str, limit: int) -> list[dict]:
+    items = []
+    for snapshot in snapshots:
+        tasks = snapshot["tasks"]
+        filtered = tasks if status == "all" else [task for task in tasks if str(task.get("status") or "") == status]
+        items.append(
             {
-                "name": str(project.get("name") or ""),
-                "path": str(project.get("path") or ""),
+                "project": snapshot["name"],
+                "status": status,
+                "items": _task_lookup_items(filtered, limit=limit, fields=("status", "priority")),
             }
-            for project in projects
-        ]
+        )
+    return items
 
-    for raw in lookups[:4]:
-        if not isinstance(raw, dict):
-            continue
-        tool = str(raw.get("tool") or "").strip()
-        limit = int(raw.get("limit") or 5)
-        status = str(raw.get("status") or "all").strip().lower()
 
-        if tool == "project_list":
-            continue
+def _status_task_lookup_items(snapshots: list[dict], *, status: str, limit: int, fields: tuple[str, ...]) -> list[dict]:
+    return [
+        {
+            "project": snapshot["name"],
+            "items": _task_lookup_items(
+                [task for task in snapshot["tasks"] if str(task.get("status") or "") == status],
+                limit=limit,
+                fields=fields,
+            ),
+        }
+        for snapshot in snapshots
+    ]
 
-        if tool == "service_status":
-            payload = []
-            for project in target_projects:
-                snapshot = _project_runtime_snapshot(project)
-                payload.append(
-                    {
-                        "project": snapshot["name"],
-                        "services": snapshot["services"],
-                    }
-                )
-            result["lookups"].append({"tool": tool, "items": payload})
-            continue
 
-        if not target_projects:
-            continue
+def _service_status_lookup_items(snapshots: list[dict]) -> list[dict]:
+    return [{"project": snapshot["name"], "services": snapshot["services"]} for snapshot in snapshots]
 
-        payload = []
-        for project in target_projects:
-            snapshot = _project_runtime_snapshot(project)
-            tasks = snapshot["tasks"]
-            if tool == "task_stats":
-                payload.append(
-                    {
-                        "project": snapshot["name"],
-                        "stats": snapshot["stats"],
-                    }
-                )
-            elif tool == "task_list":
-                filtered = tasks if status == "all" else [item for item in tasks if str(item.get("status") or "") == status]
-                payload.append(
-                    {
-                        "project": snapshot["name"],
-                        "status": status,
-                        "items": [
-                            {
-                                "id": int(item.get("id") or 0),
-                                "title": str(item.get("title") or ""),
-                                "status": str(item.get("status") or ""),
-                                "priority": str(item.get("priority") or ""),
-                            }
-                            for item in filtered[:limit]
-                        ],
-                    }
-                )
-            elif tool == "running_tasks":
-                filtered = [item for item in tasks if str(item.get("status") or "") == "in_progress"]
-                payload.append(
-                    {
-                        "project": snapshot["name"],
-                        "items": [
-                            {
-                                "id": int(item.get("id") or 0),
-                                "title": str(item.get("title") or ""),
-                                "priority": str(item.get("priority") or ""),
-                            }
-                            for item in filtered[:limit]
-                        ],
-                    }
-                )
-            elif tool == "failed_tasks":
-                filtered = [item for item in tasks if str(item.get("status") or "") == "failed"]
-                payload.append(
-                    {
-                        "project": snapshot["name"],
-                        "items": [
-                            {
-                                "id": int(item.get("id") or 0),
-                                "title": str(item.get("title") or ""),
-                                "priority": str(item.get("priority") or ""),
-                                "error_message": str(item.get("error_message") or ""),
-                            }
-                            for item in filtered[:limit]
-                        ],
-                    }
-                )
-        result["lookups"].append({"tool": tool, "items": payload})
+
+def _execute_runtime_lookup_request(request: dict, target_projects: list[dict]) -> dict | None:
+    tool = str(request.get("tool") or "")
+    if tool == "project_list":
+        return None
+
+    snapshots = [_project_runtime_snapshot(project) for project in target_projects]
+    limit = int(request.get("limit") or 5)
+    status = str(request.get("status") or "all")
+
+    if tool == "service_status":
+        return {"tool": tool, "items": _service_status_lookup_items(snapshots)}
+    if not target_projects:
+        return None
+    if tool == "task_stats":
+        return {"tool": tool, "items": _task_stats_lookup_items(snapshots)}
+    if tool == "task_list":
+        return {"tool": tool, "items": _task_list_lookup_items(snapshots, status=status, limit=limit)}
+    if tool == "running_tasks":
+        return {
+            "tool": tool,
+            "items": _status_task_lookup_items(
+                snapshots,
+                status="in_progress",
+                limit=limit,
+                fields=("priority",),
+            ),
+        }
+    if tool == "failed_tasks":
+        return {
+            "tool": tool,
+            "items": _status_task_lookup_items(
+                snapshots,
+                status="failed",
+                limit=limit,
+                fields=("priority", "error_message"),
+            ),
+        }
+    return None
+
+
+def _execute_question_runtime_lookups(plan: dict, *, project_path: str = "") -> dict:
+    scope = str(plan.get("project_scope") or "current").strip().lower()
+    requests = _question_runtime_lookup_requests(plan)
+    current_project = _resolve_question_project(project_path)
+    projects = db.list_projects()
+    result = _empty_runtime_lookup_result(scope, current_project)
+    target_projects = _runtime_lookup_target_projects(
+        scope,
+        current_project=current_project,
+        projects=projects,
+        result=result,
+    )
+
+    if any(request["tool"] == "project_list" for request in requests):
+        result["projects"] = [_project_identity(project) for project in projects]
+
+    for request in requests:
+        lookup_result = _execute_runtime_lookup_request(request, target_projects)
+        if lookup_result:
+            result["lookups"].append(lookup_result)
 
     return result
 
@@ -668,107 +718,128 @@ def _question_runtime_bundle_json(bundle: dict) -> str:
     return json.dumps(bundle, ensure_ascii=False, indent=2)
 
 
+def _lookup_entry_items(entry: dict) -> list:
+    return entry.get("items") if isinstance(entry.get("items"), list) else []
+
+
+def _render_task_stats_lookup(question: str, items: list, *, project_name: str) -> list[str]:
+    normalized_question = _normalize_question_key(question)
+    include_breakdown = any(keyword in normalized_question for keyword in ("状态", "进度", "失败", "执行中"))
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        project = str(item.get("project") or project_name or "当前项目")
+        stats = item.get("stats") if isinstance(item.get("stats"), dict) else {}
+        total = int(stats.get("total") or 0)
+        done = int(stats.get("done") or 0)
+        remaining = max(total - done, 0)
+        lines.append(f"项目 `{project}` 共有 {total} 个任务，已完成 {done} 个，未完成 {remaining} 个。")
+        if include_breakdown:
+            lines.append(
+                "当前 "
+                f"backlog={int(stats.get('backlog') or 0)}，"
+                f"in_progress={int(stats.get('in_progress') or 0)}，"
+                f"failed={int(stats.get('failed') or 0)}，"
+                f"cancelled={int(stats.get('cancelled') or 0)}。"
+            )
+    return lines
+
+
+def _render_task_refs(tasks: list, *, limit: int, include_status: bool = False) -> str:
+    refs = []
+    for task in tasks[:limit]:
+        if not isinstance(task, dict):
+            continue
+        ref = f"#{int(task.get('id') or 0)} {str(task.get('title') or '').strip()}"
+        if include_status:
+            ref += f"[{str(task.get('status') or '').strip()}]"
+        refs.append(ref)
+    return "；".join(refs)
+
+
+def _render_status_task_lookup(items: list, *, label: str, empty_text: str) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        tasks = item.get("items") if isinstance(item.get("items"), list) else []
+        summary = _render_task_refs(tasks, limit=5)
+        lines.append(f"{label}：{summary}。" if summary else empty_text)
+    return lines
+
+
+def _render_task_list_lookup(items: list) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        tasks = item.get("items") if isinstance(item.get("items"), list) else []
+        summary = _render_task_refs(tasks, limit=8, include_status=True)
+        if summary:
+            lines.append(f"任务列表：{summary}。")
+    return lines
+
+
+def _render_service_status_lookup(items: list) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        services = item.get("services") if isinstance(item.get("services"), dict) else {}
+        daemon = services.get("daemon") if isinstance(services.get("daemon"), dict) else {}
+        inspect = services.get("inspect") if isinstance(services.get("inspect"), dict) else {}
+        daemon_label = "运行中" if daemon.get("running") else "未运行"
+        inspect_label = "运行中" if inspect.get("running") else "未运行"
+        lines.append(f"任务轮询 {daemon_label}，巡检 {inspect_label}。")
+    return lines
+
+
+def _render_project_list_fallback(data: dict) -> str:
+    projects = data.get("projects") if isinstance(data.get("projects"), list) else []
+    names = "、".join(
+        f"`{str(project.get('name') or '').strip()}`"
+        for project in projects[:10]
+        if isinstance(project, dict)
+    )
+    return f"当前已注册项目有 {len(projects)} 个：{names}。" if names else ""
+
+
+def _render_runtime_lookup_entry(question: str, entry: dict, *, project_name: str) -> list[str]:
+    tool = str(entry.get("tool") or "").strip()
+    items = _lookup_entry_items(entry)
+    if tool == "task_stats":
+        return _render_task_stats_lookup(question, items, project_name=project_name)
+    if tool == "running_tasks":
+        return _render_status_task_lookup(items, label="当前执行中的任务有", empty_text="当前没有执行中的任务。")
+    if tool == "failed_tasks":
+        return _render_status_task_lookup(items, label="当前失败任务有", empty_text="当前没有失败任务。")
+    if tool == "task_list":
+        return _render_task_list_lookup(items)
+    if tool == "service_status":
+        return _render_service_status_lookup(items)
+    return []
+
+
 def _render_runtime_lookup_answer(question: str, bundle: dict) -> str:
     if not bundle:
         return ""
     data = bundle.get("data") if isinstance(bundle.get("data"), dict) else {}
     notes = data.get("notes") if isinstance(data.get("notes"), list) else []
-    lookup_items = data.get("lookups") if isinstance(data.get("lookups"), list) else []
-    current_project = data.get("current_project") if isinstance(data.get("current_project"), dict) else {}
-    project_name = str(current_project.get("name") or "")
-    lines: list[str] = []
-
     if notes:
         return str(notes[0]).strip()
 
-    for entry in lookup_items:
-        if not isinstance(entry, dict):
-            continue
-        tool = str(entry.get("tool") or "").strip()
-        items = entry.get("items") if isinstance(entry.get("items"), list) else []
-        if tool == "task_stats":
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                project = str(item.get("project") or project_name or "当前项目")
-                stats = item.get("stats") if isinstance(item.get("stats"), dict) else {}
-                total = int(stats.get("total") or 0)
-                done = int(stats.get("done") or 0)
-                in_progress = int(stats.get("in_progress") or 0)
-                failed = int(stats.get("failed") or 0)
-                backlog = int(stats.get("backlog") or 0)
-                cancelled = int(stats.get("cancelled") or 0)
-                remaining = max(total - done, 0)
-                lines.append(
-                    f"项目 `{project}` 共有 {total} 个任务，已完成 {done} 个，未完成 {remaining} 个。"
-                )
-                if any(keyword in _normalize_question_key(question) for keyword in ("状态", "进度", "失败", "执行中")):
-                    lines.append(
-                        f"当前 backlog={backlog}，in_progress={in_progress}，failed={failed}，cancelled={cancelled}。"
-                    )
-        elif tool == "running_tasks":
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                running = item.get("items") if isinstance(item.get("items"), list) else []
-                if running:
-                    summary = "；".join(
-                        f"#{int(task.get('id') or 0)} {str(task.get('title') or '').strip()}"
-                        for task in running[:5]
-                        if isinstance(task, dict)
-                    )
-                    lines.append(f"当前执行中的任务有：{summary}。")
-                else:
-                    lines.append("当前没有执行中的任务。")
-        elif tool == "failed_tasks":
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                failed_items = item.get("items") if isinstance(item.get("items"), list) else []
-                if failed_items:
-                    summary = "；".join(
-                        f"#{int(task.get('id') or 0)} {str(task.get('title') or '').strip()}"
-                        for task in failed_items[:5]
-                        if isinstance(task, dict)
-                    )
-                    lines.append(f"当前失败任务有：{summary}。")
-                else:
-                    lines.append("当前没有失败任务。")
-        elif tool == "task_list":
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                task_items = item.get("items") if isinstance(item.get("items"), list) else []
-                if task_items:
-                    summary = "；".join(
-                        f"#{int(task.get('id') or 0)} {str(task.get('title') or '').strip()}[{str(task.get('status') or '').strip()}]"
-                        for task in task_items[:8]
-                        if isinstance(task, dict)
-                    )
-                    lines.append(f"任务列表：{summary}。")
-        elif tool == "service_status":
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                services = item.get("services") if isinstance(item.get("services"), dict) else {}
-                daemon = services.get("daemon") if isinstance(services.get("daemon"), dict) else {}
-                inspect = services.get("inspect") if isinstance(services.get("inspect"), dict) else {}
-                daemon_label = "运行中" if daemon.get("running") else "未运行"
-                inspect_label = "运行中" if inspect.get("running") else "未运行"
-                lines.append(f"任务轮询 {daemon_label}，巡检 {inspect_label}。")
-
+    current_project = data.get("current_project") if isinstance(data.get("current_project"), dict) else {}
+    project_name = str(current_project.get("name") or "")
+    lookup_items = data.get("lookups") if isinstance(data.get("lookups"), list) else []
+    lines = [
+        line
+        for entry in lookup_items
+        if isinstance(entry, dict)
+        for line in _render_runtime_lookup_entry(question, entry, project_name=project_name)
+    ]
     if not lines:
-        projects = data.get("projects") if isinstance(data.get("projects"), list) else []
-        if projects:
-            names = "、".join(
-                f"`{str(project.get('name') or '').strip()}`"
-                for project in projects[:10]
-                if isinstance(project, dict)
-            )
-            if names:
-                return f"当前已注册项目有 {len(projects)} 个：{names}。"
-        return ""
-
+        return _render_project_list_fallback(data)
     return "\n".join(dict.fromkeys(line for line in lines if line.strip()))
 
 

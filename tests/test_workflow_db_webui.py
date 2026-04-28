@@ -365,6 +365,8 @@ def test_webui_cancel_archive_delete_actions_follow_status_rules(tmp_path, monke
 
     payload = webui_mod.dashboard_payload("demo")
     assert done["id"] not in [task["id"] for task in payload["tasks"]]
+    assert payload["projects"][0]["stats"]["total"] == 1
+    assert len(payload["tasks"]) == 1
 
     removed = webui_mod.delete_task_action(backlog["id"])
     assert removed["ok"] is True
