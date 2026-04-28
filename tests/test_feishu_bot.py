@@ -112,18 +112,26 @@ def test_feishu_requirement_command_submits_goal_in_active_project(tmp_path, mon
     assert "后台任务" in payload
 
 
-def test_feishu_plain_text_in_project_context_does_not_submit_requirement(tmp_path, monkeypatch):
+def test_feishu_plain_text_in_project_context_submits_goal_action(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
     calls = []
-    monkeypatch.setattr("codepilot.webapp.actions.submit_requirement_action", lambda *args, **kwargs: calls.append(args) or {})
+    monkeypatch.setattr(
+        "codepilot.webapp.actions.submit_goal_action",
+        lambda project, text, **kwargs: calls.append({"project": project, "text": text, "kwargs": kwargs}) or {
+            "ok": True,
+            "intent": "requirement",
+            "message": "需求已提交，后台任务 #13 已启动。",
+            "job": {"id": 13, "status": "queued", "phase": "queued", "task_ids": []},
+        },
+    )
 
     handle_command_text("use demo", chat_id="chat-plain")
     reply = handle_command_text("优化飞书任务面板", chat_id="chat-plain")
     payload = json.dumps(reply["card"], ensure_ascii=False)
 
-    assert calls == []
-    assert "未识别命令" in payload
-    assert "需求 优化飞书任务面板" not in payload
+    assert calls == [{"project": "demo", "text": "优化飞书任务面板", "kwargs": {}}]
+    assert "需求已提交" in payload
+    assert "后台任务" in payload
 
 
 def test_feishu_requirement_clarification_uses_answer_command(tmp_path, monkeypatch):
@@ -424,14 +432,80 @@ def test_feishu_batch_delete_task_command_reports_partial_failures(tmp_path, mon
     assert db.get_task(blocked["id"])["status"] == "in_progress"
 
 
-def test_feishu_unknown_command_returns_help_card(tmp_path, monkeypatch):
+def test_feishu_natural_language_status_routes_to_project_overview(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
+
+    reply = handle_command_text("看看 demo 项目的运行状态")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "项目总览" in payload
+    assert "demo" in payload
+
+
+def test_feishu_natural_language_delete_uses_numbered_choice(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    first = db.create_task(
+        project="demo",
+        title="自然语言删除任务 1",
+        content="验证飞书候选选择",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+    db.create_task(
+        project="demo",
+        title="自然语言删除任务 2",
+        content="验证飞书候选选择",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+
+    handle_command_text("use demo", chat_id="chat-nl-delete")
+    first_reply = handle_command_text("删除任务", chat_id="chat-nl-delete")
+    second_reply = handle_command_text("1", chat_id="chat-nl-delete")
+    first_payload = json.dumps(first_reply["card"], ensure_ascii=False)
+    second_payload = json.dumps(second_reply["card"], ensure_ascii=False)
+
+    assert "请确认操作" in first_payload
+    assert "回复数字继续" in first_payload
+    assert "任务已删除" in second_payload
+    assert db.get_task(first["id"]) is None
+
+
+def test_feishu_unknown_plain_text_defaults_to_chat_goal(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        "codepilot.webapp.actions.submit_goal_action",
+        lambda project, text, **kwargs: calls.append({"project": project, "text": text, "kwargs": kwargs}) or {
+            "ok": True,
+            "intent": "question",
+            "message": "这里按 chat 问答处理。",
+        },
+    )
 
     reply = handle_command_text("wat")
     payload = json.dumps(reply["card"], ensure_ascii=False)
 
     assert reply["type"] == "interactive"
-    assert "未识别命令" in payload
+    assert calls == [{"project": "demo", "text": "wat", "kwargs": {}}]
+    assert "按 chat 问答处理" in payload
+
+
+def test_feishu_plain_text_without_active_project_prompts_project_choice(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    other_path = tmp_path / "other"
+    other_path.mkdir()
+    db.register_project("other", str(other_path))
+
+    reply = handle_command_text("帮我看看最近进度", chat_id="chat-multi")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "先确认你要在哪个项目里继续" in payload
+    assert "回复数字继续" in payload
 
 
 def test_ensure_feishu_service_running_if_enabled_returns_disabled_when_config_off(monkeypatch):

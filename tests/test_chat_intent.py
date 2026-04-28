@@ -90,8 +90,8 @@ def test_chat_requirement_heuristic_triggers_planning(tmp_path, monkeypatch):
     assert "阶段 3/3：正在生成计划并执行任务" in result.output
 
 
-def test_chat_command_heuristic_shows_help(tmp_path, monkeypatch):
-    """A command like '查看状态' should show CLI help, not create task."""
+def test_chat_command_heuristic_executes_local_status_command(tmp_path, monkeypatch):
+    """A command-like sentence should execute the local workflow action directly."""
     register_project(tmp_path, monkeypatch)
 
     def _heuristic_only(text, **kwargs):
@@ -107,8 +107,7 @@ def test_chat_command_heuristic_shows_help(tmp_path, monkeypatch):
     result = runner.invoke(main, ["chat", "--no-ui"], input="查看状态\n/exit\n")
 
     assert result.exit_code == 0
-    assert "codepilot status" in result.output
-    # No task created
+    assert "任务执行服务" in result.output
     tasks = db.list_tasks(project="demo")
     assert len(tasks) == 0
 
@@ -315,6 +314,53 @@ def test_chat_exit_does_not_stop_global_webui_service(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert calls == []
+
+
+def test_chat_natural_language_task_status_executes_local_command(tmp_path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+
+    called = {}
+
+    monkeypatch.setattr(
+        auto_mod,
+        "render_project_dashboard",
+        lambda *args, **kwargs: called.update({"args": args, "kwargs": kwargs}),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat", "--no-ui"], input="看看 demo 项目的任务状态\n/exit\n")
+
+    assert result.exit_code == 0
+    assert called["args"][0] == "demo"
+    assert "任务面板" in called["kwargs"]["title"]
+
+
+def test_chat_natural_language_delete_uses_numbered_choice(tmp_path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+    project_path = tmp_path / "demo"
+    first = db.create_task(
+        project="demo",
+        title="自然语言删除任务一",
+        content="验证候选选择",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+    db.create_task(
+        project="demo",
+        title="自然语言删除任务二",
+        content="验证候选选择",
+        agent="dual",
+        priority="P2",
+        project_path=str(project_path),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat", "--no-ui"], input="删除任务\n1\n/exit\n")
+
+    assert result.exit_code == 0
+    assert "回复数字继续" in result.output
+    assert db.get_task(first["id"]) is None
 
 
 

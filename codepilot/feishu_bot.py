@@ -15,6 +15,12 @@ from typing import Any
 
 from codepilot.core.config import load_config
 from codepilot.core.runtime import is_process_alive
+from codepilot.nl_command_router import (
+    format_numbered_options,
+    infer_goal_from_text,
+    pick_command_option,
+    resolve_natural_language_command,
+)
 from codepilot.storage import database as db
 from codepilot.webapp.display_sort import sort_tasks_for_display
 from codepilot.webapp.action_task_ops import (
@@ -43,6 +49,8 @@ _CHAT_CONTEXT_SERVICE = "feishu_chat"
 _CHAT_CONTEXT_PREFIX = "chat:"
 _NOTIFY_DEDUPE_SERVICE = "feishu_notify"
 _PENDING_REQUIREMENT_KEY = "pending_requirement"
+_PENDING_ACTION_OPTIONS_KEY = "pending_action_options"
+_PENDING_GOAL_TEXT_KEY = "pending_goal_text"
 
 
 def _chat_scope(chat_id: str) -> str:
@@ -465,6 +473,8 @@ def _save_chat_project(chat_id: str, project_name: str) -> None:
     _scope, meta = _chat_meta(chat_id)
     meta["project"] = project_name
     meta.pop(_PENDING_REQUIREMENT_KEY, None)
+    meta.pop(_PENDING_ACTION_OPTIONS_KEY, None)
+    meta.pop(_PENDING_GOAL_TEXT_KEY, None)
     _write_chat_meta(chat_id, meta)
 
 
@@ -502,9 +512,12 @@ def _notification_chat_ids(project_name: str = "") -> list[str]:
 
 def _active_project(cfg: FeishuBotConfig, chat_id: str = "") -> str:
     selected = _load_chat_project(chat_id)
-    if selected:
+    if selected and db.get_project(selected):
         return selected
-    return str(cfg.default_project or "").strip()
+    default_project = str(cfg.default_project or "").strip()
+    if default_project and db.get_project(default_project):
+        return default_project
+    return ""
 
 
 def _load_pending_requirement(chat_id: str, project_name: str) -> dict[str, Any] | None:
@@ -540,6 +553,73 @@ def _clear_pending_requirement(chat_id: str) -> None:
     _scope, meta = _chat_meta(chat_id)
     if _PENDING_REQUIREMENT_KEY in meta:
         meta.pop(_PENDING_REQUIREMENT_KEY, None)
+        _write_chat_meta(chat_id, meta)
+
+
+def _load_pending_action_options(chat_id: str) -> list[dict[str, Any]]:
+    _scope, meta = _chat_meta(chat_id)
+    options = meta.get(_PENDING_ACTION_OPTIONS_KEY)
+    if not isinstance(options, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in options:
+        if not isinstance(item, dict):
+            continue
+        command = str(item.get("command") or "").strip()
+        label = str(item.get("label") or command).strip()
+        if not command:
+            continue
+        normalized.append({"command": command, "label": label})
+    return normalized
+
+
+def _save_pending_action_options(chat_id: str, options: list[dict[str, Any]]) -> None:
+    if not chat_id:
+        return
+    _scope, meta = _chat_meta(chat_id)
+    meta[_PENDING_ACTION_OPTIONS_KEY] = [
+        {
+            "command": str(item.get("command") or "").strip(),
+            "label": str(item.get("label") or item.get("command") or "").strip(),
+        }
+        for item in (options or [])
+        if str(item.get("command") or "").strip()
+    ]
+    _write_chat_meta(chat_id, meta)
+
+
+def _clear_pending_action_options(chat_id: str) -> None:
+    if not chat_id:
+        return
+    _scope, meta = _chat_meta(chat_id)
+    if _PENDING_ACTION_OPTIONS_KEY in meta:
+        meta.pop(_PENDING_ACTION_OPTIONS_KEY, None)
+        _write_chat_meta(chat_id, meta)
+
+
+def _load_pending_goal_text(chat_id: str) -> str:
+    _scope, meta = _chat_meta(chat_id)
+    return str(meta.get(_PENDING_GOAL_TEXT_KEY) or "").strip()
+
+
+def _save_pending_goal_text(chat_id: str, text: str) -> None:
+    if not chat_id:
+        return
+    _scope, meta = _chat_meta(chat_id)
+    value = str(text or "").strip()
+    if value:
+        meta[_PENDING_GOAL_TEXT_KEY] = value
+    else:
+        meta.pop(_PENDING_GOAL_TEXT_KEY, None)
+    _write_chat_meta(chat_id, meta)
+
+
+def _clear_pending_goal_text(chat_id: str) -> None:
+    if not chat_id:
+        return
+    _scope, meta = _chat_meta(chat_id)
+    if _PENDING_GOAL_TEXT_KEY in meta:
+        meta.pop(_PENDING_GOAL_TEXT_KEY, None)
         _write_chat_meta(chat_id, meta)
 
 
@@ -600,6 +680,59 @@ def build_help_card(*, prefix: str = "", error: str = "") -> dict[str, Any]:
         ]
     )
     return _card("CodePilot 飞书命令", blocks, template="indigo", subtitle="命令按使用场景分组，具体卡片底部会显示更相关的下一步。")
+
+
+def build_choice_card(message: str, options: list[dict[str, Any]], *, prefix: str = "") -> dict[str, Any]:
+    lines = format_numbered_options(message, options)
+    blocks: list[str | dict[str, Any]] = [
+        _section("请确认操作"),
+        _plain_block(lines),
+        _note("直接回复数字继续，例如 1。发送新的完整命令会覆盖这次候选。"),
+    ]
+    blocks.extend(_command_panel(prefix, [("help", "查看命令帮助"), ("projects", "查看项目"), ("tasks", "查看任务")]))
+    return _card("CodePilot 操作候选", blocks, template="orange", subtitle="自然语言命中了多个可能操作。")
+
+
+def build_goal_answer_card(project_name: str, user_text: str, result: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
+    intent = str(result.get("intent") or "").strip().lower()
+    if intent == "clarify" or result.get("job"):
+        return build_requirement_result_card(project_name, user_text, result, prefix=prefix)
+    if intent == "command":
+        return build_help_card(prefix=prefix, error=str(result.get("message") or ""))
+    blocks: list[str | dict[str, Any]] = [
+        _section("会话结果"),
+        *_column_panels(
+            [
+                f"**项目**\n`{project_name}`",
+                f"**类型**\n`{intent or 'question'}`",
+            ]
+        ),
+        _section("你的输入"),
+        _plain_block(user_text[:700]),
+        _section("系统回复"),
+        _plain_block(str(result.get("message") or "").strip()[:1200] or "未获得回复"),
+    ]
+    blocks.extend(_command_panel(prefix, _card_commands("project", project=project_name)))
+    return _card(
+        f"CodePilot 会话 · {project_name}",
+        blocks,
+        template="blue",
+        subtitle="自然语言已自动分发到问答或需求流。",
+    )
+
+
+def _submit_goal_from_feishu(project_name: str, user_text: str, *, chat_id: str = "", prefix: str = "") -> dict[str, Any]:
+    from codepilot.webapp import actions as web_actions
+
+    if chat_id and project_name:
+        _save_chat_project(chat_id, project_name)
+    result = web_actions.submit_goal_action(project_name, str(user_text or "").strip())
+    if result.get("intent") == "clarify":
+        _save_pending_requirement(chat_id, project_name, result)
+    else:
+        _clear_pending_requirement(chat_id)
+    _clear_pending_goal_text(chat_id)
+    return _reply_card(build_goal_answer_card(project_name, user_text, result, prefix=prefix))
 
 
 def _resolve_project(explicit: str, *, default_project: str = "") -> str:
@@ -1713,12 +1846,47 @@ def build_batch_task_action_card(action: str, result: dict[str, Any], *, prefix:
     )
 
 
-def handle_command_text(text: str, *, config_path: Path | None = None, chat_id: str = "") -> dict[str, Any]:
+def handle_command_text(
+    text: str,
+    *,
+    config_path: Path | None = None,
+    chat_id: str = "",
+    _normalized_command_text: str | None = None,
+    _allow_nl: bool = True,
+) -> dict[str, Any]:
     db.init_db()
     cfg = load_feishu_bot_config(config_path)
-    command_text = _normalize_command_text(text, cfg.command_prefix)
+    command_text = _normalized_command_text
+    if command_text is None:
+        command_text = _normalize_command_text(text, cfg.command_prefix)
     if command_text is None:
         return {"type": "ignore"}
+    pending_options = _load_pending_action_options(chat_id)
+    selected = pick_command_option(command_text, pending_options)
+    if selected:
+        _clear_pending_action_options(chat_id)
+        selected_command = str(selected.get("command") or "")
+        pending_goal_text = _load_pending_goal_text(chat_id)
+        if pending_goal_text and selected_command.lower().startswith("use "):
+            project_name = selected_command.split(None, 1)[1].strip()
+            return _submit_goal_from_feishu(
+                project_name,
+                pending_goal_text,
+                chat_id=chat_id,
+                prefix=cfg.command_prefix,
+            )
+        return handle_command_text(
+            selected_command,
+            config_path=config_path,
+            chat_id=chat_id,
+            _normalized_command_text=selected_command,
+            _allow_nl=False,
+        )
+    if pending_options and str(command_text).isdigit():
+        return _reply_card(build_choice_card("可选项超出范围，请重新选择：", pending_options, prefix=cfg.command_prefix))
+    if pending_options:
+        _clear_pending_action_options(chat_id)
+        _clear_pending_goal_text(chat_id)
     parts = command_text.split()
     if not parts:
         return _reply_card(build_help_card(prefix=cfg.command_prefix))
@@ -1907,6 +2075,60 @@ def handle_command_text(text: str, *, config_path: Path | None = None, chat_id: 
         project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=_active_project(cfg, chat_id))
         result = project_service_action(project_name, "tasks", "status")
         return _reply_card(build_service_card(project_name, result, prefix=cfg.command_prefix, title="任务执行服务状态"))
+
+    if _allow_nl:
+        active_project = _active_project(cfg, chat_id)
+        resolved = resolve_natural_language_command(command_text, active_project=active_project)
+        if resolved.get("status") == "options":
+            options = list(resolved.get("options") or [])
+            _save_pending_action_options(chat_id, options)
+            return _reply_card(build_choice_card(str(resolved.get("message") or "请确认操作"), options, prefix=cfg.command_prefix))
+        if resolved.get("status") == "match":
+            _clear_pending_action_options(chat_id)
+            return handle_command_text(
+                str(resolved.get("command") or ""),
+                config_path=config_path,
+                chat_id=chat_id,
+                _normalized_command_text=str(resolved.get("command") or ""),
+                _allow_nl=False,
+            )
+
+        goal = infer_goal_from_text(command_text, active_project=active_project)
+        if goal and goal.get("status") == "options":
+            options = list(goal.get("options") or [])
+            _save_pending_action_options(chat_id, options)
+            _save_pending_goal_text(chat_id, command_text)
+            return _reply_card(build_choice_card(str(goal.get("message") or "请确认项目"), options, prefix=cfg.command_prefix))
+        if goal and goal.get("project"):
+            return _submit_goal_from_feishu(
+                str(goal.get("project") or "").strip(),
+                str(goal.get("text") or "").strip(),
+                chat_id=chat_id,
+                prefix=cfg.command_prefix,
+            )
+
+        fallback_project = active_project
+        if not fallback_project:
+            projects = db.list_projects()
+            if len(projects) == 1:
+                fallback_project = str(projects[0].get("name") or "").strip()
+            elif len(projects) > 1:
+                options = [
+                    {"command": f"use {str(project.get('name') or '').strip()}", "label": f"在项目 {str(project.get('name') or '').strip()} 中继续"}
+                    for project in projects[:4]
+                    if str(project.get("name") or "").strip()
+                ]
+                if options:
+                    _save_pending_action_options(chat_id, options)
+                    _save_pending_goal_text(chat_id, command_text)
+                    return _reply_card(build_choice_card("这条消息会按 chat 处理。先确认你要在哪个项目里继续：", options, prefix=cfg.command_prefix))
+        if fallback_project:
+            return _submit_goal_from_feishu(
+                fallback_project,
+                command_text,
+                chat_id=chat_id,
+                prefix=cfg.command_prefix,
+            )
 
     return _reply_card(build_help_card(prefix=cfg.command_prefix, error=f"`{command_text}`"))
 

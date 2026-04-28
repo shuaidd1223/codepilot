@@ -317,6 +317,7 @@ def resolve_natural_language_command(text: str, *, active_project: str = "") -> 
     lowered = content.lower()
     project_name, project_matches = _project_target(content, active_project=active_project)
     task_ids = _extract_task_ids(content)
+    requirement_like = _contains_any(content, _REQUIREMENT_WORDS)
 
     if _contains_any(content, ("项目列表", "项目清单", "有哪些项目", "所有项目")):
         return _build_result("match", command="projects", label="查看项目清单")
@@ -409,7 +410,7 @@ def resolve_natural_language_command(text: str, *, active_project: str = "") -> 
             if options:
                 return _format_options("我需要具体任务 ID，你是指下面哪一个？", options)
 
-    if _contains_any(content, ("任务列表", "任务面板", "看任务", "任务情况", "任务状态", "做完了没有", "完成了没有")):
+    if (not requirement_like) and _contains_any(content, ("任务列表", "任务面板", "看任务", "任务情况", "任务状态", "做完了没有", "完成了没有")):
         if project_name:
             return _build_result("match", command=f"tasks {project_name}", label=f"查看 {project_name} 任务")
         if len(project_matches) > 1:
@@ -422,7 +423,7 @@ def resolve_natural_language_command(text: str, *, active_project: str = "") -> 
         if options:
             return _format_options("你是想看哪个项目的任务？", options)
 
-    if _contains_any(content, ("服务状态", "服务情况", "服务列表")):
+    if (not requirement_like) and _contains_any(content, ("服务状态", "服务情况", "服务列表")):
         if project_name:
             return _build_result("match", command=f"services {project_name}", label=f"查看 {project_name} 服务状态")
         if len(project_matches) > 1:
@@ -432,7 +433,7 @@ def resolve_natural_language_command(text: str, *, active_project: str = "") -> 
         if default_project:
             return _build_result("match", command=f"services {default_project}", label=f"查看 {default_project} 服务状态")
 
-    if _contains_any(content, ("项目状态", "项目概览", "项目总览", "运行状态", "看状态", "查看状态", "状态")):
+    if (not requirement_like) and _contains_any(content, ("项目状态", "项目概览", "项目总览", "运行状态", "看状态", "查看状态", "状态")):
         if project_name:
             return _build_result("match", command=f"overview {project_name}", label=f"查看 {project_name} 项目状态")
         if len(project_matches) > 1:

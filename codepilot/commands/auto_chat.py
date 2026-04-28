@@ -22,6 +22,7 @@ from enum import Enum, auto
 from typing import Callable, Optional
 
 import click
+from click.testing import CliRunner as _InlineRunner
 
 from codepilot.ai_support.interaction_controller import (
     interpret_clarification_outcome,
@@ -31,6 +32,14 @@ from codepilot.ai_support.interaction_controller import (
 )
 from codepilot import __version__
 from codepilot.core.runtime import no_window_kwargs
+from codepilot.nl_command_router import (
+    _normalize_text as _normalize_nl_text,
+    format_numbered_options,
+    pick_command_option,
+    resolve_natural_language_command,
+)
+from codepilot.storage import database as db
+from codepilot.webapp.action_task_ops import project_service_action
 
 
 def _shell():
@@ -204,6 +213,7 @@ class _ChatRuntime:
     max_retries_opt: int
     chat_history: list[dict] = field(default_factory=list)
     pending_clarification: Optional[dict] = None
+    pending_action_options: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -254,6 +264,243 @@ _CHAT_TASK_COMMAND_MAP = {
     "/stop": "stop",
     "/logs": "logs",
 }
+
+
+def _active_chat_project_name(runtime: _ChatRuntime) -> str:
+    if runtime.project_info.get("is_temporary"):
+        return ""
+    return str(runtime.project_info.get("name") or "").strip()
+
+
+def _inline_click_output(command, args: list[str]) -> str:
+    result = _InlineRunner().invoke(command, args)
+    output = str(result.output or "").strip()
+    if result.exit_code != 0:
+        raise RuntimeError(output or "命令执行失败。")
+    return output
+
+
+def _render_chat_projects_summary() -> str:
+    projects = db.list_projects()
+    if not projects:
+        return "当前还没有已注册项目。"
+    lines = [f"已注册项目 {len(projects)} 个："]
+    for project in projects:
+        name = str(project.get("name") or "")
+        stats = db.get_task_stats(name)
+        lines.append(
+            f"- {name}: backlog={stats['backlog']} in_progress={stats['in_progress']} failed={stats['failed']} done={stats['done']}"
+        )
+    return "\n".join(lines)
+
+
+def _render_chat_overview(project_name: str) -> str:
+    project = db.get_project(project_name)
+    if not project:
+        raise RuntimeError(f"项目 '{project_name}' 未注册。")
+    stats = db.get_task_stats(project_name)
+    task_status = project_service_action(project_name, "tasks", "status").get("status") or {}
+    inspect_status = project_service_action(project_name, "inspect", "status").get("status") or {}
+    lines = [
+        f"项目: {project_name}",
+        f"路径: {project.get('path') or '-'}",
+        f"任务: backlog={stats['backlog']} in_progress={stats['in_progress']} failed={stats['failed']} cancelled={stats['cancelled']} done={stats['done']} total={stats['total']}",
+        f"任务执行服务: {'运行中' if task_status.get('running') else '未运行'} pid={task_status.get('pid') or 0}",
+        f"巡检服务: {'运行中' if inspect_status.get('running') else '未运行'} pid={inspect_status.get('pid') or 0}",
+    ]
+    return "\n".join(lines)
+
+
+def _render_chat_services(project_name: str) -> str:
+    project = db.get_project(project_name)
+    if not project:
+        raise RuntimeError(f"项目 '{project_name}' 未注册。")
+    task_result = project_service_action(project_name, "tasks", "status")
+    inspect_result = project_service_action(project_name, "inspect", "status")
+    task_status = task_result.get("status") or {}
+    inspect_status = inspect_result.get("status") or {}
+    lines = [
+        f"项目: {project_name}",
+        f"任务执行服务: {'运行中' if task_status.get('running') else '未运行'} pid={task_status.get('pid') or 0}",
+        f"巡检服务: {'运行中' if inspect_status.get('running') else '未运行'} pid={inspect_status.get('pid') or 0}",
+    ]
+    return "\n".join(lines)
+
+
+def _render_chat_sessions(project_name: str) -> str:
+    sessions = db.list_sessions(project=project_name)
+    if not sessions:
+        return f"{project_name} 当前没有需求会话。"
+    lines = [f"{project_name} 最近需求会话："]
+    for session in sessions[:8]:
+        lines.append(
+            f"- #{session['id']} {session.get('title') or '新会话'} [{session.get('status') or '-'}]"
+        )
+    return "\n".join(lines)
+
+
+def _execute_chat_command(command_text: str, runtime: _ChatRuntime, *, echo) -> str:
+    from codepilot.commands import status as status_mod
+    from codepilot.commands import tasks as tasks_mod
+
+    command_text = " ".join(str(command_text or "").strip().split())
+    if not command_text:
+        raise RuntimeError("空命令。")
+    parts = command_text.split()
+    verb = parts[0].lower()
+
+    if verb == "projects":
+        message = _render_chat_projects_summary()
+        click.echo(message)
+        return message
+
+    if verb == "global":
+        message = _render_chat_projects_summary()
+        click.echo(message)
+        return message
+
+    if verb == "use":
+        if len(parts) < 2:
+            raise RuntimeError("缺少项目名。")
+        runtime.project_info = runtime.shell.resolve_project_for_prompt(parts[1])
+        runtime.effective = runtime.shell._resolve_effective_options(
+            runtime.project_info,
+            planner=runtime.planner_opt,
+            executor=runtime.executor_opt,
+            auto_commit=runtime.auto_commit_opt,
+            max_tasks=runtime.max_tasks_opt,
+            max_retries=runtime.max_retries_opt,
+        )
+        runtime.default_agent = runtime.shell._resolve_task_agent(
+            runtime.project_info,
+            runtime.default_agent,
+            runtime.effective["executor"],
+        )
+        message = f"已切换到项目 {runtime.project_info['name']}"
+        echo(f"[green][OK] {message}[/green]")
+        return message
+
+    if verb == "overview":
+        project_name = parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
+        message = _render_chat_overview(project_name)
+        click.echo(message)
+        return message
+
+    if verb == "tasks":
+        project_name = parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
+        runtime.shell.render_project_dashboard(
+            project_name,
+            verbose=False,
+            include_done=False,
+            title=f"任务面板  {project_name}",
+        )
+        return f"已显示 {project_name} 任务面板"
+
+    if verb in {"requirements", "sessions"}:
+        project_name = parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
+        message = _render_chat_sessions(project_name)
+        click.echo(message)
+        return message
+
+    if verb == "services":
+        project_name = parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
+        message = _render_chat_services(project_name)
+        click.echo(message)
+        return message
+
+    if verb in {"daemon", "inspect"}:
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        project_name = parts[2] if len(parts) > 2 else _active_chat_project_name(runtime)
+        service_name = "tasks" if verb == "daemon" else "inspect"
+        result = project_service_action(project_name, service_name, action)
+        status = result.get("status") or {}
+        message = (
+            f"{project_name} {('任务执行服务' if service_name == 'tasks' else '巡检服务')}: "
+            f"{result.get('message') or '-'} / {'运行中' if status.get('running') else '未运行'} / pid={status.get('pid') or 0}"
+        )
+        click.echo(message)
+        return message
+
+    if verb == "detail":
+        output = _inline_click_output(tasks_mod.show, [parts[1]])
+        click.echo(output)
+        return output
+
+    if verb == "logs":
+        output = _inline_click_output(tasks_mod.logs, [parts[1]])
+        click.echo(output)
+        return output
+
+    if verb == "retry":
+        output = _inline_click_output(tasks_mod.retry, [parts[1]])
+        click.echo(output)
+        return output
+
+    if verb == "stop":
+        output = _inline_click_output(tasks_mod.stop, [parts[1]])
+        click.echo(output)
+        return output
+
+    if verb == "cancel":
+        output = _inline_click_output(tasks_mod.cancel, parts[1:])
+        click.echo(output)
+        return output
+
+    if verb == "archive":
+        output = _inline_click_output(tasks_mod.archive, parts[1:])
+        click.echo(output)
+        return output
+
+    if verb == "delete":
+        output = _inline_click_output(tasks_mod.rm, [*parts[1:], "-f"])
+        click.echo(output)
+        return output
+
+    if verb == "status":
+        project_name = parts[1] if len(parts) > 1 else _active_chat_project_name(runtime)
+        output = _inline_click_output(status_mod.status, ["-p", project_name])
+        click.echo(output)
+        return output
+
+    raise RuntimeError(f"未支持的自然语言操作: {command_text}")
+
+
+def _dispatch_chat_natural_language_command(
+    text: str,
+    runtime: _ChatRuntime,
+    *,
+    echo,
+) -> tuple[bool, str]:
+    selected = pick_command_option(text, runtime.pending_action_options)
+    if selected:
+        runtime.pending_action_options.clear()
+        response = _execute_chat_command(str(selected.get("command") or ""), runtime, echo=echo)
+        return True, response
+
+    active_project = _active_chat_project_name(runtime)
+    resolved = resolve_natural_language_command(text, active_project=active_project)
+    if resolved.get("status") == "options":
+        runtime.pending_action_options = list(resolved.get("options") or [])
+        message = format_numbered_options(
+            str(resolved.get("message") or "请确认操作"),
+            runtime.pending_action_options,
+        )
+        click.echo(message)
+        return True, message
+
+    if resolved.get("status") == "match":
+        runtime.pending_action_options.clear()
+        response = _execute_chat_command(str(resolved.get("command") or ""), runtime, echo=echo)
+        return True, response
+
+    if runtime.pending_action_options and _normalize_nl_text(text).isdigit():
+        message = format_numbered_options("可选项超出范围，请重新选择：", runtime.pending_action_options)
+        click.echo(message)
+        return True, message
+
+    if runtime.pending_action_options:
+        runtime.pending_action_options.clear()
+    return False, ""
 
 
 def _end_chat_session(frame: _ChatTurnFrame, *, shutdown_ui, echo, prepend_blank_line: bool = False) -> None:
@@ -416,6 +663,7 @@ def _handle_chat_meta_command(
         return True
     if cmd in {"/clear", "/cancel"}:
         runtime.chat_history.clear()
+        runtime.pending_action_options.clear()
         if runtime.pending_clarification:
             runtime.pending_clarification = None
             echo("[green]对话历史已清空，当前待澄清的需求也已放弃[/green]")
@@ -701,6 +949,17 @@ def _dispatch_chat_requirement(
 def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdown_ui, echo, safe) -> None:
     """Run intent classification + question/requirement handling for normal input."""
     payload_text = frame.payload_text
+    handled, assistant_response = _dispatch_chat_natural_language_command(payload_text, runtime, echo=echo)
+    if handled:
+        runtime.chat_history.append({
+            "user": payload_text,
+            "assistant": assistant_response,
+            "intent": "command",
+        })
+        click.echo()
+        _reset_to_read_input(frame)
+        return
+
     dispatch_ctx = _ChatMessageDispatchContext(
         runtime=runtime,
         payload_text=payload_text,
