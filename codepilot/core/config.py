@@ -893,10 +893,8 @@ enabled = false
 # 飞书企业应用长连接机器人（本地可用，无需公网回调）
 enabled = false
 app_id = ""
-# 敏感字段建议放到同目录 .codepilot.secrets.toml:
+# App Secret 只写到同目录 .codepilot.secrets.toml，避免 AGENTS.toml 出现密钥字段:
 # [feishu_bot]
-# app_secret = "xxx"
-app_secret = ""
 node_command = "node"
 default_project = ""
 command_prefix = ""
@@ -944,10 +942,8 @@ enabled = false
 [feishu_bot]
 enabled = false
 app_id = ""
-# 敏感字段建议放到同目录 .codepilot.secrets.toml:
+# App Secret 只写到同目录 .codepilot.secrets.toml，避免 AGENTS.toml 出现密钥字段:
 # [feishu_bot]
-# app_secret = "xxx"
-app_secret = ""
 node_command = "node"
 default_project = ""
 command_prefix = ""

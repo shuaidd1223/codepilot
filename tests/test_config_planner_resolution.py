@@ -221,7 +221,7 @@ node_command = "node"
 
     assert agents_data["feishu_bot"]["enabled"] is True
     assert agents_data["feishu_bot"]["app_id"] == "cli-demo"
-    assert agents_data["feishu_bot"]["app_secret"] == ""
+    assert "app_secret" not in agents_data["feishu_bot"]
     assert ".codepilot.secrets.toml" in (project / "AGENTS.toml").read_text(encoding="utf-8")
     assert secrets_data["feishu_bot"]["app_secret"] == "feishu-inline-secret"
 
@@ -259,7 +259,7 @@ app_secret = "feishu-from-secrets"
     secrets_data = tomllib.loads((project / SECRETS_FILENAME).read_text(encoding="utf-8"))
     agents_data = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
 
-    assert agents_data["feishu_bot"]["app_secret"] == ""
+    assert "app_secret" not in agents_data["feishu_bot"]
     assert secrets_data["feishu_bot"]["app_secret"] == "feishu-from-secrets"
     assert secrets_data["providers"]["openai-gpt4o"]["api_key"] == "sk-existing"
 

@@ -289,7 +289,9 @@ def test_init_dot_defaults_project_name_to_current_directory(tmp_path, monkeypat
     assert project is not None
     assert project["name"] == "current-project"
     assert project["path"] == str(project_path.resolve())
-    assert 'name = "current-project"' in (project_path / "AGENTS.toml").read_text(encoding="utf-8")
+    content = (project_path / "AGENTS.toml").read_text(encoding="utf-8")
+    assert 'name = "current-project"' in content
+    assert "app_secret =" not in content
 
 
 def test_project_delete_command_removes_project_and_children(tmp_path, monkeypatch):
@@ -322,7 +324,9 @@ def test_webui_project_actions_create_and_delete_project(tmp_path, monkeypatch):
     assert created["created"] is True
     assert created["project"]["name"] == "web-project"
     assert db.get_project("web-project")["path"] == str(project_path.resolve())
-    assert 'name = "web-project"' in (project_path / "AGENTS.toml").read_text(encoding="utf-8")
+    content = (project_path / "AGENTS.toml").read_text(encoding="utf-8")
+    assert 'name = "web-project"' in content
+    assert "app_secret =" not in content
 
     task = db.create_task("web-project", "remove me")
     deleted = webui_mod.delete_project_action("web-project")

@@ -227,7 +227,6 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
         "feishu_bot": {
             "enabled": _bool(feishu_bot.get("enabled"), False),
             "app_id": _string(feishu_bot.get("app_id"), ""),
-            "app_secret": _string(feishu_bot.get("app_secret"), ""),
             "node_command": _string(feishu_bot.get("node_command"), "node"),
             "default_project": _string(feishu_bot.get("default_project"), ""),
             "command_prefix": _string(feishu_bot.get("command_prefix"), ""),
@@ -279,7 +278,7 @@ SECTION_COMMENTS: dict[str, list[str]] = {
     ],
     "feishu_bot": [
         "飞书企业应用长连接机器人配置。运行时使用官方 Node SDK，不依赖 lark-cli。",
-        f"敏感字段建议放到同目录 {config_mod.SECRETS_FILENAME}，运行时会自动覆盖。",
+        f"App Secret 只写到同目录 {config_mod.SECRETS_FILENAME}，不要放在 AGENTS.toml。",
     ],
 }
 
@@ -331,13 +330,6 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("notifications", "enabled"): ["是否发送通知。"],
     ("feishu_bot", "enabled"): ["是否启用飞书企业应用长连接机器人。"],
     ("feishu_bot", "app_id"): ["飞书企业应用 App ID。"],
-    (
-        "feishu_bot",
-        "app_secret",
-    ): [
-        f"飞书企业应用 App Secret。敏感字段，建议写到同目录 {config_mod.SECRETS_FILENAME}。",
-        "这里保持空字符串即可；运行时会自动从 secrets 覆盖。",
-    ],
     ("feishu_bot", "node_command"): ["Node.js 命令名或完整路径；默认 node。"],
     ("feishu_bot", "default_project"): ["未显式指定项目时默认操作的项目名。"],
     ("feishu_bot", "command_prefix"): ["可选命令前缀，例如 cp；留空则直接识别 help/tasks/stop 等命令。"],
@@ -541,8 +533,6 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
     existing_feishu = existing_secrets.get("feishu_bot")
     if isinstance(existing_feishu, dict):
         existing_feishu_secret = str(existing_feishu.get("app_secret", "") or "").strip()
-    if isinstance(canonical.get("feishu_bot"), dict):
-        canonical["feishu_bot"]["app_secret"] = ""
     content = render_agents_toml(canonical)
     write_secrets = bool(sync_secrets) and not existing_feishu_secret
     secrets_content = ""
