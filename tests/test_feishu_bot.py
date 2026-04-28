@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
 from codepilot.commands import feishu as feishu_cmd
 from codepilot.feishu_bot import build_task_event_card, handle_command_text, handle_event_payload, notify_feishu_task_event
@@ -214,6 +215,64 @@ def test_feishu_plain_text_in_project_context_submits_goal_action(tmp_path, monk
     assert "后台任务" in payload
 
 
+def test_feishu_information_query_in_project_context_routes_to_question(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    calls = []
+
+    monkeypatch.setattr(
+        "codepilot.webapp.action_requirements._answer_project_question",
+        lambda project_info, question, **kwargs: calls.append(
+            {"project": project_info["name"], "question": question, "kwargs": kwargs}
+        ) or "共有 2 个任务，已完成 1 个。",
+    )
+
+    handle_command_text("use demo", chat_id="chat-question")
+    reply = handle_command_text("当前有多少任务，完成了多少", chat_id="chat-question")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert len(calls) == 1
+    assert calls[0]["project"] == "demo"
+    assert calls[0]["question"] == "当前有多少任务，完成了多少"
+    assert "共有 2 个任务，已完成 1 个" in payload
+    assert "需求已提交" not in payload
+
+
+def test_feishu_auto_requirement_like_text_requires_explicit_prefix(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    handle_command_text("use demo", chat_id="chat-confirm")
+    reply = handle_command_text("优化飞书任务面板", chat_id="chat-confirm")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert "不会直接执行" in payload
+    assert "需求 <内容>" in payload
+    assert "# <内容>" in payload
+
+
+def test_feishu_explicit_requirement_prefix_still_submits_goal_action(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        "codepilot.webapp.actions.submit_requirement_action",
+        lambda project, text, **kwargs: calls.append({"project": project, "text": text, "kwargs": kwargs}) or {
+            "ok": True,
+            "intent": "requirement",
+            "message": "需求已提交，后台任务 #13 已启动。",
+            "job": {"id": 13, "status": "queued", "phase": "queued", "task_ids": []},
+        },
+    )
+
+    handle_command_text("use demo", chat_id="chat-prefix")
+    reply = handle_command_text("需求 优化飞书任务面板", chat_id="chat-prefix")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert calls == [{
+        "project": "demo",
+        "text": "优化飞书任务面板",
+        "kwargs": {"execute": True, "run_async": False, "task_source": "feishu:chat-prefix"},
+    }]
+    assert "需求已提交" in payload
+
+
 def test_feishu_requirement_clarification_uses_answer_command(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
     calls = []
@@ -372,6 +431,11 @@ def test_feishu_event_card_uses_structured_blocks():
     assert "CodePilot · Build 完成" in card["header"]["title"]["content"]
     assert "note" in tags
     assert "column_set" in tags
+    assert any(
+        elem.get("text", {}).get("tag") == "lark_md"
+        for elem in card["elements"]
+        if isinstance(elem, dict) and elem.get("tag") == "div"
+    )
     assert "下一步命令" in json.dumps(card, ensure_ascii=False)
 
 
@@ -788,6 +852,92 @@ def test_feishu_event_payload_dedupes_same_message_id(tmp_path, monkeypatch):
     assert first["type"] == "text"
     assert second == {"type": "ignore"}
     assert calls == [{"text": "hello", "kwargs": {"config_path": None, "chat_id": "chat-dup"}}]
+
+
+def test_feishu_event_payload_prefers_event_id_for_dedup(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    calls = []
+
+    monkeypatch.setattr(
+        "codepilot.feishu_bot.handle_command_text",
+        lambda text, **kwargs: calls.append({"text": text, "kwargs": kwargs}) or {
+            "type": "text",
+            "text": "ok",
+        },
+    )
+
+    payload = {"chat_id": "chat-dup", "event_id": "evt-1", "message_id": "msg-1", "text": "hello"}
+    first = handle_event_payload(payload)
+    second = handle_event_payload(payload)
+
+    assert first["type"] == "text"
+    assert second == {"type": "ignore"}
+    assert calls == [{"text": "hello", "kwargs": {"config_path": None, "chat_id": "chat-dup"}}]
+
+
+def test_feishu_event_payload_failure_keeps_dedup_record(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "codepilot.feishu_bot.handle_command_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    payload = {"chat_id": "chat-dup", "event_id": "evt-fail-1", "message_id": "msg-fail-1", "text": "hello"}
+    first = handle_event_payload(payload)
+    second = handle_event_payload(payload)
+    state = db.get_service_state("feishu_inbound_msg", "event:evt-fail-1")
+
+    assert first["type"] == "interactive"
+    assert second == {"type": "ignore"}
+    assert state
+    assert state["status"] == "failed"
+
+
+def test_feishu_handle_event_cli_emits_clean_json_even_with_stdout_noise(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+
+    def _noisy_handler(payload, **kwargs):
+        print("noise on stdout")
+        return {"type": "text", "text": "ok"}
+
+    monkeypatch.setattr(feishu_cmd, "handle_event_payload", _noisy_handler)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        feishu_cmd.handle_event_cmd,
+        input=json.dumps({"chat_id": "chat-1", "message_id": "msg-1", "text": "hello"}, ensure_ascii=False),
+    )
+
+    assert result.exit_code == 0
+    last_line = [line for line in result.output.splitlines() if line.strip()][-1]
+    assert json.loads(last_line) == {"type": "text", "text": "ok"}
+
+
+def test_submit_goal_action_without_webui_server_uses_fallback_ui_state(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    import sys
+    from codepilot.webapp import actions as web_actions
+
+    monkeypatch.setitem(sys.modules, "codepilot.webapp.server", None)
+    web_actions._UI_JOB_SEQ = 0
+    web_actions._UI_JOBS.clear()
+    web_actions._UI_EVENTS.clear()
+
+    monkeypatch.setattr(
+        "codepilot.webapp.actions.assess_requirement_for_planning",
+        lambda title, **kwargs: {"status": "ready", "refined_title": title},
+    )
+    monkeypatch.setattr(
+        web_actions,
+        "run_requirement_workflow",
+        lambda **kwargs: {"tasks": [], "run": {"done": 0, "failed": 0}, "summary": "ok"},
+    )
+
+    result = web_actions.submit_goal_action("demo", "帮我整理任务说明", category="requirement")
+
+    assert result["ok"] is True
+    assert result["job"]["id"] == 1
+    assert result["job"]["status"] in {"queued", "running", "succeeded", "attention"}
 
 
 def test_feishu_req_new_creates_requirement_session_with_context_commands(tmp_path, monkeypatch):

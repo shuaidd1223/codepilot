@@ -18,6 +18,7 @@ from codepilot.ai_support.clarification_protocol import (
 )
 from codepilot.ai_support.interaction_controller import (
     interpret_clarification_outcome,
+    parse_intent_prefix,
     resolve_turn_intent,
 )
 from codepilot.webapp.action_requirements import (
@@ -55,6 +56,7 @@ class _SessionDispatchContext:
     clarify_answers: Optional[list[dict]]
     category: str
     gateway_options: object
+    forced_intent: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -408,21 +410,37 @@ def _resolve_session_dispatch_decision(
     intent = resolve_turn_intent(
         ctx.text,
         category=ctx.category,
+        forced_intent=ctx.forced_intent,
         classify_fn=actions.classify_entry_intent,
         classify_kwargs={
             "project_info": ctx.project_info,
             "category": ctx.category,
             "gateway_options": ctx.gateway_options,
         },
-        fallback_intent="requirement",
+        fallback_intent="question",
     )
     return _SessionDispatchDecision(intent=intent)
+
+
+def _session_requirement_confirmation_payload(intent: str) -> dict:
+    label = "任务" if intent == "task" else "需求"
+    prefix = "任务" if intent == "task" else "需求"
+    symbol = "!" if intent == "task" else "#"
+    return _session_payload(
+        "confirm",
+        f"这条消息更像要创建{label}，但当前不会直接执行。请明确发送 `{prefix} <内容>` 或 `{symbol} <内容>` 再继续。",
+    )
 
 
 def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: list[dict]) -> dict:
     decision = _resolve_session_dispatch_decision(ctx, existing_messages)
     if decision.pending_clarification:
         return _actions()._dispatch_session_pending_clarification(ctx, decision.pending_clarification)
+    if ctx.category == "auto" and not ctx.forced_intent and decision.intent in {"requirement", "task"}:
+        db.create_session_message(ctx.session_id, "user", ctx.text)
+        reply = _session_requirement_confirmation_payload(decision.intent)
+        db.create_session_message(ctx.session_id, "assistant", reply["message"], intent="confirm")
+        return reply
 
     db.create_session_message(ctx.session_id, "user", ctx.text)
     return _dispatch_with_intent_handlers(
@@ -456,6 +474,8 @@ def send_session_message_action(
     if not text and not clarify_answers:
         raise RuntimeError("输入不能为空。")
     normalized_category = _normalize_goal_category(category)
+    forced_intent, payload_text = parse_intent_prefix(text)
+    text = normalize_text(payload_text if forced_intent else text)
 
     existing_messages = db.list_session_messages(session_id)
     pending_state = _reconstruct_clarification_state(existing_messages)
@@ -481,6 +501,7 @@ def send_session_message_action(
         clarify_answers=clarify_answers,
         category=normalized_category,
         gateway_options=_actions().resolve_shared_gateway_options(project_info),
+        forced_intent=forced_intent,
     )
     return _actions()._dispatch_session_message(ctx, existing_messages)
 

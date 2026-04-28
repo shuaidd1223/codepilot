@@ -14,8 +14,11 @@ _GOAL_MAX_BYTES = 4096
 
 
 def _shell():
-    """Return the ``codepilot.webapp.server`` shell module for state access."""
-    return sys.modules.get("codepilot.webapp.server")
+    """Return the active UI-state shell module for state access."""
+    shell = sys.modules.get("codepilot.webapp.server")
+    if shell is not None:
+        return shell
+    return sys.modules.get("codepilot.webapp.actions")
 
 
 def _effective_planner(project_info: dict, planner: str | None = None) -> str:

@@ -877,7 +877,7 @@ def _resolve_chat_turn_intent(ctx: _ChatMessageDispatchContext) -> str:
             "category": "auto",
             "gateway_options": ctx.shared_gateway_options,
         },
-        fallback_intent="requirement",
+        fallback_intent="question",
     )
 
 
@@ -946,6 +946,16 @@ def _dispatch_chat_requirement(
     return "任务已创建并执行" if ctx.intent == "task" else "需求已规划"
 
 
+def _chat_requirement_confirmation_message(intent: str) -> str:
+    label = "任务" if intent == "task" else "需求"
+    prefix = "任务" if intent == "task" else "需求"
+    symbol = "!" if intent == "task" else "#"
+    return (
+        f"这条消息更像要创建{label}，但当前不会直接执行。"
+        f"请明确输入 `{prefix} <内容>` 或 `{symbol} <内容>` 再继续。"
+    )
+
+
 def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdown_ui, echo, safe) -> None:
     """Run intent classification + question/requirement handling for normal input."""
     payload_text = frame.payload_text
@@ -983,6 +993,18 @@ def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shut
                 echo=echo,
             )
         else:
+            if frame.forced_intent is None:
+                spinner.__exit__(None, None, None)
+                assistant_response = _chat_requirement_confirmation_message(dispatch_ctx.intent)
+                echo(f"[yellow]{assistant_response}[/yellow]")
+                click.echo()
+                runtime.chat_history.append({
+                    "user": payload_text,
+                    "assistant": assistant_response,
+                    "intent": "confirm",
+                })
+                _reset_to_read_input(frame)
+                return
             assistant_response = _dispatch_chat_requirement(
                 dispatch_ctx,
                 spinner=spinner,

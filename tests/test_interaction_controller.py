@@ -24,6 +24,9 @@ def test_parse_intent_prefix_supports_question_task_requirement():
     assert parse_intent_prefix("? 怎么用") == ("question", "怎么用")
     assert parse_intent_prefix("! 修复登录") == ("task", "修复登录")
     assert parse_intent_prefix("# 做一个规划") == ("requirement", "做一个规划")
+    assert parse_intent_prefix("问题 现在什么状态") == ("question", "现在什么状态")
+    assert parse_intent_prefix("任务 修一下文档") == ("task", "修一下文档")
+    assert parse_intent_prefix("需求 优化任务面板") == ("requirement", "优化任务面板")
     assert parse_intent_prefix("普通输入") == (None, "普通输入")
 
 

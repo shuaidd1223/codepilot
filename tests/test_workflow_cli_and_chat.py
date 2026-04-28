@@ -584,7 +584,7 @@ def test_chat_command_accepts_plain_text_and_exit(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_cmd, "run_requirement_workflow", fake_run_requirement_workflow)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["chat", "--no-ui"], input="做一个自动重试机制\n/exit\n")
+    result = runner.invoke(main, ["chat", "--no-ui"], input="! 做一个自动重试机制\n/exit\n")
 
     assert result.exit_code == 0
     assert len(captured) == 1, f"expected one planner call, got {captured!r}"
@@ -613,7 +613,7 @@ def test_chat_command_reports_natural_language_error(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_cmd, "run_requirement_workflow", fake_run_requirement_workflow)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["chat", "--no-ui"], input="做一个自动重试机制\n/exit\n")
+    result = runner.invoke(main, ["chat", "--no-ui"], input="! 做一个自动重试机制\n/exit\n")
 
     assert result.exit_code == 0
     assert "当前无法使用 Claude CLI" in result.output

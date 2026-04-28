@@ -51,10 +51,85 @@ function invokePython(payload) {
   if (result.error) {
     throw result.error;
   }
+  const parsed = parsePythonReply(result.stdout || '');
+  if (parsed) {
+    return parsed;
+  }
   if (result.status !== 0) {
     throw new Error((result.stderr || result.stdout || '').trim() || `python exit=${result.status}`);
   }
-  return JSON.parse(result.stdout || '{}');
+  throw new Error('python handler did not return valid JSON');
+}
+
+function parsePythonReply(stdout) {
+  const raw = String(stdout || '').trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {}
+  const lines = raw
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      return JSON.parse(lines[index]);
+    } catch {}
+  }
+  return null;
+}
+
+function buildErrorCard(text) {
+  return {
+    type: 'interactive',
+    card: {
+      config: { wide_screen_mode: true },
+      header: {
+        title: { tag: 'plain_text', content: 'CodePilot 飞书处理失败' },
+        template: 'red',
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: { tag: 'lark_md', content: String(text || 'CodePilot 飞书处理失败。') },
+        },
+      ],
+    },
+  };
+}
+
+async function processIncomingMessage(payload) {
+  const chatId = payload.chat_id;
+  try {
+    const reply = invokePython(payload);
+    await sendReply(chatId, reply);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    log('handler failed', { chatId, detail });
+    try {
+      await sendReply(chatId, buildErrorCard(`CodePilot 飞书处理失败：${detail}`));
+    } catch (replyError) {
+      log('failed to send error reply', {
+        chatId,
+        detail: replyError instanceof Error ? replyError.message : String(replyError),
+      });
+    }
+  }
+}
+
+function buildPostContent(title, text) {
+  const paragraphs = String(text || '')
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .slice(0, 20)
+    .map(line => [{ tag: 'text', text: line }]);
+  return {
+    zh_cn: {
+      title: String(title || 'CodePilot 回复').slice(0, 120),
+      content: paragraphs.length ? paragraphs : [[{ tag: 'text', text: 'CodePilot 已收到。' }]],
+    },
+  };
 }
 
 async function sendReply(chatId, reply) {
@@ -75,19 +150,19 @@ async function sendReply(chatId, reply) {
     return;
   }
   const text = String(reply.text || 'CodePilot 已收到，但没有可发送的结果。');
-  log('send text reply', { chatId, preview: text.slice(0, 80) });
+  log('send rich text reply', { chatId, preview: text.slice(0, 80) });
   await client.im.message.create({
     params: { receive_id_type: 'chat_id' },
     data: {
       receive_id: chatId,
-      msg_type: 'text',
-      content: JSON.stringify({ text }),
+      msg_type: 'post',
+      content: JSON.stringify(buildPostContent('CodePilot 回复', text)),
     },
   });
 }
 
 const dispatcher = new Lark.EventDispatcher({}).register({
-  'im.message.receive_v1': async (data) => {
+  'im.message.receive_v1': (data) => {
     const message = data?.message || {};
     if (String(message.message_type || '').toLowerCase() !== 'text') {
       log('ignore non-text message', { message_type: message.message_type || '' });
@@ -99,19 +174,14 @@ const dispatcher = new Lark.EventDispatcher({}).register({
       log('ignore empty message', { chatId, text });
       return;
     }
-    log('received text message', { chatId, message_id: message.message_id || '', text });
-    try {
-      const reply = invokePython({
-        text,
-        chat_id: chatId,
-        message_id: message.message_id || '',
-      });
-      await sendReply(chatId, reply);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      log('handler failed', { chatId, detail });
-      await sendReply(chatId, { type: 'text', text: `CodePilot 飞书处理失败：${detail}` });
-    }
+    const eventId = data?.header?.event_id || data?.event_id || '';
+    log('received text message', { chatId, event_id: eventId, message_id: message.message_id || '', text });
+    void processIncomingMessage({
+      text,
+      chat_id: chatId,
+      message_id: message.message_id || '',
+      event_id: eventId,
+    });
   },
 });
 

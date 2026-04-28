@@ -18,6 +18,7 @@ from codepilot.commands.auto import normalize_requirement_text
 from codepilot.ai_support.interaction_controller import (
     ClarificationTransition,
     interpret_clarification_outcome,
+    parse_intent_prefix,
     resolve_turn_intent,
 )
 from codepilot.webapp.action_state import (
@@ -89,6 +90,7 @@ class _GoalDispatchContext:
     qa_history: Optional[list[dict]]
     original_title: str
     gateway_options: object
+    forced_intent: Optional[str]
 
 
 def _dispatch_with_intent_handlers(
@@ -577,24 +579,40 @@ def _dispatch_goal_requirement(ctx: _GoalDispatchContext, *, intent: str) -> dic
     return result
 
 
+def _requirement_confirmation_payload(intent: str) -> dict:
+    label = "任务" if intent == "task" else "需求"
+    prefix = "任务" if intent == "task" else "需求"
+    symbol = "!" if intent == "task" else "#"
+    return {
+        "ok": True,
+        "intent": "confirm",
+        "message": (
+            f"这条消息更像要创建{label}，但当前不会直接执行。"
+            f"如果你确认要创建，请明确发送 `{prefix} <内容>` 或 `{symbol} <内容>`。"
+        ),
+    }
+
+
 def _resolve_goal_intent(ctx: _GoalDispatchContext) -> str:
     actions = _actions()
     return resolve_turn_intent(
         ctx.text,
         category=ctx.category,
-        forced_intent="requirement" if ctx.original_title else None,
+        forced_intent=ctx.forced_intent or ("requirement" if ctx.original_title else None),
         classify_fn=actions.classify_entry_intent,
         classify_kwargs={
             "project_info": ctx.project_info,
             "category": ctx.category,
             "gateway_options": ctx.gateway_options,
         },
-        fallback_intent="requirement",
+        fallback_intent="question",
     )
 
 
 def _dispatch_goal_by_intent(ctx: _GoalDispatchContext) -> dict:
     intent = _resolve_goal_intent(ctx)
+    if ctx.category == "auto" and not ctx.forced_intent and intent in {"requirement", "task"}:
+        return _requirement_confirmation_payload(intent)
     return _dispatch_with_intent_handlers(
         intent,
         handlers={
@@ -632,6 +650,8 @@ def submit_goal_action(
         raise RuntimeError("输入不能为空。")
     if len(text.encode("utf-8")) > _GOAL_MAX_BYTES:
         raise RuntimeError(f"输入超过 {_GOAL_MAX_BYTES // 1024}KB 限制。")
+    forced_intent, payload_text = parse_intent_prefix(text)
+    text = normalize_text(payload_text if forced_intent else text)
 
     ctx = _GoalDispatchContext(
         project=project,
@@ -644,5 +664,6 @@ def submit_goal_action(
         qa_history=normalize_clarification_history(qa_history),
         original_title=original_title,
         gateway_options=_actions().resolve_shared_gateway_options(project_info),
+        forced_intent=forced_intent,
     )
     return _actions()._dispatch_goal_by_intent(ctx)

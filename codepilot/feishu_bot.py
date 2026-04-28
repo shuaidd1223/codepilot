@@ -60,6 +60,16 @@ _PENDING_CONFIRM_DIRECT_SCOPE = "__direct__"
 _PENDING_CONFIRM_TTL_SECONDS = 120
 
 
+def _inbound_dedupe_key(payload: dict[str, Any]) -> str:
+    event_id = str(payload.get("event_id") or "").strip()
+    if event_id:
+        return f"event:{event_id}"
+    message_id = str(payload.get("message_id") or "").strip()
+    if message_id:
+        return f"msg:{message_id}"
+    return ""
+
+
 def _chat_scope(chat_id: str) -> str:
     raw = str(chat_id or "").strip()
     return f"{_CHAT_CONTEXT_PREFIX}{raw}" if raw else ""
@@ -176,7 +186,7 @@ def _md_block(content: str) -> dict[str, Any]:
 
 
 def _plain_block(content: str) -> dict[str, Any]:
-    return {"tag": "div", "text": {"tag": "plain_text", "content": str(content or "").strip()}}
+    return _md_block(str(content or "").strip())
 
 
 def _note(content: str) -> dict[str, Any]:
@@ -253,22 +263,22 @@ def _status_mark(status: str) -> str:
     value = str(status or "").strip()
     label = _status_label(value)
     if value in {"done", "running", "in_progress"}:
-        return f"[OK] {label}"
+        return f'<font color="green">OK · {label}</font>'
     if value in {"failed", "cancelled"}:
-        return f"[!] {label}"
+        return f'<font color="red">注意 · {label}</font>'
     if value in {"backlog", "pending"}:
-        return f"[..] {label}"
+        return f'<font color="grey">等待 · {label}</font>'
     if value in {"archived"}:
-        return f"[-] {label}"
+        return f'<font color="grey">归档 · {label}</font>'
     return label
 
 
 def _service_mark(status: dict[str, Any]) -> str:
     if status.get("stopping"):
-        return "[..] 停止中"
+        return '<font color="red">停止中</font>'
     if status.get("running"):
-        return "[OK] 运行中"
-    return "[-] 未运行"
+        return '<font color="green">运行中</font>'
+    return '<font color="grey">未运行</font>'
 
 
 def _task_filter_label(status_filter: str) -> str:
@@ -584,7 +594,9 @@ def _running_label(status: dict[str, Any]) -> str:
 
 def _priority_badge(priority: str) -> str:
     value = str(priority or "P2").upper()
-    return value if value in {"P0", "P1", "P2", "P3"} else "P2"
+    value = value if value in {"P0", "P1", "P2", "P3"} else "P2"
+    color = {"P0": "red", "P1": "red", "P2": "green", "P3": "grey"}.get(value, "grey")
+    return f'<font color="{color}">{value}</font>'
 
 
 def _task_count(project_name: str) -> int:
@@ -1288,7 +1300,7 @@ def build_global_status_card(*, prefix: str = "", default_project: str = "") -> 
             _column_panels(
                 [
                     f"**项目**\n{label}",
-                    f"**服务**\n轮询 `{_service_mark(task_status)}`\n巡检 `{_service_mark(inspect_status)}`",
+                    f"**服务**\n轮询 {_service_mark(task_status)}\n巡检 {_service_mark(inspect_status)}",
                     f"**待执行**\n`{int(stats.get('backlog', 0))}`",
                     f"**执行中**\n`{int(stats.get('in_progress', 0))}`",
                     f"**失败**\n`{int(stats.get('failed', 0))}`",
@@ -1306,8 +1318,8 @@ def build_global_status_card(*, prefix: str = "", default_project: str = "") -> 
                 f"**注册项目**\n`{len(projects)}`",
                 f"**任务轮询**\n`{task_services_running}` / `{len(projects)}`",
                 f"**巡检运行**\n`{inspect_services_running}` / `{len(projects)}`",
-                f"**飞书长连接**\n`{_service_mark(feishu_status)}`\nPID `{feishu_status.get('pid') or 0}`",
-                f"**Web UI**\n`{_service_mark(webui_status)}`\nPID `{webui_status.get('pid') or 0}`",
+                f"**飞书长连接**\n{_service_mark(feishu_status)}\nPID `{feishu_status.get('pid') or 0}`",
+                f"**Web UI**\n{_service_mark(webui_status)}\nPID `{webui_status.get('pid') or 0}`",
             ]
         ),
         *_section_note("任务汇总", "所有注册项目的任务状态合计。"),
@@ -1460,8 +1472,8 @@ def build_tasks_card(project_name: str, *, prefix: str = "", status_filter: str 
                 _column_panels(
                     [
                         f"**任务**\n`#{task['id']}` {task['title'][:56]}",
-                        f"**状态**\n`{_status_mark(task['status'])}`",
-                        f"**优先级**\n`{_priority_badge(task['priority'])}`",
+                        f"**状态**\n{_status_mark(task['status'])}",
+                        f"**优先级**\n{_priority_badge(task['priority'])}",
                         f"**Agent**\n`{task['agent']}`{runtime}",
                     ],
                     background="default",
@@ -1729,8 +1741,8 @@ def build_task_card(task_id: int, *, prefix: str = "", title_prefix: str = "任�
         *_column_panels(
             [
                 f"**项目**\n`{task['project']}`",
-                f"**状态**\n`{_status_mark(task['status'])}`",
-                f"**优先级**\n`{_priority_badge(task['priority'])}`",
+                f"**状态**\n{_status_mark(task['status'])}",
+                f"**优先级**\n{_priority_badge(task['priority'])}",
                 f"**Agent**\n`{task['agent']}`",
                 f"**运行时长**\n`{runtime}`",
                 f"**重试**\n`{int(task.get('retry_count') or 0)}/{int(task.get('max_retries') or 0)}`",
@@ -1762,7 +1774,7 @@ def build_task_log_card(task_id: int, *, prefix: str = "") -> dict[str, Any]:
         *_column_panels(
             [
                 f"**项目**\n`{detail.get('project') or '-'}`",
-                f"**状态**\n`{_status_mark(detail.get('status') or '')}`",
+                f"**状态**\n{_status_mark(detail.get('status') or '')}",
                 f"**当前阶段**\n`{_phase_label(detail.get('phase') or '-')}`",
             ]
         ),
@@ -1788,7 +1800,7 @@ def build_service_card(project_name: str, result: dict[str, Any], *, prefix: str
         *_column_panels(
             [
                 f"**项目**\n`{project_name}`",
-                f"**服务状态**\n`{_service_mark(status)}`",
+                f"**服务状态**\n{_service_mark(status)}",
                 f"**PID**\n`{status.get('pid') or 0}`",
                 f"**启动时间**\n`{started_at or '-'}`",
             ]
@@ -1997,7 +2009,7 @@ def build_requirement_result_card(
             [
                 f"**项目**\n`{project_name}`",
                 f"**后台任务**\n`#{job.get('id') or '-'}`",
-                f"**状态**\n`{_status_mark(status)}`",
+                f"**状态**\n{_status_mark(status)}",
                 f"**阶段**\n`{_phase_label(phase)}`",
                 f"**关联任务**\n`{task_text}`",
             ]
@@ -2324,7 +2336,7 @@ def build_task_event_card(
                 f"**项目**\n`{project_name or '-'}`",
                 f"**任务**\n`#{task_id}`",
                 f"**事件**\n`{_event_title(event, phase)}`",
-                f"**状态**\n`{_status_mark(status) if status else '-'}`",
+                f"**状态**\n{_status_mark(status) if status else '-'}",
                 f"**阶段**\n`{_phase_label(phase)}`",
             ]
         ),
@@ -2911,17 +2923,19 @@ def handle_command_text(
 
 def handle_event_payload(payload: dict[str, Any], *, config_path: Path | None = None) -> dict[str, Any]:
     chat_id = str(payload.get("chat_id") or "")
-    message_id = str(payload.get("message_id") or "").strip()
+    dedupe_key = _inbound_dedupe_key(payload)
     claimed = True
-    if message_id:
+    if dedupe_key:
         claimed = db.claim_service_state(
             _INBOUND_DEDUPE_SERVICE,
-            message_id,
+            dedupe_key,
             pid=0,
             status="processing",
             log_path="",
             meta={
                 "chat_id": chat_id,
+                "event_id": str(payload.get("event_id") or "").strip(),
+                "message_id": str(payload.get("message_id") or "").strip(),
                 "text": str(payload.get("text") or "")[:200],
                 "received_at": _now_iso(),
             },
@@ -2936,23 +2950,39 @@ def handle_event_payload(payload: dict[str, Any], *, config_path: Path | None = 
             config_path=config_path,
             chat_id=chat_id,
         )
-        if message_id:
+        if dedupe_key:
             db.upsert_service_state(
                 _INBOUND_DEDUPE_SERVICE,
-                message_id,
+                dedupe_key,
                 pid=0,
                 status="done",
                 log_path="",
                 meta={
                     "chat_id": chat_id,
+                    "event_id": str(payload.get("event_id") or "").strip(),
+                    "message_id": str(payload.get("message_id") or "").strip(),
                     "text": str(payload.get("text") or "")[:200],
                     "handled_at": _now_iso(),
                 },
             )
         return reply
     except Exception as exc:
-        if message_id:
-            db.clear_service_state(_INBOUND_DEDUPE_SERVICE, message_id)
+        if dedupe_key:
+            db.upsert_service_state(
+                _INBOUND_DEDUPE_SERVICE,
+                dedupe_key,
+                pid=0,
+                status="failed",
+                log_path="",
+                meta={
+                    "chat_id": chat_id,
+                    "event_id": str(payload.get("event_id") or "").strip(),
+                    "message_id": str(payload.get("message_id") or "").strip(),
+                    "text": str(payload.get("text") or "")[:200],
+                    "failed_at": _now_iso(),
+                    "error": str(exc)[:300],
+                },
+            )
         cfg = load_feishu_bot_config(config_path)
         return _reply_card(
             _card(

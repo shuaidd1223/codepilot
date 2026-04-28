@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -27,6 +29,26 @@ _RESTART_BACKOFF_SECONDS = (2, 5, 10, 20, 30)
 
 def _service_scope() -> str:
     return "_global"
+
+
+def _handle_event_error_reply(message: str) -> dict[str, Any]:
+    text = f"CodePilot 飞书处理失败：{str(message or '').strip()}"
+    return {
+        "type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "CodePilot 飞书处理失败"},
+                "template": "red",
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": text},
+                }
+            ],
+        },
+    }
 
 
 def _now_iso() -> str:
@@ -387,13 +409,18 @@ def logs_cmd(tail: int) -> None:
 @feishu_group.command("handle-event")
 def handle_event_cmd() -> None:
     """内部入口：处理一条飞书消息事件并输出 JSON 回复。"""
+    side_output = io.StringIO()
     try:
         raw = sys.stdin.read() or "{}"
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise RuntimeError("payload 必须是 JSON 对象。")
-        reply = handle_event_payload(payload)
-        click.echo(json.dumps(reply, ensure_ascii=False))
+        with contextlib.redirect_stdout(side_output):
+            reply = handle_event_payload(payload)
     except Exception as exc:
-        click.echo(json.dumps({"type": "text", "text": f"CodePilot 飞书处理失败：{exc}"}, ensure_ascii=False))
-        raise SystemExit(1) from exc
+        reply = _handle_event_error_reply(str(exc))
+    extra = side_output.getvalue().strip()
+    if extra:
+        click.echo(extra, err=True)
+    sys.stdout.write(json.dumps(reply, ensure_ascii=False) + "\n")
+    sys.stdout.flush()

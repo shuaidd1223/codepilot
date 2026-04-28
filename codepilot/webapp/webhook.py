@@ -180,10 +180,60 @@ def _detect_webhook_provider(url: str) -> str:
     return "generic"
 
 
-def _build_feishu_payload(text: str, *, secret: str = "") -> dict[str, Any]:
+def _feishu_field(label: str, value: object, *, is_short: bool = True) -> dict[str, Any]:
+    return {
+        "is_short": is_short,
+        "text": {
+            "tag": "lark_md",
+            "content": f"**{str(label or '').strip()}**\n`{str(value or '-').strip() or '-'}`",
+        },
+    }
+
+
+def _feishu_template_for_status(status: str) -> str:
+    if status == "done":
+        return "green"
+    if status == "failed":
+        return "red"
+    if status == "in_progress":
+        return "blue"
+    return "grey"
+
+
+def _build_feishu_card(
+    title: str,
+    fields: list[dict[str, Any]],
+    *,
+    template: str = "blue",
+    detail_label: str = "",
+    detail: str = "",
+) -> dict[str, Any]:
+    elements: list[dict[str, Any]] = []
+    if fields:
+        elements.append({"tag": "div", "fields": fields})
+    detail = str(detail or "").strip()
+    if detail:
+        label = str(detail_label or "说明").strip()
+        elements.extend(
+            [
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**{label}**\n{detail[:600]}"}},
+            ]
+        )
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": template,
+            "title": {"tag": "plain_text", "content": str(title or "CodePilot 通知")[:120]},
+        },
+        "elements": elements,
+    }
+
+
+def _build_feishu_payload(card: dict[str, Any], *, secret: str = "") -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "msg_type": "text",
-        "content": {"text": text},
+        "msg_type": "interactive",
+        "card": card,
     }
     secret = str(secret or "").strip()
     if secret:
@@ -196,9 +246,9 @@ def _build_feishu_payload(text: str, *, secret: str = "") -> dict[str, Any]:
     return payload
 
 
-def _send_feishu_webhook(url: str, text: str, *, secret: str = "") -> bool:
-    """发送飞书机器人消息."""
-    payload = json.dumps(_build_feishu_payload(text, secret=secret), ensure_ascii=False).encode("utf-8")
+def _send_feishu_webhook(url: str, card: dict[str, Any], *, secret: str = "") -> bool:
+    """发送飞书机器人卡片消息."""
+    payload = json.dumps(_build_feishu_payload(card, secret=secret), ensure_ascii=False).encode("utf-8")
 
     try:
         req = urllib.request.Request(
@@ -276,7 +326,6 @@ def notify_task_status(
 
     url = config["webhook_url"]
 
-    # 构建通知文本
     if status == "done":
         emoji = "[OK]"
         status_text = "已完成"
@@ -304,7 +353,19 @@ def notify_task_status(
         provider = _detect_webhook_provider(url)
 
     if provider == "feishu":
-        ok = _send_feishu_webhook(url, message, secret=str(config.get("webhook_secret") or ""))
+        card = _build_feishu_card(
+            f"CodePilot #{task_id} {status_text}",
+            [
+                _feishu_field("项目", project_name),
+                _feishu_field("任务", f"#{task_id}"),
+                _feishu_field("状态", status_text),
+                _feishu_field("标题", task_title, is_short=False),
+            ],
+            template=_feishu_template_for_status(status),
+            detail_label="错误",
+            detail=error_message[:300] if error_message else "",
+        )
+        ok = _send_feishu_webhook(url, card, secret=str(config.get("webhook_secret") or ""))
     elif provider == "wecom":
         ok = _send_wecom_webhook(url, message)
     else:
@@ -381,7 +442,21 @@ def notify_task_event(
         provider = _detect_webhook_provider(url)
 
     if provider == "feishu":
-        return _send_feishu_webhook(url, text, secret=str(config.get("webhook_secret") or ""))
+        card = _build_feishu_card(
+            f"CodePilot #{task_id} {event_label}",
+            [
+                _feishu_field("项目", project_name),
+                _feishu_field("任务", f"#{task_id}"),
+                _feishu_field("事件", event_label),
+                _feishu_field("阶段", phase_text),
+                _feishu_field("状态", status or "-"),
+                _feishu_field("标题", task_title, is_short=False),
+            ],
+            template="red" if level == "error" or event in {"failed", "merge_failed"} else "blue",
+            detail_label="说明",
+            detail=detail[:600] if detail else "",
+        )
+        return _send_feishu_webhook(url, card, secret=str(config.get("webhook_secret") or ""))
     if provider == "wecom":
         return _send_wecom_webhook(url, text)
     return _send_generic_webhook(

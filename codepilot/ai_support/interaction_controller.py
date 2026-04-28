@@ -25,13 +25,30 @@ def parse_intent_prefix(text: str) -> tuple[Optional[str], str]:
     """Return (forced_intent, stripped_text)."""
     if not text:
         return None, text
-    first, rest = text[0], text[1:].lstrip()
+    normalized = str(text or "").strip()
+    if not normalized:
+        return None, normalized
+    first, rest = normalized[0], normalized[1:].lstrip()
     if first == "?" and rest:
         return "question", rest
     if first == "!" and rest:
         return "task", rest
     if first == "#" and rest:
         return "requirement", rest
+    word_prefixes = (
+        ("问题", "question"),
+        ("问答", "question"),
+        ("提问", "question"),
+        ("任务", "task"),
+        ("需求", "requirement"),
+    )
+    for prefix, intent in word_prefixes:
+        if normalized == prefix:
+            return intent, ""
+        if normalized.startswith(prefix):
+            tail = normalized[len(prefix):]
+            if tail.startswith((" ", "\t", "\n", "：", ":")):
+                return intent, tail[1:].lstrip()
     return None, text
 
 

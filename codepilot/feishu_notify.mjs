@@ -26,6 +26,21 @@ const chatIds = Array.isArray(payload.chat_ids) ? payload.chat_ids.filter(Boolea
 const card = payload.card;
 const text = String(payload.text || '');
 
+function buildPostContent(title, body) {
+  const paragraphs = String(body || '')
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .slice(0, 20)
+    .map(line => [{ tag: 'text', text: line }]);
+  return {
+    zh_cn: {
+      title: String(title || 'CodePilot 通知').slice(0, 120),
+      content: paragraphs.length ? paragraphs : [[{ tag: 'text', text: 'CodePilot 通知' }]],
+    },
+  };
+}
+
 if (!chatIds.length) {
   console.log(JSON.stringify({ ok: true, sent: 0 }));
   process.exit(0);
@@ -46,8 +61,8 @@ for (const chatId of chatIds) {
       params: { receive_id_type: 'chat_id' },
       data: {
         receive_id: chatId,
-        msg_type: card ? 'interactive' : 'text',
-        content: JSON.stringify(card || { text }),
+        msg_type: card ? 'interactive' : 'post',
+        content: JSON.stringify(card || buildPostContent('CodePilot 通知', text)),
       },
     });
     sent += 1;

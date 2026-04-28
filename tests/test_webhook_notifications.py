@@ -61,15 +61,18 @@ def test_notify_task_status_sends_signed_feishu_payload(tmp_path, monkeypatch):
     assert captured["url"] == "https://open.feishu.cn/open-apis/bot/v2/hook/demo"
 
     payload = captured["payload"]
-    assert payload["msg_type"] == "text"
+    assert payload["msg_type"] == "interactive"
     assert payload["timestamp"] == "1710000000"
     expected_sign = base64.b64encode(
         hmac.new(b"1710000000\nsign-secret", digestmod=hashlib.sha256).digest()
     ).decode("utf-8")
     assert payload["sign"] == expected_sign
-    assert "CodePilot #12 已完成" in payload["content"]["text"]
-    assert "项目: demo" in payload["content"]["text"]
-    assert "任务: 修复 webhook 通知" in payload["content"]["text"]
+    card = payload["card"]
+    assert "CodePilot #12 已完成" in card["header"]["title"]["content"]
+    card_text = json.dumps(card, ensure_ascii=False)
+    assert "demo" in card_text
+    assert "#12" in card_text
+    assert "修复 webhook 通知" in card_text
 
 
 def test_notify_task_status_auto_detects_wecom_payload_shape(tmp_path, monkeypatch):
@@ -160,3 +163,46 @@ def test_notify_task_event_sends_generic_progress_payload(tmp_path, monkeypatch)
         "message": "builder 完成",
         "summary": "",
     }
+
+
+def test_notify_task_event_sends_feishu_interactive_card(tmp_path, monkeypatch):
+    project_path = tmp_path / "demo"
+    project_path.mkdir()
+
+    monkeypatch.setattr(
+        webhook_mod,
+        "_get_webhook_config",
+        lambda _path: {
+            "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/demo",
+            "provider": "feishu",
+            "webhook_secret": "",
+            "enabled": True,
+        },
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req, timeout=10):
+        captured["payload"] = json.loads(req.data.decode("utf-8"))
+        return _FakeHTTPResponse({"code": 0})
+
+    monkeypatch.setattr(webhook_mod.urllib.request, "urlopen", fake_urlopen)
+
+    ok = webhook_mod.notify_task_event(
+        str(project_path),
+        9,
+        "执行阶段反馈",
+        event="phase_end",
+        phase="builder",
+        level="info",
+        message="builder 完成",
+        status="in_progress",
+    )
+
+    assert ok is True
+    payload = captured["payload"]
+    assert payload["msg_type"] == "interactive"
+    card_text = json.dumps(payload["card"], ensure_ascii=False)
+    assert "CodePilot #9 阶段完成" in card_text
+    assert "builder 完成" in card_text
+    assert "lark_md" in card_text
