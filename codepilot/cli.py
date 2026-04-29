@@ -43,6 +43,11 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "project": ("codepilot.commands.project", "project_group"),
     "cleanup": ("codepilot.commands.cleanup", "cleanup"),
     "doctor": ("codepilot.commands.doctor", "doctor"),
+    "setup": ("codepilot.commands.setup", "setup"),
+    "event": ("codepilot.commands.event", "event_group"),
+    "hook": ("codepilot.commands.hook", "hook_group"),
+    "build-fix": ("codepilot.commands.build_fix", "build_fix"),
+    "skill": ("codepilot.commands.skill", "skill_group"),
     "hud": ("codepilot.commands.hud", "hud"),
     "task": ("codepilot.commands.task", "task_group"),
 }
@@ -169,7 +174,7 @@ def main(
     ctx.obj["max_tasks"] = max_tasks
     ctx.obj["max_retries"] = max_retries
 
-    if not json_mode:
+    if not json_mode and ctx.invoked_subcommand != "setup":
         init_db()
 
     if ctx.invoked_subcommand is None and not ctx.args:

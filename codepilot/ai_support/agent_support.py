@@ -71,13 +71,18 @@ def command_manifest(
                 "如果用户是在询问项目、任务数量、完成度、失败任务、运行中任务或服务状态，优先按 `question` 处理，CodePilot 会读取本地项目与任务数据辅助回答。",
                 f"如果目标是发布产物，优先调用 `{_cmd(command, 'binary prepare --version <版本号>')}`。",
                 f"如果任务处于运行中，先用 `{_cmd(command, 'status -p <项目名> -v')}` 查看阶段，再决定是否 `task logs` 或 `task stop`。",
-                f"如果任务失败或被取消，且需要重新排队，使用 `{_cmd(command, 'task retry <task_id>')}`。",
+                f"如果任务失败且需要完整修复闭环，优先用 `{_cmd(command, 'build-fix -p <项目名> --task-id <task_id> --json')}`；只需重新排队时再用 `{_cmd(command, 'task retry <task_id>')}`。",
             ],
         "structured_outputs": [
             {
                 "command": _cmd(command, "ai manifest"),
                 "format": "json",
                 "purpose": "输出完整命令清单、常见工作流和调用建议。",
+            },
+            {
+                "command": _cmd(command, "setup . --dry-run --json"),
+                "format": "json",
+                "purpose": "预检项目级 .codepilot 初始化、配置和项目注册动作，不写入真实 hooks。",
             },
             {
                 "command": _cmd(command, "status -p <项目名> --json"),
@@ -110,6 +115,11 @@ def command_manifest(
                 "purpose": "检索项目本地 wiki 中沉淀的构建命令、架构事实、失败模式和人工决策。",
             },
             {
+                "command": _cmd(command, "wiki ingest --from trace -p <项目名> --json"),
+                "format": "json",
+                "purpose": "显式把 trace 时间线沉淀为 wiki 页面，保留来源和关联任务/工作流元数据。",
+            },
+            {
                 "command": _cmd(command, "note show -p <项目名> --json"),
                 "format": "json",
                 "purpose": "读取项目持久工作记忆，恢复跨会话关键上下文。",
@@ -135,6 +145,31 @@ def command_manifest(
                 "purpose": "检查本机运行环境、CLI 工具、配置和数据库可用性。",
             },
             {
+                "command": _cmd(command, "doctor --fix --json"),
+                "format": "json",
+                "purpose": "执行保守项目级自动修复：运行 setup 准备配置和 .codepilot 目录，不修改真实 hooks。",
+            },
+            {
+                "command": _cmd(command, "event list -p <项目名> --json"),
+                "format": "json",
+                "purpose": "列出项目本地事件 sink registry，用于 Hook/Event 插件化集成。",
+            },
+            {
+                "command": _cmd(command, "event schema --json"),
+                "format": "json",
+                "purpose": "列出 CodePilot 事件类型、必需字段和 payload 字段约定。",
+            },
+            {
+                "command": _cmd(command, "build-fix -p <项目名> --json"),
+                "format": "json",
+                "purpose": "对 failed 任务执行收集失败、重试修复、验证和 verdict 输出的质量闭环。",
+            },
+            {
+                "command": _cmd(command, "skill list -p <项目名> --json"),
+                "format": "json",
+                "purpose": "列出项目本地 skill catalog，查看内置/项目技能启用状态。",
+            },
+            {
                 "command": _cmd(command, "ai template --format json"),
                 "format": "json",
                 "purpose": "获取任务模板字段 schema 与批量导入格式，用于外部 AI 规划后投递任务。",
@@ -152,6 +187,17 @@ def command_manifest(
                 "purpose": "初始化项目并生成 AGENTS.toml。",
                 "when_to_use": "第一次接入某个仓库时。",
                 "examples": [_cmd(command, "init ."), _cmd(command, "init D:\\repo -n demo")],
+            },
+            {
+                "name": "setup",
+                "syntax": _cmd(command, "setup [path] [--name <项目名>] [--dry-run] [--json]"),
+                "purpose": "初始化项目级 .codepilot 目录骨架、同步 AGENTS.toml 和项目注册记录；第一阶段不会修改 .codex/hooks.json。",
+                "when_to_use": "希望按项目准备 CodePilot 状态目录和配置，或在安装 hooks 前先做 dry-run 预检时。",
+                "examples": [
+                    _cmd(command, "setup ."),
+                    _cmd(command, "setup . --dry-run --json"),
+                    _cmd(command, "setup D:\\repo -n demo"),
+                ],
             },
             {
                 "name": "goal",
@@ -218,10 +264,23 @@ def command_manifest(
             },
             {
                 "name": "doctor",
-                "syntax": _cmd(command, "doctor [--json]"),
-                "purpose": "检查 CodePilot 当前运行环境、配置、CLI 工具、API Key 和任务数据库。",
-                "when_to_use": "接入新机器、排查环境问题，或需要机器可读环境健康状态时。",
-                "examples": [_cmd(command, "doctor"), _cmd(command, "doctor --json")],
+                "syntax": _cmd(command, "doctor [--project <项目名>] [--services] [--fix] [--json]"),
+                "purpose": "检查 CodePilot 当前运行环境、配置、CLI 工具、API Key、任务数据库和项目服务；--fix 会执行保守项目级 setup；有项目上下文时会发布 doctor.checked 事件到启用的 sink。",
+                "when_to_use": "接入新机器、排查环境问题、需要机器可读环境健康状态，或需要补齐 .codepilot 项目骨架时。",
+                "examples": [_cmd(command, "doctor"), _cmd(command, "doctor --json"), _cmd(command, "doctor --fix --json")],
+            },
+            {
+                "name": "event",
+                "syntax": _cmd(command, "event <schema|list|register|enable|disable|test> [--project <项目名>] [--json]"),
+                "purpose": "管理项目本地事件 sink registry 和事件 schema；当前支持 JSONL sink，用于后续 hook/event 插件订阅。",
+                "when_to_use": "需要查看、注册或验证项目级事件输出插件时。",
+                "examples": [
+                    _cmd(command, "event schema --json"),
+                    _cmd(command, "event list -p codepilot-dev --json"),
+                    _cmd(command, "event register -p codepilot-dev --name audit --type jsonl --path .codepilot/events/audit.jsonl --event doctor.checked"),
+                    _cmd(command, "event enable -p codepilot-dev audit --json"),
+                    _cmd(command, "event test -p codepilot-dev --event doctor.checked --json"),
+                ],
             },
             {
                 "name": "stop",
@@ -243,6 +302,16 @@ def command_manifest(
                 "purpose": "执行 backlog 中的任务。",
                 "when_to_use": "已存在 backlog，想手动触发执行。",
                 "examples": [_cmd(command, "run -p codepilot-dev --executor builtin --no-auto-commit")],
+            },
+            {
+                "name": "build_fix",
+                "syntax": _cmd(command, "build-fix -p <项目名> [--task-id <id>] [--verify-command <cmd>] [--json]"),
+                "purpose": "对 failed 任务执行质量闭环：收集失败日志、重置重试、调用执行器、运行验证命令并输出 verdict。",
+                "when_to_use": "失败任务需要从失败原因到修复验证的一键入口，而不是单纯 `task retry` 时。",
+                "examples": [
+                    _cmd(command, "build-fix -p codepilot-dev --json"),
+                    _cmd(command, 'build-fix -p codepilot-dev --task-id 7 --verify-command "pytest tests/test_x.py -q" --json'),
+                ],
             },
             {
                 "name": "task_find",
@@ -322,13 +391,25 @@ def command_manifest(
             },
             {
                 "name": "wiki",
-                "syntax": _cmd(command, "wiki <add|list|query|lint> ..."),
-                "purpose": "维护项目本地 Markdown 知识库，沉淀长期有用的项目事实。",
-                "when_to_use": "需要记录或复用构建命令、架构事实、巡检发现、常见失败和人工决策时；不要写入 secret。",
+                "syntax": _cmd(command, "wiki <add|list|query|lint|ingest> ..."),
+                "purpose": "维护项目本地 Markdown 知识库，沉淀长期有用的项目事实；ingest 可显式沉淀 trace/plan artifact。",
+                "when_to_use": "需要记录或复用构建命令、架构事实、巡检发现、常见失败、trace/plan 结果和人工决策时；不要写入 secret。",
                 "examples": [
                     _cmd(command, 'wiki add -p codepilot-dev --title "构建命令" --body "pytest tests"'),
                     _cmd(command, 'wiki query -p codepilot-dev "构建" --json'),
+                    _cmd(command, "wiki ingest --from plan -p codepilot-dev --json"),
                     _cmd(command, "wiki lint -p codepilot-dev --json"),
+                ],
+            },
+            {
+                "name": "skill",
+                "syntax": _cmd(command, "skill <list|search|show|enable|disable> -p <项目名> [--json]"),
+                "purpose": "管理项目本地 skill catalog，当前支持内置/项目本地技能元数据和启停状态，不做远程安装。",
+                "when_to_use": "需要浏览可用工作流技能、开启本地技能标记，或让 AI 判断可借用哪些 CodePilot 能力时。",
+                "examples": [
+                    _cmd(command, "skill list -p codepilot-dev --json"),
+                    _cmd(command, "skill search quality -p codepilot-dev --json"),
+                    _cmd(command, "skill enable build-fix -p codepilot-dev --json"),
                 ],
             },
             {
@@ -415,7 +496,7 @@ def command_manifest(
             {
                 "name": "提交一个新需求并执行",
                 "steps": [
-                    _cmd(command, "init ."),
+                    _cmd(command, "setup ."),
                     f'{command} "实现一个需求"',
                     _cmd(command, "status -p <项目名> -v"),
                     _cmd(command, "task show <task_id>"),
@@ -496,7 +577,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 2. 需要结构化结果时，优先使用 JSON 输出命令。
 3. 需要提交高层需求时，直接调用自然语言入口，不要先自己拆任务，除非你明确要控制拆分策略。
 4. 看到任务处于 `in_progress` 时，先查 `status -v` 和 `task logs`，不要盲目重复触发 `run`。
-5. 任务失败或取消后，如需人工重新排队，使用 `{_cmd(command, "task retry <task_id>")}`。
+5. 任务失败后，如需修复闭环优先使用 `{_cmd(command, "build-fix -p <项目名> --task-id <task_id> --json")}`；只需人工重新排队时使用 `{_cmd(command, "task retry <task_id>")}`。
 6. 准备发布包时，优先使用 `{_cmd(command, "binary prepare --version <版本号>")}`。
 7. 在 `chat`、Web UI 会话和飞书自由文本中，疑似需求/任务不会直接执行；创建工作必须显式输入 `需求 <内容>` / `# <内容>` 或 `任务 <内容>` / `! <内容>`。
 8. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态这类问题应作为问答处理；CodePilot 会优先读取本地运行数据。
@@ -506,7 +587,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ### 1. 初始化项目
 
 ```bash
-{_cmd(command, "init .")}
+{_cmd(command, "setup .")}
 ```
 
 ### 2. 提交一个需求
@@ -557,10 +638,12 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ```bash
 {_cmd(command, 'wiki add -p <项目名> --title "构建命令" --body "pytest tests"')}
 {_cmd(command, 'wiki query -p <项目名> "构建" --json')}
+{_cmd(command, "wiki ingest --from trace -p <项目名> --json")}
+{_cmd(command, "wiki ingest --from plan -p <项目名> --json")}
 {_cmd(command, "wiki lint -p <项目名> --json")}
 ```
 
-适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
+适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。`wiki ingest` 只在显式调用时沉淀 trace/plan，并保留 source、created_at、related_task/session/workflow 元数据。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
 
 ### 3.4 项目持久工作记忆
 
@@ -611,7 +694,26 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ```bash
 {_cmd(command, "doctor")}
 {_cmd(command, "doctor --json")}
+{_cmd(command, "doctor --fix --json")}
 ```
+
+### 5.1 查看和测试事件 sink
+
+```bash
+{_cmd(command, "event schema --json")}
+{_cmd(command, "event list -p <项目名> --json")}
+{_cmd(command, "event test -p <项目名> --json")}
+```
+
+### 5.2 查看技能目录
+
+```bash
+{_cmd(command, "skill list -p <项目名> --json")}
+{_cmd(command, "skill search quality -p <项目名> --json")}
+{_cmd(command, "skill enable build-fix -p <项目名> --json")}
+```
+
+`skill` 管理 `.codepilot/skills/catalog.json` 中的本地技能元数据和启停状态；当前不做远程安装。
 
 ### 6. 查看日志
 
@@ -631,6 +733,15 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ```bash
 {_cmd(command, "task retry <task_id>")}
 ```
+
+### 8.1 失败修复闭环
+
+```bash
+{_cmd(command, "build-fix -p <项目名> --json")}
+{_cmd(command, 'build-fix -p <项目名> --task-id <task_id> --verify-command "pytest tests/test_x.py -q" --json')}
+```
+
+`build-fix` 会选择 failed 任务或指定任务，收集失败日志，重置为 backlog，调用现有执行器跑一轮，再执行验证命令并输出 `task_id`、`triage`、`actions`、`verification`、`verdict`。
 
 ### 9. 发布
 
@@ -735,6 +846,7 @@ def ai_prompt_text(*, command_name: str = "codepilot") -> str:
         "在 chat、Web UI 会话和飞书自由文本里，疑似需求/任务不会直接执行；"
         "要创建需求用 `需求 <内容>` 或 `# <内容>`，要创建单步任务用 `任务 <内容>` 或 `! <内容>`；"
         "项目状态、任务数量、完成度、失败任务、运行中任务和服务状态问题应作为问答处理。"
+        f"失败任务需要修复闭环时优先用 `{_cmd(command, 'build-fix -p <项目名> --task-id <task_id> --json')}`。"
         "如果你必须自己写任务（不走规划器），必须按 task-template 提供完整 content，"
         f"先用 `{_cmd(command, 'ai template --format json')}` 拿 schema 再投递；"
         "没有 --no-ai / --allow-empty 这种占位通道，缺章节直接拒。"

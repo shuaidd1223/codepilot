@@ -8,7 +8,7 @@
 2. 需要结构化结果时，优先使用 JSON 输出命令。
 3. 需要提交高层需求时，直接调用自然语言入口，不要先自己拆任务，除非你明确要控制拆分策略。
 4. 看到任务处于 `in_progress` 时，先查 `status -v` 和 `task logs`，不要盲目重复触发 `run`。
-5. 任务失败或取消后，如需人工重新排队，使用 `codepilot task retry <task_id>`。
+5. 任务失败后，如需修复闭环优先使用 `codepilot build-fix -p <项目名> --task-id <task_id> --json`；只需人工重新排队时使用 `codepilot task retry <task_id>`。
 6. 准备发布包时，优先使用 `codepilot binary prepare --version <版本号>`。
 7. 在 `chat`、Web UI 会话和飞书自由文本中，疑似需求/任务不会直接执行；创建工作必须显式输入 `需求 <内容>` / `# <内容>` 或 `任务 <内容>` / `! <内容>`。
 8. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态这类问题应作为问答处理；CodePilot 会优先读取本地运行数据。
@@ -18,7 +18,7 @@
 ### 1. 初始化项目
 
 ```bash
-codepilot init .
+codepilot setup .
 ```
 
 ### 2. 提交一个需求
@@ -69,10 +69,12 @@ codepilot explore --prompt "find task template" --json
 ```bash
 codepilot wiki add -p <项目名> --title "构建命令" --body "pytest tests"
 codepilot wiki query -p <项目名> "构建" --json
+codepilot wiki ingest --from trace -p <项目名> --json
+codepilot wiki ingest --from plan -p <项目名> --json
 codepilot wiki lint -p <项目名> --json
 ```
 
-适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
+适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。`wiki ingest` 只在显式调用时沉淀 trace/plan，并保留 source、created_at、related_task/session/workflow 元数据。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
 
 ### 3.4 项目持久工作记忆
 
@@ -123,7 +125,26 @@ codepilot task show <task_id> --json
 ```bash
 codepilot doctor
 codepilot doctor --json
+codepilot doctor --fix --json
 ```
+
+### 5.1 查看和测试事件 sink
+
+```bash
+codepilot event schema --json
+codepilot event list -p <项目名> --json
+codepilot event test -p <项目名> --json
+```
+
+### 5.2 查看技能目录
+
+```bash
+codepilot skill list -p <项目名> --json
+codepilot skill search quality -p <项目名> --json
+codepilot skill enable build-fix -p <项目名> --json
+```
+
+`skill` 管理 `.codepilot/skills/catalog.json` 中的本地技能元数据和启停状态；当前不做远程安装。
 
 ### 6. 查看日志
 
@@ -143,6 +164,15 @@ codepilot task stop <task_id>
 ```bash
 codepilot task retry <task_id>
 ```
+
+### 8.1 失败修复闭环
+
+```bash
+codepilot build-fix -p <项目名> --json
+codepilot build-fix -p <项目名> --task-id <task_id> --verify-command "pytest tests/test_x.py -q" --json
+```
+
+`build-fix` 会选择 failed 任务或指定任务，收集失败日志，重置为 backlog，调用现有执行器跑一轮，再执行验证命令并输出 `task_id`、`triage`、`actions`、`verification`、`verdict`。
 
 ### 9. 发布
 
