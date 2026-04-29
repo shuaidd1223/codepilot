@@ -1,61 +1,63 @@
-# CodePilot AI 与 Agent 调用手册（命令集合）
+# CodePilot AI 与 Agent 调用手册
 
-本文面向其他 AI / Agent / 自动化系统。
+本文面向其他 AI / Agent / 自动化系统，目标是让调用方稳定地读状态、创建明确工作、排障和接入服务。
 
 ## 1. 调用原则
 
-1. 优先非交互命令，避免 `chat` 模式。
-2. 优先结构化输出：`--json`。
-3. 提交需求优先使用自然语言入口：`codepilot "需求文本"`。
-4. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态等输入优先当问答处理，不要直接创建任务。
-5. `chat`、Web UI 会话和飞书自由文本中，疑似需求/任务必须显式前缀确认后才创建工作：`? <问题>`、`# <需求>`、`! <任务>`。
+1. 优先使用非交互命令；除非需要连续会话，否则避免 `chat`。
+2. 需要结构化结果时优先加 `--json`，或直接读取 `codepilot ai manifest`。
+3. 提交高层需求时优先使用 `codepilot "需求文本"` 或 `codepilot go "需求文本"`，不要先自行拆任务。
+4. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态等输入优先当问答处理。
+5. 在 `chat`、Web UI 会话和飞书自由文本中，创建工作必须显式使用 `# <需求>` / `需求 <内容>` 或 `! <任务>` / `任务 <内容>`。
 6. 任务运维统一使用 `codepilot task ...`。
 7. 发布统一使用 `codepilot binary ...`。
-8. **人工不应直接调 `add`**；要新增任务请用 `codepilot "需求文本"` 让规划器拆。`add` 命令主要为外部 AI / 智能体批量投递任务设计。
-9. **AI / 智能体调 `add` 必须带 task-template 合规 content**；没有空 content 占位通道，缺章节直接拒。先 `codepilot ai template --format json` 拿 schema。
+8. 外部 AI 只有在明确要直接投递已规划任务时才用 `add`，并且必须满足 task-template content 约束。
 
 ## 2. 最小命令集合
 
-### 2.1 初始化与需求
+### 2.1 项目准备
 
 ```bash
-codepilot init .
+codepilot setup . --dry-run --json
+codepilot setup .
+codepilot doctor --project <项目名> --services --json
+```
+
+### 2.2 需求、澄清和计划
+
+```bash
 codepilot "需求文本"
-codepilot go "需求文本"
-codepilot go "当前项目有多少任务，完成了多少" -p <项目名>
-codepilot chat -p <项目名>
+codepilot go "需求文本" -p <项目名>
+codepilot clarify -p <项目名> "模糊需求" --json
+codepilot plan -p <项目名> "明确需求" --json
+codepilot plan -p <项目名> --from-spec .codepilot/specs/example.md --json
 ```
 
-### 2.2 状态与查询（建议 JSON）
+`clarify` 和 `plan` 都不创建 backlog、不启动执行器，适合执行前审查。
+
+### 2.3 状态、证据和记忆
 
 ```bash
+codepilot go "当前项目状态怎么样" -p <项目名>
 codepilot status -p <项目名> --json
-codepilot explore --prompt "要查询的问题" -p <项目名> --json
-codepilot clarify "模糊需求" -p <项目名> --json
-codepilot plan "明确需求" -p <项目名> --json
-codepilot plan --from-spec .codepilot/specs/example.md -p <项目名> --json
-codepilot wiki query "构建" -p <项目名> --json
-codepilot task show <task_id> --json
-codepilot task find <关键词> -p <项目名> --json
-codepilot doctor --json
+codepilot hud -p <项目名> --preset full --json
+codepilot explore -p <项目名> --prompt "要查询的问题" --json
+codepilot trace -p <项目名> --limit 30 --json
+codepilot wiki query -p <项目名> "构建" --json
+codepilot note show -p <项目名> --json
 ```
 
-`explore` 是只读项目探索入口，只返回 `query/evidence/sources/limitations`，用于澄清和计划前取证。它不会写文件、改 Git、启动服务、安装依赖或执行测试；修改类请求会被拒绝并提示改走普通 workflow。
+`explore` 是只读取证入口，只返回 `query/evidence/sources/limitations`，不会写文件、改 Git、启动服务、安装依赖或执行测试。
 
-`wiki` 是项目本地 Markdown 知识库，适合沉淀稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
-
-`clarify` 生成执行前需求规格 artifact，不创建任务、不启动执行器。适合在 plan/go 前明确目标、范围、非目标、约束、验收标准和待确认问题。
-
-`plan` 生成可审查执行计划 artifact，不创建任务、不启动执行器。输出包含任务候选、执行顺序、文件范围、风险和验证矩阵；人工确认后再导入任务或继续 clarify。
-
-### 2.3 任务控制
+### 2.4 任务控制
 
 ```bash
+codepilot task show <task_id> --json
 codepilot task logs <task_id> --tail 80
+codepilot task find <关键词> -p <项目名> --json
 codepilot task stop <task_id>
 codepilot task retry <task_id>
 codepilot task resume <task_id>
-codepilot task done <task_id>
 codepilot task cancel <task_id>
 codepilot task archive <task_id>
 codepilot task edit <task_id> --status backlog
@@ -63,24 +65,25 @@ codepilot task rm <task_id>
 codepilot task sweep <task_id>
 ```
 
-### 2.4 执行与后台服务
+### 2.5 执行、后台服务和修复闭环
 
 ```bash
-codepilot run -p <项目名>
+codepilot run -p <项目名> --once
 codepilot daemon -p <项目名>
 codepilot daemon -p <项目名> --status
 codepilot daemon -p <项目名> --stop
-codepilot inspect -p <项目名> --once
+codepilot inspect -p <项目名> --once --json
 codepilot inspect -p <项目名> --status
-codepilot inspect -p <项目名> --stop
+codepilot build-fix -p <项目名> --task-id <task_id> --json
+```
+
+### 2.6 Web UI、飞书和 Webhook
+
+```bash
 codepilot ui start
 codepilot ui status
 codepilot ui logs --tail 100
-```
-
-### 2.5 飞书与 Webhook
-
-```bash
+codepilot ui stop
 codepilot feishu start
 codepilot feishu status
 codepilot feishu logs --tail 100
@@ -88,7 +91,7 @@ codepilot feishu stop
 codepilot webhook --host 127.0.0.1 --port 8765
 ```
 
-飞书自由文本建议使用符号前缀：
+飞书自由文本建议使用：
 
 ```text
 ? 当前项目状态怎么样
@@ -96,7 +99,20 @@ codepilot webhook --host 127.0.0.1 --port 8765
 ! 修复一个明确的小问题
 ```
 
-### 2.6 发布与安装
+### 2.7 事件、Hook、Provider 和 Skill
+
+```bash
+codepilot event schema --json
+codepilot event list -p <项目名> --json
+codepilot event test -p <项目名> --event doctor.checked --json
+codepilot hook validate -p <项目名> --json
+codepilot hook test -p <项目名> --provider codex --event agent.prompt.submitted --json
+codepilot exec -p <项目名> --provider codex --dry-run --json -- codex --version
+codepilot skill list -p <项目名> --json
+codepilot skill run ralplan -p <项目名> --provider codex --input "需求" --json
+```
+
+### 2.8 发布与安装
 
 ```bash
 codepilot binary build
@@ -106,40 +122,72 @@ codepilot binary prepare --version <版本号>
 codepilot binary where
 ```
 
-### 2.7 机器可读说明
+### 2.9 机器可读说明
 
 ```bash
 codepilot ai manifest
 codepilot ai guide
 codepilot ai prompt
-codepilot ai template --format json    # 任务模板字段 schema + 批量导入格式
-codepilot ai template --format guide   # 中文填充指南
+codepilot ai template --format json
+codepilot ai template --format guide
 ```
 
-### 2.8 直接投递任务（仅 AI / 智能体）
+## 3. 直接投递任务
 
-预先按模板规划好任务后，三种批量格式：
+直接投递任务仅适合外部 AI / 自动化系统已经完成任务规划的场景。
 
 ```bash
-# 单条：让 codepilot 用 --agent 指定的 AI 生成模板合规 content（推荐）
+codepilot ai template --format json
 codepilot add -p <项目名> -t "任务标题"
-
-# 批量 JSON：每条带 content
 codepilot add -p <项目名> -f tasks.json
-
-# 批量 Markdown：多个完整 task-template，用 `---` 分隔
 codepilot add -p <项目名> -f tasks.md
-
-# 批量纯文本：每行一个标题，逐条 AI 生成
 codepilot add -p <项目名> -f tasks.txt
 ```
 
-**强制规则**：
-- 所有路径都做模板合规校验（必填 9 个章节）；缺章节立即整批拒绝。
-- 没有 `--no-ai` / `--allow-empty` 占位通道。
-- 章节骨架英文（`## Task Goal` / `## In Scope` ...），章节正文中文。
+强制规则：
 
-## 3. JSON 输出契约
+- 所有 content 都必须符合 task-template 的必填章节。
+- `tasks.json` 每条必须带模板合规 `content`。
+- `tasks.md` 每个 `---` 分隔段必须是完整 task-template。
+- `tasks.txt` 和 `add -t` 会调用 AI 生成 content 并校验。
+- `--no-ai` / `--allow-empty` 已废弃。
+
+## 4. 推荐工作流
+
+### 4.1 提交需求并跟踪
+
+1. `codepilot "需求文本"`
+2. `codepilot status -p <项目名> --json`
+3. `codepilot task show <task_id> --json`
+4. `codepilot task logs <task_id> --tail 80`
+
+### 4.2 先澄清再计划
+
+1. `codepilot clarify -p <项目名> "模糊需求" --json`
+2. `codepilot plan -p <项目名> --from-spec <spec_path> --json`
+3. 人工确认后再提交需求或通过模板投递任务。
+
+### 4.3 回答项目问题
+
+1. `codepilot go "当前项目状态怎么样" -p <项目名>`
+2. 需要确定性数据时读 `status --json`、`hud --json`、`trace --json`。
+3. 需要证据时用 `explore --json`、`wiki query --json`。
+
+### 4.4 失败任务恢复
+
+1. `codepilot task logs <task_id> --full`
+2. `codepilot build-fix -p <项目名> --task-id <task_id> --dry-run`
+3. `codepilot build-fix -p <项目名> --task-id <task_id> --json`
+4. 如只需重新排队，用 `codepilot task retry <task_id>`。
+
+### 4.5 发布前检查
+
+1. `codepilot binary prepare --version <版本号>`
+2. `codepilot binary verify`
+
+## 5. JSON 输出契约
+
+成功：
 
 ```json
 {
@@ -149,7 +197,7 @@ codepilot add -p <项目名> -f tasks.txt
 }
 ```
 
-错误示例：
+失败：
 
 ```json
 {
@@ -160,50 +208,16 @@ codepilot add -p <项目名> -f tasks.txt
 }
 ```
 
-## 4. 推荐工作流模板
+调用方应优先分支处理 `error.code`，不要盲目重试。
 
-### 4.1 提交需求并跟踪
-
-1. `codepilot "需求文本"`
-2. `codepilot status -p <项目名> --json`
-3. `codepilot task show <task_id> --json`
-4. `codepilot task logs <task_id> --tail 80`
-
-### 4.2 问答与确认式执行
-
-1. 问状态：`codepilot go "当前项目状态怎么样" -p <项目名>`
-2. 进 `chat` 或飞书时，普通问题直接问或加 `?`。
-3. 要创建需求时，明确使用 `# <需求内容>`。
-4. 要创建单步任务时，明确使用 `! <任务内容>`。
-5. 收到“不会直接执行”的确认提示后，只有用户确认要创建工作时才重发 `#` 或 `!`。
-
-### 4.3 失败任务恢复
-
-1. `codepilot task logs <task_id> --full`
-2. 修复环境或代码上下文
-3. `codepilot task retry <task_id>`
-4. `codepilot run -p <项目名>`
-
-### 4.4 发布前检查
-
-1. `codepilot binary prepare --version <版本号>`
-2. `codepilot binary verify`
-
-### 4.5 飞书/通知排障
-
-1. `codepilot feishu status`
-2. `codepilot feishu logs --tail 100`
-3. 检查 `AGENTS.toml` 的 `[feishu_bot]` 和 `.codepilot.secrets.toml`。
-4. Webhook 飞书通知失败时，检查 `[notifications]` 的 `provider = "feishu"`、`webhook_url` 和 `webhook_secret`。
-
-## 5. 兼容性说明
+## 6. 兼容性说明
 
 以下旧入口已移除：
 
 - `codepilot release ...`
 - 顶层 `codepilot show/logs/stop/retry/find/...`
 - `codepilot webui ...`
-- `--no-ai` / `--allow-empty` 空任务占位通道
+- `--no-ai` / `--allow-empty`
 
 请统一改为：
 
@@ -211,10 +225,13 @@ codepilot add -p <项目名> -f tasks.txt
 - `codepilot task ...`
 - `codepilot ui <start|status|logs|stop|restart>`
 
-## 6. 结合 Skill 使用
+## 7. 结合 Skill 使用
 
-仓库已提供 Skill：
+仓库提供 Skill：
 
 - `skills/codepilot-workflow/SKILL.md`
 
-若你的 Agent 支持 `$skill` 机制，优先通过该 Skill 固化调用策略和命令顺序。
+支持 `$skill` 的 Agent 应优先通过该 Skill 固化调用策略和排障流程。Skill 里的详细命令映射见：
+
+- `skills/codepilot-workflow/references/command-map.md`
+- `skills/codepilot-workflow/references/agent-playbooks.md`

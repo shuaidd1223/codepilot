@@ -1,6 +1,6 @@
 ---
 name: codepilot-workflow
-description: "Use this skill when an AI agent needs to run CodePilot as a local engineering workflow orchestrator: answer project/task status questions from local workflow data, convert explicit natural-language requirements into tasks, inspect task status and logs, operate project-level daemon/inspect/ui/feishu/webhook services, and prepare binary releases. Trigger for requests like requirement intake, task retry/stop/show/logs, queue execution, daemon/inspect/ui operations, Feishu bot control, webhook integration, AI manifest/template usage, and release packaging/verification."
+description: "Use this skill when an AI agent needs to run CodePilot as a local engineering workflow orchestrator: answer project/task/service questions from local data, clarify requirements, create plans, convert explicit requirements into tasks, inspect status and logs, operate daemon/inspect/ui/feishu/webhook/event/hook/provider services, manage local skill catalog entries, and prepare binary releases. Trigger for requirement intake, project status questions, task retry/stop/show/logs, queue execution, read-only exploration, wiki/note/trace use, Feishu or webhook integration, AI manifest/template usage, and release packaging/verification."
 ---
 
 # CodePilot Workflow
@@ -9,28 +9,60 @@ description: "Use this skill when an AI agent needs to run CodePilot as a local 
 
 Use non-interactive commands by default.
 
-1. Initialize or verify project registration.
-2. Distinguish question vs work creation before acting.
-3. Read status and task detail in JSON mode.
+1. Classify the request as a question, clarification/plan, explicit work creation, task operation, service operation, or release flow.
+2. Prefer JSON output for machine reasoning.
+3. Use read-only commands before planning when evidence is needed.
 4. Operate tasks only through `codepilot task ...`.
-5. Use `codepilot binary ...` for build/release flows.
+5. Use `codepilot binary ...` for build and release flows.
 
-## Standard Execution Flow
+## Standard Flow
 
-### 1) Intake Or Ask
+### 1) Prepare Or Check The Project
 
-For one-shot CLI requirement intake, run:
+```bash
+codepilot setup . --dry-run --json
+codepilot setup .
+codepilot doctor --project <project> --services --json
+```
+
+### 2) Answer Questions First
+
+Treat status, totals, completion, failed tasks, running tasks, project lists, and service health as questions.
+
+```bash
+codepilot go "What is the current project status?" -p <project>
+codepilot status -p <project> --json
+codepilot hud -p <project> --preset full --json
+codepilot trace -p <project> --limit 30 --json
+```
+
+If evidence is needed before answering or planning:
+
+```bash
+codepilot explore -p <project> --prompt "question or search terms" --json
+codepilot wiki query -p <project> "keyword" --json
+codepilot note show -p <project> --json
+```
+
+`explore` is read-only. It must not be used to modify files, run tests, start services, install dependencies, or mutate Git state.
+
+### 3) Clarify Or Plan Before Creating Work
+
+```bash
+codepilot clarify -p <project> "ambiguous requirement" --json
+codepilot plan -p <project> "clear requirement" --json
+codepilot plan -p <project> --from-spec <spec_path> --json
+```
+
+`clarify` and `plan` produce artifacts only. They do not create backlog items or start executors.
+
+### 4) Create Explicit Work
+
+For one-shot requirement intake:
 
 ```bash
 codepilot "<requirement>"
-codepilot go "<requirement>"
-```
-
-For project/status questions, ask through the natural-language entrypoint or inspect JSON directly:
-
-```bash
-codepilot go "How many tasks exist and how many are done?" -p <project>
-codepilot status -p <project> --json
+codepilot go "<requirement>" -p <project>
 ```
 
 In `chat`, Web UI sessions, and Feishu free text, do not rely on ambiguous text to create work. Use explicit prefixes:
@@ -43,51 +75,85 @@ In `chat`, Web UI sessions, and Feishu free text, do not rely on ambiguous text 
 
 If free text looks like a requirement but lacks an explicit prefix, CodePilot returns a confirmation prompt and does not execute.
 
-### 2) Observe
+### 5) Observe And Intervene
 
 ```bash
-codepilot status -p <project> --json
 codepilot task show <task_id> --json
 codepilot task logs <task_id> --tail 80
-```
-
-### 3) Intervene
-
-```bash
+codepilot task find <keyword> -p <project> --json
 codepilot task stop <task_id>
 codepilot task retry <task_id>
 codepilot task resume <task_id>
 codepilot task cancel <task_id>
 codepilot task archive <task_id>
 codepilot task edit <task_id> --status backlog
+codepilot task rm <task_id>
 ```
 
-### 4) Execute Backlog Explicitly
+For a failed-task repair loop:
 
 ```bash
-codepilot run -p <project>
+codepilot build-fix -p <project> --task-id <task_id> --dry-run
+codepilot build-fix -p <project> --task-id <task_id> --json
 ```
 
-### 5) Project Services (optional)
+### 6) Execute Or Operate Services
 
 ```bash
+codepilot run -p <project> --once
 codepilot daemon -p <project>
 codepilot daemon -p <project> --status
 codepilot daemon -p <project> --stop
+codepilot inspect -p <project> --once --json
 codepilot inspect -p <project> --status
+codepilot ui start
 codepilot ui status
-codepilot feishu status
+codepilot ui logs --tail 100
 ```
+
+### 7) Integrations
+
+```bash
+codepilot feishu start
+codepilot feishu status
+codepilot feishu logs --tail 100
+codepilot webhook --host 127.0.0.1 --port 8765
+codepilot event schema --json
+codepilot event list -p <project> --json
+codepilot hook validate -p <project> --json
+codepilot exec -p <project> --provider codex --dry-run --json -- codex --version
+codepilot skill list -p <project> --json
+```
+
+## Direct Task Injection
+
+Only use `add` when an external agent has already planned concrete tasks.
+
+```bash
+codepilot ai template --format json
+codepilot add -p <project> -t "task title"
+codepilot add -p <project> -f tasks.json
+codepilot add -p <project> -f tasks.md
+```
+
+Hard rules:
+
+- `tasks.json` entries must include task-template compliant `content`.
+- `tasks.md` sections separated by `---` must each be complete task-template content.
+- `add -t` and `tasks.txt` invoke the configured AI to generate compliant content.
+- Empty placeholders such as `--no-ai` and `--allow-empty` are removed.
 
 ## Release Flow
 
-Use only `binary` command group:
+Use only the `binary` command group:
 
 ```bash
 codepilot binary build
+codepilot binary install --binary <binary-path>
 codepilot binary release --build-current
 codepilot binary verify
 codepilot binary prepare --version <version>
+codepilot binary where
 ```
 
 ## Hard Constraints
@@ -95,9 +161,11 @@ codepilot binary prepare --version <version>
 - Do not use removed command forms:
   - `codepilot release ...`
   - top-level `codepilot show/logs/stop/retry/find/...`
+  - `codepilot webui ...`
 - Always use:
   - `codepilot task <subcommand>`
   - `codepilot binary <subcommand>`
+  - `codepilot ui <subcommand>`
 - Prefer `--json` outputs for machine-agent integration.
 - Treat project status, task totals, failed/running tasks, service status, and command usage questions as questions first.
 - In interactive channels, only create work when the user explicitly uses `#` for a requirement or `!` for a small task.
