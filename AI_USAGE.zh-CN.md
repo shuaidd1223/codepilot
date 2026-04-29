@@ -65,6 +65,14 @@ codepilot wiki lint -p <项目名> --json
 
 适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
 
+### 3.3 生成执行前需求规格
+
+```bash
+codepilot clarify -p <项目名> "改进 doctor" --json
+```
+
+`clarify` 只生成 `.codepilot/specs/clarify-*.md` 和 context artifact，写入 workflow state，不创建 backlog 任务、不启动执行器。适合先把模糊需求整理成目标、范围、非目标、约束、验收标准和待确认问题。
+
 ### 4. 精确查看单个任务
 
 ```bash

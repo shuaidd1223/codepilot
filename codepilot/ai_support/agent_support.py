@@ -270,6 +270,16 @@ def command_manifest(
                 ],
             },
             {
+                "name": "clarify",
+                "syntax": _cmd(command, "clarify [-p <项目名>] [--quick|--standard] <需求> [--json]"),
+                "purpose": "生成执行前需求规格 artifact，明确目标、范围、非目标、约束、验收标准和待确认问题。",
+                "when_to_use": "需求仍模糊但还不应创建任务或执行代码时；输出 spec 后再进入 plan/go。",
+                "examples": [
+                    _cmd(command, 'clarify -p codepilot-dev "改进 doctor" --json'),
+                    _cmd(command, 'clarify --quick -p codepilot-dev "优化任务面板"'),
+                ],
+            },
+            {
                 "name": "wiki",
                 "syntax": _cmd(command, "wiki <add|list|query|lint> ..."),
                 "purpose": "维护项目本地 Markdown 知识库，沉淀长期有用的项目事实。",
@@ -479,6 +489,14 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ```
 
 适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
+
+### 3.3 生成执行前需求规格
+
+```bash
+{_cmd(command, 'clarify -p <项目名> "改进 doctor" --json')}
+```
+
+`clarify` 只生成 `.codepilot/specs/clarify-*.md` 和 context artifact，写入 workflow state，不创建 backlog 任务、不启动执行器。适合先把模糊需求整理成目标、范围、非目标、约束、验收标准和待确认问题。
 
 ### 4. 精确查看单个任务
 

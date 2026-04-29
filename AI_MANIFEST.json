@@ -228,6 +228,16 @@
       ]
     },
     {
+      "name": "clarify",
+      "syntax": "codepilot clarify [-p <项目名>] [--quick|--standard] <需求> [--json]",
+      "purpose": "生成执行前需求规格 artifact，明确目标、范围、非目标、约束、验收标准和待确认问题。",
+      "when_to_use": "需求仍模糊但还不应创建任务或执行代码时；输出 spec 后再进入 plan/go。",
+      "examples": [
+        "codepilot clarify -p codepilot-dev \"改进 doctor\" --json",
+        "codepilot clarify --quick -p codepilot-dev \"优化任务面板\""
+      ]
+    },
+    {
       "name": "wiki",
       "syntax": "codepilot wiki <add|list|query|lint> ...",
       "purpose": "维护项目本地 Markdown 知识库，沉淀长期有用的项目事实。",
