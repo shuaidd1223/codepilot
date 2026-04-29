@@ -126,6 +126,7 @@ def add_wiki_note(
     slug: str | None = None,
     source: str = "manual",
     tags: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a wiki note in the project's local wiki directory."""
     title = (title or "").strip()
@@ -149,14 +150,19 @@ def add_wiki_note(
     elif path.exists():
         raise WikiError(f"wiki 页面已存在：{path.name}")
 
-    metadata = {
+    extra_metadata = dict(metadata or {})
+    page_metadata = {
         "title": title,
         "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "source": source or "manual",
         "tags": tags or [],
     }
-    path.write_text(f"{_frontmatter(metadata)}\n\n{body}\n", encoding="utf-8")
-    return {"path": path.name, "title": title, "source": metadata["source"], "tags": metadata["tags"]}
+    for key, value in extra_metadata.items():
+        safe_key = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(key or "").strip()).strip("_")
+        if safe_key and safe_key not in page_metadata:
+            page_metadata[safe_key] = value
+    path.write_text(f"{_frontmatter(page_metadata)}\n\n{body}\n", encoding="utf-8")
+    return {"path": path.name, "title": title, "source": page_metadata["source"], "tags": page_metadata["tags"]}
 
 
 def list_wiki_pages(project_info: dict) -> list[dict[str, Any]]:
@@ -235,6 +241,89 @@ def lint_wiki(project_info: dict) -> dict[str, Any]:
     return {"ok": not issues, "issues": issues}
 
 
+def _latest_plan_artifact(project_info: dict) -> Path:
+    plan_dir = Path(project_info["path"]).resolve() / ".codepilot" / "plans"
+    candidates = [path for path in plan_dir.glob("*.md") if path.is_file()] if plan_dir.exists() else []
+    if not candidates:
+        raise WikiError("没有可 ingest 的 plan artifact。")
+    return sorted(candidates, key=lambda path: (path.stat().st_mtime, path.name), reverse=True)[0]
+
+
+def _trace_body(project_info: dict, *, task_id: int | None, limit: int) -> tuple[str, dict[str, Any]]:
+    from codepilot.commands.trace import collect_trace_events
+
+    events = collect_trace_events(project_info, task_id=task_id, limit=max(1, int(limit or 1)))
+    if not events:
+        raise WikiError("没有可 ingest 的 trace 事件。")
+    lines = [
+        f"# Trace Digest: {project_info['name']}",
+        "",
+        "| Time | Source | Event | Status | Phase | Message | Detail |",
+        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for item in events:
+        cells = [
+            str(item.get("timestamp") or "")[:19],
+            str(item.get("source") or ""),
+            str(item.get("event") or ""),
+            str(item.get("status") or ""),
+            str(item.get("phase") or ""),
+            str(item.get("message") or "").replace("|", "\\|"),
+            str(item.get("detail") or "").replace("|", "\\|").replace("\n", " ")[:500],
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    metadata = {
+        "related_task": str(task_id or ""),
+        "related_session": "",
+        "related_workflow": "trace",
+    }
+    return "\n".join(lines), metadata
+
+
+def _plan_body(project_info: dict) -> tuple[str, dict[str, Any], Path]:
+    path = _latest_plan_artifact(project_info)
+    body = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not body:
+        raise WikiError(f"plan artifact 为空：{path.name}")
+    metadata = {
+        "related_task": "",
+        "related_session": "",
+        "related_workflow": "plan",
+        "source_path": path.resolve().relative_to(Path(project_info["path"]).resolve()).as_posix(),
+    }
+    return body, metadata, path
+
+
+def ingest_wiki(project_info: dict, *, source: str, task_id: int | None = None, limit: int = 30) -> dict[str, Any]:
+    source = str(source or "").strip().lower()
+    if source == "trace":
+        body, metadata = _trace_body(project_info, task_id=task_id, limit=limit)
+        title = f"Trace Digest {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
+        page = add_wiki_note(
+            project_info,
+            title=title,
+            body=body,
+            source="wiki.ingest.trace",
+            tags=["ingest", "trace"],
+            metadata=metadata,
+        )
+        return {"project": project_info["name"], "from": source, "page": page, "metadata": metadata}
+    if source == "plan":
+        body, metadata, plan_path = _plan_body(project_info)
+        title_match = re.search(r"^#\s+(.+?)\s*$", body, re.MULTILINE)
+        title = title_match.group(1).strip() if title_match else f"Plan Digest {plan_path.stem}"
+        page = add_wiki_note(
+            project_info,
+            title=title,
+            body=body,
+            source="wiki.ingest.plan",
+            tags=["ingest", "plan"],
+            metadata=metadata,
+        )
+        return {"project": project_info["name"], "from": source, "page": page, "metadata": metadata}
+    raise WikiError("--from 仅支持 trace 或 plan。")
+
+
 def _emit_or_raise(ctx: click.Context, command: str, json_mode: bool, exc: Exception) -> None:
     if json_mode:
         emit_json_payload(command, ok=False, data={}, error=str(exc), error_code="wiki_error")
@@ -245,6 +334,28 @@ def _emit_or_raise(ctx: click.Context, command: str, json_mode: bool, exc: Excep
 @click.group("wiki")
 def wiki_group() -> None:
     """管理项目本地 Markdown wiki。"""
+
+
+@wiki_group.command("ingest")
+@click.option("--from", "source", type=click.Choice(["trace", "plan"], case_sensitive=False), required=True, help="沉淀来源")
+@click.option("--project", "-p", help="项目名称，不指定则按当前目录匹配")
+@click.option("--task", "task_id", type=int, help="trace 来源时只沉淀指定任务")
+@click.option("--limit", type=int, default=30, show_default=True, help="trace 来源最多沉淀事件数")
+@click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
+@click.pass_context
+def ingest_cmd(ctx: click.Context, source: str, project: str | None, task_id: int | None, limit: int, json_mode: bool) -> None:
+    """显式把 trace 或 plan artifact 沉淀为 wiki 页面。"""
+    json_mode = resolve_json_mode(ctx, json_mode)
+    try:
+        project_info = _resolve_project(project)
+        result = ingest_wiki(project_info, source=source, task_id=task_id, limit=limit)
+    except (WikiError, click.ClickException) as exc:
+        _emit_or_raise(ctx, "wiki ingest", json_mode, exc)
+        return
+    if json_mode:
+        emit_json_payload("wiki ingest", ok=True, data=result)
+        return
+    echo(f"[green][OK] 已 ingest 到 wiki：{result['page']['path']}[/green]")
 
 
 @wiki_group.command("add")
