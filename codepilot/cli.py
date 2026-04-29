@@ -46,6 +46,8 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "setup": ("codepilot.commands.setup", "setup"),
     "event": ("codepilot.commands.event", "event_group"),
     "hook": ("codepilot.commands.hook", "hook_group"),
+    "exec": ("codepilot.commands.exec_cmd", "exec_cmd"),
+    "self-update": ("codepilot.commands.self_update", "self_update"),
     "build-fix": ("codepilot.commands.build_fix", "build_fix"),
     "skill": ("codepilot.commands.skill", "skill_group"),
     "hud": ("codepilot.commands.hud", "hud"),

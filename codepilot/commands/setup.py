@@ -29,6 +29,7 @@ PROJECT_DIRECTORIES = (
     ".codepilot/wiki",
     ".codepilot/hooks",
     ".codepilot/events",
+    ".codepilot/exec",
     ".codepilot/skills",
 )
 
