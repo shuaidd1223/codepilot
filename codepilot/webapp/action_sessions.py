@@ -53,6 +53,8 @@ class _SessionDispatchContext:
     project_info: dict
     planner: str
     text: str
+    session_context: str
+    session_history: list[dict]
     clarify_answers: Optional[list[dict]]
     category: str
     gateway_options: object
@@ -161,6 +163,92 @@ def _message_metadata(message: dict) -> dict:
     return {}
 
 
+def _message_task_ids(message: dict) -> list[int]:
+    raw = message.get("task_ids")
+    if isinstance(raw, list):
+        return [int(item) for item in raw if str(item).isdigit()]
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if isinstance(parsed, list):
+            ids: list[int] = []
+            for item in parsed:
+                try:
+                    value = int(item)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    ids.append(value)
+            return ids
+    return []
+
+
+def _compact_session_text(value: str, *, limit: int = 220) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _session_history_turns(messages: list[dict], *, limit: int = 8) -> list[dict]:
+    turns: list[dict] = []
+    pending_user = ""
+    for message in messages:
+        role = message.get("role")
+        content = _compact_session_text(message.get("content") or "", limit=260)
+        if not content:
+            continue
+        if role == "user":
+            if pending_user:
+                turns.append({"user": pending_user, "assistant": ""})
+            pending_user = content
+        elif role == "assistant":
+            if pending_user:
+                turns.append({"user": pending_user, "assistant": content})
+                pending_user = ""
+            else:
+                turns.append({"user": "", "assistant": content})
+    if pending_user:
+        turns.append({"user": pending_user, "assistant": ""})
+    return turns[-limit:]
+
+
+def _session_context_block(messages: list[dict], *, limit: int = 8, max_chars: int = 1600) -> str:
+    relevant = [msg for msg in messages if str(msg.get("content") or "").strip()]
+    if not relevant:
+        return ""
+    lines = []
+    for message in relevant[-limit:]:
+        role = "用户" if message.get("role") == "user" else "助手"
+        intent = message.get("intent") or "-"
+        task_ids = _message_task_ids(message)
+        task_suffix = f" tasks={task_ids}" if task_ids else ""
+        content = _compact_session_text(message.get("content") or "", limit=260)
+        lines.append(f"- {role} [{intent}{task_suffix}]: {content}")
+    block = "\n".join(lines)
+    if len(block) <= max_chars:
+        return block
+    return block[-max_chars:].lstrip()
+
+
+def _augment_text_with_session_context(text: str, session_context: str) -> str:
+    text = normalize_text(text)
+    context = str(session_context or "").strip()
+    if not context:
+        return text
+    if "## 会话上下文" in text:
+        return text
+    return (
+        f"{text}\n\n"
+        "## 会话上下文（用于保持连续需求/问题的记忆）\n"
+        f"{context}\n\n"
+        "请把“当前输入”作为最新指令；如果它引用了上文、上一需求、刚才的计划或已有任务，"
+        "必须结合上面的会话上下文理解。"
+    )
+
+
 def _legacy_clarification_questions_from_content(content: str) -> list[dict]:
     raw_content = str(content or "")
     questions: list[dict] = []
@@ -235,7 +323,11 @@ def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
     if original_user_idx < 0 or messages[original_user_idx].get("role") != "user":
         return None
 
-    original_title = (messages[original_user_idx].get("content") or "").strip()
+    assistant_metadata = _message_metadata(last_assistant)
+    original_title = (
+        assistant_metadata.get("original_title")
+        or (messages[original_user_idx].get("content") or "").strip()
+    )
     qa_history: list[dict] = []
     idx = clarify_start
     while idx < last_assistant_idx:
@@ -265,12 +357,15 @@ def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
             break
 
     last_questions = _message_questions(last_assistant)
-    return _actions().build_clarification_state(
+    state = _actions().build_clarification_state(
         original_title=original_title,
         qa_history=qa_history,
         last_questions=last_questions,
         intent="requirement",
     )
+    if assistant_metadata.get("session_context"):
+        state["session_context"] = assistant_metadata.get("session_context")
+    return state
 
 
 def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pending: dict) -> dict:
@@ -321,15 +416,23 @@ def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pendin
             "assistant",
             reply,
             intent="clarify",
-            metadata={"questions": questions},
+            metadata={
+                "questions": questions,
+                "original_title": next_state.get("original_title") or pending.get("original_title") or ctx.text,
+                "session_context": next_state.get("session_context") or pending.get("session_context") or "",
+            },
         )
         return _session_payload("clarify", reply, questions=questions)
 
     refined = actions.normalize_requirement_text(pending.get("original_title") or "")
     refined = transition.refined_title or refined
+    planning_text = _augment_text_with_session_context(
+        refined,
+        str(pending.get("session_context") or ""),
+    )
     _, reply, task_ids = _submit_requirement_from_message(
         ctx.project,
-        refined,
+        planning_text,
         planner=ctx.planner,
         max_tasks=5,
     )
@@ -354,14 +457,16 @@ def _dispatch_session_question(ctx: _SessionDispatchContext) -> dict:
         ctx.project_info,
         ctx.text,
         gateway_options=ctx.gateway_options,
+        history=ctx.session_history,
     )
     db.create_session_message(ctx.session_id, "assistant", reply, intent="question")
     return _session_payload("question", reply)
 
 
 def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) -> dict:
+    contextual_text = _augment_text_with_session_context(ctx.text, ctx.session_context)
     assessment = _assess_requirement(
-        ctx.text,
+        contextual_text,
         project_info=ctx.project_info,
         planner=ctx.planner,
         clarify_answers=ctx.clarify_answers,
@@ -379,15 +484,20 @@ def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) 
             "assistant",
             reply,
             intent="clarify",
-            metadata={"questions": questions},
+            metadata={
+                "questions": questions,
+                "original_title": assessment.get("seed_title") or contextual_text,
+                "session_context": ctx.session_context,
+            },
         )
         return _session_payload("clarify", reply, questions=questions)
 
     refined = assessment.get("refined_title") or ctx.text
+    planning_text = _augment_text_with_session_context(refined, ctx.session_context)
     max_tasks = 1 if intent == "task" else 5
     _, reply, task_ids = _submit_requirement_from_message(
         ctx.project,
-        refined,
+        planning_text,
         planner=ctx.planner,
         max_tasks=max_tasks,
     )
@@ -498,6 +608,8 @@ def send_session_message_action(
         project_info=project_info,
         planner=_effective_planner(project_info),
         text=text,
+        session_context=_session_context_block(existing_messages),
+        session_history=_session_history_turns(existing_messages),
         clarify_answers=clarify_answers,
         category=normalized_category,
         gateway_options=_actions().resolve_shared_gateway_options(project_info),

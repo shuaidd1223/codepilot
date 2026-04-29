@@ -56,7 +56,7 @@ def _format_numbered_questions(questions: list[dict]) -> str:
     return render_clarification_questions(questions)
 
 
-def _answer_project_question(project_info: dict, question: str, *, gateway_options=None) -> str:
+def _answer_project_question(project_info: dict, question: str, *, gateway_options=None, history: Optional[list[dict]] = None) -> str:
     from codepilot.ai_support.service import answer_question_via_api
 
     shared_gateway_options = gateway_options or _actions().resolve_shared_gateway_options(project_info)
@@ -65,6 +65,7 @@ def _answer_project_question(project_info: dict, question: str, *, gateway_optio
             provider_key=shared_gateway_options.classifier_provider,
             question=question,
             gateway_options=shared_gateway_options,
+            history=history,
         )
     except Exception as exc:
         answer = f"回答失败：{exc}"

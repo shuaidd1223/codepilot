@@ -300,6 +300,112 @@ def test_webui_session_reconstructs_legacy_pending_clarification_without_metadat
     }]
 
 
+def test_webui_session_question_uses_previous_turn_history(tmp_path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+    session = webui_mod.create_session_action("demo", title="chat")
+    session_id = session["session"]["id"]
+    db.create_session_message(session_id, "user", "第一个需求是优化任务列表")
+    db.create_session_message(session_id, "assistant", "已创建任务 #1", intent="requirement", task_ids=[1])
+
+    captured: dict[str, object] = {}
+
+    def fake_answer(project_info, question, **kwargs):
+        captured["question"] = question
+        captured["history"] = kwargs.get("history")
+        return "会结合上一个需求继续说明。"
+
+    monkeypatch.setattr("codepilot.webapp.action_sessions._answer_project_question", fake_answer)
+
+    out = webui_mod.send_session_message_action(
+        session_id,
+        "刚才那个需求现在做到哪了？",
+        category="question",
+    )
+
+    assert out["intent"] == "question"
+    assert captured["question"] == "刚才那个需求现在做到哪了？"
+    assert captured["history"] == [
+        {"user": "第一个需求是优化任务列表", "assistant": "已创建任务 #1"}
+    ]
+
+
+def test_webui_session_requirement_planning_includes_previous_turn_context(tmp_path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+    session = webui_mod.create_session_action("demo", title="chat")
+    session_id = session["session"]["id"]
+    db.create_session_message(session_id, "user", "第一个需求：优化任务列表")
+    db.create_session_message(session_id, "assistant", "需求已提交，后台任务 #9。", intent="requirement", task_ids=[9])
+
+    assessed: dict[str, str] = {}
+    submitted: dict[str, str] = {}
+
+    def fake_assess(text, **kwargs):
+        assessed["text"] = text
+        return {"status": "ready", "refined_title": "在上一个需求基础上增加筛选"}
+
+    def fake_submit(project, text, **kwargs):
+        submitted["text"] = text
+        return {"ok": True, "message": "queued", "job": {"task_ids": [2]}}
+
+    monkeypatch.setattr("codepilot.webapp.action_sessions._assess_requirement", fake_assess)
+    monkeypatch.setattr("codepilot.webapp.actions.submit_requirement_action", fake_submit)
+
+    out = webui_mod.send_session_message_action(
+        session_id,
+        "# 第二个需求：在刚才基础上继续加筛选",
+        category="auto",
+    )
+
+    assert out["intent"] == "requirement"
+    assert "## 会话上下文" in assessed["text"]
+    assert "第一个需求：优化任务列表" in assessed["text"]
+    assert "tasks=[9]" in assessed["text"]
+    assert submitted["text"].startswith("在上一个需求基础上增加筛选")
+    assert "## 会话上下文" in submitted["text"]
+    assert "第一个需求：优化任务列表" in submitted["text"]
+
+
+def test_webui_session_clarification_preserves_session_context_until_submit(tmp_path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+    session = webui_mod.create_session_action("demo", title="chat")
+    session_id = session["session"]["id"]
+    db.create_session_message(session_id, "user", "第一个需求：优化任务列表")
+    db.create_session_message(session_id, "assistant", "需求已提交。", intent="requirement", task_ids=[7])
+
+    clarify_calls: list[str] = []
+    submitted: dict[str, str] = {}
+
+    def fake_clarify(title, *, qa_history=None, **kwargs):
+        clarify_calls.append(title)
+        if qa_history:
+            return {"status": "ready", "refined_title": "继续补充空状态", "qa_history": qa_history}
+        return {"status": "needs_clarification", "questions": [_q("先补哪块?")], "qa_history": []}
+
+    def fake_submit(project, text, **kwargs):
+        submitted["text"] = text
+        return {"ok": True, "message": "queued", "job": {"task_ids": [3]}}
+
+    monkeypatch.setattr("codepilot.webapp.actions.clarify_requirement", fake_clarify)
+    monkeypatch.setattr("codepilot.webapp.actions.submit_requirement_action", fake_submit)
+
+    first = webui_mod.send_session_message_action(
+        session_id,
+        "# 继续完善刚才那个",
+        category="auto",
+    )
+    second = webui_mod.send_session_message_action(
+        session_id,
+        "先补空状态",
+        category="auto",
+    )
+
+    assert first["intent"] == "clarify"
+    assert second["intent"] == "requirement"
+    assert "## 会话上下文" in clarify_calls[0]
+    assert "第一个需求：优化任务列表" in submitted["text"]
+    assert "## 会话上下文" in submitted["text"]
+
+
 def test_webui_session_reconstructs_legacy_question_prefix_variants(tmp_path, monkeypatch):
     register_project(tmp_path, monkeypatch)
     session = webui_mod.create_session_action("demo", title="chat")
