@@ -13,8 +13,11 @@ but pytest bypasses that path, so we re-use the helper here.
 
 from __future__ import annotations
 
+import os
+
 from codepilot.core.console_encoding import configure_console_encoding
 
 
 configure_console_encoding()
+os.environ.setdefault("CODEPILOT_DESKTOP_NOTIFY", "0")
 

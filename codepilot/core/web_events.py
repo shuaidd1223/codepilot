@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 from typing import Any
 
 from codepilot.storage import database as db
@@ -19,6 +20,18 @@ DEFAULT_WEB_UI_HOST = "127.0.0.1"
 DEFAULT_WEB_UI_PORT = 8766
 WEBUI_SERVICE = "webui"
 WEBUI_SCOPE = "_global"
+
+
+def _truthy_env(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _web_event_delivery_allowed() -> bool:
+    if _truthy_env("CODEPILOT_SUPPRESS_WEB_EVENTS"):
+        return False
+    if "PYTEST_CURRENT_TEST" in os.environ and not _truthy_env("CODEPILOT_ALLOW_TEST_WEB_EVENTS"):
+        return False
+    return True
 
 
 def _webui_host_port() -> tuple[str, int]:
@@ -40,6 +53,8 @@ def publish_web_event(payload: dict[str, Any], *, timeout: float = 0.25) -> bool
     still persists in SQLite and the dashboard can read a fresh snapshot on the
     next page load.
     """
+    if not _web_event_delivery_allowed():
+        return False
     host, port = _webui_host_port()
     body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
     conn = http.client.HTTPConnection(host, int(port), timeout=max(float(timeout), 0.05))

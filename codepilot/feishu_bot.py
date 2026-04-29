@@ -2258,7 +2258,21 @@ def _feishu_notify_script() -> Path:
     return Path(__file__).resolve().parent / "feishu_notify.mjs"
 
 
+def _truthy_env(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _external_notifications_allowed() -> bool:
+    if _truthy_env("CODEPILOT_SUPPRESS_EXTERNAL_NOTIFICATIONS"):
+        return False
+    if "PYTEST_CURRENT_TEST" in os.environ and not _truthy_env("CODEPILOT_ALLOW_TEST_NOTIFICATIONS"):
+        return False
+    return True
+
+
 def _send_bot_card(card: dict[str, Any], *, project_name: str = "", chat_ids: list[str] | None = None) -> bool:
+    if not _external_notifications_allowed():
+        return False
     cfg = load_feishu_bot_config()
     if not cfg.enabled or not cfg.app_id or not cfg.app_secret:
         return False

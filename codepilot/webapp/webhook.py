@@ -22,6 +22,18 @@ from codepilot.core.config import load_config
 _MAX_WEBHOOK_BODY_BYTES = 1024 * 1024
 
 
+def _truthy_env(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _external_notifications_allowed() -> bool:
+    if _truthy_env("CODEPILOT_SUPPRESS_EXTERNAL_NOTIFICATIONS"):
+        return False
+    if "PYTEST_CURRENT_TEST" in os.environ and not _truthy_env("CODEPILOT_ALLOW_TEST_NOTIFICATIONS"):
+        return False
+    return True
+
+
 def _normalize_priority(value: object) -> str:
     priority = str(value or "P2").strip().upper()
     if priority not in {"P0", "P1", "P2", "P3"}:
@@ -248,6 +260,8 @@ def _build_feishu_payload(card: dict[str, Any], *, secret: str = "") -> dict[str
 
 def _send_feishu_webhook(url: str, card: dict[str, Any], *, secret: str = "") -> bool:
     """发送飞书机器人卡片消息."""
+    if not _external_notifications_allowed():
+        return False
     payload = json.dumps(_build_feishu_payload(card, secret=secret), ensure_ascii=False).encode("utf-8")
 
     try:
@@ -269,6 +283,8 @@ def _send_feishu_webhook(url: str, card: dict[str, Any], *, secret: str = "") ->
 
 def _send_wecom_webhook(url: str, text: str) -> bool:
     """发送企业微信机器人消息."""
+    if not _external_notifications_allowed():
+        return False
     payload = json.dumps({
         "msgtype": "text",
         "text": {"content": text},
@@ -293,6 +309,8 @@ def _send_wecom_webhook(url: str, text: str) -> bool:
 
 def _send_generic_webhook(url: str, payload: dict) -> bool:
     """发送通用 HTTP POST（JSON）."""
+    if not _external_notifications_allowed():
+        return False
     data = json.dumps(payload).encode("utf-8")
     try:
         req = urllib.request.Request(

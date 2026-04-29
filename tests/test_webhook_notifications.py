@@ -26,6 +26,7 @@ class _FakeHTTPResponse:
 def test_notify_task_status_sends_signed_feishu_payload(tmp_path, monkeypatch):
     project_path = tmp_path / "demo"
     project_path.mkdir()
+    monkeypatch.setenv("CODEPILOT_ALLOW_TEST_NOTIFICATIONS", "1")
 
     monkeypatch.setattr(
         webhook_mod,
@@ -78,6 +79,7 @@ def test_notify_task_status_sends_signed_feishu_payload(tmp_path, monkeypatch):
 def test_notify_task_status_auto_detects_wecom_payload_shape(tmp_path, monkeypatch):
     project_path = tmp_path / "demo"
     project_path.mkdir()
+    monkeypatch.setenv("CODEPILOT_ALLOW_TEST_NOTIFICATIONS", "1")
 
     monkeypatch.setattr(
         webhook_mod,
@@ -119,6 +121,7 @@ def test_notify_task_status_auto_detects_wecom_payload_shape(tmp_path, monkeypat
 def test_notify_task_event_sends_generic_progress_payload(tmp_path, monkeypatch):
     project_path = tmp_path / "demo"
     project_path.mkdir()
+    monkeypatch.setenv("CODEPILOT_ALLOW_TEST_NOTIFICATIONS", "1")
 
     monkeypatch.setattr(
         webhook_mod,
@@ -168,6 +171,7 @@ def test_notify_task_event_sends_generic_progress_payload(tmp_path, monkeypatch)
 def test_notify_task_event_sends_feishu_interactive_card(tmp_path, monkeypatch):
     project_path = tmp_path / "demo"
     project_path.mkdir()
+    monkeypatch.setenv("CODEPILOT_ALLOW_TEST_NOTIFICATIONS", "1")
 
     monkeypatch.setattr(
         webhook_mod,
@@ -206,3 +210,35 @@ def test_notify_task_event_sends_feishu_interactive_card(tmp_path, monkeypatch):
     assert "CodePilot #9 阶段完成" in card_text
     assert "builder 完成" in card_text
     assert "lark_md" in card_text
+
+
+def test_notify_task_event_suppresses_pytest_external_delivery(tmp_path, monkeypatch):
+    project_path = tmp_path / "demo"
+    project_path.mkdir()
+    monkeypatch.delenv("CODEPILOT_ALLOW_TEST_NOTIFICATIONS", raising=False)
+    monkeypatch.setattr(
+        webhook_mod,
+        "_get_webhook_config",
+        lambda _path: {
+            "webhook_url": "https://example.invalid/progress",
+            "provider": "generic",
+            "webhook_secret": "",
+            "enabled": True,
+        },
+    )
+
+    def fail_urlopen(*args, **kwargs):
+        raise AssertionError("test notifications must not reach a real HTTP layer by default")
+
+    monkeypatch.setattr(webhook_mod.urllib.request, "urlopen", fail_urlopen)
+
+    assert webhook_mod.notify_task_event(
+        str(project_path),
+        9,
+        "不会外发的测试通知",
+        event="phase_end",
+        phase="builder",
+        level="info",
+        message="builder 完成",
+        status="in_progress",
+    ) is False

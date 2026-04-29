@@ -211,7 +211,10 @@ def test_internal_event_endpoint_publishes_task_state_event(ui_server):
     assert events[0]["extra"]["changed_task_ids"] == [123]
 
 
-def test_publish_task_state_event_posts_to_registered_webui(ui_server):
+def test_publish_task_state_event_posts_to_registered_webui(ui_server, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_ALLOW_TEST_WEB_EVENTS", "1")
+    # Use an explicit allow flag because normal pytest runs must not publish
+    # task-state events to a developer's real Web UI service.
     progress_bus.clear_subscribers_for_tests()
     task = db.create_task("demo", "cross process task", agent="codex")
     db.update_task(task["id"], status="in_progress", run_phase="builder")
@@ -238,6 +241,28 @@ def test_publish_task_state_event_posts_to_registered_webui(ui_server):
     assert event["extra"]["changed_task_ids"] == [task["id"]]
     assert event["extra"]["changes"][0]["task"]["status"] == "in_progress"
     assert event["extra"]["changes"][0]["task"]["run_phase"] == "builder"
+
+
+def test_publish_task_state_event_is_suppressed_under_pytest_by_default(ui_server, monkeypatch):
+    monkeypatch.delenv("CODEPILOT_ALLOW_TEST_WEB_EVENTS", raising=False)
+    progress_bus.clear_subscribers_for_tests()
+    task = db.create_task("demo", "suppressed cross process task", agent="codex")
+    events: list[dict] = []
+    token = progress_bus.subscribe(lambda event: events.append(event))
+    try:
+        delivered = publish_task_state_event(
+            project="demo",
+            task=task,
+            event="started",
+            phase="builder",
+            status="in_progress",
+            message="测试通知不应进入真实 Web UI",
+        )
+    finally:
+        progress_bus.unsubscribe(token)
+
+    assert delivered is False
+    assert events == []
 
 
 def test_ui_state_mutations_emit_refresh_events(ui_server):
