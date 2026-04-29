@@ -5,7 +5,7 @@
   "description": "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。",
   "calling_principles": [
     "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
-    "需要结构化结果时，优先使用 `status --json`、`task show --json`、`doctor --json`、`task find --json`、`ai manifest`。",
+    "需要结构化结果时，优先使用 `hud --json`、`status --json`、`task show --json`、`doctor --json`、`task find --json`、`ai manifest`。",
     "如果目标是提交一个自然语言需求，直接调用 `codepilot \"需求文本\"` 或 `codepilot go \"需求文本\"`。",
     "在 chat、Web UI 会话和飞书自由文本里，疑似需求/任务不会自动执行；要创建工作请显式使用 `需求 <内容>` / `# <内容>` 或 `任务 <内容>` / `! <内容>`。",
     "如果用户是在询问项目、任务数量、完成度、失败任务、运行中任务或服务状态，优先按 `question` 处理，CodePilot 会读取本地项目与任务数据辅助回答。",
@@ -23,6 +23,11 @@
       "command": "codepilot status -p <项目名> --json",
       "format": "json",
       "purpose": "获取项目任务状态和任务列表。"
+    },
+    {
+      "command": "codepilot hud -p <项目名> --preset full --json",
+      "format": "json",
+      "purpose": "获取轻量工作流 HUD：项目队列、运行任务、最近活动和服务状态。"
     },
     {
       "command": "codepilot explore --prompt <问题> --json",
@@ -119,6 +124,17 @@
       "examples": [
         "codepilot status -p codepilot-dev -v",
         "codepilot status -p codepilot-dev --json"
+      ]
+    },
+    {
+      "name": "hud",
+      "syntax": "codepilot hud [-p <项目名>] [--all] [--preset minimal|focused|full] [--watch|--json]",
+      "purpose": "显示轻量工作流 HUD，汇总项目队列、运行中任务、最近活动和后台服务状态。",
+      "when_to_use": "需要快速判断当前工作台是否繁忙、是否有失败任务、服务是否仍有心跳时。",
+      "examples": [
+        "codepilot hud -p codepilot-dev --preset full",
+        "codepilot hud -p codepilot-dev --preset full --json",
+        "codepilot hud --watch"
       ]
     },
     {

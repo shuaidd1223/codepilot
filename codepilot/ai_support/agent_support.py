@@ -65,7 +65,7 @@ def command_manifest(
         "description": "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。",
             "calling_principles": [
                 "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
-                "需要结构化结果时，优先使用 `status --json`、`task show --json`、`doctor --json`、`task find --json`、`ai manifest`。",
+                "需要结构化结果时，优先使用 `hud --json`、`status --json`、`task show --json`、`doctor --json`、`task find --json`、`ai manifest`。",
                 f"如果目标是提交一个自然语言需求，直接调用 `{command} \"需求文本\"` 或 `{command} go \"需求文本\"`。",
                 "在 chat、Web UI 会话和飞书自由文本里，疑似需求/任务不会自动执行；要创建工作请显式使用 `需求 <内容>` / `# <内容>` 或 `任务 <内容>` / `! <内容>`。",
                 "如果用户是在询问项目、任务数量、完成度、失败任务、运行中任务或服务状态，优先按 `question` 处理，CodePilot 会读取本地项目与任务数据辅助回答。",
@@ -83,6 +83,11 @@ def command_manifest(
                 "command": _cmd(command, "status -p <项目名> --json"),
                 "format": "json",
                 "purpose": "获取项目任务状态和任务列表。",
+            },
+            {
+                "command": _cmd(command, "hud -p <项目名> --preset full --json"),
+                "format": "json",
+                "purpose": "获取轻量工作流 HUD：项目队列、运行任务、最近活动和服务状态。",
             },
             {
                 "command": _cmd(command, "explore --prompt <问题> --json"),
@@ -174,6 +179,17 @@ def command_manifest(
                 "examples": [
                     _cmd(command, "status -p codepilot-dev -v"),
                     _cmd(command, "status -p codepilot-dev --json"),
+                ],
+            },
+            {
+                "name": "hud",
+                "syntax": _cmd(command, "hud [-p <项目名>] [--all] [--preset minimal|focused|full] [--watch|--json]"),
+                "purpose": "显示轻量工作流 HUD，汇总项目队列、运行中任务、最近活动和后台服务状态。",
+                "when_to_use": "需要快速判断当前工作台是否繁忙、是否有失败任务、服务是否仍有心跳时。",
+                "examples": [
+                    _cmd(command, "hud -p codepilot-dev --preset full"),
+                    _cmd(command, "hud -p codepilot-dev --preset full --json"),
+                    _cmd(command, "hud --watch"),
                 ],
             },
             {
@@ -487,7 +503,16 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 {_cmd(command, "status -p <项目名> --json")}
 ```
 
-### 3.1 只读探索项目证据
+### 3.1 查看轻量 HUD
+
+```bash
+{_cmd(command, "hud -p <项目名> --preset full")}
+{_cmd(command, "hud -p <项目名> --preset full --json")}
+```
+
+`hud` 适合快速判断当前工作台是否繁忙：它汇总项目队列、运行中任务、最近活动和后台服务状态；需要实时观察时使用 `hud --watch`。
+
+### 3.2 只读探索项目证据
 
 ```bash
 {_cmd(command, 'explore --prompt "find task template" --json')}
@@ -495,7 +520,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 
 `explore` 只读取项目文件、Git、任务日志摘要和 inspect 信号。涉及修改、安装、启动服务或执行测试的问题应改走普通 workflow。
 
-### 3.2 项目本地 wiki
+### 3.3 项目本地 wiki
 
 ```bash
 {_cmd(command, 'wiki add -p <项目名> --title "构建命令" --body "pytest tests"')}
@@ -505,7 +530,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 
 适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
 
-### 3.3 生成执行前需求规格
+### 3.4 生成执行前需求规格
 
 ```bash
 {_cmd(command, 'clarify -p <项目名> "改进 doctor" --json')}
@@ -513,7 +538,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 
 `clarify` 只生成 `.codepilot/specs/clarify-*.md` 和 context artifact，写入 workflow state，不创建 backlog 任务、不启动执行器。适合先把模糊需求整理成目标、范围、非目标、约束、验收标准和待确认问题。
 
-### 3.4 生成可审查执行计划
+### 3.5 生成可审查执行计划
 
 ```bash
 {_cmd(command, 'plan -p <项目名> "新增 explore" --json')}

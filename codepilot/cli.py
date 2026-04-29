@@ -41,6 +41,7 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "project": ("codepilot.commands.project", "project_group"),
     "cleanup": ("codepilot.commands.cleanup", "cleanup"),
     "doctor": ("codepilot.commands.doctor", "doctor"),
+    "hud": ("codepilot.commands.hud", "hud"),
     "task": ("codepilot.commands.task", "task_group"),
 }
 

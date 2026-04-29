@@ -47,7 +47,16 @@ codepilot status -p <项目名> -v
 codepilot status -p <项目名> --json
 ```
 
-### 3.1 只读探索项目证据
+### 3.1 查看轻量 HUD
+
+```bash
+codepilot hud -p <项目名> --preset full
+codepilot hud -p <项目名> --preset full --json
+```
+
+`hud` 适合快速判断当前工作台是否繁忙：它汇总项目队列、运行中任务、最近活动和后台服务状态；需要实时观察时使用 `hud --watch`。
+
+### 3.2 只读探索项目证据
 
 ```bash
 codepilot explore --prompt "find task template" --json
@@ -55,7 +64,7 @@ codepilot explore --prompt "find task template" --json
 
 `explore` 只读取项目文件、Git、任务日志摘要和 inspect 信号。涉及修改、安装、启动服务或执行测试的问题应改走普通 workflow。
 
-### 3.2 项目本地 wiki
+### 3.3 项目本地 wiki
 
 ```bash
 codepilot wiki add -p <项目名> --title "构建命令" --body "pytest tests"
@@ -65,7 +74,7 @@ codepilot wiki lint -p <项目名> --json
 
 适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
 
-### 3.3 生成执行前需求规格
+### 3.4 生成执行前需求规格
 
 ```bash
 codepilot clarify -p <项目名> "改进 doctor" --json
@@ -73,7 +82,7 @@ codepilot clarify -p <项目名> "改进 doctor" --json
 
 `clarify` 只生成 `.codepilot/specs/clarify-*.md` 和 context artifact，写入 workflow state，不创建 backlog 任务、不启动执行器。适合先把模糊需求整理成目标、范围、非目标、约束、验收标准和待确认问题。
 
-### 3.4 生成可审查执行计划
+### 3.5 生成可审查执行计划
 
 ```bash
 codepilot plan -p <项目名> "新增 explore" --json

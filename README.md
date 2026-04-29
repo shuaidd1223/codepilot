@@ -30,6 +30,13 @@ codepilot go "当前项目有多少任务，完成了多少" -p <项目名>
 codepilot status -p <项目名> -v
 ```
 
+查看轻量 HUD（项目队列、运行任务、服务状态）：
+
+```bash
+codepilot hud -p <项目名> --preset full
+codepilot hud --watch
+```
+
 任务运维（统一入口 `task`）：
 
 ```bash
