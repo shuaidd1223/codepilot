@@ -215,7 +215,7 @@ def test_feishu_requirement_command_submits_goal_in_active_project(tmp_path, mon
         {
             "project": "demo",
             "text": "优化飞书任务面板",
-            "kwargs": {"execute": True, "run_async": False, "task_source": "feishu:chat-req"},
+            "kwargs": {"execute": True, "run_async": True, "task_source": "feishu:chat-req"},
         }
     ]
     assert "需求已提交" in payload
@@ -297,7 +297,7 @@ def test_feishu_explicit_requirement_prefix_still_submits_goal_action(tmp_path, 
     assert calls == [{
         "project": "demo",
         "text": "优化飞书任务面板",
-        "kwargs": {"execute": True, "run_async": False, "task_source": "feishu:chat-prefix"},
+        "kwargs": {"execute": True, "run_async": True, "task_source": "feishu:chat-prefix"},
     }]
     assert "需求已提交" in payload
 

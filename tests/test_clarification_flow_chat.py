@@ -66,7 +66,7 @@ def test_chat_asks_for_clarification_then_plans(tmp_path, monkeypatch):
     result = runner.invoke(
         main,
         ["chat", "--no-ui"],
-        input="优化一下\n1\n/exit\n",
+        input="# 优化一下\n1\n/exit\n",
     )
 
     assert result.exit_code == 0
@@ -95,7 +95,7 @@ def test_chat_slash_clear_aborts_pending_clarification(tmp_path, monkeypatch):
     result = runner.invoke(
         main,
         ["chat", "--no-ui"],
-        input="优化\n/clear\n/exit\n",
+        input="# 优化\n/clear\n/exit\n",
     )
     assert result.exit_code == 0
     assert not ran, "planner should not run after /clear during clarification"
@@ -126,7 +126,7 @@ def test_chat_pending_clarification_exception_does_not_crash(tmp_path, monkeypat
     result = runner.invoke(
         main,
         ["chat", "--no-ui"],
-        input="优化一下\n先优化 Web UI\n/exit\n",
+        input="# 优化一下\n先优化 Web UI\n/exit\n",
     )
 
     assert result.exit_code == 0
@@ -159,7 +159,7 @@ def test_chat_pending_clarification_interrupt_exits_cleanly(tmp_path, monkeypatc
     result = runner.invoke(
         main,
         ["chat", "--no-ui"],
-        input="优化一下\n先优化 Web UI\n",
+        input="# 优化一下\n先优化 Web UI\n",
     )
 
     assert result.exit_code == 0
@@ -207,11 +207,11 @@ def test_chat_pending_clarification_keeps_task_intent_single_task_limit(tmp_path
     result = runner.invoke(
         main,
         ["chat", "--no-ui", "--max-tasks", "9"],
-        input="修复登录失败\n先修重试逻辑\n/exit\n",
+        input="! 修复登录失败\n先修重试逻辑\n/exit\n",
     )
 
     assert result.exit_code == 0
-    assert len(classify_calls) == 1, "pending clarification turn should be session-driven"
+    assert classify_calls == [], "explicit task prefix and pending clarification turns should skip classification"
     assert captured["max_tasks"] == 1
     assert "重试逻辑" in captured["title"]
 
@@ -243,7 +243,7 @@ def test_chat_pending_clarification_empty_answer_does_not_reenter_clarifier(tmp_
     result = runner.invoke(
         main,
         ["chat", "--no-ui"],
-        input="优化一下\n继续\n/exit\n",
+        input="# 优化一下\n继续\n/exit\n",
     )
 
     assert result.exit_code == 0

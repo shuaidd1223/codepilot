@@ -211,6 +211,7 @@ class _ChatRuntime:
     auto_commit_opt: Optional[bool]
     max_tasks_opt: int
     max_retries_opt: int
+    use_async_requirements: bool = True
     chat_history: list[dict] = field(default_factory=list)
     pending_clarification: Optional[dict] = None
     pending_action_options: list[dict] = field(default_factory=list)
@@ -879,6 +880,25 @@ def _chat_max_tasks_for_intent(runtime: _ChatRuntime, intent: str) -> int:
 
 def _run_chat_requirement_workflow(runtime: _ChatRuntime, *, title: str, intent: str) -> None:
     from codepilot.core.output import echo
+
+    max_tasks = _chat_max_tasks_for_intent(runtime, intent)
+    if not runtime.use_async_requirements:
+        runtime.shell.run_requirement_workflow(
+            project_info=runtime.project_info,
+            title=title,
+            planner=runtime.effective["planner"],
+            task_agent=runtime.default_agent,
+            priority="P2",
+            max_tasks=max_tasks,
+            execute=runtime.default_execute,
+            executor=runtime.effective["executor"],
+            auto_commit=runtime.effective["auto_commit"],
+            max_retries=runtime.effective["max_retries"],
+            json_mode=False,
+            task_source="chat",
+        )
+        return
+
     from codepilot.webapp import actions as web_actions
 
     result = web_actions.submit_requirement_action(
@@ -889,7 +909,7 @@ def _run_chat_requirement_workflow(runtime: _ChatRuntime, *, title: str, intent:
         execute=runtime.default_execute,
         executor=runtime.effective["executor"],
         auto_commit=runtime.effective["auto_commit"],
-        max_tasks=_chat_max_tasks_for_intent(runtime, intent),
+        max_tasks=max_tasks,
         max_retries=runtime.effective["max_retries"],
         run_async=True,
         clarify=False,
@@ -1164,6 +1184,7 @@ def run_chat_session(
         auto_commit_opt=auto_commit,
         max_tasks_opt=max_tasks,
         max_retries_opt=max_retries,
+        use_async_requirements=enable_ui,
     )
 
     echo(
