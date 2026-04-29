@@ -115,6 +115,14 @@ def test_web_ui_task_cards_render_phase_progress():
     assert ".task-phase-step.state-current" in styles
 
 
+def test_task_list_uses_detail_phase_progress_style():
+    task_section = Path("codepilot/web/components/TaskSection.js").read_text(encoding="utf-8")
+
+    assert 'class="task-phase-progress task-phase-progress-detail"' in task_section
+    assert "task-phase-track" not in task_section
+    assert "task-phase-fill" not in task_section
+
+
 def test_web_ui_bootstrap_wires_app_state_boundary_before_mount():
     index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
     app = Path("codepilot/web/app.js").read_text(encoding="utf-8")

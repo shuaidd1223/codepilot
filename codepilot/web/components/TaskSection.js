@@ -261,16 +261,13 @@ CP.Components.TaskSection = Vue.defineComponent({
               <span v-if="x.started_at">开始: {{ $cp.fmtTime(x.started_at) }}</span>
               <span v-if="x.completed_at">完成: {{ $cp.fmtTime(x.completed_at) }}</span>
             </div>
-            <div class="task-phase-progress" :class="'tone-' + $cp.taskPhaseProgress(x).tone">
+            <div class="task-phase-progress task-phase-progress-detail" :class="'tone-' + $cp.taskPhaseProgress(x).tone">
               <div class="task-phase-progress-head">
                 <div class="task-phase-current">
                   <span class="phase-pulse" v-if="x.status === 'in_progress'"></span>
                   {{ $cp.taskPhaseProgress(x).currentLabel }}
                 </div>
                 <div class="task-phase-next">{{ $cp.taskPhaseProgress(x).nextLabel }}</div>
-              </div>
-              <div class="task-phase-track">
-                <span class="task-phase-fill" :style="{ width: $cp.taskPhaseProgress(x).percent + '%' }"></span>
               </div>
               <div class="task-phase-steps">
                 <span v-for="step in $cp.taskPhaseProgress(x).steps"
