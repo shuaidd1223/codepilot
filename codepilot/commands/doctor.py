@@ -12,6 +12,7 @@ import click
 
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.output import echo, safe
+from codepilot.storage import database as db
 
 
 # ── Check result model ───────────────────────────────────────────────────────
@@ -367,15 +368,156 @@ def run_all_checks() -> list[CheckResult]:
     return results
 
 
+def _resolve_project(project: str | None) -> dict | None:
+    db.init_db()
+    if project:
+        found = db.get_project(project)
+        if not found:
+            raise click.ClickException(f"项目 '{project}' 未注册。")
+        return found
+    found = db.find_project_by_path(Path.cwd())
+    if found:
+        return found
+    projects = db.list_projects()
+    if len(projects) == 1:
+        return projects[0]
+    return None
+
+
+def _project_config_check(project_info: dict) -> CheckResult:
+    from codepilot.core.config import load_project_config
+
+    cfg = load_project_config(project_info)
+    config_file = str(project_info.get("config_file") or "")
+    if not cfg:
+        return CheckResult(
+            "project_config",
+            False,
+            f"项目配置不可读取 ({config_file or project_info.get('path')})",
+            fix="检查 AGENTS.toml 是否存在且语法正确。",
+        )
+    return CheckResult("project_config", True, f"项目配置可读取 ({config_file or cfg.config_file_path or project_info.get('path')})")
+
+
+def _service_check(name: str, status: dict, state: dict | None = None) -> CheckResult:
+    running = bool(status.get("running"))
+    pid = int(status.get("pid") or 0)
+    log_path = str(status.get("log") or (state or {}).get("log_path") or "")
+    if running:
+        detail = f"运行中 pid={pid}"
+        if log_path:
+            detail += f" log={log_path}"
+        return CheckResult(f"service_{name}", True, detail)
+
+    raw_pid = int((state or {}).get("pid") or 0)
+    if state and raw_pid:
+        detail = f"stale meta: recorded pid={raw_pid} status={(state or {}).get('status') or '-'}"
+        if log_path:
+            detail += f" log={log_path}"
+        return CheckResult(
+            f"service_{name}",
+            True,
+            detail,
+            fix=f"服务 {name} 记录了已退出进程；可按需运行对应 status/stop 命令清理。",
+            severity="warning",
+        )
+    detail = "未运行"
+    if log_path:
+        detail += f" log={log_path}"
+    return CheckResult(f"service_{name}", True, detail)
+
+
+def _webui_status_from_state() -> dict:
+    from codepilot.core.runtime import is_process_alive
+    from codepilot.commands import webui_service
+
+    state = db.get_service_state("webui", "_global")
+    meta = state.get("meta") if state and isinstance(state.get("meta"), dict) else {}
+    try:
+        pid = int((state or {}).get("pid") or 0)
+    except Exception:
+        pid = 0
+    running = bool(pid and is_process_alive(pid))
+    return {
+        "running": running,
+        "pid": pid if running else 0,
+        "log": str((state or {}).get("log_path") or webui_service.LOG_FILE),
+        "host": meta.get("host") or "",
+        "port": meta.get("port") or "",
+    }
+
+
+def _feishu_config_check(project_info: dict | None) -> CheckResult:
+    from codepilot.core.config import load_project_config
+
+    cfg = load_project_config(project_info) if project_info else load_project_config()
+    if not cfg or not cfg.feishu_bot_enabled:
+        return CheckResult("feishu_config", True, "飞书服务未启用")
+    if not str(cfg.feishu_app_secret or "").strip():
+        return CheckResult(
+            "feishu_config",
+            True,
+            "飞书服务已启用，但缺少 feishu_bot.app_secret。",
+            fix="将 [feishu_bot].app_secret 写入 .codepilot.secrets.toml，不要写入 AGENTS.toml。",
+            severity="warning",
+        )
+    return CheckResult("feishu_config", True, "飞书服务已启用，secret 已通过配置解析。")
+
+
+def run_project_checks(project_info: dict | None, *, include_services: bool = False) -> list[CheckResult]:
+    results: list[CheckResult] = []
+    if project_info:
+        results.append(_project_config_check(project_info))
+    results.append(_feishu_config_check(project_info))
+    if not include_services and not project_info:
+        return results
+
+    project_name = str(project_info.get("name") or "") if project_info else ""
+    try:
+        from codepilot.commands.daemon import daemon_service_status
+
+        daemon_status = daemon_service_status(project_name or None)
+    except Exception as exc:
+        daemon_status = {"running": False, "log": "", "error": str(exc)}
+    results.append(_service_check("daemon", daemon_status, db.get_service_state("daemon", project_name)))
+
+    if project_name:
+        try:
+            from codepilot.commands.inspect import inspect_service_status
+
+            inspect_status = inspect_service_status(project_name)
+        except Exception as exc:
+            inspect_status = {"running": False, "log": "", "error": str(exc)}
+        results.append(_service_check("inspect", inspect_status, db.get_service_state("inspect", project_name)))
+    else:
+        results.append(CheckResult("service_inspect", True, "未指定项目，跳过 inspect 项目服务检查", severity="warning"))
+
+    results.append(_service_check("webui", _webui_status_from_state(), db.get_service_state("webui", "_global")))
+
+    try:
+        from codepilot.commands.feishu import _service_status as feishu_service_status
+
+        feishu_status = feishu_service_status()
+    except Exception as exc:
+        feishu_status = {"running": False, "log": "", "error": str(exc)}
+    results.append(_service_check("feishu", feishu_status, db.get_service_state("feishu", "_global")))
+    return results
+
+
 # ── Click command ─────────────────────────────────────────────────────────────
 
 @click.command()
 @click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
+@click.option("--project", "-p", help="项目名称；开启项目级配置和服务健康检查")
+@click.option("--services", is_flag=True, help="包含 daemon / inspect / Web UI / Feishu 服务状态")
 @click.pass_context
-def doctor(ctx: click.Context, json_mode: bool):
+def doctor(ctx: click.Context, json_mode: bool, project: str | None, services: bool):
     """环境自检，检查 Python、Git、AGENTS.toml、CLI 工具、数据库和编码。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     results = run_all_checks()
+    project_info = _resolve_project(project) if (project or services) else None
+    if project or services:
+        results.extend(run_project_checks(project_info, include_services=True))
 
     if json_mode:
         overall_ok = not any(r.severity == "error" for r in results)
@@ -383,6 +525,11 @@ def doctor(ctx: click.Context, json_mode: bool):
             "checks": [r.to_dict() for r in results],
             "status_emoji": _summary_status_emoji(results),
         }
+        if project_info:
+            payload["project"] = {
+                "name": project_info.get("name"),
+                "path": project_info.get("path"),
+            }
         emit_json_payload("doctor", ok=overall_ok, data=payload)
         return
 

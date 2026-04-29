@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from codepilot.cli import main
 from codepilot.commands import doctor as doctor_mod
 from codepilot.core.config import SECRETS_FILENAME, SECRETS_PATH_ENV
+from codepilot.storage import database as db
 
 
 API_KEY_ENVS = (
@@ -336,4 +337,108 @@ def test_doctor_json_status_emoji_depends_on_error_severity(
     assert payload["ok"] is (expected_emoji != "✘")
     assert payload["command"] == "doctor"
     assert payload["data"]["status_emoji"] == expected_emoji
+
+
+def _register_project(tmp_path: Path, monkeypatch, agents_toml: str) -> dict:
+    project = _project(tmp_path, monkeypatch, agents_toml)
+    db.init_db()
+    return db.register_project("demo", str(project), config_file=str(project / "AGENTS.toml"))
+
+
+def test_doctor_project_json_includes_project_and_service_checks(_isolate_sources, monkeypatch):
+    _register_project(
+        _isolate_sources,
+        monkeypatch,
+        """
+[project]
+name = "demo"
+base_branch = "dev"
+
+[agents]
+codex_cmd = "codex"
+claude_cmd = "claude"
+
+[automation]
+planner = "codex"
+""".strip(),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["doctor", "--project", "demo", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["command"] == "doctor"
+    assert payload["data"]["project"]["name"] == "demo"
+    check_names = {item["name"] for item in payload["data"]["checks"]}
+    assert "project_config" in check_names
+    assert "service_daemon" in check_names
+    assert "service_webui" in check_names
+
+
+def test_doctor_services_json_reports_stale_service_state(_isolate_sources, monkeypatch):
+    _register_project(
+        _isolate_sources,
+        monkeypatch,
+        """
+[project]
+name = "demo"
+base_branch = "dev"
+
+[agents]
+codex_cmd = "codex"
+claude_cmd = "claude"
+
+[automation]
+planner = "codex"
+""".strip(),
+    )
+    db.upsert_service_state(
+        "daemon",
+        "demo",
+        pid=999999,
+        status="running",
+        log_path="daemon.log",
+        meta={"project": "demo"},
+    )
+
+    result = CliRunner().invoke(main, ["doctor", "--services", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    stale = next(item for item in payload["data"]["checks"] if item["name"] == "service_daemon")
+    assert stale["severity"] == "warning"
+    assert "stale" in stale["detail"].lower()
+
+
+def test_doctor_warns_when_feishu_enabled_without_secret(_isolate_sources, monkeypatch):
+    _register_project(
+        _isolate_sources,
+        monkeypatch,
+        """
+[project]
+name = "demo"
+base_branch = "dev"
+
+[agents]
+codex_cmd = "codex"
+claude_cmd = "claude"
+
+[automation]
+planner = "codex"
+
+[feishu_bot]
+enabled = true
+app_id = "cli_xxx"
+""".strip(),
+    )
+
+    result = CliRunner().invoke(main, ["doctor", "--project", "demo", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    feishu = next(item for item in payload["data"]["checks"] if item["name"] == "feishu_config")
+    assert feishu["severity"] == "warning"
+    assert "app_secret" in feishu["detail"]
+    assert "cli_xxx" not in json.dumps(payload, ensure_ascii=False)
 
