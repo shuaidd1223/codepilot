@@ -14,6 +14,7 @@ from codepilot.feishu_bot import (
     build_batch_task_action_card,
     build_pending_confirm_card,
     build_task_event_card,
+    handle_card_action_payload,
     handle_command_text,
     handle_event_payload,
     notify_feishu_task_event,
@@ -30,6 +31,62 @@ def _setup_project(tmp_path, monkeypatch):
     return project_path
 
 
+def _card_buttons(card):
+    buttons = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            if value.get("tag") == "button":
+                buttons.append(value)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(card)
+    return buttons
+
+
+def _button_commands(card):
+    return [button.get("value", {}).get("command") for button in _card_buttons(card)]
+
+
+def _button_types_by_command(card):
+    return {button.get("value", {}).get("command"): button.get("type") for button in _card_buttons(card)}
+
+
+def _action_blocks(card):
+    return [elem for elem in card["elements"] if isinstance(elem, dict) and elem.get("tag") == "action"]
+
+
+def _assert_multi_button_actions_use_flow_layout(card):
+    for block in _action_blocks(card):
+        if len(block.get("actions", [])) > 1:
+            assert block.get("layout") == "flow"
+
+
+def _assert_card_uses_markdown(card):
+    payload = json.dumps(card, ensure_ascii=False)
+    assert "lark_md" in payload
+
+
+def _first_interactive_card(reply):
+    if reply["type"] == "interactive":
+        return reply["card"]
+    if reply["type"] == "multi":
+        for message in reply["messages"]:
+            if message.get("type") == "interactive":
+                return message["card"]
+    raise AssertionError(f"reply does not contain an interactive card: {reply!r}")
+
+
+def _assert_no_copy_command_panel(card):
+    payload = json.dumps(card, ensure_ascii=False)
+    assert "复制命令发送即可执行" not in payload
+    assert "下一步命令" not in payload
+
+
 def test_feishu_help_returns_interactive_card(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
 
@@ -37,6 +94,10 @@ def test_feishu_help_returns_interactive_card(tmp_path, monkeypatch):
 
     assert reply["type"] == "interactive"
     assert "CodePilot 飞书命令" in reply["card"]["header"]["title"]["content"]
+    assert {"global", "projects", "tasks"}.issubset(set(_button_commands(reply["card"])))
+    _assert_no_copy_command_panel(reply["card"])
+    _assert_card_uses_markdown(reply["card"])
+    _assert_multi_button_actions_use_flow_layout(reply["card"])
 
 
 def test_feishu_tasks_card_lists_project_tasks(tmp_path, monkeypatch):
@@ -58,8 +119,48 @@ def test_feishu_tasks_card_lists_project_tasks(tmp_path, monkeypatch):
     assert "修复飞书命令面板" in payload
     assert "stop 1" in payload
     assert "delete 1" in payload
-    assert "下一步命令" in payload
-    assert "任务列表" in payload
+    assert "快捷操作" in payload
+    assert "重点任务" in payload
+    assert "任务操作" in payload
+    assert "查看详情" in payload
+    assert "任务日志" in payload
+    assert "删除任务" in payload
+    assert {"detail 1", "logs 1", "delete 1", "tasks demo status=backlog"}.issubset(set(_button_commands(reply["card"])))
+    _assert_no_copy_command_panel(reply["card"])
+    _assert_multi_button_actions_use_flow_layout(reply["card"])
+    assert any(
+        elem.get("tag") == "action" and any(action.get("tag") == "button" for action in elem.get("actions", []))
+        for elem in reply["card"]["elements"]
+        if isinstance(elem, dict)
+    )
+
+
+def test_feishu_tasks_card_uses_visual_task_rows_instead_of_plain_text_only(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    running = db.create_task(
+        project="demo",
+        title="执行中的专业任务卡片",
+        content="验证任务行视觉层级",
+        agent="codex",
+        priority="P0",
+        project_path=str(project_path),
+    )
+    db.update_task(running["id"], status="in_progress", run_phase="builder")
+
+    reply = handle_command_text("tasks demo")
+    card = reply["card"]
+    payload = json.dumps(card, ensure_ascii=False)
+    action_blocks = [elem for elem in card["elements"] if isinstance(elem, dict) and elem.get("tag") == "action"]
+    buttons = [button for block in action_blocks for button in block.get("actions", []) if isinstance(button, dict)]
+
+    assert "重点任务" in payload
+    assert "任务 #1" in payload
+    assert "P0" in payload
+    assert "执行中" in payload
+    assert "任务操作" in payload
+    assert any(button.get("type") == "primary" and button.get("value", {}).get("command") == "detail 1" for button in buttons)
+    assert any(button.get("type") == "danger" and button.get("value", {}).get("command") == "stop 1" for button in buttons)
+    assert not any("**任务**" in elem.get("text", {}).get("content", "") for elem in card["elements"] if isinstance(elem, dict))
 
 
 def test_feishu_tasks_card_supports_status_filter(tmp_path, monkeypatch):
@@ -465,17 +566,10 @@ def test_feishu_event_card_uses_structured_blocks():
     assert "note" in tags
     assert "column_set" in tags
     assert tags.count("hr") >= 2
-    assert any(
-        elem.get("tag") == "column_set" and elem.get("background_style") == "default"
-        for elem in card["elements"]
-        if isinstance(elem, dict)
-    )
-    assert any(
-        elem.get("text", {}).get("tag") == "lark_md"
-        for elem in card["elements"]
-        if isinstance(elem, dict) and elem.get("tag") == "div"
-    )
-    assert "下一步命令" in json.dumps(card, ensure_ascii=False)
+    assert any(elem.get("tag") == "action" for elem in card["elements"] if isinstance(elem, dict))
+    _assert_card_uses_markdown(card)
+    assert {"detail 12", "logs 12", "tasks"}.issubset(set(_button_commands(card)))
+    _assert_no_copy_command_panel(card)
 
 
 def test_feishu_cards_use_professional_sectioned_layout(tmp_path, monkeypatch):
@@ -498,9 +592,11 @@ def test_feishu_cards_use_professional_sectioned_layout(tmp_path, monkeypatch):
     assert card["config"]["enable_forward"] is True
     assert card["config"]["update_multi"] is True
     assert "任务概览" in payload
-    assert "任务列表" in payload
-    assert "下一步命令" in payload
-    assert "复制命令发送即可执行" in payload
+    assert "重点任务" in payload
+    assert "快捷操作" in payload
+    assert "复制命令发送即可执行" not in payload
+    assert {"tasks demo status=backlog", "tasks demo status=in_progress"}.issubset(set(_button_commands(card)))
+    _assert_card_uses_markdown(card)
     assert tags.count("hr") >= 2
     assert any(
         elem.get("tag") == "column_set" and elem.get("background_style") == "default"
@@ -527,7 +623,11 @@ def test_feishu_confirm_card_uses_sectioned_warning_layout():
     assert card["header"]["template"] == "orange"
     assert "请二次确认" in payload
     assert "影响范围" in payload
-    assert "确认命令" in payload
+    assert "确认操作" in payload
+    assert _button_types_by_command(card)["/cp confirm ABC123"] == "danger"
+    assert _button_types_by_command(card)["/cp cancel confirm ABC123"] == "default"
+    assert "`/cp confirm ABC123`" not in payload
+    _assert_card_uses_markdown(card)
     assert tags.count("hr") >= 2
 
 
@@ -576,7 +676,8 @@ def test_feishu_delete_task_command_requires_confirm_token(tmp_path, monkeypatch
 
     assert first["type"] == "interactive"
     assert "敏感操作待确认" in first_payload
-    assert f"confirm {token}" in first_payload
+    assert f"confirm {token}" in _button_commands(first["card"])
+    assert f"`confirm {token}`" not in first_payload
     assert db.get_task(task["id"]) is not None
     second = handle_command_text(f"confirm {token}", chat_id="chat-delete")
     second_payload = json.dumps(second["card"], ensure_ascii=False)
@@ -713,9 +814,10 @@ def test_build_batch_task_action_card_contract_for_partial_failure():
     assert "- `#11` 任务 #11 已归档。" in payload
     assert "失败任务" in payload
     assert "- `#13` 任务 #13 正在执行中，不能归档。" in payload
-    assert "`/cp detail 11`" in payload
-    assert "`/cp logs 11`" in payload
-    assert "`/cp tasks`" in payload
+    assert {"/cp detail 11", "/cp logs 11", "/cp tasks"}.issubset(set(_button_commands(card)))
+    assert "`/cp detail 11`" not in payload
+    assert "`/cp logs 11`" not in payload
+    assert "`/cp tasks`" not in payload
 
 
 def test_build_batch_task_action_card_delete_omits_detail_commands_and_limits_rows():
@@ -738,9 +840,10 @@ def test_build_batch_task_action_card_delete_omits_detail_commands_and_limits_ro
 
     assert card["header"]["template"] == "green"
     assert card["header"]["title"]["content"] == "批量删除完成"
-    assert "`tasks`" in payload
-    assert "`detail 1`" not in payload
-    assert "`logs 1`" not in payload
+    assert "tasks" in _button_commands(card)
+    assert "detail 1" not in _button_commands(card)
+    assert "logs 1" not in _button_commands(card)
+    assert "`tasks`" not in payload
     assert "- `#8` 任务 #8 已删除。" in payload
     assert "- `#9` 任务 #9 已删除。" not in payload
 
@@ -754,6 +857,108 @@ def test_feishu_natural_language_status_routes_to_project_overview(tmp_path, mon
     assert reply["type"] == "interactive"
     assert "项目总览" in payload
     assert "demo" in payload
+
+
+def test_feishu_short_chinese_command_aliases_do_not_fall_back_to_help(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    db.create_task(
+        project="demo",
+        title="短中文命令识别",
+        content="验证飞书入口不会误判为未知命令",
+        agent="dual",
+        priority="P1",
+        project_path=str(project_path),
+    )
+
+    cases = {
+        "项目": "CodePilot 项目",
+        "看项目": "CodePilot 项目",
+        "任务": "CodePilot 任务面板",
+        "看任务": "CodePilot 任务面板",
+        "服务": "项目服务状态",
+        "全局": "CodePilot 全局状态",
+    }
+
+    for text, expected in cases.items():
+        reply = handle_command_text(text, chat_id="chat-alias")
+        payload = json.dumps(reply["card"], ensure_ascii=False)
+        assert expected in payload
+        assert "未识别命令" not in payload
+
+
+def test_feishu_chinese_task_action_aliases_extract_task_id(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    task = db.create_task(
+        project="demo",
+        title="中文任务操作识别",
+        content="验证任务详情和日志中文命令",
+        agent="dual",
+        priority="P1",
+        project_path=str(project_path),
+    )
+
+    detail = handle_command_text(f"任务详情 {task['id']}")
+    logs = handle_command_text(f"任务日志 {task['id']}")
+    detail_payload = json.dumps(detail["card"], ensure_ascii=False)
+    logs_card = _first_interactive_card(logs)
+    logs_payload = json.dumps(logs_card, ensure_ascii=False)
+
+    assert "任务详情" in detail_payload
+    assert "中文任务操作识别" in detail_payload
+    assert "任务日志" in logs_payload
+    assert "中文任务操作识别" in logs_payload
+
+
+def test_feishu_task_log_command_sends_card_and_post_rich_text(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    task = db.create_task(
+        project="demo",
+        title="富文本日志任务",
+        content="验证日志拆成富文本",
+        agent="dual",
+        priority="P1",
+        project_path=str(project_path),
+    )
+    db.update_task(task["id"], last_output="\n".join(f"日志行 {index}" for index in range(1, 12)))
+
+    reply = handle_command_text(f"logs {task['id']}")
+
+    assert reply["type"] == "multi"
+    assert reply["messages"][0]["type"] == "interactive"
+    assert reply["messages"][1]["type"] == "post"
+    card = reply["messages"][0]["card"]
+    post = reply["messages"][1]
+    _assert_card_uses_markdown(card)
+    assert "任务日志" in card["header"]["title"]["content"]
+    assert post["title"] == f"任务日志 · #{task['id']}"
+    assert post["content"][0][0] == {"tag": "text", "text": "日志行 1"}
+    assert "日志行 11" in json.dumps(post["content"], ensure_ascii=False)
+    assert {"detail 1", "logs 1"}.issubset(set(_button_commands(card)))
+
+
+def test_feishu_card_action_callback_runs_button_command(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    db.create_task(
+        project="demo",
+        title="按钮回调任务列表",
+        content="验证卡片按钮点击能执行 value.command",
+        agent="dual",
+        priority="P1",
+        project_path=str(project_path),
+    )
+
+    reply = handle_card_action_payload(
+        {
+            "context": {"open_chat_id": "chat-card", "open_message_id": "om_1"},
+            "operator": {"open_id": "ou_1"},
+            "action": {"tag": "button", "value": {"command": "tasks demo"}},
+        }
+    )
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "CodePilot 任务面板" in payload
+    assert "按钮回调任务列表" in payload
 
 
 def test_feishu_natural_language_delete_uses_numbered_choice(tmp_path, monkeypatch):
@@ -786,7 +991,8 @@ def test_feishu_natural_language_delete_uses_numbered_choice(tmp_path, monkeypat
     third_payload = json.dumps(third_reply["card"], ensure_ascii=False)
 
     assert "请确认操作" in first_payload
-    assert "回复数字继续" in first_payload
+    assert "点击候选按钮继续" in first_payload
+    assert {"1", "2"}.issubset(set(_button_commands(first_reply["card"])))
     assert "敏感操作待确认" in second_payload
     assert "confirm" in second_payload
     assert "任务已删除" in third_payload
@@ -822,7 +1028,8 @@ def test_feishu_pending_choice_out_of_range_keeps_options(tmp_path, monkeypatch)
 
     assert "请确认操作" in first_payload
     assert "可选项超出范围" in invalid_payload
-    assert "回复数字继续" in invalid_payload
+    assert "点击候选按钮继续" in invalid_payload
+    assert "1" in _button_commands(invalid_reply["card"])
     assert "敏感操作待确认" in valid_payload
 
 
@@ -1016,7 +1223,8 @@ def test_feishu_plain_text_without_active_project_prompts_project_choice(tmp_pat
 
     assert reply["type"] == "interactive"
     assert "先确认你要在哪个项目里继续" in payload
-    assert "回复数字继续" in payload
+    assert "点击候选按钮继续" in payload
+    assert {"1", "2"}.issubset(set(_button_commands(reply["card"])))
 
 
 def test_feishu_event_payload_dedupes_same_message_id(tmp_path, monkeypatch):
@@ -1268,6 +1476,57 @@ def test_ensure_feishu_service_running_if_enabled_starts_detached_worker(monkeyp
     assert result["running"] is True
     assert result["started"] is True
     assert result["pid"] == 4321
+
+
+def test_feishu_process_command_detection_matches_only_feishu_processes():
+    assert feishu_cmd._is_feishu_process_command("python.exe -m codepilot feishu run")
+    assert feishu_cmd._is_feishu_process_command("node D:\\myCode\\workflow\\codepilot\\feishu_worker.mjs")
+    assert feishu_cmd._is_feishu_process_command(
+        "cmd.exe /C D:\\ServBay\\bin\\node.cmd D:\\myCode\\workflow\\codepilot\\feishu_worker.mjs"
+    )
+    assert not feishu_cmd._is_feishu_process_command("python.exe -m codepilot daemon --project demo")
+    assert not feishu_cmd._is_feishu_process_command("python.exe -m codepilot ui --port 8766")
+
+
+def test_ensure_feishu_service_running_if_enabled_cleans_orphan_workers_before_start(monkeypatch, tmp_path):
+    cleaned = []
+    monkeypatch.setattr(
+        feishu_cmd,
+        "load_feishu_bot_config",
+        lambda: type("Cfg", (), {"enabled": True})(),
+    )
+    monkeypatch.setattr(feishu_cmd, "_check_runtime_ready", lambda: None)
+    monkeypatch.setattr(feishu_cmd, "_service_status", lambda: {"running": False})
+    monkeypatch.setattr(feishu_cmd, "_clear_state", lambda: None)
+    monkeypatch.setattr(feishu_cmd, "_stop_feishu_processes", lambda: cleaned.append(True) or [31740])
+    monkeypatch.setattr(feishu_cmd, "LOG_FILE", tmp_path / "feishu.log")
+    monkeypatch.setattr(feishu_cmd.time, "sleep", lambda _seconds: None)
+
+    class _Proc:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(feishu_cmd, "_spawn_detached", lambda: _Proc())
+
+    result = feishu_cmd.ensure_service_running_if_enabled()
+
+    assert cleaned == [True]
+    assert result["started"] is True
+
+
+def test_feishu_stop_cmd_cleans_orphan_workers(monkeypatch):
+    calls = []
+    monkeypatch.setattr(feishu_cmd, "_service_status", lambda: {"pid": 0})
+    monkeypatch.setattr(feishu_cmd, "_clear_state", lambda: calls.append("clear"))
+    monkeypatch.setattr(feishu_cmd, "_stop_feishu_processes", lambda: calls.append("orphans") or [31740])
+
+    runner = CliRunner()
+    result = runner.invoke(feishu_cmd.stop_cmd)
+
+    assert result.exit_code == 0
+    assert calls == ["orphans", "clear"]
 
 
 def test_feishu_spawn_detached_uses_external_launcher(monkeypatch, tmp_path):

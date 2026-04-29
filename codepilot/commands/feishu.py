@@ -6,6 +6,8 @@ import contextlib
 import io
 import json
 import os
+import platform
+import re
 import subprocess
 import sys
 import time
@@ -18,6 +20,7 @@ from codepilot.core.output import echo, safe
 from codepilot.core.paths import global_storage_root
 from codepilot.core.runtime import is_process_alive, stop_process_tree
 from codepilot.core.service_launcher import DetachedProcessHandle, append_log_header, spawn_detached_command_via_launcher
+from codepilot.core.text_decode import decode_subprocess_text
 from codepilot.feishu_bot import handle_event_payload, load_feishu_bot_config, validate_feishu_bot_config
 from codepilot.storage import database as db
 
@@ -64,6 +67,98 @@ def _repo_root() -> Path:
 
 def _worker_script() -> Path:
     return Path(__file__).resolve().parents[1] / "feishu_worker.mjs"
+
+
+def _is_feishu_process_command(command_line: str) -> bool:
+    text = " ".join(str(command_line or "").strip().split()).lower()
+    if not text:
+        return False
+    if re.search(r"(?:^|\s)-m\s+codepilot\s+feishu\s+run(?:\s|$)", text):
+        return True
+    return "feishu_worker.mjs" in text
+
+
+def _windows_feishu_processes() -> list[dict[str, Any]]:
+    script = (
+        "$ErrorActionPreference='SilentlyContinue'; "
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.CommandLine -and "
+        "($_.CommandLine -match '-m\\s+codepilot\\s+feishu\\s+run' -or "
+        "$_.CommandLine -match 'feishu_worker\\.mjs') } | "
+        "Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-Command", script],
+            capture_output=True,
+            text=False,
+            timeout=20,
+        )
+    except Exception:
+        return []
+    raw = decode_subprocess_text(result.stdout).strip()
+    if result.returncode != 0 or not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    rows = payload if isinstance(payload, list) else [payload]
+    processes: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            pid = int(row.get("ProcessId") or 0)
+        except Exception:
+            pid = 0
+        command_line = str(row.get("CommandLine") or "")
+        if pid > 0 and _is_feishu_process_command(command_line):
+            processes.append({"pid": pid, "command_line": command_line})
+    return processes
+
+
+def _posix_feishu_processes() -> list[dict[str, Any]]:
+    try:
+        result = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True, timeout=20)
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+    processes: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        pid_text, _, command_line = raw.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid > 0 and _is_feishu_process_command(command_line):
+            processes.append({"pid": pid, "command_line": command_line})
+    return processes
+
+
+def _feishu_processes() -> list[dict[str, Any]]:
+    if platform.system().lower() == "windows":
+        return _windows_feishu_processes()
+    return _posix_feishu_processes()
+
+
+def _stop_feishu_processes() -> list[int]:
+    current_pid = os.getpid()
+    killed: list[int] = []
+    for process in _feishu_processes():
+        try:
+            pid = int(process.get("pid") or 0)
+        except Exception:
+            continue
+        if pid <= 0 or pid == current_pid or not is_process_alive(pid):
+            continue
+        if stop_process_tree(pid, wait_seconds=5):
+            killed.append(pid)
+    return killed
 
 
 def _read_meta() -> dict:
@@ -292,6 +387,7 @@ def ensure_service_running_if_enabled() -> dict[str, Any]:
     if status["running"]:
         return {"enabled": True, "running": True, "started": False, "pid": status["pid"]}
 
+    _stop_feishu_processes()
     _clear_state()
     proc = _spawn_detached()
     time.sleep(0.8)
@@ -347,14 +443,21 @@ def stop_cmd() -> None:
     status = _service_status()
     pid = int(status.get("pid") or 0)
     if not pid:
+        killed = _stop_feishu_processes()
         _clear_state()
-        echo("[dim]飞书服务未在运行[/dim]")
+        if killed:
+            echo(f"[green]已清理旧飞书进程[/green]  PID={', '.join(str(item) for item in killed)}")
+        else:
+            echo("[dim]飞书服务未在运行[/dim]")
         return
     _mark_stopping(pid)
     if not stop_process_tree(pid, wait_seconds=5):
         raise click.ClickException(f"无法停止飞书服务 PID={pid}")
+    killed = _stop_feishu_processes()
     _clear_state()
     echo(f"[green]飞书服务已停止[/green]  PID={pid}")
+    if killed:
+        echo(f"[green]已清理旧飞书进程[/green]  PID={', '.join(str(item) for item in killed)}")
 
 
 @feishu_group.command("status")

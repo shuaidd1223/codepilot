@@ -45,6 +45,7 @@ function invokePython(payload) {
       input: JSON.stringify(payload),
       encoding: 'utf8',
       maxBuffer: 1024 * 1024,
+      cwd: process.cwd(),
       env: process.env,
     },
   );
@@ -117,7 +118,81 @@ async function processIncomingMessage(payload) {
   }
 }
 
-function buildPostContent(title, text) {
+function cardActionEvent(data) {
+  const event = data?.event && typeof data.event === 'object' ? data.event : data;
+  return event && typeof event === 'object' ? event : {};
+}
+
+function cardActionChatId(event) {
+  return String(
+    event?.chat_id
+    || event?.open_chat_id
+    || event?.context?.open_chat_id
+    || event?.context?.chat_id
+    || '',
+  );
+}
+
+function cardActionMessageId(event) {
+  return String(
+    event?.message_id
+    || event?.open_message_id
+    || event?.context?.open_message_id
+    || '',
+  );
+}
+
+function cardActionCommand(event) {
+  const value = event?.action?.value;
+  if (!value || typeof value !== 'object') return '';
+  return String(value.command || value.cmd || value.text || '').trim();
+}
+
+async function processCardAction(data) {
+  const event = cardActionEvent(data);
+  const chatId = cardActionChatId(event);
+  const command = cardActionCommand(event);
+  if (!chatId || !command) {
+    log('ignore card action without command', { chatId, command });
+    return { toast: { type: 'warning', content: '这个按钮没有可执行命令' } };
+  }
+  try {
+    const reply = invokePython({
+      event_type: 'card.action.trigger',
+      text: command,
+      chat_id: chatId,
+      message_id: cardActionMessageId(event),
+      event_id: data?.header?.event_id || data?.event_id || '',
+      action: event.action || {},
+      context: event.context || {},
+      operator: event.operator || {},
+    });
+    await sendReply(chatId, reply);
+    return { toast: { type: 'success', content: '已执行' } };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    log('card action failed', { chatId, detail });
+    try {
+      await sendReply(chatId, buildErrorCard(`CodePilot 飞书处理失败：${detail}`));
+    } catch (replyError) {
+      log('failed to send card action error reply', {
+        chatId,
+        detail: replyError instanceof Error ? replyError.message : String(replyError),
+      });
+    }
+    return { toast: { type: 'error', content: '执行失败' } };
+  }
+}
+
+function buildPostContent(title, text, content = null) {
+  if (Array.isArray(content)) {
+    return {
+      zh_cn: {
+        title: String(title || 'CodePilot 回复').slice(0, 120),
+        content,
+      },
+    };
+  }
   const paragraphs = String(text || '')
     .split(/\n+/)
     .map(line => line.trim())
@@ -137,6 +212,13 @@ async function sendReply(chatId, reply) {
     log('skip reply', { chatId, reason: 'ignore' });
     return;
   }
+  if (reply.type === 'multi' && Array.isArray(reply.messages)) {
+    log('send multi reply', { chatId, count: reply.messages.length });
+    for (const message of reply.messages) {
+      await sendReply(chatId, message);
+    }
+    return;
+  }
   if (reply.type === 'interactive' && reply.card) {
     log('send interactive reply', { chatId });
     await client.im.message.create({
@@ -145,6 +227,19 @@ async function sendReply(chatId, reply) {
         receive_id: chatId,
         msg_type: 'interactive',
         content: JSON.stringify(reply.card),
+      },
+    });
+    return;
+  }
+  if (reply.type === 'post') {
+    const title = String(reply.title || 'CodePilot 详情');
+    log('send post reply', { chatId, title: title.slice(0, 80) });
+    await client.im.message.create({
+      params: { receive_id_type: 'chat_id' },
+      data: {
+        receive_id: chatId,
+        msg_type: 'post',
+        content: JSON.stringify(buildPostContent(title, reply.text || '', reply.content || null)),
       },
     });
     return;
@@ -182,6 +277,15 @@ const dispatcher = new Lark.EventDispatcher({}).register({
       message_id: message.message_id || '',
       event_id: eventId,
     });
+  },
+  'card.action.trigger': async (data) => {
+    const event = cardActionEvent(data);
+    log('received card action', {
+      chat_id: cardActionChatId(event),
+      message_id: cardActionMessageId(event),
+      command: cardActionCommand(event),
+    });
+    return processCardAction(data);
   },
 });
 

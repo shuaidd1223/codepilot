@@ -17,7 +17,6 @@ from typing import Any
 from codepilot.core.config import load_config
 from codepilot.core.runtime import is_process_alive
 from codepilot.nl_command_router import (
-    format_numbered_options,
     infer_goal_from_text,
     pick_command_option,
     resolve_natural_language_command,
@@ -391,11 +390,148 @@ def _cmd(prefix: str, command: str) -> str:
     return f"`{lead}{command}`"
 
 
-def _command_panel(prefix: str, commands: list[tuple[str, str]], *, title: str = "下一步命令") -> list[dict[str, Any] | str]:
+def _command_value(prefix: str, command: str) -> str:
+    lead = f"{prefix} " if prefix else ""
+    return f"{lead}{command}".strip()
+
+
+def _button(label: str, command: str, *, prefix: str = "", button_type: str = "default") -> dict[str, Any]:
+    return {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": str(label or "").strip()[:20]},
+        "type": button_type,
+        "value": {"command": _command_value(prefix, command)},
+    }
+
+
+def _button_row(buttons: list[dict[str, Any]]) -> dict[str, Any]:
+    actions = buttons[:4]
+    block: dict[str, Any] = {"tag": "action", "actions": actions}
+    if len(actions) > 1:
+        block["layout"] = "flow"
+    return block
+
+
+def _button_rows(buttons: list[dict[str, Any]], *, per_row: int = 4) -> list[dict[str, Any]]:
+    return [_button_row(buttons[index:index + per_row]) for index in range(0, len(buttons), per_row) if buttons[index:index + per_row]]
+
+
+def _command_button_type(command: str) -> str:
+    normalized = str(command or "").strip().lower()
+    if normalized.startswith("cancel confirm"):
+        return "default"
+    if normalized.startswith(("confirm ", "delete ", "project delete ", "stop ", "cancel ")):
+        return "danger"
+    if normalized.startswith(("use ", "overview", "tasks", "projects", "global", "help")):
+        return "primary"
+    if normalized.startswith(("daemon start", "inspect start", "retry ", "resume ")):
+        return "primary"
+    return "default"
+
+
+def _command_buttons(prefix: str, commands: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    return [
+        _button(label, command, prefix=prefix, button_type=_command_button_type(command))
+        for command, label in commands
+        if str(command or "").strip()
+    ]
+
+
+def _command_action_blocks(prefix: str, commands: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    return _button_rows(_command_buttons(prefix, commands))
+
+
+def _option_field(option: Any, key: str) -> str:
+    if isinstance(option, dict):
+        return str(option.get(key) or "").strip()
+    return str(getattr(option, key, "") or "").strip()
+
+
+def _choice_action_blocks(prefix: str, options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buttons: list[dict[str, Any]] = []
+    for index, option in enumerate(options or [], 1):
+        command = _option_field(option, "command")
+        label = _option_field(option, "label") or command or f"选项 {index}"
+        buttons.append(
+            _button(
+                f"{index}. {label}",
+                str(index),
+                prefix=prefix,
+                button_type=_command_button_type(command),
+            )
+        )
+    return _button_rows(buttons)
+
+
+def _task_status_color(status: str) -> str:
+    value = str(status or "").strip()
+    if value in {"failed", "cancelled"}:
+        return "red"
+    if value in {"in_progress", "running", "done"}:
+        return "green"
+    if value in {"backlog", "pending", "archived"}:
+        return "grey"
+    return "grey"
+
+
+def _task_action_buttons(task: dict[str, Any], *, prefix: str = "") -> list[dict[str, Any]]:
+    task_id = int(task["id"])
+    actions = task.get("actions") if isinstance(task.get("actions"), dict) else {}
+    buttons = [
+        _button("查看详情", f"detail {task_id}", prefix=prefix, button_type="primary"),
+        _button("任务日志", f"logs {task_id}", prefix=prefix),
+    ]
+    if actions.get("stop"):
+        buttons.append(_button("停止任务", f"stop {task_id}", prefix=prefix, button_type="danger"))
+    elif actions.get("retry"):
+        buttons.append(_button("重试任务", f"retry {task_id}", prefix=prefix))
+    if actions.get("cancel"):
+        buttons.append(_button("取消任务", f"cancel {task_id}", prefix=prefix, button_type="danger"))
+    elif actions.get("archive"):
+        buttons.append(_button("归档任务", f"archive {task_id}", prefix=prefix))
+    if actions.get("delete"):
+        buttons.append(_button("删除任务", f"delete {task_id}", prefix=prefix, button_type="danger"))
+    return buttons
+
+
+def _task_row_blocks(task: dict[str, Any], *, prefix: str = "") -> list[dict[str, Any]]:
+    task_id = int(task["id"])
+    status = str(task.get("status") or "")
+    color = _task_status_color(status)
+    phase = _phase_label(str(task.get("phase") or ""))
+    runtime = str(task.get("runtime") or "").strip()
+    latest = str(task.get("latest") or "").strip().replace("\n", " ")
+    title = str(task.get("title") or "").strip()
+    blocks: list[dict[str, Any]] = [
+        _md_block(
+            f"<font color=\"{color}\">● {_status_label(status)}</font> "
+            f"{_priority_badge(str(task.get('priority') or 'P2'))} "
+            f"任务 #{task_id} **{title[:72]}**"
+        ),
+        _column_panel(
+            [
+                f"**阶段**\n`{phase}`",
+                f"**Agent**\n`{task.get('agent') or '-'}`",
+                f"**重试**\n`{int(task.get('retry_count') or 0)}/{int(task.get('max_retries') or 0)}`",
+                f"**运行**\n`{runtime or '-'}`",
+            ],
+            background="default",
+        ),
+        _md_block("**任务操作**"),
+        _button_row(_task_action_buttons(task, prefix=prefix)),
+    ]
+    if latest:
+        blocks.insert(
+            2,
+            _md_block(f"<font color=\"grey\">最近输出</font>\n{latest[:140]}"),
+        )
+    return blocks
+
+
+def _command_panel(prefix: str, commands: list[tuple[str, str]], *, title: str = "快捷操作") -> list[dict[str, Any] | str]:
     if not commands:
         return []
-    command_items = [f"**{label}**\n{_cmd(prefix, command)}" for command, label in commands]
-    return [_hr(), *_section_note(title, "只展示当前卡片最相关的操作。复制命令发送即可执行。"), *_column_panels(command_items, background="default")]
+    return [_hr(), *_section_note(title, "点击按钮直接执行；所有操作通过飞书卡片回调处理。"), *_command_action_blocks(prefix, commands)]
 
 
 def _card_commands(kind: str, *, project: str = "", task_id: int | None = None) -> list[tuple[str, str]]:
@@ -446,12 +582,14 @@ def _card_commands(kind: str, *, project: str = "", task_id: int | None = None) 
         ]
     if kind == "task" and task_id:
         return [
+            (f"detail {task_id}", "任务详情"),
             (f"logs {task_id}", "查看日志"),
             (f"stop {task_id}", "停止执行"),
             (f"retry {task_id}", "重试任务"),
             (f"cancel {task_id}", "取消任务"),
             (f"archive {task_id}", "归档任务"),
             (f"delete {task_id}", "删除任务"),
+            ("tasks", "任务面板"),
         ]
     if kind == "sessions":
         return [
@@ -564,6 +702,26 @@ def _card(
 
 def _reply_card(card: dict[str, Any]) -> dict[str, Any]:
     return {"type": "interactive", "card": card}
+
+
+def _post_content(text: str, *, max_lines: int = 80) -> list[list[dict[str, str]]]:
+    lines = [line.rstrip() for line in str(text or "").splitlines()]
+    lines = [line for line in lines if line.strip()]
+    if not lines:
+        lines = ["CodePilot 没有可展示的详情。"]
+    return [[{"tag": "text", "text": line[:4000]}] for line in lines[:max_lines]]
+
+
+def _reply_post(title: str, text: str) -> dict[str, Any]:
+    return {
+        "type": "post",
+        "title": str(title or "CodePilot 详情").strip()[:120],
+        "content": _post_content(text),
+    }
+
+
+def _reply_multi(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"type": "multi", "messages": [message for message in messages if message and message.get("type") != "ignore"]}
 
 
 def _help_note(prefix: str) -> str:
@@ -962,7 +1120,7 @@ def build_pending_confirm_card(pending: dict[str, Any], *, prefix: str = "") -> 
                 (f"confirm {token}", "确认执行"),
                 (f"cancel confirm {token}", "取消本次确认"),
             ],
-            title="确认命令",
+            title="确认操作",
         )
     )
     return _card(
@@ -1115,61 +1273,51 @@ def build_help_card(*, prefix: str = "", error: str = "") -> dict[str, Any]:
         blocks.extend([_section("未识别命令"), _plain_block(error)])
     blocks.extend(
         [
-            *_section_note("常用入口", "先进入项目，再查看任务或服务状态。"),
-            *_column_panels(
+            *_section_note("常用入口", "先进入项目，再查看任务、需求或服务状态。"),
+            *_command_action_blocks(
+                prefix,
                 [
-                    f"**全局状态**\n{_cmd(prefix, 'global')}",
-                    f"**项目清单**\n{_cmd(prefix, 'projects')}",
-                    f"**进入项目**\n{_cmd(prefix, 'use <project>')}",
-                    f"**注册项目**\n{_cmd(prefix, 'project add <name> <path>')}",
-                    f"**项目信息**\n{_cmd(prefix, 'project info <project>')}",
-                    f"**删除项目**\n{_cmd(prefix, 'project delete <project>')}",
-                    f"**项目总览**\n{_cmd(prefix, 'overview')}",
-                    f"**任务面板**\n{_cmd(prefix, 'tasks')}",
-                    f"**需求会话**\n{_cmd(prefix, 'requirements')}",
-                    f"**提交需求**\n{_cmd(prefix, '需求 <内容>')}",
-                    f"**回复澄清**\n{_cmd(prefix, '答 <内容>')}",
-                    f"**会话建需求**\n{_cmd(prefix, 'req new <内容>')}",
-                    f"**会话继续**\n{_cmd(prefix, 'session reply <id> <内容>')}",
+                    ("global", "全局状态"),
+                    ("projects", "项目清单"),
+                    ("overview", "项目总览"),
+                    ("tasks", "任务面板"),
+                    ("requirements", "需求会话"),
+                    ("services", "服务状态"),
                 ],
-                background="default",
             ),
-            *_section_note("任务操作", "支持单任务和批量任务 ID；多个 ID 可用空格或逗号分隔。"),
-            *_column_panels(
+            *_section_note("任务操作", "请先进入任务面板；具体任务行会提供详情、日志、停止、重试和删除按钮。"),
+            *_command_action_blocks(
+                prefix,
                 [
-                    f"**详情**\n{_cmd(prefix, 'detail <id>')}",
-                    f"**日志**\n{_cmd(prefix, 'logs <id>')}",
-                    f"**停止**\n{_cmd(prefix, 'stop <id>')}",
-                    f"**重试**\n{_cmd(prefix, 'retry <id>')}",
-                    f"**批量取消**\n{_cmd(prefix, 'cancel <id...>')}",
-                    f"**批量归档**\n{_cmd(prefix, 'archive <id...>')}",
-                    f"**批量删除**\n{_cmd(prefix, 'delete <id...>')}",
+                    ("tasks status=backlog", "待执行"),
+                    ("tasks status=in_progress", "执行中"),
+                    ("tasks status=failed", "失败任务"),
+                    ("tasks status=done", "已完成"),
                 ],
-                background="default",
             ),
             *_section_note("服务控制", "轮询负责执行任务，巡检负责发现可改进项。"),
-            *_column_panels(
+            *_command_action_blocks(
+                prefix,
                 [
-                    f"**轮询状态**\n{_cmd(prefix, 'daemon status')}",
-                    f"**启动轮询**\n{_cmd(prefix, 'daemon start')}",
-                    f"**停止轮询**\n{_cmd(prefix, 'daemon stop')}",
-                    f"**巡检状态**\n{_cmd(prefix, 'inspect status')}",
-                    f"**启动巡检**\n{_cmd(prefix, 'inspect start')}",
-                    f"**停止巡检**\n{_cmd(prefix, 'inspect stop')}",
+                    ("daemon status", "轮询状态"),
+                    ("daemon start", "启动轮询"),
+                    ("daemon stop", "停止轮询"),
+                    ("inspect status", "巡检状态"),
+                    ("inspect start", "启动巡检"),
+                    ("inspect stop", "停止巡检"),
                 ],
-                background="default",
             ),
         ]
     )
-    return _card("CodePilot 飞书命令", blocks, template="indigo", subtitle="命令按使用场景分组，具体卡片底部会显示更相关的下一步。")
+    return _card("CodePilot 飞书命令", blocks, template="indigo", subtitle="常用操作已改为卡片按钮，可直接点击执行。")
 
 
 def build_choice_card(message: str, options: list[dict[str, Any]], *, prefix: str = "") -> dict[str, Any]:
-    lines = format_numbered_options(message, options)
     blocks: list[str | dict[str, Any]] = [
         _section("请确认操作"),
-        _plain_block(lines),
-        _note("直接回复数字继续，例如 1。发送新的完整命令会覆盖这次候选。"),
+        _plain_block(str(message or "").strip()),
+        *_choice_action_blocks(prefix, options),
+        _note("点击候选按钮继续；发送新的完整命令会覆盖这次候选。"),
     ]
     blocks.extend(_command_panel(prefix, [("help", "查看命令帮助"), ("projects", "查看项目"), ("tasks", "查看任务")]))
     return _card("CodePilot 操作候选", blocks, template="orange", subtitle="自然语言命中了多个可能操作。")
@@ -1467,50 +1615,42 @@ def build_tasks_card(project_name: str, *, prefix: str = "", status_filter: str 
     page_start = (current_page - 1) * page_size
     tasks = [_task_payload(task) for task in raw_tasks[page_start:page_start + page_size]]
     blocks: list[str | dict[str, Any]] = [
-        *_section_note("任务概览", "支持按状态筛选，并按页查看任务。"),
+        *_section_note("任务概览", "先看异常和执行中任务；每条任务下方提供直接操作按钮。"),
+        *_column_panels(
+            [
+                f"**执行中**\n<font color=\"green\">{int(stats.get('in_progress', 0))}</font>",
+                f"**失败**\n<font color=\"red\">{int(stats.get('failed', 0))}</font>",
+                f"**待执行**\n<font color=\"grey\">{int(stats.get('backlog', 0))}</font>",
+                f"**完成**\n<font color=\"green\">{int(stats.get('done', 0))}</font>",
+            ],
+            per_row=4,
+            background="default",
+        ),
         *_column_panels(
             [
                 f"**项目**\n`{project_name}`",
-                f"**任务总数**\n`{_task_count(project_name)}`",
                 f"**当前筛选**\n`{_task_filter_label(normalized_status)}`",
-                f"**筛选命中**\n`{total_filtered}`",
+                f"**命中 / 总数**\n`{total_filtered}/{_task_count(project_name)}`",
                 f"**当前页**\n`{current_page}/{total_pages}`",
-                f"**待执行**\n`{int(stats.get('backlog', 0))}`",
-                f"**执行中**\n`{int(stats.get('in_progress', 0))}`",
-                f"**失败**\n`{int(stats.get('failed', 0))}`",
-                f"**完成**\n`{int(stats.get('done', 0))}`",
-            ]
+            ],
+            per_row=4,
         )
     ]
     if tasks:
         blocks.append(_hr())
         blocks.extend(
             _section_note(
-                "任务列表",
-                f"第 {current_page} 页，每页 {page_size} 条。每条任务都带下一步可复制命令。",
+                "重点任务",
+                f"第 {current_page} 页，每页 {page_size} 条；优先展示执行中、失败和高优先级任务。",
             )
         )
         for task in tasks:
-            runtime = f" / {task['runtime']}" if task.get("runtime") else ""
-            latest = str(task.get("latest") or "").strip().replace("\n", " ")
-            blocks.extend(
-                _column_panels(
-                    [
-                        f"**任务**\n`#{task['id']}` {task['title'][:56]}",
-                        f"**状态**\n{_status_mark(task['status'])}",
-                        f"**优先级**\n{_priority_badge(task['priority'])}",
-                        f"**Agent**\n`{task['agent']}`{runtime}",
-                    ],
-                    background="default",
-                )
-            )
-            if latest:
-                blocks.append(f"**最近输出**\n{latest[:120]}")
+            blocks.extend(_task_row_blocks(task, prefix=prefix))
             blocks.append(_hr())
         if blocks and blocks[-1].get("tag") == "hr":
             blocks.pop()
     else:
-        blocks.extend([_section("任务列表"), _plain_block("当前筛选下没有可展示的任务。")])
+        blocks.extend([_section("重点任务"), _plain_block("当前筛选下没有可展示的任务。")])
     blocks.extend(
         _command_panel(
             prefix,
@@ -1793,9 +1933,8 @@ def build_task_log_card(task_id: int, *, prefix: str = "") -> dict[str, Any]:
         raise RuntimeError(f"任务 #{task_id} 不存在。")
     detail = task_detail_payload(task_id)
     text = str(detail.get("log_text") or _compose_log_text(task) or "").strip()
-    preview = text[-1800:] if text else ""
     blocks: list[str | dict[str, Any]] = [
-        *_section_note("日志摘要", "展示任务阶段和最近日志片段。"),
+        *_section_note("日志摘要", "日志详情已通过富文本消息发送，卡片保留操作入口。"),
         *_column_panels(
             [
                 f"**项目**\n`{detail.get('project') or '-'}`",
@@ -1806,12 +1945,23 @@ def build_task_log_card(task_id: int, *, prefix: str = "") -> dict[str, Any]:
         _section("标题"),
         _plain_block(detail.get("title") or ""),
     ]
-    if preview:
-        blocks.extend(_code_block(preview, title="日志 / 最近输出"))
-    else:
-        blocks.extend([_section("日志 / 最近输出"), _plain_block("当前没有可展示的日志。")])
+    blocks.extend([_section("富文本详情"), _plain_block("日志正文会作为下一条富文本消息发送。")])
     blocks.extend(_command_panel(prefix, _card_commands("task", task_id=task_id)))
-    return _card(f"任务日志 · #{task_id}", blocks, template="grey", subtitle="代码块只展示最近片段，避免刷屏。")
+    return _card(f"任务日志 · #{task_id}", blocks, template="grey", subtitle="卡片用于操作，日志正文使用富文本消息展示。")
+
+
+def _build_task_log_reply(task_id: int, *, prefix: str = "") -> dict[str, Any]:
+    task = db.get_task(task_id)
+    if not task:
+        raise RuntimeError(f"任务 #{task_id} 不存在。")
+    detail = task_detail_payload(task_id)
+    text = str(detail.get("log_text") or _compose_log_text(task) or "").strip()
+    return _reply_multi(
+        [
+            _reply_card(build_task_log_card(task_id, prefix=prefix)),
+            _reply_post(f"任务日志 · #{task_id}", text or "当前没有可展示的日志。"),
+        ]
+    )
 
 
 def build_service_card(project_name: str, result: dict[str, Any], *, prefix: str = "", title: str = "任务执行服务") -> dict[str, Any]:
@@ -1839,7 +1989,7 @@ def build_service_card(project_name: str, result: dict[str, Any], *, prefix: str
     if log_path:
         blocks.extend([_section("日志"), _plain_block(log_path)])
     blocks.extend(_command_panel(prefix, _card_commands("services", project=project_name)))
-    return _card(f"{title} · {project_name}", blocks, template="purple", subtitle="服务控制结果和下一步命令。")
+    return _card(f"{title} · {project_name}", blocks, template="purple", subtitle="服务控制结果和快捷操作按钮。")
 
 
 def build_services_card(project_name: str, *, prefix: str = "") -> dict[str, Any]:
@@ -2504,7 +2654,82 @@ def _normalize_command_text(text: str, prefix: str) -> str | None:
         content = content[len(prefix):].strip()
         if not content:
             return "help"
-    return content
+    return _normalize_command_alias(content)
+
+
+_EXACT_COMMAND_ALIASES = {
+    "帮助": "help",
+    "使用帮助": "help",
+    "命令": "help",
+    "命令帮助": "help",
+    "项目": "projects",
+    "项目列表": "projects",
+    "项目清单": "projects",
+    "所有项目": "projects",
+    "全部项目": "projects",
+    "有哪些项目": "projects",
+    "看项目": "projects",
+    "查看项目": "projects",
+    "任务": "tasks",
+    "任务列表": "tasks",
+    "任务清单": "tasks",
+    "任务面板": "tasks",
+    "所有任务": "tasks",
+    "全部任务": "tasks",
+    "看任务": "tasks",
+    "查看任务": "tasks",
+    "查任务": "tasks",
+    "需求列表": "requirements",
+    "会话列表": "requirements",
+    "需求会话": "requirements",
+    "会话": "requirements",
+    "服务": "services",
+    "服务列表": "services",
+    "服务状态": "services",
+    "服务情况": "services",
+    "状态": "overview",
+    "项目状态": "overview",
+    "项目概览": "overview",
+    "项目总览": "overview",
+    "总览": "overview",
+    "全局": "global",
+    "全局状态": "global",
+    "整体状态": "global",
+}
+
+_TASK_ACTION_ALIASES = (
+    ("logs", ("任务日志", "查看日志", "日志")),
+    ("detail", ("任务详情", "查看任务", "任务信息", "任务内容", "详情")),
+    ("retry", ("重试任务", "重新执行任务", "再跑任务")),
+    ("stop", ("停止任务", "终止任务", "停掉任务")),
+    ("cancel", ("取消任务",)),
+    ("archive", ("归档任务",)),
+    ("delete", ("删除任务", "删掉任务", "移除任务")),
+)
+
+
+def _compact_alias_text(text: str) -> str:
+    return re.sub(r"[\s，,。.!！?？:：；;、]+", "", str(text or "").strip())
+
+
+def _normalize_command_alias(content: str) -> str:
+    raw = str(content or "").strip()
+    if not raw:
+        return raw
+    compact = _compact_alias_text(raw)
+    alias = _EXACT_COMMAND_ALIASES.get(compact)
+    if alias:
+        return alias
+
+    for command, aliases in _TASK_ACTION_ALIASES:
+        for label in aliases:
+            match = re.fullmatch(rf"{re.escape(label)}\s*#?(\d+)", raw)
+            if match:
+                return f"{command} {match.group(1)}"
+            match = re.fullmatch(rf"#?(\d+)\s*{re.escape(label)}", raw)
+            if match:
+                return f"{command} {match.group(1)}"
+    return raw
 
 
 def _parse_task_id(token: str) -> int:
@@ -2894,7 +3119,7 @@ def _handle_task_command(
     if verb in {"logs", "log"}:
         if len(parts) < 2:
             raise RuntimeError("请提供任务 ID，例如 `logs 123`。")
-        return _reply_card(build_task_log_card(_parse_task_id(parts[1]), prefix=cfg.command_prefix))
+        return _build_task_log_reply(_parse_task_id(parts[1]), prefix=cfg.command_prefix)
     if verb == "stop":
         if len(parts) < 2:
             raise RuntimeError("请提供任务 ID，例如 `stop 123`。")
@@ -3115,7 +3340,47 @@ def handle_command_text(
     return _reply_card(build_help_card(prefix=cfg.command_prefix, error=f"`{command_text}`"))
 
 
+def _card_action_event(payload: dict[str, Any]) -> dict[str, Any]:
+    event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+    return event if isinstance(event, dict) else {}
+
+
+def _card_action_chat_id(event: dict[str, Any]) -> str:
+    context = event.get("context") if isinstance(event.get("context"), dict) else {}
+    return str(
+        event.get("chat_id")
+        or event.get("open_chat_id")
+        or context.get("open_chat_id")
+        or context.get("chat_id")
+        or ""
+    ).strip()
+
+
+def _card_action_command(event: dict[str, Any]) -> str:
+    action = event.get("action") if isinstance(event.get("action"), dict) else {}
+    value = action.get("value") if isinstance(action.get("value"), dict) else {}
+    for key in ("command", "cmd", "text"):
+        command = str(value.get(key) or "").strip()
+        if command:
+            return command
+    return ""
+
+
+def handle_card_action_payload(payload: dict[str, Any], *, config_path: Path | None = None) -> dict[str, Any]:
+    """Handle a Feishu card button callback using the same command router as text messages."""
+    db.init_db()
+    event = _card_action_event(payload)
+    command = _card_action_command(event)
+    if not command:
+        cfg = load_feishu_bot_config(config_path)
+        return _reply_card(build_help_card(prefix=cfg.command_prefix, error="卡片按钮缺少 command"))
+    return handle_command_text(command, config_path=config_path, chat_id=_card_action_chat_id(event))
+
+
 def handle_event_payload(payload: dict[str, Any], *, config_path: Path | None = None) -> dict[str, Any]:
+    if str(payload.get("event_type") or payload.get("type") or "").strip() == "card.action.trigger":
+        return handle_card_action_payload(payload, config_path=config_path)
+
     chat_id = str(payload.get("chat_id") or "")
     dedupe_key = _inbound_dedupe_key(payload)
     claimed = True
