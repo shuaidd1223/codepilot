@@ -55,6 +55,11 @@
       "purpose": "读取项目持久工作记忆，恢复跨会话关键上下文。"
     },
     {
+      "command": "codepilot trace -p <项目名> --json",
+      "format": "json",
+      "purpose": "获取项目最近活动时间线，合并任务、日志、服务心跳和 workflow state。"
+    },
+    {
       "command": "codepilot task find <关键词> -p <项目名> --json",
       "format": "json",
       "purpose": "搜索任务并获取结构化结果。"
@@ -294,6 +299,16 @@
         "codepilot note add -p codepilot-dev --priority \"项目使用 Python 3.11\"",
         "codepilot note show -p codepilot-dev --json",
         "codepilot note prune -p codepilot-dev --days 7"
+      ]
+    },
+    {
+      "name": "trace",
+      "syntax": "codepilot trace [-p <项目名>] [--task <task_id>] [--limit N] [--json]",
+      "purpose": "显示项目最近活动时间线，合并任务生命周期、任务日志、服务心跳和 workflow state。",
+      "when_to_use": "需要排查最近发生了什么、任务卡在哪个阶段、服务是否仍有心跳，或向其他 Agent 提供时间线证据时。",
+      "examples": [
+        "codepilot trace -p codepilot-dev --limit 30",
+        "codepilot trace -p codepilot-dev --task 7 --json"
       ]
     },
     {

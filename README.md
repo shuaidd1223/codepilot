@@ -44,6 +44,13 @@ codepilot note add -p <项目名> "当前验证命令是 pytest tests"
 codepilot note show -p <项目名>
 ```
 
+查看最近活动时间线：
+
+```bash
+codepilot trace -p <项目名> --limit 30
+codepilot trace -p <项目名> --task <task_id> --json
+```
+
 任务运维（统一入口 `task`）：
 
 ```bash

@@ -85,7 +85,16 @@ codepilot note prune -p <项目名> --days 7
 
 `note` 写入 `.codepilot/notepad.md`，适合记录跨会话仍要保留的短上下文。Priority Context 应保持短小；Working Memory 可裁剪；Manual 由人工维护。不要写入 secret、token 或密码。
 
-### 3.5 生成执行前需求规格
+### 3.5 查看活动时间线
+
+```bash
+codepilot trace -p <项目名> --limit 30
+codepilot trace -p <项目名> --task <task_id> --json
+```
+
+`trace` 合并任务生命周期、任务日志、服务心跳和 workflow state，适合排查最近发生了什么、任务卡在哪个阶段、服务是否仍有心跳。
+
+### 3.6 生成执行前需求规格
 
 ```bash
 codepilot clarify -p <项目名> "改进 doctor" --json
@@ -93,7 +102,7 @@ codepilot clarify -p <项目名> "改进 doctor" --json
 
 `clarify` 只生成 `.codepilot/specs/clarify-*.md` 和 context artifact，写入 workflow state，不创建 backlog 任务、不启动执行器。适合先把模糊需求整理成目标、范围、非目标、约束、验收标准和待确认问题。
 
-### 3.6 生成可审查执行计划
+### 3.7 生成可审查执行计划
 
 ```bash
 codepilot plan -p <项目名> "新增 explore" --json
