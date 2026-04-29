@@ -338,12 +338,6 @@ def notify_task_status(
     支持飞书/企微机器人 webhook 和通用 HTTP webhook。
     返回是否发送成功。
     """
-    config = _get_webhook_config(project_path)
-    if not config.get("enabled") or not config.get("webhook_url"):
-        return False
-
-    url = config["webhook_url"]
-
     if status == "done":
         emoji = "[OK]"
         status_text = "已完成"
@@ -353,6 +347,9 @@ def notify_task_status(
     elif status == "in_progress":
         emoji = "[>>]"
         status_text = "开始执行"
+    elif status == "cancelled":
+        emoji = "[--]"
+        status_text = "已取消"
     else:
         emoji = "[--]"
         status_text = status
@@ -365,6 +362,22 @@ def notify_task_status(
     )
     if error_message:
         message += f"\n错误: {error_message[:100]}"
+
+    desktop_ok = False
+    if status in {"done", "failed", "cancelled"}:
+        try:
+            desktop_ok = _send_desktop_notification(
+                title=f"CodePilot: 任务 {status_text} (#{task_id})",
+                body=f"{project_name} — {task_title}",
+            )
+        except Exception:
+            desktop_ok = False
+
+    config = _get_webhook_config(project_path)
+    if not config.get("enabled") or not config.get("webhook_url"):
+        return desktop_ok
+
+    url = config["webhook_url"]
 
     provider = _normalize_webhook_provider(config.get("provider"))
     if provider == "auto":
@@ -396,19 +409,7 @@ def notify_task_status(
             "error_message": error_message,
         })
 
-    # Also fire a best-effort desktop toast so the user doesn't need to look
-    # at the terminal to know a long task finished. Failures here never
-    # affect the webhook success return.
-    if status in {"done", "failed"}:
-        try:
-            _send_desktop_notification(
-                title=f"CodePilot: 任务 {status_text} (#{task_id})",
-                body=f"{project_name} — {task_title}",
-            )
-        except Exception:
-            pass
-
-    return ok
+    return bool(ok or desktop_ok)
 
 
 def notify_task_event(
@@ -516,21 +517,32 @@ def _send_desktop_notification(*, title: str, body: str) -> bool:
     body = (body or "")[:500]
     system = platform.system().lower()
 
+    def _run_windows_msg() -> bool:
+        msg = shutil.which("msg.exe") or shutil.which("msg")
+        if not msg:
+            return False
+        result = subprocess.run(
+            [msg, "*", "/time:10", f"{title}\n{body}".strip()],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+
     try:
         if system == "darwin":
             script = f'display notification "{body}" with title "{title}"'
-            subprocess.run(
+            result = subprocess.run(
                 ["osascript", "-e", script],
                 capture_output=True, timeout=3,
             )
-            return True
+            return result.returncode == 0
         if system == "linux":
             if shutil.which("notify-send"):
-                subprocess.run(
+                result = subprocess.run(
                     ["notify-send", title, body],
                     capture_output=True, timeout=3,
                 )
-                return True
+                return result.returncode == 0
             return False
         if system == "windows":
             # PowerShell one-liner using Windows Runtime ToastNotification.
@@ -546,12 +558,16 @@ def _send_desktop_notification(*, title: str, body: str) -> bool:
                 "$toast = [Windows.UI.Notifications.ToastNotification]::new($template);"
                 "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('CodePilot').Show($toast);"
             )
-            subprocess.run(
+            result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-Command", ps_cmd],
                 capture_output=True, timeout=5,
             )
-            return True
+            if result.returncode == 0:
+                return True
+            return _run_windows_msg()
     except Exception:
+        if system == "windows":
+            return _run_windows_msg()
         return False
     return False
 

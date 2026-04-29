@@ -400,3 +400,37 @@ def test_desktop_notification_honors_env_opt_out(monkeypatch):
     monkeypatch.setenv("CODEPILOT_DESKTOP_NOTIFY", "0")
     assert webhook._send_desktop_notification(title="t", body="b") is False
 
+
+def test_windows_desktop_notification_falls_back_to_msg(monkeypatch):
+    from codepilot.webapp import webhook
+
+    import platform as _platform
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    class Result:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    calls = []
+
+    monkeypatch.setenv("CODEPILOT_DESKTOP_NOTIFY", "1")
+    monkeypatch.setattr(_platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        _shutil,
+        "which",
+        lambda name: "msg.exe" if name in {"msg.exe", "msg"} else None,
+    )
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args[0] == "powershell.exe":
+            return Result(1)
+        return Result(0)
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+
+    assert webhook._send_desktop_notification(title="t", body="b") is True
+    assert calls[0][0] == "powershell.exe"
+    assert calls[1][0] == "msg.exe"
+

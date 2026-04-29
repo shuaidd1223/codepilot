@@ -118,6 +118,80 @@ def test_notify_task_status_auto_detects_wecom_payload_shape(tmp_path, monkeypat
     }
 
 
+def test_notify_task_status_sends_desktop_without_webhook(tmp_path, monkeypatch):
+    project_path = tmp_path / "demo"
+    project_path.mkdir()
+
+    monkeypatch.setattr(
+        webhook_mod,
+        "_get_webhook_config",
+        lambda _path: {
+            "webhook_url": "",
+            "provider": "auto",
+            "webhook_secret": "",
+            "enabled": False,
+        },
+    )
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        webhook_mod,
+        "_send_desktop_notification",
+        lambda **kwargs: calls.append(kwargs) or True,
+    )
+
+    ok = webhook_mod.notify_task_status(
+        str(project_path),
+        5,
+        "本地通知",
+        "done",
+    )
+
+    assert ok is True
+    assert calls == [
+        {
+            "title": "CodePilot: 任务 已完成 (#5)",
+            "body": "demo — 本地通知",
+        }
+    ]
+
+
+def test_notify_task_status_sends_desktop_for_cancelled(tmp_path, monkeypatch):
+    project_path = tmp_path / "demo"
+    project_path.mkdir()
+
+    monkeypatch.setattr(
+        webhook_mod,
+        "_get_webhook_config",
+        lambda _path: {
+            "webhook_url": "",
+            "provider": "auto",
+            "webhook_secret": "",
+            "enabled": False,
+        },
+    )
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        webhook_mod,
+        "_send_desktop_notification",
+        lambda **kwargs: calls.append(kwargs) or True,
+    )
+
+    ok = webhook_mod.notify_task_status(
+        str(project_path),
+        6,
+        "停止任务",
+        "cancelled",
+    )
+
+    assert ok is True
+    assert calls == [
+        {
+            "title": "CodePilot: 任务 已取消 (#6)",
+            "body": "demo — 停止任务",
+        }
+    ]
+
+
 def test_notify_task_event_sends_generic_progress_payload(tmp_path, monkeypatch):
     project_path = tmp_path / "demo"
     project_path.mkdir()
