@@ -442,3 +442,156 @@ app_id = "cli_xxx"
     assert "app_secret" in feishu["detail"]
     assert "cli_xxx" not in json.dumps(payload, ensure_ascii=False)
 
+
+def test_doctor_fix_runs_project_setup_without_touching_codex_hooks(_isolate_sources, monkeypatch):
+    project = _isolate_sources / "fix-project"
+    project.mkdir()
+    (project / ".codex").mkdir()
+    hooks_file = project / ".codex" / "hooks.json"
+    hooks_file.write_text('{"keep": true}', encoding="utf-8")
+    monkeypatch.chdir(project)
+
+    result = CliRunner().invoke(main, ["doctor", "--fix", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["command"] == "doctor"
+    assert payload["data"]["fix"]["project"]["name"] == "fix-project"
+    assert (project / "AGENTS.toml").is_file()
+    assert (project / ".codepilot" / "hooks").is_dir()
+    assert (project / ".codepilot" / "events").is_dir()
+    assert hooks_file.read_text(encoding="utf-8") == '{"keep": true}'
+    assert db.get_project("fix-project") is not None
+    assert any(item["kind"] == "codex_hooks" and item["status"] == "skipped" for item in payload["data"]["fix"]["actions"])
+
+
+def test_doctor_fix_with_project_name_registers_current_directory(_isolate_sources, monkeypatch):
+    project = _isolate_sources / "worktree"
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    result = CliRunner().invoke(main, ["doctor", "--fix", "--project", "demo", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["fix"]["project"]["name"] == "demo"
+    registered = db.get_project("demo")
+    assert registered is not None
+    assert registered["path"] == str(project.resolve())
+
+
+def test_doctor_fix_refreshes_incomplete_agents_toml_before_checks(_isolate_sources, monkeypatch):
+    project = _isolate_sources / "legacy"
+    project.mkdir()
+    _write(
+        project / "AGENTS.toml",
+        """
+[project]
+name = "legacy"
+base_branch = "dev"
+""".strip(),
+    )
+    monkeypatch.chdir(project)
+
+    result = CliRunner().invoke(main, ["doctor", "--fix", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    agents_check = next(item for item in payload["data"]["checks"] if item["name"] == "agents_toml")
+    assert agents_check["severity"] == "ok"
+    config_action = next(item for item in payload["data"]["fix"]["actions"] if item["kind"] == "config")
+    assert config_action["status"] == "refreshed"
+
+    import tomllib
+
+    parsed = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
+    assert "agents" in parsed
+    assert "automation" in parsed
+
+
+def test_doctor_project_json_emits_doctor_checked_event_to_enabled_sink(_isolate_sources, monkeypatch):
+    project = _project(
+        _isolate_sources,
+        monkeypatch,
+        """
+[project]
+name = "demo"
+base_branch = "dev"
+
+[agents]
+codex_cmd = "codex"
+claude_cmd = "claude"
+
+[automation]
+planner = "codex"
+""".strip(),
+    )
+    db.init_db()
+    db.register_project("demo", str(project), config_file=str(project / "AGENTS.toml"))
+
+    register = CliRunner().invoke(
+        main,
+        [
+            "event",
+            "register",
+            "-p",
+            "demo",
+            "--name",
+            "doctor-audit",
+            "--type",
+            "jsonl",
+            "--path",
+            ".codepilot/events/doctor.jsonl",
+            "--event",
+            "doctor.checked",
+            "--json",
+        ],
+    )
+    assert register.exit_code == 0, register.output
+
+    result = CliRunner().invoke(main, ["doctor", "--project", "demo", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["event_delivery"]["delivered"] == 1
+
+    lines = (project / ".codepilot" / "events" / "doctor.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    assert event["type"] == "doctor.checked"
+    assert event["source"] == "codepilot.doctor"
+    assert event["project"] == "demo"
+    assert event["payload"]["ok"] == payload["ok"]
+    assert any(item["name"] == "project_config" for item in event["payload"]["checks"])
+
+
+def test_doctor_project_json_does_not_write_disabled_default_sink(_isolate_sources, monkeypatch):
+    project = _project(
+        _isolate_sources,
+        monkeypatch,
+        """
+[project]
+name = "demo"
+base_branch = "dev"
+
+[agents]
+codex_cmd = "codex"
+claude_cmd = "claude"
+
+[automation]
+planner = "codex"
+""".strip(),
+    )
+    db.init_db()
+    db.register_project("demo", str(project), config_file=str(project / "AGENTS.toml"))
+    setup = CliRunner().invoke(main, ["setup", str(project), "--json"])
+    assert setup.exit_code == 0, setup.output
+
+    result = CliRunner().invoke(main, ["doctor", "--project", "demo", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["event_delivery"]["delivered"] == 0
+    assert payload["data"]["event_delivery"]["results"][0]["status"] == "disabled"
+    assert not (project / ".codepilot" / "events" / "events.jsonl").exists()
+

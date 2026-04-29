@@ -504,27 +504,87 @@ def run_project_checks(project_info: dict | None, *, include_services: bool = Fa
     return results
 
 
+def _run_setup_fix(project: str | None) -> dict:
+    """Run the conservative project setup fix used by ``doctor --fix``."""
+    db.init_db()
+    project_info = db.get_project(project) if project else db.find_project_by_path(Path.cwd())
+    target = Path(project_info["path"]).resolve() if project_info else Path.cwd().resolve()
+    project_name = project or (str(project_info.get("name") or "") if project_info else None)
+
+    from codepilot.commands.setup import setup_project
+
+    return setup_project(target, project_name, dry_run=False)
+
+
+def _dispatch_doctor_event(
+    project_info: dict | None,
+    *,
+    overall_ok: bool,
+    results: list[CheckResult],
+    fix_result: dict | None,
+) -> dict | None:
+    """Publish ``doctor.checked`` to enabled project event sinks."""
+    if not project_info:
+        return None
+    try:
+        from codepilot.core import event_plugins
+
+        event = event_plugins.build_event(
+            str(project_info.get("name") or ""),
+            "doctor.checked",
+            source="codepilot.doctor",
+            event_id_prefix="doctor",
+            payload={
+                "ok": bool(overall_ok),
+                "checks": [item.to_dict() for item in results],
+                "fix": fix_result,
+            },
+        )
+        delivery_results = event_plugins.dispatch_event_to_sinks(project_info["path"], event)
+        return {
+            "delivered": len([item for item in delivery_results if item.get("status") == "delivered"]),
+            "results": delivery_results,
+        }
+    except Exception as exc:
+        return {
+            "delivered": 0,
+            "results": [{"name": "event_sinks", "type": "event", "status": "error", "detail": str(exc)}],
+        }
+
+
 # ── Click command ─────────────────────────────────────────────────────────────
 
 @click.command()
 @click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
 @click.option("--project", "-p", help="项目名称；开启项目级配置和服务健康检查")
 @click.option("--services", is_flag=True, help="包含 daemon / inspect / Web UI / Feishu 服务状态")
+@click.option("--fix", "fix_mode", is_flag=True, help="执行保守自动修复：运行项目级 setup，不修改真实 Codex hooks")
 @click.pass_context
-def doctor(ctx: click.Context, json_mode: bool, project: str | None, services: bool):
+def doctor(ctx: click.Context, json_mode: bool, project: str | None, services: bool, fix_mode: bool):
     """环境自检，检查 Python、Git、AGENTS.toml、CLI 工具、数据库和编码。"""
     json_mode = resolve_json_mode(ctx, json_mode)
+    fix_result = _run_setup_fix(project) if fix_mode else None
     results = run_all_checks()
-    project_info = _resolve_project(project) if (project or services) else None
-    if project or services:
+    project_info = _resolve_project(project) if (project or services or fix_mode) else None
+    if project or services or fix_mode:
         results.extend(run_project_checks(project_info, include_services=True))
+    overall_ok = not any(r.severity == "error" for r in results)
+    event_delivery = _dispatch_doctor_event(
+        project_info,
+        overall_ok=overall_ok,
+        results=results,
+        fix_result=fix_result,
+    )
 
     if json_mode:
-        overall_ok = not any(r.severity == "error" for r in results)
         payload = {
             "checks": [r.to_dict() for r in results],
             "status_emoji": _summary_status_emoji(results),
         }
+        if event_delivery is not None:
+            payload["event_delivery"] = event_delivery
+        if fix_result is not None:
+            payload["fix"] = fix_result
         if project_info:
             payload["project"] = {
                 "name": project_info.get("name"),
@@ -537,6 +597,9 @@ def doctor(ctx: click.Context, json_mode: bool, project: str | None, services: b
     echo()
     echo("[bold]codepilot doctor[/bold]  环境自检报告")
     echo("─" * 50)
+    if fix_result is not None:
+        echo("[green]已执行保守修复：项目级 setup 完成，真实 .codex/hooks.json 未修改。[/green]")
+        echo("─" * 50)
 
     errors: list[CheckResult] = []
     warnings: list[CheckResult] = []

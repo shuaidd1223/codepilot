@@ -4,6 +4,7 @@ import json
 
 from click.testing import CliRunner
 
+from codepilot.core.event_plugins import register_jsonl_sink
 from codepilot.cli import main
 from codepilot.core.workflow_state import (
     cleanup_workflow_states,
@@ -97,3 +98,29 @@ def test_workflow_status_cli_returns_active_state_json(tmp_path, monkeypatch):
     assert payload["data"]["project"] == "demo"
     assert payload["data"]["state"]["mode"] == "clarify"
     assert payload["data"]["state"]["current_phase"] == "drafting"
+
+
+def test_workflow_state_write_emits_workflow_changed_event(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    register_jsonl_sink(
+        project_path,
+        name="workflow-audit",
+        path=".codepilot/events/workflow.jsonl",
+        events=["workflow.changed"],
+    )
+
+    state = start_workflow(project_path, mode="plan", session_id="session-events", current_phase="drafting")
+
+    assert state["current_phase"] == "drafting"
+    lines = (project_path / ".codepilot" / "events" / "workflow.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    assert event["type"] == "workflow.changed"
+    assert event["source"] == "codepilot.workflow"
+    assert event["project"] == "demo"
+    assert event["payload"]["mode"] == "plan"
+    assert event["payload"]["phase"] == "drafting"
+    assert event["payload"]["state_path"] == ".codepilot/state/plan-state.json"

@@ -102,7 +102,41 @@ def _write_state_files(project_path: str | Path, state: dict[str, Any]) -> dict[
         active = _read_json(active_path)
         if active and str(active.get("mode") or "").strip().lower() == mode:
             active_path.unlink(missing_ok=True)
+    _publish_workflow_changed_event(project_path, state)
     return state
+
+
+def _publish_workflow_changed_event(project_path: str | Path, state: dict[str, Any]) -> None:
+    try:
+        from codepilot.core.event_plugins import build_event, dispatch_event_to_sinks
+        from codepilot.storage import database as db
+
+        root = Path(project_path).expanduser().resolve()
+        project = db.find_project_by_path(root)
+        if not project:
+            return
+        mode = str(state.get("mode") or "").strip().lower()
+        if not mode:
+            return
+        state_path = (Path(".codepilot") / "state" / f"{mode}-state.json").as_posix()
+        event = build_event(
+            str(project.get("name") or ""),
+            "workflow.changed",
+            source="codepilot.workflow",
+            payload={
+                "mode": mode,
+                "phase": str(state.get("current_phase") or ""),
+                "active": bool(state.get("active")),
+                "session_id": str(state.get("session_id") or ""),
+                "state_path": state_path,
+                "context_path": str(state.get("context_path") or ""),
+                "artifact_paths": dict(state.get("artifact_paths") or {}),
+            },
+            event_id_prefix=f"workflow-{mode}",
+        )
+        dispatch_event_to_sinks(root, event)
+    except Exception:
+        return
 
 
 def start_workflow(

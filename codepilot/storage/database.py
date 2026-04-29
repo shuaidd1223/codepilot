@@ -297,6 +297,74 @@ def _resolve_project_path(project: str, project_path: Optional[str]) -> str:
     return proj["path"] if proj else ""
 
 
+_TASK_EVENT_FIELDS = {
+    "status",
+    "run_phase",
+    "error_message",
+    "delivery_record",
+    "started_at",
+    "completed_at",
+    "retry_count",
+    "heartbeat_at",
+    "active_pid",
+    "current_log_path",
+    "last_output",
+    "stop_requested",
+    "stop_reason",
+}
+
+
+def _task_update_summary(task: dict) -> str:
+    for field in ("error_message", "delivery_record", "last_output"):
+        value = str(task.get(field) or "").strip()
+        if value:
+            return value[:4000]
+    status = str(task.get("status") or "").strip()
+    phase = str(task.get("run_phase") or "").strip()
+    if status and phase:
+        return f"{status}:{phase}"
+    return status or phase
+
+
+def _publish_task_updated_event(task: Optional[dict], changed_fields: set[str]) -> None:
+    if not task or not (changed_fields & _TASK_EVENT_FIELDS):
+        return
+    try:
+        from codepilot.core.event_plugins import build_event, dispatch_event_to_sinks
+
+        project_name = str(task.get("project") or "")
+        if not project_name:
+            return
+        project_root = str(task.get("project_path") or "")
+        if not project_root:
+            project = get_project(project_name)
+            project_root = str((project or {}).get("path") or "")
+        if not project_root:
+            return
+
+        payload = {
+            "task_id": int(task.get("id")),
+            "status": str(task.get("status") or ""),
+            "phase": str(task.get("run_phase") or ""),
+            "summary": _task_update_summary(task),
+            "changed_fields": sorted(changed_fields),
+            "retry_count": int(task.get("retry_count") or 0),
+            "max_retries": int(task.get("max_retries") or 0),
+            "error_message": str(task.get("error_message") or ""),
+            "completed_at": task.get("completed_at"),
+        }
+        event = build_event(
+            project_name,
+            "task.updated",
+            source="codepilot.task",
+            payload=payload,
+            event_id_prefix=f"task-{task.get('id')}",
+        )
+        dispatch_event_to_sinks(project_root, event)
+    except Exception:
+        return
+
+
 def create_task(
     project: str,
     title: str,
@@ -380,7 +448,9 @@ def update_task(task_id: int, **fields) -> Optional[dict]:
     with get_write_conn() as conn:
         _update_task_fields(conn, task_id, updates)
     _invalidate_task_caches()
-    return get_task(task_id)
+    updated = get_task(task_id)
+    _publish_task_updated_event(updated, set(updates))
+    return updated
 
 
 def delete_task(task_id: int) -> bool:
