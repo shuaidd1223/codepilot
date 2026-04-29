@@ -32,6 +32,8 @@ codepilot chat -p <项目名>
 codepilot status -p <项目名> --json
 codepilot explore --prompt "要查询的问题" -p <项目名> --json
 codepilot clarify "模糊需求" -p <项目名> --json
+codepilot plan "明确需求" -p <项目名> --json
+codepilot plan --from-spec .codepilot/specs/example.md -p <项目名> --json
 codepilot wiki query "构建" -p <项目名> --json
 codepilot task show <task_id> --json
 codepilot task find <关键词> -p <项目名> --json
@@ -43,6 +45,8 @@ codepilot doctor --json
 `wiki` 是项目本地 Markdown 知识库，适合沉淀稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
 
 `clarify` 生成执行前需求规格 artifact，不创建任务、不启动执行器。适合在 plan/go 前明确目标、范围、非目标、约束、验收标准和待确认问题。
+
+`plan` 生成可审查执行计划 artifact，不创建任务、不启动执行器。输出包含任务候选、执行顺序、文件范围、风险和验证矩阵；人工确认后再导入任务或继续 clarify。
 
 ### 2.3 任务控制
 

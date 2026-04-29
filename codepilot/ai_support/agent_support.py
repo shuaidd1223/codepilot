@@ -90,6 +90,11 @@ def command_manifest(
                 "purpose": "只读探索项目文件、Git、任务日志和 inspect 信号，返回 evidence/sources/limitations。",
             },
             {
+                "command": _cmd(command, "plan -p <项目名> <需求> --json"),
+                "format": "json",
+                "purpose": "生成可审查执行计划 artifact、任务候选、风险和验证矩阵；默认不创建 backlog。",
+            },
+            {
                 "command": _cmd(command, "wiki list -p <项目名> --json"),
                 "format": "json",
                 "purpose": "列出项目本地 Markdown wiki 页面。",
@@ -277,6 +282,16 @@ def command_manifest(
                 "examples": [
                     _cmd(command, 'clarify -p codepilot-dev "改进 doctor" --json'),
                     _cmd(command, 'clarify --quick -p codepilot-dev "优化任务面板"'),
+                ],
+            },
+            {
+                "name": "plan",
+                "syntax": _cmd(command, "plan [-p <项目名>] <需求> [--from-spec <path>] [--json]"),
+                "purpose": "生成可审查执行计划 artifact，输出执行顺序、文件范围、风险、验证矩阵和任务候选。",
+                "when_to_use": "需求已足够进入计划审查，但还不应创建 backlog 或执行代码时；可消费 clarify spec。",
+                "examples": [
+                    _cmd(command, 'plan -p codepilot-dev "新增 explore" --json'),
+                    _cmd(command, "plan -p codepilot-dev --from-spec .codepilot/specs/example.md --json"),
                 ],
             },
             {
@@ -497,6 +512,15 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ```
 
 `clarify` 只生成 `.codepilot/specs/clarify-*.md` 和 context artifact，写入 workflow state，不创建 backlog 任务、不启动执行器。适合先把模糊需求整理成目标、范围、非目标、约束、验收标准和待确认问题。
+
+### 3.4 生成可审查执行计划
+
+```bash
+{_cmd(command, 'plan -p <项目名> "新增 explore" --json')}
+{_cmd(command, "plan -p <项目名> --from-spec .codepilot/specs/example.md --json")}
+```
+
+`plan` 生成 `.codepilot/plans/plan-*.md` 和 context artifact，返回任务候选、风险、执行顺序和验证矩阵。默认不创建 backlog、不启动执行器；人工确认后再导入任务或继续 clarify。
 
 ### 4. 精确查看单个任务
 

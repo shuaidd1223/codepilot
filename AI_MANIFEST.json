@@ -30,6 +30,11 @@
       "purpose": "只读探索项目文件、Git、任务日志和 inspect 信号，返回 evidence/sources/limitations。"
     },
     {
+      "command": "codepilot plan -p <项目名> <需求> --json",
+      "format": "json",
+      "purpose": "生成可审查执行计划 artifact、任务候选、风险和验证矩阵；默认不创建 backlog。"
+    },
+    {
       "command": "codepilot wiki list -p <项目名> --json",
       "format": "json",
       "purpose": "列出项目本地 Markdown wiki 页面。"
@@ -235,6 +240,16 @@
       "examples": [
         "codepilot clarify -p codepilot-dev \"改进 doctor\" --json",
         "codepilot clarify --quick -p codepilot-dev \"优化任务面板\""
+      ]
+    },
+    {
+      "name": "plan",
+      "syntax": "codepilot plan [-p <项目名>] <需求> [--from-spec <path>] [--json]",
+      "purpose": "生成可审查执行计划 artifact，输出执行顺序、文件范围、风险、验证矩阵和任务候选。",
+      "when_to_use": "需求已足够进入计划审查，但还不应创建 backlog 或执行代码时；可消费 clarify spec。",
+      "examples": [
+        "codepilot plan -p codepilot-dev \"新增 explore\" --json",
+        "codepilot plan -p codepilot-dev --from-spec .codepilot/specs/example.md --json"
       ]
     },
     {

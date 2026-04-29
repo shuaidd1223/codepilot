@@ -73,6 +73,15 @@ codepilot clarify -p <项目名> "改进 doctor" --json
 
 `clarify` 只生成 `.codepilot/specs/clarify-*.md` 和 context artifact，写入 workflow state，不创建 backlog 任务、不启动执行器。适合先把模糊需求整理成目标、范围、非目标、约束、验收标准和待确认问题。
 
+### 3.4 生成可审查执行计划
+
+```bash
+codepilot plan -p <项目名> "新增 explore" --json
+codepilot plan -p <项目名> --from-spec .codepilot/specs/example.md --json
+```
+
+`plan` 生成 `.codepilot/plans/plan-*.md` 和 context artifact，返回任务候选、风险、执行顺序和验证矩阵。默认不创建 backlog、不启动执行器；人工确认后再导入任务或继续 clarify。
+
 ### 4. 精确查看单个任务
 
 ```bash
