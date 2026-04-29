@@ -432,5 +432,6 @@ def test_windows_desktop_notification_falls_back_to_msg(monkeypatch):
 
     assert webhook._send_desktop_notification(title="t", body="b") is True
     assert calls[0][0] == "powershell.exe"
+    assert "ToastGeneric" in calls[0][-1]
     assert calls[1][0] == "msg.exe"
 

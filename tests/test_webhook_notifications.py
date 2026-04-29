@@ -69,7 +69,7 @@ def test_notify_task_status_sends_signed_feishu_payload(tmp_path, monkeypatch):
     ).decode("utf-8")
     assert payload["sign"] == expected_sign
     card = payload["card"]
-    assert "CodePilot #12 已完成" in card["header"]["title"]["content"]
+    assert card["header"]["title"]["content"] == "✅ CodePilot #12 · 已完成"
     card_text = json.dumps(card, ensure_ascii=False)
     assert "demo" in card_text
     assert "#12" in card_text
@@ -113,7 +113,7 @@ def test_notify_task_status_auto_detects_wecom_payload_shape(tmp_path, monkeypat
     assert captured["payload"] == {
         "msgtype": "text",
         "text": {
-            "content": "[X] CodePilot #7 失败\n项目: demo\n任务: 处理失败任务\n错误: boom",
+            "content": "❌ CodePilot #7 · 失败\n项目：demo\n任务：处理失败任务\n错误：boom",
         },
     }
 
@@ -149,8 +149,9 @@ def test_notify_task_status_sends_desktop_without_webhook(tmp_path, monkeypatch)
     assert ok is True
     assert calls == [
         {
-            "title": "CodePilot: 任务 已完成 (#5)",
-            "body": "demo — 本地通知",
+            "title": "✅ CodePilot #5 · 已完成",
+            "body": "项目：demo\n任务：本地通知",
+            "icon": "dialog-information",
         }
     ]
 
@@ -186,8 +187,9 @@ def test_notify_task_status_sends_desktop_for_cancelled(tmp_path, monkeypatch):
     assert ok is True
     assert calls == [
         {
-            "title": "CodePilot: 任务 已取消 (#6)",
-            "body": "demo — 停止任务",
+            "title": "⏹️ CodePilot #6 · 已取消",
+            "body": "项目：demo\n任务：停止任务",
+            "icon": "dialog-warning",
         }
     ]
 

@@ -212,6 +212,39 @@ def _feishu_template_for_status(status: str) -> str:
     return "grey"
 
 
+def _task_status_meta(status: str) -> dict[str, str]:
+    meta = {
+        "done": {
+            "icon": "✅",
+            "label": "已完成",
+            "desktop_icon": "dialog-information",
+        },
+        "failed": {
+            "icon": "❌",
+            "label": "失败",
+            "desktop_icon": "dialog-error",
+        },
+        "in_progress": {
+            "icon": "🚀",
+            "label": "开始执行",
+            "desktop_icon": "dialog-information",
+        },
+        "cancelled": {
+            "icon": "⏹️",
+            "label": "已取消",
+            "desktop_icon": "dialog-warning",
+        },
+    }
+    return meta.get(
+        status,
+        {
+            "icon": "ℹ️",
+            "label": status or "状态更新",
+            "desktop_icon": "dialog-information",
+        },
+    )
+
+
 def _build_feishu_card(
     title: str,
     fields: list[dict[str, Any]],
@@ -338,37 +371,30 @@ def notify_task_status(
     支持飞书/企微机器人 webhook 和通用 HTTP webhook。
     返回是否发送成功。
     """
-    if status == "done":
-        emoji = "[OK]"
-        status_text = "已完成"
-    elif status == "failed":
-        emoji = "[X]"
-        status_text = "失败"
-    elif status == "in_progress":
-        emoji = "[>>]"
-        status_text = "开始执行"
-    elif status == "cancelled":
-        emoji = "[--]"
-        status_text = "已取消"
-    else:
-        emoji = "[--]"
-        status_text = status
+    status_meta = _task_status_meta(status)
+    icon = status_meta["icon"]
+    status_text = status_meta["label"]
 
     project_name = Path(project_path).name
     message = (
-        f"{emoji} CodePilot #{task_id} {status_text}\n"
-        f"项目: {project_name}\n"
-        f"任务: {task_title}"
+        f"{icon} CodePilot #{task_id} · {status_text}\n"
+        f"项目：{project_name}\n"
+        f"任务：{task_title}"
     )
     if error_message:
-        message += f"\n错误: {error_message[:100]}"
+        message += f"\n错误：{error_message[:100]}"
 
     desktop_ok = False
     if status in {"done", "failed", "cancelled"}:
         try:
             desktop_ok = _send_desktop_notification(
-                title=f"CodePilot: 任务 {status_text} (#{task_id})",
-                body=f"{project_name} — {task_title}",
+                title=f"{icon} CodePilot #{task_id} · {status_text}",
+                body=(
+                    f"项目：{project_name}\n"
+                    f"任务：{task_title}"
+                    + (f"\n错误：{error_message[:160]}" if error_message else "")
+                ),
+                icon=status_meta["desktop_icon"],
             )
         except Exception:
             desktop_ok = False
@@ -385,7 +411,7 @@ def notify_task_status(
 
     if provider == "feishu":
         card = _build_feishu_card(
-            f"CodePilot #{task_id} {status_text}",
+            f"{icon} CodePilot #{task_id} · {status_text}",
             [
                 _feishu_field("项目", project_name),
                 _feishu_field("任务", f"#{task_id}"),
@@ -405,6 +431,8 @@ def notify_task_status(
             "task_id": task_id,
             "task_title": task_title,
             "status": status,
+            "status_text": status_text,
+            "icon": icon,
             "project": project_name,
             "error_message": error_message,
         })
@@ -495,7 +523,12 @@ def notify_task_event(
     )
 
 
-def _send_desktop_notification(*, title: str, body: str) -> bool:
+def _send_desktop_notification(
+    *,
+    title: str,
+    body: str,
+    icon: str = "dialog-information",
+) -> bool:
     """Best-effort cross-platform desktop notification.
 
     Windows: PowerShell BurntToast / Windows.UI.Notifications ToastNotification
@@ -515,6 +548,7 @@ def _send_desktop_notification(*, title: str, body: str) -> bool:
 
     title = (title or "CodePilot")[:120]
     body = (body or "")[:500]
+    icon = (icon or "dialog-information")[:80]
     system = platform.system().lower()
 
     def _run_windows_msg() -> bool:
@@ -528,9 +562,39 @@ def _send_desktop_notification(*, title: str, body: str) -> bool:
         )
         return result.returncode == 0
 
+    def _escape_applescript(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+    def _escape_xml(value: str) -> str:
+        return (
+            value.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+
+    def _windows_toast_xml() -> str:
+        lines = [title, *[line for line in body.splitlines() if line.strip()]]
+        text_nodes = "\n".join(
+            f"        <text>{_escape_xml(line)}</text>" for line in lines[:4]
+        )
+        return (
+            "<toast>\n"
+            "  <visual>\n"
+            "    <binding template=\"ToastGeneric\">\n"
+            f"{text_nodes}\n"
+            "      <text placement=\"attribution\">CodePilot</text>\n"
+            "    </binding>\n"
+            "  </visual>\n"
+            "</toast>"
+        )
+
     try:
         if system == "darwin":
-            script = f'display notification "{body}" with title "{title}"'
+            script = (
+                f'display notification "{_escape_applescript(body)}" '
+                f'with title "{_escape_applescript(title)}"'
+            )
             result = subprocess.run(
                 ["osascript", "-e", script],
                 capture_output=True, timeout=3,
@@ -539,23 +603,21 @@ def _send_desktop_notification(*, title: str, body: str) -> bool:
         if system == "linux":
             if shutil.which("notify-send"):
                 result = subprocess.run(
-                    ["notify-send", title, body],
+                    ["notify-send", "-i", icon, title, body],
                     capture_output=True, timeout=3,
                 )
                 return result.returncode == 0
             return False
         if system == "windows":
             # PowerShell one-liner using Windows Runtime ToastNotification.
-            # Escape single quotes by doubling them (PowerShell convention).
-            ps_title = title.replace("'", "''")
-            ps_body = body.replace("'", "''")
+            toast_xml = _windows_toast_xml()
             ps_cmd = (
                 "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;"
                 "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null;"
-                "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
-                f"$template.GetElementsByTagName('text').Item(0).AppendChild($template.CreateTextNode('{ps_title}')) > $null;"
-                f"$template.GetElementsByTagName('text').Item(1).AppendChild($template.CreateTextNode('{ps_body}')) > $null;"
-                "$toast = [Windows.UI.Notifications.ToastNotification]::new($template);"
+                f"$xml = @'\n{toast_xml}\n'@\n"
+                "$doc = [Windows.Data.Xml.Dom.XmlDocument]::new();"
+                "$doc.LoadXml($xml);"
+                "$toast = [Windows.UI.Notifications.ToastNotification]::new($doc);"
                 "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('CodePilot').Show($toast);"
             )
             result = subprocess.run(
