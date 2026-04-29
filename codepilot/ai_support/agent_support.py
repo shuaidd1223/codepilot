@@ -85,6 +85,11 @@ def command_manifest(
                 "purpose": "预检项目级 .codepilot 初始化、配置和项目注册动作，不写入真实 hooks。",
             },
             {
+                "command": _cmd(command, 'self-update -p <项目名> --dry-run --json "改进目标"'),
+                "format": "json",
+                "purpose": "项目内自我迭代 dry-run：只做预检、证据采集和内存计划，不创建任务、不执行修复、不提交代码。",
+            },
+            {
                 "command": _cmd(command, "status -p <项目名> --json"),
                 "format": "json",
                 "purpose": "获取项目任务状态和任务列表。",
@@ -160,6 +165,16 @@ def command_manifest(
                 "purpose": "列出 CodePilot 事件类型、必需字段和 payload 字段约定。",
             },
             {
+                "command": _cmd(command, "hook validate -p <项目名> --json"),
+                "format": "json",
+                "purpose": "验证项目级 hook registry 和 provider-neutral lifecycle 事件，不写全局 hooks。",
+            },
+            {
+                "command": _cmd(command, "exec --provider codex --dry-run --json -- codex --version"),
+                "format": "json",
+                "purpose": "在当前项目内对 codex/claude/gemini/custom 做 provider preflight 或命令烟测，不安装 wrapper。",
+            },
+            {
                 "command": _cmd(command, "build-fix -p <项目名> --json"),
                 "format": "json",
                 "purpose": "对 failed 任务执行收集失败、重试修复、验证和 verdict 输出的质量闭环。",
@@ -168,6 +183,11 @@ def command_manifest(
                 "command": _cmd(command, "skill list -p <项目名> --json"),
                 "format": "json",
                 "purpose": "列出项目本地 skill catalog，查看内置/项目技能启用状态。",
+            },
+            {
+                "command": _cmd(command, 'skill run ralplan -p <项目名> --provider codex --input "需求" --json'),
+                "format": "json",
+                "purpose": "运行已启用的项目本地技能，复用 CodePilot 现有 clarify/plan/wiki/build-fix 能力。",
             },
             {
                 "command": _cmd(command, "ai template --format json"),
@@ -197,6 +217,16 @@ def command_manifest(
                     _cmd(command, "setup ."),
                     _cmd(command, "setup . --dry-run --json"),
                     _cmd(command, "setup D:\\repo -n demo"),
+                ],
+            },
+            {
+                "name": "self_update",
+                "syntax": _cmd(command, 'self-update -p <项目名> --dry-run [--provider codex] "改进目标" [--json]'),
+                "purpose": "项目内自我迭代 dry-run：复用 doctor、hook、event、exec、trace、explore、wiki 和 plan 生成下一步升级计划；不自动改代码。",
+                "when_to_use": "想让 CodePilot 先审计自身状态、收集证据并给出下一轮升级方案，但还不希望创建任务、执行修复或提交时。",
+                "examples": [
+                    _cmd(command, 'self-update -p codepilot-dev --dry-run --json "改进多智能体兼容性"'),
+                    _cmd(command, 'self-update -p codepilot-dev --provider codex --provider gemini --dry-run "检查 provider 兼容性" --json'),
                 ],
             },
             {
@@ -283,6 +313,27 @@ def command_manifest(
                 ],
             },
             {
+                "name": "hook",
+                "syntax": _cmd(command, "hook <plan|validate|test|logs|install|uninstall> -p <项目名> [--json]"),
+                "purpose": "管理项目级 hook registry，并用 provider-neutral lifecycle 事件做本地验证和日志读取；不写真实 Codex/Claude/Gemini 全局配置。",
+                "when_to_use": "需要确认 hook/event 插件化集成是否可用，或需要生成 agent lifecycle 测试事件时。",
+                "examples": [
+                    _cmd(command, "hook validate -p codepilot-dev --json"),
+                    _cmd(command, "hook test -p codepilot-dev --provider codex --event agent.prompt.submitted --json"),
+                    _cmd(command, "hook logs -p codepilot-dev --json"),
+                ],
+            },
+            {
+                "name": "exec",
+                "syntax": _cmd(command, "exec -p <项目名> --provider codex|claude|gemini|custom [--dry-run] [--json] -- <command...>"),
+                "purpose": "项目内 provider-neutral 命令烟测和审计执行，记录到 `.codepilot/exec` 并投递 exec 事件；不安装 shell alias、不替换原生命令。",
+                "when_to_use": "需要确认 Codex、Claude、Gemini 或自定义命令在当前项目能否被调用，或需要留下项目内审计记录时。",
+                "examples": [
+                    _cmd(command, "exec -p codepilot-dev --provider codex --dry-run --json -- codex --version"),
+                    _cmd(command, 'exec -p codepilot-dev --provider custom --json -- python -c "print(123)"'),
+                ],
+            },
+            {
                 "name": "stop",
                 "syntax": _cmd(command, "task stop <task_id> [-m 原因]"),
                 "purpose": "停止运行中的任务。",
@@ -361,8 +412,8 @@ def command_manifest(
             },
             {
                 "name": "explore",
-                "syntax": _cmd(command, "explore --prompt <问题> [-p <项目名>] [--json]"),
-                "purpose": "只读查询项目文件、Git 状态、任务日志摘要和 inspect 信号，输出可复用证据。",
+                "syntax": _cmd(command, "explore --prompt <问题> [-p <项目名>] [--use-wiki|--no-wiki] [--json]"),
+                "purpose": "只读查询项目文件、Git 状态、任务日志摘要、wiki 上下文和 inspect 信号，输出可复用证据。",
                 "when_to_use": "澄清或规划前需要本地证据，但不应修改文件、启动服务、安装依赖或执行测试时。",
                 "examples": [
                     _cmd(command, 'explore --prompt "find task template" --json'),
@@ -381,8 +432,8 @@ def command_manifest(
             },
             {
                 "name": "plan",
-                "syntax": _cmd(command, "plan [-p <项目名>] <需求> [--from-spec <path>] [--json]"),
-                "purpose": "生成可审查执行计划 artifact，输出执行顺序、文件范围、风险、验证矩阵和任务候选。",
+                "syntax": _cmd(command, "plan [-p <项目名>] <需求> [--from-spec <path>] [--use-wiki|--no-wiki] [--json]"),
+                "purpose": "生成可审查执行计划 artifact，输出执行顺序、文件范围、wiki 引用、风险、验证矩阵和任务候选。",
                 "when_to_use": "需求已足够进入计划审查，但还不应创建 backlog 或执行代码时；可消费 clarify spec。",
                 "examples": [
                     _cmd(command, 'plan -p codepilot-dev "新增 explore" --json'),
@@ -391,25 +442,27 @@ def command_manifest(
             },
             {
                 "name": "wiki",
-                "syntax": _cmd(command, "wiki <add|list|query|lint|ingest> ..."),
+                "syntax": _cmd(command, "wiki <add|list|query|update|delete|refresh|lint|ingest> ..."),
                 "purpose": "维护项目本地 Markdown 知识库，沉淀长期有用的项目事实；ingest 可显式沉淀 trace/plan artifact。",
                 "when_to_use": "需要记录或复用构建命令、架构事实、巡检发现、常见失败、trace/plan 结果和人工决策时；不要写入 secret。",
                 "examples": [
                     _cmd(command, 'wiki add -p codepilot-dev --title "构建命令" --body "pytest tests"'),
                     _cmd(command, 'wiki query -p codepilot-dev "构建" --json'),
+                    _cmd(command, 'wiki update -p codepilot-dev --slug build --body "pytest -q" --json'),
                     _cmd(command, "wiki ingest --from plan -p codepilot-dev --json"),
                     _cmd(command, "wiki lint -p codepilot-dev --json"),
                 ],
             },
             {
                 "name": "skill",
-                "syntax": _cmd(command, "skill <list|search|show|enable|disable> -p <项目名> [--json]"),
-                "purpose": "管理项目本地 skill catalog，当前支持内置/项目本地技能元数据和启停状态，不做远程安装。",
-                "when_to_use": "需要浏览可用工作流技能、开启本地技能标记，或让 AI 判断可借用哪些 CodePilot 能力时。",
+                "syntax": _cmd(command, "skill <list|search|show|enable|disable|run> -p <项目名> [--json]"),
+                "purpose": "管理并运行项目本地 skill catalog，当前只复用 CodePilot 已有能力，不做远程安装。",
+                "when_to_use": "需要浏览可用工作流技能、开启本地技能标记，或通过 skill run 显式调用 clarify/plan/wiki/build-fix 能力时。",
                 "examples": [
                     _cmd(command, "skill list -p codepilot-dev --json"),
                     _cmd(command, "skill search quality -p codepilot-dev --json"),
                     _cmd(command, "skill enable build-fix -p codepilot-dev --json"),
+                    _cmd(command, 'skill run ralplan -p codepilot-dev --provider codex --input "新增 wiki context" --json'),
                 ],
             },
             {
@@ -628,16 +681,18 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ### 3.2 只读探索项目证据
 
 ```bash
-{_cmd(command, 'explore --prompt "find task template" --json')}
+{_cmd(command, 'explore --prompt "find task template" --use-wiki --json')}
 ```
 
-`explore` 只读取项目文件、Git、任务日志摘要和 inspect 信号。涉及修改、安装、启动服务或执行测试的问题应改走普通 workflow。
+`explore` 只读取项目文件、Git、wiki、任务日志摘要和 inspect 信号。涉及修改、安装、启动服务或执行测试的问题应改走普通 workflow。
 
 ### 3.3 项目本地 wiki
 
 ```bash
 {_cmd(command, 'wiki add -p <项目名> --title "构建命令" --body "pytest tests"')}
 {_cmd(command, 'wiki query -p <项目名> "构建" --json')}
+{_cmd(command, 'wiki update -p <项目名> --slug build --body "pytest -q" --json')}
+{_cmd(command, "wiki refresh -p <项目名> --json")}
 {_cmd(command, "wiki ingest --from trace -p <项目名> --json")}
 {_cmd(command, "wiki ingest --from plan -p <项目名> --json")}
 {_cmd(command, "wiki lint -p <项目名> --json")}
@@ -676,11 +731,11 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ### 3.7 生成可审查执行计划
 
 ```bash
-{_cmd(command, 'plan -p <项目名> "新增 explore" --json')}
+{_cmd(command, 'plan -p <项目名> "新增 explore" --use-wiki --json')}
 {_cmd(command, "plan -p <项目名> --from-spec .codepilot/specs/example.md --json")}
 ```
 
-`plan` 生成 `.codepilot/plans/plan-*.md` 和 context artifact，返回任务候选、风险、执行顺序和验证矩阵。默认不创建 backlog、不启动执行器；人工确认后再导入任务或继续 clarify。
+`plan` 生成 `.codepilot/plans/plan-*.md` 和 context artifact，返回任务候选、wiki 引用、风险、执行顺序和验证矩阵。默认不创建 backlog、不启动执行器；人工确认后再导入任务或继续 clarify。
 
 ### 4. 精确查看单个任务
 
@@ -703,17 +758,33 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 {_cmd(command, "event schema --json")}
 {_cmd(command, "event list -p <项目名> --json")}
 {_cmd(command, "event test -p <项目名> --json")}
+{_cmd(command, "hook validate -p <项目名> --json")}
+{_cmd(command, "hook test -p <项目名> --provider codex --event agent.prompt.submitted --json")}
+{_cmd(command, "hook logs -p <项目名> --json")}
+{_cmd(command, "exec -p <项目名> --provider codex --dry-run --json -- codex --version")}
 ```
 
-### 5.2 查看技能目录
+`hook` 和 `exec` 都只使用当前项目 `.codepilot/` 状态与日志；不会写 `.codex/hooks.json`，也不会修改 Claude/Gemini 的全局配置。
+
+### 5.2 自我迭代 dry-run
+
+```bash
+{_cmd(command, 'self-update -p <项目名> --dry-run --json "改进目标"')}
+{_cmd(command, 'self-update -p <项目名> --provider codex --provider gemini --dry-run "检查 provider 兼容性" --json')}
+```
+
+`self-update` 第一版只做项目内预检、证据采集和内存计划，输出后续人工可执行命令；不会创建 backlog、不会运行修复、不会写 wiki、不会提交代码。
+
+### 5.3 查看技能目录
 
 ```bash
 {_cmd(command, "skill list -p <项目名> --json")}
 {_cmd(command, "skill search quality -p <项目名> --json")}
 {_cmd(command, "skill enable build-fix -p <项目名> --json")}
+{_cmd(command, 'skill run ralplan -p <项目名> --provider codex --input "新增 wiki context" --json')}
 ```
 
-`skill` 管理 `.codepilot/skills/catalog.json` 中的本地技能元数据和启停状态；当前不做远程安装。
+`skill` 管理 `.codepilot/skills/catalog.json` 中的本地技能元数据、启停状态和显式运行入口；当前不做远程安装，也不写用户 `$HOME/.codex/skills`。
 
 ### 6. 查看日志
 

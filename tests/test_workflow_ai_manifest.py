@@ -148,7 +148,15 @@ def test_manifest_advertises_ai_template_command():
     payload = command_manifest()
     names = {c["name"] for c in payload["commands"]}
     assert "ai_template" in names
+    assert "exec" in names
+    assert "hook" in names
+    assert "skill" in names
+    assert "self_update" in names
 
     outputs = [o["command"] for o in payload["structured_outputs"]]
     assert any("ai template --format json" in cmd for cmd in outputs)
+    assert any("exec --provider codex --dry-run --json" in cmd for cmd in outputs)
+    assert any("hook validate" in cmd for cmd in outputs)
+    assert any("skill run" in cmd for cmd in outputs)
+    assert any("self-update" in cmd and "--dry-run --json" in cmd for cmd in outputs)
 

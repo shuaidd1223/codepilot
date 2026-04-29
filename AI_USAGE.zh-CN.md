@@ -59,16 +59,18 @@ codepilot hud -p <项目名> --preset full --json
 ### 3.2 只读探索项目证据
 
 ```bash
-codepilot explore --prompt "find task template" --json
+codepilot explore --prompt "find task template" --use-wiki --json
 ```
 
-`explore` 只读取项目文件、Git、任务日志摘要和 inspect 信号。涉及修改、安装、启动服务或执行测试的问题应改走普通 workflow。
+`explore` 只读取项目文件、Git、wiki、任务日志摘要和 inspect 信号。涉及修改、安装、启动服务或执行测试的问题应改走普通 workflow。
 
 ### 3.3 项目本地 wiki
 
 ```bash
 codepilot wiki add -p <项目名> --title "构建命令" --body "pytest tests"
 codepilot wiki query -p <项目名> "构建" --json
+codepilot wiki update -p <项目名> --slug build --body "pytest -q" --json
+codepilot wiki refresh -p <项目名> --json
 codepilot wiki ingest --from trace -p <项目名> --json
 codepilot wiki ingest --from plan -p <项目名> --json
 codepilot wiki lint -p <项目名> --json
@@ -107,11 +109,11 @@ codepilot clarify -p <项目名> "改进 doctor" --json
 ### 3.7 生成可审查执行计划
 
 ```bash
-codepilot plan -p <项目名> "新增 explore" --json
+codepilot plan -p <项目名> "新增 explore" --use-wiki --json
 codepilot plan -p <项目名> --from-spec .codepilot/specs/example.md --json
 ```
 
-`plan` 生成 `.codepilot/plans/plan-*.md` 和 context artifact，返回任务候选、风险、执行顺序和验证矩阵。默认不创建 backlog、不启动执行器；人工确认后再导入任务或继续 clarify。
+`plan` 生成 `.codepilot/plans/plan-*.md` 和 context artifact，返回任务候选、wiki 引用、风险、执行顺序和验证矩阵。默认不创建 backlog、不启动执行器；人工确认后再导入任务或继续 clarify。
 
 ### 4. 精确查看单个任务
 
@@ -134,17 +136,33 @@ codepilot doctor --fix --json
 codepilot event schema --json
 codepilot event list -p <项目名> --json
 codepilot event test -p <项目名> --json
+codepilot hook validate -p <项目名> --json
+codepilot hook test -p <项目名> --provider codex --event agent.prompt.submitted --json
+codepilot hook logs -p <项目名> --json
+codepilot exec -p <项目名> --provider codex --dry-run --json -- codex --version
 ```
 
-### 5.2 查看技能目录
+`hook` 和 `exec` 都只使用当前项目 `.codepilot/` 状态与日志；不会写 `.codex/hooks.json`，也不会修改 Claude/Gemini 的全局配置。
+
+### 5.2 自我迭代 dry-run
+
+```bash
+codepilot self-update -p <项目名> --dry-run --json "改进目标"
+codepilot self-update -p <项目名> --provider codex --provider gemini --dry-run "检查 provider 兼容性" --json
+```
+
+`self-update` 第一版只做项目内预检、证据采集和内存计划，输出后续人工可执行命令；不会创建 backlog、不会运行修复、不会写 wiki、不会提交代码。
+
+### 5.3 查看技能目录
 
 ```bash
 codepilot skill list -p <项目名> --json
 codepilot skill search quality -p <项目名> --json
 codepilot skill enable build-fix -p <项目名> --json
+codepilot skill run ralplan -p <项目名> --provider codex --input "新增 wiki context" --json
 ```
 
-`skill` 管理 `.codepilot/skills/catalog.json` 中的本地技能元数据和启停状态；当前不做远程安装。
+`skill` 管理 `.codepilot/skills/catalog.json` 中的本地技能元数据、启停状态和显式运行入口；当前不做远程安装，也不写用户 `$HOME/.codex/skills`。
 
 ### 6. 查看日志
 
