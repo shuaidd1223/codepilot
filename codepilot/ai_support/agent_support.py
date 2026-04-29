@@ -90,6 +90,16 @@ def command_manifest(
                 "purpose": "只读探索项目文件、Git、任务日志和 inspect 信号，返回 evidence/sources/limitations。",
             },
             {
+                "command": _cmd(command, "wiki list -p <项目名> --json"),
+                "format": "json",
+                "purpose": "列出项目本地 Markdown wiki 页面。",
+            },
+            {
+                "command": _cmd(command, "wiki query <关键词> -p <项目名> --json"),
+                "format": "json",
+                "purpose": "检索项目本地 wiki 中沉淀的构建命令、架构事实、失败模式和人工决策。",
+            },
+            {
                 "command": _cmd(command, "task find <关键词> -p <项目名> --json"),
                 "format": "json",
                 "purpose": "搜索任务并获取结构化结果。",
@@ -257,6 +267,17 @@ def command_manifest(
                 "examples": [
                     _cmd(command, 'explore --prompt "find task template" --json'),
                     _cmd(command, 'explore -p codepilot-dev "recent failed task logs"'),
+                ],
+            },
+            {
+                "name": "wiki",
+                "syntax": _cmd(command, "wiki <add|list|query|lint> ..."),
+                "purpose": "维护项目本地 Markdown 知识库，沉淀长期有用的项目事实。",
+                "when_to_use": "需要记录或复用构建命令、架构事实、巡检发现、常见失败和人工决策时；不要写入 secret。",
+                "examples": [
+                    _cmd(command, 'wiki add -p codepilot-dev --title "构建命令" --body "pytest tests"'),
+                    _cmd(command, 'wiki query -p codepilot-dev "构建" --json'),
+                    _cmd(command, "wiki lint -p codepilot-dev --json"),
                 ],
             },
             {
@@ -448,6 +469,16 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ```
 
 `explore` 只读取项目文件、Git、任务日志摘要和 inspect 信号。涉及修改、安装、启动服务或执行测试的问题应改走普通 workflow。
+
+### 3.2 项目本地 wiki
+
+```bash
+{_cmd(command, 'wiki add -p <项目名> --title "构建命令" --body "pytest tests"')}
+{_cmd(command, 'wiki query -p <项目名> "构建" --json')}
+{_cmd(command, "wiki lint -p <项目名> --json")}
+```
+
+适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
 
 ### 4. 精确查看单个任务
 

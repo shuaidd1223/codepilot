@@ -30,6 +30,16 @@
       "purpose": "只读探索项目文件、Git、任务日志和 inspect 信号，返回 evidence/sources/limitations。"
     },
     {
+      "command": "codepilot wiki list -p <项目名> --json",
+      "format": "json",
+      "purpose": "列出项目本地 Markdown wiki 页面。"
+    },
+    {
+      "command": "codepilot wiki query <关键词> -p <项目名> --json",
+      "format": "json",
+      "purpose": "检索项目本地 wiki 中沉淀的构建命令、架构事实、失败模式和人工决策。"
+    },
+    {
       "command": "codepilot task find <关键词> -p <项目名> --json",
       "format": "json",
       "purpose": "搜索任务并获取结构化结果。"
@@ -215,6 +225,17 @@
       "examples": [
         "codepilot explore --prompt \"find task template\" --json",
         "codepilot explore -p codepilot-dev \"recent failed task logs\""
+      ]
+    },
+    {
+      "name": "wiki",
+      "syntax": "codepilot wiki <add|list|query|lint> ...",
+      "purpose": "维护项目本地 Markdown 知识库，沉淀长期有用的项目事实。",
+      "when_to_use": "需要记录或复用构建命令、架构事实、巡检发现、常见失败和人工决策时；不要写入 secret。",
+      "examples": [
+        "codepilot wiki add -p codepilot-dev --title \"构建命令\" --body \"pytest tests\"",
+        "codepilot wiki query -p codepilot-dev \"构建\" --json",
+        "codepilot wiki lint -p codepilot-dev --json"
       ]
     },
     {

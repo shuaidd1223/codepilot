@@ -55,6 +55,16 @@ codepilot explore --prompt "find task template" --json
 
 `explore` 只读取项目文件、Git、任务日志摘要和 inspect 信号。涉及修改、安装、启动服务或执行测试的问题应改走普通 workflow。
 
+### 3.2 项目本地 wiki
+
+```bash
+codepilot wiki add -p <项目名> --title "构建命令" --body "pytest tests"
+codepilot wiki query -p <项目名> "构建" --json
+codepilot wiki lint -p <项目名> --json
+```
+
+适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
+
 ### 4. 精确查看单个任务
 
 ```bash
