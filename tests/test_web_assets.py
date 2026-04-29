@@ -352,3 +352,36 @@ def test_agent_log_contract_exposes_stable_adapter_surface():
         "scrollToBottom:",
     ):
         assert marker in contract_boundary
+
+
+def test_web_ui_professional_console_style_contract():
+    app = Path("codepilot/web/app.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "professional-shell" in app
+    for token in (
+        "--surface:",
+        "--surface-raised:",
+        "--sidebar:",
+        "--shadow-md:",
+        "--focus-soft:",
+    ):
+        assert token in styles
+
+    for selector in (
+        ".professional-shell",
+        ".main-header::after",
+        ".content-pane::before",
+        ".card-head::before",
+        ".task-item::before",
+        ".service-row::before",
+        ".metric::before",
+        ".big-empty svg",
+        "[data-theme=\"dark\"] .professional-shell",
+    ):
+        assert selector in styles
+
+    assert ".shell { grid-template-columns: minmax(260px, 304px) minmax(0, 1fr);" in styles
+    assert ".view { width: min(1440px, 100%);" in styles
+    assert "@media (max-width: 720px)" in styles
+    assert ".main-header { min-height: 60px;" in styles

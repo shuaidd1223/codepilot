@@ -12,6 +12,7 @@ from click.testing import CliRunner
 from codepilot.commands import feishu as feishu_cmd
 from codepilot.feishu_bot import (
     build_batch_task_action_card,
+    build_pending_confirm_card,
     build_task_event_card,
     handle_command_text,
     handle_event_payload,
@@ -457,15 +458,77 @@ def test_feishu_event_card_uses_structured_blocks():
 
     tags = [elem.get("tag") for elem in card["elements"] if isinstance(elem, dict)]
 
+    assert card["config"]["wide_screen_mode"] is True
+    assert card["config"]["enable_forward"] is True
+    assert card["config"]["update_multi"] is True
     assert "CodePilot · Build 完成" in card["header"]["title"]["content"]
     assert "note" in tags
     assert "column_set" in tags
+    assert tags.count("hr") >= 2
+    assert any(
+        elem.get("tag") == "column_set" and elem.get("background_style") == "default"
+        for elem in card["elements"]
+        if isinstance(elem, dict)
+    )
     assert any(
         elem.get("text", {}).get("tag") == "lark_md"
         for elem in card["elements"]
         if isinstance(elem, dict) and elem.get("tag") == "div"
     )
     assert "下一步命令" in json.dumps(card, ensure_ascii=False)
+
+
+def test_feishu_cards_use_professional_sectioned_layout(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    db.create_task(
+        project="demo",
+        title="专业控制台卡片",
+        content="验证飞书任务面板布局",
+        agent="dual",
+        priority="P1",
+        project_path=str(project_path),
+    )
+
+    reply = handle_command_text("tasks demo")
+    card = reply["card"]
+    payload = json.dumps(card, ensure_ascii=False)
+    tags = [elem.get("tag") for elem in card["elements"] if isinstance(elem, dict)]
+
+    assert card["config"]["wide_screen_mode"] is True
+    assert card["config"]["enable_forward"] is True
+    assert card["config"]["update_multi"] is True
+    assert "任务概览" in payload
+    assert "任务列表" in payload
+    assert "下一步命令" in payload
+    assert "复制命令发送即可执行" in payload
+    assert tags.count("hr") >= 2
+    assert any(
+        elem.get("tag") == "column_set" and elem.get("background_style") == "default"
+        for elem in card["elements"]
+        if isinstance(elem, dict)
+    )
+
+
+def test_feishu_confirm_card_uses_sectioned_warning_layout():
+    card = build_pending_confirm_card(
+        {
+            "token": "ABC123",
+            "action": "delete_task",
+            "summary": "删除任务 #12",
+            "details": ["- `#12` 专业控制台卡片 / 待执行"],
+            "expires_at": "2026-04-29T12:00:00",
+        },
+        prefix="/cp",
+    )
+    payload = json.dumps(card, ensure_ascii=False)
+    tags = [elem.get("tag") for elem in card["elements"] if isinstance(elem, dict)]
+
+    assert card["config"]["enable_forward"] is True
+    assert card["header"]["template"] == "orange"
+    assert "请二次确认" in payload
+    assert "影响范围" in payload
+    assert "确认命令" in payload
+    assert tags.count("hr") >= 2
 
 
 def test_feishu_task_notifications_dedupe_same_event(tmp_path, monkeypatch):

@@ -259,6 +259,14 @@ def _section(label: str, *, hint: str = "") -> dict[str, Any]:
     return _md_block(f"**{label}**")
 
 
+def _is_section_block(block: dict[str, Any]) -> bool:
+    text = block.get("text") if isinstance(block, dict) else None
+    if not isinstance(text, dict) or text.get("tag") != "lark_md":
+        return False
+    content = str(text.get("content") or "").strip()
+    return bool(content.startswith("**") and content.endswith("**") and "\n" not in content)
+
+
 def _section_note(label: str, hint: str = "") -> list[dict[str, Any]]:
     blocks = [_section(label)]
     if hint:
@@ -523,8 +531,18 @@ def _card(
     elements: list[dict[str, Any]] = []
     if subtitle:
         elements.append(_note(subtitle))
+    has_body_section = False
     for block in blocks:
         if isinstance(block, dict):
+            if (
+                _is_section_block(block)
+                and has_body_section
+                and elements
+                and elements[-1].get("tag") != "hr"
+            ):
+                elements.append(_hr())
+            if _is_section_block(block):
+                has_body_section = True
             elements.append(block)
             continue
         text = str(block or "").strip()
@@ -535,7 +553,7 @@ def _card(
         elements.append({"tag": "hr"})
         elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": note}]})
     return {
-        "config": {"wide_screen_mode": True},
+        "config": {"wide_screen_mode": True, "enable_forward": True, "update_multi": True},
         "header": {
             "template": template,
             "title": {"tag": "plain_text", "content": title[:120]},

@@ -253,9 +253,36 @@ def _build_feishu_card(
     detail_label: str = "",
     detail: str = "",
 ) -> dict[str, Any]:
-    elements: list[dict[str, Any]] = []
+    elements: list[dict[str, Any]] = [
+        {"tag": "note", "elements": [{"tag": "plain_text", "content": "通知摘要"}]},
+        {"tag": "hr"},
+        {"tag": "div", "text": {"tag": "lark_md", "content": "**任务信息**"}},
+    ]
     if fields:
-        elements.append({"tag": "div", "fields": fields})
+        columns: list[dict[str, Any]] = []
+        for field in fields:
+            text = field.get("text") if isinstance(field, dict) else {}
+            content = str(text.get("content") or "").strip() if isinstance(text, dict) else ""
+            if not content:
+                continue
+            columns.append(
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "vertical_align": "top",
+                    "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
+                }
+            )
+        if columns:
+            elements.append(
+                {
+                    "tag": "column_set",
+                    "flex_mode": "none",
+                    "background_style": "default",
+                    "columns": columns,
+                }
+            )
     detail = str(detail or "").strip()
     if detail:
         label = str(detail_label or "说明").strip()
@@ -266,7 +293,7 @@ def _build_feishu_card(
             ]
         )
     return {
-        "config": {"wide_screen_mode": True},
+        "config": {"wide_screen_mode": True, "enable_forward": True, "update_multi": True},
         "header": {
             "template": template,
             "title": {"tag": "plain_text", "content": str(title or "CodePilot 通知")[:120]},

@@ -70,7 +70,16 @@ def test_notify_task_status_sends_signed_feishu_payload(tmp_path, monkeypatch):
     assert payload["sign"] == expected_sign
     card = payload["card"]
     assert card["header"]["title"]["content"] == "✅ CodePilot #12 · 已完成"
+    assert card["config"]["wide_screen_mode"] is True
+    assert card["config"]["enable_forward"] is True
+    assert card["config"]["update_multi"] is True
+    tags = [elem.get("tag") for elem in card["elements"] if isinstance(elem, dict)]
+    assert "note" in tags
+    assert "column_set" in tags
+    assert "hr" in tags
     card_text = json.dumps(card, ensure_ascii=False)
+    assert "通知摘要" in card_text
+    assert "任务信息" in card_text
     assert "demo" in card_text
     assert "#12" in card_text
     assert "修复 webhook 通知" in card_text

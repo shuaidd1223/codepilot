@@ -6,7 +6,7 @@ const { createApp } = Vue;
 const RootApp = {
   setup: CP.AppStateBoundary.setup,
   template: `
-    <div class="shell">
+    <div class="shell professional-shell">
       <cp-sidebar></cp-sidebar>
       <main class="main">
         <cp-main-header></cp-main-header>
