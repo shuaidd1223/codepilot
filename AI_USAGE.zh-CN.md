@@ -47,6 +47,14 @@ codepilot status -p <项目名> -v
 codepilot status -p <项目名> --json
 ```
 
+### 3.1 只读探索项目证据
+
+```bash
+codepilot explore --prompt "find task template" --json
+```
+
+`explore` 只读取项目文件、Git、任务日志摘要和 inspect 信号。涉及修改、安装、启动服务或执行测试的问题应改走普通 workflow。
+
 ### 4. 精确查看单个任务
 
 ```bash

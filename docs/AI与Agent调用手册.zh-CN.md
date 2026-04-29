@@ -30,10 +30,13 @@ codepilot chat -p <项目名>
 
 ```bash
 codepilot status -p <项目名> --json
+codepilot explore --prompt "要查询的问题" -p <项目名> --json
 codepilot task show <task_id> --json
 codepilot task find <关键词> -p <项目名> --json
 codepilot doctor --json
 ```
+
+`explore` 是只读项目探索入口，只返回 `query/evidence/sources/limitations`，用于澄清和计划前取证。它不会写文件、改 Git、启动服务、安装依赖或执行测试；修改类请求会被拒绝并提示改走普通 workflow。
 
 ### 2.3 任务控制
 

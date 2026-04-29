@@ -85,6 +85,11 @@ def command_manifest(
                 "purpose": "获取项目任务状态和任务列表。",
             },
             {
+                "command": _cmd(command, "explore --prompt <问题> --json"),
+                "format": "json",
+                "purpose": "只读探索项目文件、Git、任务日志和 inspect 信号，返回 evidence/sources/limitations。",
+            },
+            {
                 "command": _cmd(command, "task find <关键词> -p <项目名> --json"),
                 "format": "json",
                 "purpose": "搜索任务并获取结构化结果。",
@@ -242,6 +247,16 @@ def command_manifest(
                 "examples": [
                     _cmd(command, "inspect -p codepilot-dev --once"),
                     _cmd(command, "inspect -p codepilot-dev --status"),
+                ],
+            },
+            {
+                "name": "explore",
+                "syntax": _cmd(command, "explore --prompt <问题> [-p <项目名>] [--json]"),
+                "purpose": "只读查询项目文件、Git 状态、任务日志摘要和 inspect 信号，输出可复用证据。",
+                "when_to_use": "澄清或规划前需要本地证据，但不应修改文件、启动服务、安装依赖或执行测试时。",
+                "examples": [
+                    _cmd(command, 'explore --prompt "find task template" --json'),
+                    _cmd(command, 'explore -p codepilot-dev "recent failed task logs"'),
                 ],
             },
             {
@@ -425,6 +440,14 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ```bash
 {_cmd(command, "status -p <项目名> --json")}
 ```
+
+### 3.1 只读探索项目证据
+
+```bash
+{_cmd(command, 'explore --prompt "find task template" --json')}
+```
+
+`explore` 只读取项目文件、Git、任务日志摘要和 inspect 信号。涉及修改、安装、启动服务或执行测试的问题应改走普通 workflow。
 
 ### 4. 精确查看单个任务
 
