@@ -39,6 +39,54 @@ EVENT_SCHEMAS = (
         "required_fields": ["schema_version", "id", "type", "source", "project", "timestamp", "payload"],
         "payload_fields": ["mode", "phase", "state_path"],
     },
+    {
+        "type": "agent.prompt.submitted",
+        "description": "任意智能体运行时收到用户提示或上游任务输入。",
+        "required_fields": ["schema_version", "id", "type", "source", "project", "timestamp", "payload"],
+        "payload_fields": ["provider", "agent_runtime", "prompt"],
+    },
+    {
+        "type": "agent.tool.started",
+        "description": "任意智能体运行时开始执行工具调用。",
+        "required_fields": ["schema_version", "id", "type", "source", "project", "timestamp", "payload"],
+        "payload_fields": ["provider", "agent_runtime", "tool", "args"],
+    },
+    {
+        "type": "agent.tool.finished",
+        "description": "任意智能体运行时完成工具调用。",
+        "required_fields": ["schema_version", "id", "type", "source", "project", "timestamp", "payload"],
+        "payload_fields": ["provider", "agent_runtime", "tool", "exit_code", "status"],
+    },
+    {
+        "type": "agent.run.stopped",
+        "description": "任意智能体运行时正常停止。",
+        "required_fields": ["schema_version", "id", "type", "source", "project", "timestamp", "payload"],
+        "payload_fields": ["provider", "agent_runtime", "reason"],
+    },
+    {
+        "type": "agent.run.failed",
+        "description": "任意智能体运行时失败停止。",
+        "required_fields": ["schema_version", "id", "type", "source", "project", "timestamp", "payload"],
+        "payload_fields": ["provider", "agent_runtime", "error"],
+    },
+    {
+        "type": "exec.started",
+        "description": "项目内 exec 烟测或命令执行开始。",
+        "required_fields": ["schema_version", "id", "type", "source", "project", "timestamp", "payload"],
+        "payload_fields": ["provider", "agent_runtime", "command", "cwd"],
+    },
+    {
+        "type": "exec.completed",
+        "description": "项目内 exec 命令执行成功完成。",
+        "required_fields": ["schema_version", "id", "type", "source", "project", "timestamp", "payload"],
+        "payload_fields": ["provider", "agent_runtime", "command", "cwd", "exit_code", "duration_ms"],
+    },
+    {
+        "type": "exec.failed",
+        "description": "项目内 exec 命令执行失败或超时。",
+        "required_fields": ["schema_version", "id", "type", "source", "project", "timestamp", "payload"],
+        "payload_fields": ["provider", "agent_runtime", "command", "cwd", "exit_code", "duration_ms", "error"],
+    },
 )
 
 

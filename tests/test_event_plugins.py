@@ -139,6 +139,13 @@ def test_event_schema_lists_known_event_contracts(tmp_path, monkeypatch):
     assert "test.event" in schemas
     assert "doctor.checked" in schemas
     assert "task.updated" in schemas
+    assert "agent.prompt.submitted" in schemas
+    assert "agent.tool.started" in schemas
+    assert "agent.tool.finished" in schemas
+    assert "agent.run.stopped" in schemas
+    assert "agent.run.failed" in schemas
+    assert "exec.completed" in schemas
+    assert "provider" in schemas["agent.prompt.submitted"]["payload_fields"]
     assert "required_fields" in schemas["test.event"]
     assert "payload" in schemas["test.event"]["required_fields"]
 
