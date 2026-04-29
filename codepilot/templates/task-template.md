@@ -72,9 +72,10 @@ MUST be written in Chinese per task_breakdown.md language rules.
 
 ## Execution Order
 
-1. Ship the minimum runnable happy path first.
-2. Then handle edge cases and error branches.
-3. Finally, run every check in the verification matrix.
+1. Red: add or update the focused test that captures the target behavior; confirm it fails when feasible.
+2. Green: implement the smallest change needed to pass that test and satisfy the happy path.
+3. Refactor: clean only what is necessary inside this task's scope.
+4. Verify: run every check in the verification matrix and record evidence.
 
 ---
 
@@ -103,6 +104,7 @@ MUST be written in Chinese per task_breakdown.md language rules.
 
 - **Completed at** —
 - **Changed files** —
+- **TDD evidence** — failing test added/updated; passing verification command; or reason automated TDD was not applicable.
 - **Verification result** —
 - **API changes** — (If any endpoints were added/modified/removed, update OpenAPI on dev and sync to Apifox.)
 - **Review verdict** — `VERDICT: PASS` / `VERDICT: FAIL`
