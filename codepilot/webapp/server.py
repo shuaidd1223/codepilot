@@ -436,8 +436,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if match:
             qs = parse_qs(parsed.query)
             proj = qs.get("project", [""])[0]
+            query = qs.get("q", [""])[0]
             try:
-                self._send_json(list_sessions_action(proj))
+                limit = int(qs.get("limit", ["50"])[0] or "50")
+            except ValueError:
+                limit = 50
+            try:
+                self._send_json(list_sessions_action(proj, query=query, limit=limit))
             except RuntimeError as exc:
                 self._send_json({"error": str(exc)}, status=400)
             return

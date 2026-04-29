@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -304,6 +305,20 @@ def test_project_detail_endpoint(ui_server):
     status, body = _get(f"{ui_server}/api/projects/demo")
     assert status == 200
     assert body.get("selected_project") == "demo"
+
+
+def test_sessions_endpoint_searches_message_history(ui_server):
+    session = db.create_session("demo", title="历史会话")
+    db.create_session_message(session["id"], "user", "继续优化任务列表筛选")
+
+    query = urllib.parse.quote("任务列表")
+    status, body = _get(f"{ui_server}/api/sessions?project=demo&q={query}")
+
+    assert status == 200
+    assert body["searched"] is True
+    assert body["matched_sessions"] == 1
+    assert body["sessions"][0]["id"] == session["id"]
+    assert "任务列表" in body["sessions"][0]["snippet"]
 
 
 def test_task_detail_404_for_nonexistent(ui_server):

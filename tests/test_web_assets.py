@@ -231,6 +231,19 @@ def test_form_components_use_scoped_action_pending_instead_of_global_sending():
     assert "s.sending" not in chat
 
 
+def test_sessions_view_wires_history_search():
+    sessions = Path("codepilot/web/components/SessionsView.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "searchQuery" in sessions
+    assert "runSearch()" in sessions
+    assert "/api/sessions?${qs.toString()}" in sessions
+    assert "搜索会话标题、消息正文或任务编号" in sessions
+    assert "session-snippet" in sessions
+    assert ".session-search-input" in styles
+    assert ".session-snippet" in styles
+
+
 def test_web_ui_wires_structured_clarification_fields_and_cancel_actions():
     index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
     utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")

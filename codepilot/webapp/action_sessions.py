@@ -93,23 +93,111 @@ def _session_payload(
     return payload
 
 
-def list_sessions_action(project: str = "") -> dict:
+def _session_search_terms(query: str) -> list[str]:
+    normalized = normalize_text(query).lower()
+    return [part for part in re.split(r"\s+", normalized) if part]
+
+
+def _session_match_snippet(text: str, query: str, *, context: int = 64) -> Optional[str]:
+    compact = _compact_session_text(text, limit=600)
+    if not compact:
+        return None
+    lowered = compact.lower()
+    terms = _session_search_terms(query)
+    if not terms:
+        return None
+
+    needle = normalize_text(query).lower()
+    index = lowered.find(needle)
+    needle_len = len(needle)
+    if index < 0:
+        for term in terms:
+            index = lowered.find(term)
+            if index >= 0:
+                needle_len = len(term)
+                break
+    if index < 0:
+        return None
+
+    start = max(0, index - context)
+    end = min(len(compact), index + needle_len + context)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(compact) else ""
+    return f"{prefix}{compact[start:end].strip()}{suffix}"
+
+
+def _session_matches_query(session: dict, messages: list[dict], query: str) -> tuple[bool, str, int]:
+    terms = _session_search_terms(query)
+    if not terms:
+        return True, "", 0
+
+    title = str(session.get("title") or "")
+    title_haystack = title.lower()
+    if all(term in title_haystack for term in terms):
+        return True, _session_match_snippet(title, query) or title, 0
+
+    matched_messages = 0
+    first_snippet = ""
+    for message in messages:
+        content = str(message.get("content") or "")
+        haystack = " ".join(
+            [
+                content,
+                str(message.get("intent") or ""),
+                " ".join(f"#{task_id}" for task_id in _message_task_ids(message)),
+            ]
+        ).lower()
+        if not all(term in haystack for term in terms):
+            continue
+        matched_messages += 1
+        if not first_snippet:
+            first_snippet = _session_match_snippet(content, query) or _compact_session_text(content)
+
+    return matched_messages > 0, first_snippet, matched_messages
+
+
+def _session_list_item(session: dict, messages: list[dict]) -> dict:
+    return {
+        "id": session["id"],
+        "project": session["project"],
+        "title": session["title"],
+        "status": session["status"],
+        "created_at": session["created_at"],
+        "updated_at": session["updated_at"],
+        "message_count": len(messages),
+    }
+
+
+def list_sessions_action(project: str = "", query: str = "", limit: int = 50) -> dict:
     db.init_db()
     sessions = sort_sessions_for_display(db.list_sessions(project=project or None, status="active"))
+    query = normalize_text(query)
+    try:
+        limit = max(1, min(int(limit or 50), 200))
+    except (TypeError, ValueError):
+        limit = 50
+
+    results = []
+    searched = bool(query)
+    for session in sessions:
+        messages = db.list_session_messages(session["id"])
+        item = _session_list_item(session, messages)
+        if searched:
+            matched, snippet, matched_messages = _session_matches_query(session, messages, query)
+            if not matched:
+                continue
+            item["snippet"] = snippet
+            item["matched_message_count"] = matched_messages
+        results.append(item)
+        if searched and len(results) >= limit:
+            break
+
     return {
         "ok": True,
-        "sessions": [
-            {
-                "id": s["id"],
-                "project": s["project"],
-                "title": s["title"],
-                "status": s["status"],
-                "created_at": s["created_at"],
-                "updated_at": s["updated_at"],
-                "message_count": len(db.list_session_messages(s["id"])),
-            }
-            for s in sessions
-        ],
+        "query": query,
+        "searched": searched,
+        "matched_sessions": len(results) if searched else None,
+        "sessions": results,
     }
 
 

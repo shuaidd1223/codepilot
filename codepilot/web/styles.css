@@ -465,6 +465,46 @@ p { margin: 0; }
   padding: 0 8px;
   font-size: 11px;
 }
+.session-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.session-search-input {
+  position: relative;
+  width: min(520px, 100%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  height: 36px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+}
+.session-search-input input {
+  height: 32px;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  color: hsl(var(--foreground));
+}
+.session-search-input input:focus {
+  box-shadow: none;
+}
+.session-snippet {
+  margin-top: 2px;
+  padding: 7px 8px;
+  border-left: 2px solid hsl(var(--primary) / .45);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: hsl(var(--muted) / .35);
+  color: hsl(var(--foreground) / .82);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
 
 /* Task sections (in TasksView) */
 .task-section-head {

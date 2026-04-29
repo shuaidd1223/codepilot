@@ -949,3 +949,26 @@ def test_webui_session_list_sorts_by_activity_then_creation(tmp_path, monkeypatc
     payload = webui_mod.list_sessions_action("demo")
     assert [item["id"] for item in payload["sessions"]] == [third["id"], second["id"], first["id"]]
 
+
+def test_webui_session_list_searches_titles_messages_and_task_ids(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    first = db.create_session("demo", title="任务列表优化")
+    second = db.create_session("demo", title="登录讨论")
+    third = db.create_session("demo", title="无关会话")
+    db.create_session_message(first["id"], "user", "第一轮需求：优化任务列表")
+    db.create_session_message(second["id"], "assistant", "已经创建后台任务 #42", intent="requirement", task_ids=[42])
+    db.create_session_message(third["id"], "user", "完全无关的内容")
+
+    title_payload = webui_mod.list_sessions_action("demo", query="任务列表")
+    task_payload = webui_mod.list_sessions_action("demo", query="#42")
+
+    assert title_payload["searched"] is True
+    assert [item["id"] for item in title_payload["sessions"]] == [first["id"]]
+    assert "任务列表" in title_payload["sessions"][0]["snippet"]
+    assert [item["id"] for item in task_payload["sessions"]] == [second["id"]]
+    assert task_payload["sessions"][0]["matched_message_count"] == 1
+
