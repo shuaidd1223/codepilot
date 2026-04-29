@@ -29,7 +29,12 @@ def test_setup_creates_default_skill_catalog(tmp_path, monkeypatch):
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     assert catalog["schema_version"] == 1
     names = {item["name"] for item in catalog["skills"]}
-    assert {"deep-interview", "ralplan", "ralph", "team", "build-fix"} <= names
+    assert {"deep-interview", "ralplan", "ralph", "build-fix", "wiki"} <= names
+    assert "team" not in names
+    build_fix = next(item for item in catalog["skills"] if item["name"] == "build-fix")
+    assert {"codex", "claude", "gemini", "custom"} <= set(build_fix["supported_providers"])
+    assert build_fix["entrypoint_command"] == "build-fix"
+    assert build_fix["requires_enabled"] is True
 
 
 def test_skill_list_search_show_enable_disable_json(tmp_path, monkeypatch):
@@ -58,3 +63,38 @@ def test_skill_list_search_show_enable_disable_json(tmp_path, monkeypatch):
     disabled = runner.invoke(main, ["skill", "disable", "build-fix", "-p", "project", "--json"])
     assert disabled.exit_code == 0, disabled.output
     assert json.loads(disabled.output)["data"]["skill"]["enabled"] is False
+
+
+def test_skill_run_rejects_disabled_skill(tmp_path, monkeypatch):
+    _init_project(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(
+        main,
+        ["skill", "run", "ralplan", "-p", "project", "--input", "add wiki context", "--json"],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "skill_catalog_error"
+
+
+def test_skill_run_routes_enabled_builtin_to_current_codepilot_capability(tmp_path, monkeypatch):
+    project = _init_project(tmp_path, monkeypatch)
+    runner = CliRunner()
+    enabled = runner.invoke(main, ["skill", "enable", "ralplan", "-p", "project", "--json"])
+    assert enabled.exit_code == 0, enabled.output
+
+    result = runner.invoke(
+        main,
+        ["skill", "run", "ralplan", "-p", "project", "--provider", "claude", "--input", "add wiki context", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["command"] == "skill run"
+    assert payload["data"]["skill"]["name"] == "ralplan"
+    assert payload["data"]["provider"] == "claude"
+    assert payload["data"]["entrypoint_command"] == "plan"
+    assert Path(payload["data"]["result"]["plan_path"]).is_file()
+    assert Path(payload["data"]["result"]["plan_path"]).is_relative_to(project)

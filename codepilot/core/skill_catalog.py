@@ -11,6 +11,7 @@ from typing import Any
 SCHEMA_VERSION = 1
 CATALOG_RELATIVE_PATH = Path(".codepilot") / "skills" / "catalog.json"
 SAFE_SKILL_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
+SUPPORTED_PROVIDERS = ("codex", "claude", "gemini", "custom")
 
 
 class SkillCatalogError(ValueError):
@@ -26,6 +27,9 @@ def default_skills() -> list[dict[str, Any]]:
             "description": "分层澄清技能：把模糊需求拆成目标、边界、验收标准和待确认问题。",
             "tags": ["workflow", "clarify", "interview"],
             "commands": ["clarify"],
+            "supported_providers": list(SUPPORTED_PROVIDERS),
+            "entrypoint_command": "clarify",
+            "requires_enabled": True,
         },
         {
             "name": "ralplan",
@@ -34,6 +38,9 @@ def default_skills() -> list[dict[str, Any]]:
             "description": "规划技能：把已澄清需求转成可执行任务、验收标准和验证命令。",
             "tags": ["workflow", "plan"],
             "commands": ["plan"],
+            "supported_providers": list(SUPPORTED_PROVIDERS),
+            "entrypoint_command": "plan",
+            "requires_enabled": True,
         },
         {
             "name": "ralph",
@@ -42,14 +49,9 @@ def default_skills() -> list[dict[str, Any]]:
             "description": "执行技能：按任务模板驱动 builder/reviewer 闭环执行。",
             "tags": ["workflow", "run", "review"],
             "commands": ["run", "go"],
-        },
-        {
-            "name": "team",
-            "kind": "builtin",
-            "enabled": False,
-            "description": "团队协作技能占位：描述未来 worker/mailbox 协同运行时能力。",
-            "tags": ["workflow", "team", "mailbox"],
-            "commands": ["hud", "trace"],
+            "supported_providers": list(SUPPORTED_PROVIDERS),
+            "entrypoint_command": "go",
+            "requires_enabled": True,
         },
         {
             "name": "build-fix",
@@ -58,6 +60,20 @@ def default_skills() -> list[dict[str, Any]]:
             "description": "质量闭环技能：收集失败任务、触发重试修复并运行验证命令。",
             "tags": ["quality", "retry", "verification"],
             "commands": ["build-fix"],
+            "supported_providers": list(SUPPORTED_PROVIDERS),
+            "entrypoint_command": "build-fix",
+            "requires_enabled": True,
+        },
+        {
+            "name": "wiki",
+            "kind": "builtin",
+            "enabled": False,
+            "description": "项目记忆技能：查询或显式沉淀当前项目 wiki 内容。",
+            "tags": ["memory", "wiki", "context"],
+            "commands": ["wiki"],
+            "supported_providers": list(SUPPORTED_PROVIDERS),
+            "entrypoint_command": "wiki",
+            "requires_enabled": True,
         },
     ]
 
@@ -81,6 +97,8 @@ def _normalize_skill(skill: dict[str, Any]) -> dict[str, Any]:
     name = _validate_name(str(skill.get("name") or ""))
     tags = skill.get("tags") if isinstance(skill.get("tags"), list) else []
     commands = skill.get("commands") if isinstance(skill.get("commands"), list) else []
+    providers = skill.get("supported_providers") if isinstance(skill.get("supported_providers"), list) else []
+    normalized_providers = [str(item).lower() for item in providers if str(item).lower() in SUPPORTED_PROVIDERS]
     return {
         "name": name,
         "kind": str(skill.get("kind") or "project").strip() or "project",
@@ -88,6 +106,9 @@ def _normalize_skill(skill: dict[str, Any]) -> dict[str, Any]:
         "description": str(skill.get("description") or "").strip(),
         "tags": [str(item).strip() for item in tags if str(item).strip()],
         "commands": [str(item).strip() for item in commands if str(item).strip()],
+        "supported_providers": normalized_providers or list(SUPPORTED_PROVIDERS),
+        "entrypoint_command": str(skill.get("entrypoint_command") or (commands[0] if commands else "")).strip(),
+        "requires_enabled": bool(skill.get("requires_enabled", True)),
     }
 
 

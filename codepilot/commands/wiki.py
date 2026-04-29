@@ -221,6 +221,62 @@ def query_wiki(project_info: dict, query: str, *, limit: int = MAX_QUERY_RESULTS
     return sorted(results, key=lambda item: (-item["score"], item["path"]))[:limit]
 
 
+def wiki_context(project_info: dict, query: str, *, enabled: bool = True, limit: int = 5) -> dict[str, Any]:
+    """Return small read-only wiki context for agent/provider-neutral workflows."""
+    if not enabled:
+        return {"enabled": False, "query": query, "results": []}
+    return {"enabled": True, "query": query, "results": query_wiki(project_info, query, limit=limit)}
+
+
+def update_wiki_page(
+    project_info: dict,
+    *,
+    slug: str,
+    title: str | None = None,
+    body: str | None = None,
+    tags: list[str] | None = None,
+) -> dict[str, Any]:
+    wiki_dir = _wiki_dir(project_info)
+    path = _page_path(wiki_dir, slug)
+    if not path.is_file():
+        raise WikiError(f"wiki 页面不存在：{slug}.md")
+    existing = _parse_page(path, wiki_dir)
+    next_title = (title if title is not None else existing["title"]).strip()
+    next_body = (body if body is not None else existing["body"]).strip()
+    next_tags = tags if tags is not None else existing["tags"]
+    if not next_title:
+        raise WikiError("wiki 页面标题不能为空。")
+    if not next_body:
+        raise WikiError("wiki 页面正文不能为空。")
+    if _contains_secret(f"{next_title}\n{next_body}"):
+        raise WikiError("wiki 不接受疑似 secret、token、password 或 app_secret 内容。")
+    metadata = {
+        "title": next_title,
+        "created_at": existing["created_at"] or datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "source": existing["source"] or "manual",
+        "tags": next_tags,
+        "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+    }
+    path.write_text(f"{_frontmatter(metadata)}\n\n{next_body}\n", encoding="utf-8")
+    return {"path": path.name, "title": next_title, "source": metadata["source"], "tags": next_tags}
+
+
+def delete_wiki_page(project_info: dict, *, slug: str) -> dict[str, Any]:
+    wiki_dir = _wiki_dir(project_info)
+    path = _page_path(wiki_dir, slug)
+    if not path.is_file():
+        raise WikiError(f"wiki 页面不存在：{slug}.md")
+    page = _parse_page(path, wiki_dir)
+    path.unlink()
+    return {"path": page["path"], "title": page["title"], "deleted": True}
+
+
+def refresh_wiki(project_info: dict) -> dict[str, Any]:
+    pages = list_wiki_pages(project_info)
+    lint = lint_wiki(project_info)
+    return {"project": project_info["name"], "page_count": len(pages), "pages": pages, "lint": lint}
+
+
 def lint_wiki(project_info: dict) -> dict[str, Any]:
     wiki_dir = _wiki_dir(project_info)
     issues: list[dict[str, str]] = []
@@ -400,6 +456,78 @@ def list_cmd(ctx: click.Context, project: str | None, json_mode: bool) -> None:
         return
     for page in pages:
         click.echo(f"{page['path']}\t{page['title'] or '-'}")
+
+
+@wiki_group.command("update")
+@click.option("--project", "-p", help="项目名称，不指定则按当前目录匹配")
+@click.option("--slug", required=True, help="要更新的安全文件名，不含 .md")
+@click.option("--title", help="新的页面标题")
+@click.option("--body", help="新的页面正文")
+@click.option("--tag", "tags", multiple=True, help="替换页面标签，可重复")
+@click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
+@click.pass_context
+def update_cmd(
+    ctx: click.Context,
+    project: str | None,
+    slug: str,
+    title: str | None,
+    body: str | None,
+    tags: tuple[str, ...],
+    json_mode: bool,
+) -> None:
+    """更新一个 wiki 页面。"""
+    json_mode = resolve_json_mode(ctx, json_mode)
+    try:
+        project_info = _resolve_project(project)
+        page = update_wiki_page(project_info, slug=slug, title=title, body=body, tags=list(tags) if tags else None)
+    except (WikiError, click.ClickException) as exc:
+        _emit_or_raise(ctx, "wiki update", json_mode, exc)
+        return
+    data = {"project": project_info["name"], "page": page}
+    if json_mode:
+        emit_json_payload("wiki update", ok=True, data=data)
+        return
+    echo(f"[green][OK] 已更新 wiki 页面：{page['path']}[/green]")
+
+
+@wiki_group.command("delete")
+@click.option("--project", "-p", help="项目名称，不指定则按当前目录匹配")
+@click.option("--slug", required=True, help="要删除的安全文件名，不含 .md")
+@click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
+@click.pass_context
+def delete_cmd(ctx: click.Context, project: str | None, slug: str, json_mode: bool) -> None:
+    """删除一个 wiki 页面。"""
+    json_mode = resolve_json_mode(ctx, json_mode)
+    try:
+        project_info = _resolve_project(project)
+        page = delete_wiki_page(project_info, slug=slug)
+    except (WikiError, click.ClickException) as exc:
+        _emit_or_raise(ctx, "wiki delete", json_mode, exc)
+        return
+    data = {"project": project_info["name"], "page": page}
+    if json_mode:
+        emit_json_payload("wiki delete", ok=True, data=data)
+        return
+    echo(f"[green][OK] 已删除 wiki 页面：{page['path']}[/green]")
+
+
+@wiki_group.command("refresh")
+@click.option("--project", "-p", help="项目名称，不指定则按当前目录匹配")
+@click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
+@click.pass_context
+def refresh_cmd(ctx: click.Context, project: str | None, json_mode: bool) -> None:
+    """刷新并检查项目本地 wiki 索引视图。"""
+    json_mode = resolve_json_mode(ctx, json_mode)
+    try:
+        project_info = _resolve_project(project)
+        data = refresh_wiki(project_info)
+    except (WikiError, click.ClickException) as exc:
+        _emit_or_raise(ctx, "wiki refresh", json_mode, exc)
+        return
+    if json_mode:
+        emit_json_payload("wiki refresh", ok=True, data=data)
+        return
+    echo(f"[green][OK] wiki refresh：{data['page_count']} pages[/green]")
 
 
 @wiki_group.command("query")

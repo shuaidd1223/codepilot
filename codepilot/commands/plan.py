@@ -185,6 +185,8 @@ def _render_plan_markdown(payload: dict[str, Any]) -> str:
         f"| {item['criterion']} | `{item['command']}` | {item['expected']} |" for item in verification
     )
     order_lines = "\n".join(f"{idx + 1}. {item['title']}" for idx, item in enumerate(candidates))
+    wiki_results = (payload.get("wiki_context") or {}).get("results") or []
+    wiki_lines = "\n".join(f"- {item['path']}：{item['title'] or item['summary']}" for item in wiki_results) or "- 未匹配到 wiki 引用。"
     return f"""# Execution Plan: {payload['summary']}
 
 ## 来源
@@ -196,6 +198,9 @@ def _render_plan_markdown(payload: dict[str, Any]) -> str:
 
 ## 文件范围
 {_render_list(payload['files'])}
+
+## Wiki 引用
+{wiki_lines}
 
 ## 风险
 {_render_list(payload['risks'])}
@@ -220,6 +225,7 @@ def build_execution_plan(
     *,
     source: str = "text",
     source_path: str | None = None,
+    wiki_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = _summary(requirement)
     files = _topic_files(requirement)
@@ -235,6 +241,7 @@ def build_execution_plan(
         "task_candidates": candidates,
         "risks": risks,
         "verification_plan": verification_plan,
+        "wiki_context": wiki_context or {"enabled": False, "query": requirement, "results": []},
     }
     payload["plan"] = _render_plan_markdown(payload)
     return payload
@@ -246,6 +253,7 @@ def write_plan_artifact(
     *,
     source: str = "text",
     source_path: str | None = None,
+    use_wiki: bool = True,
 ) -> dict[str, Any]:
     project_path = Path(project_info["path"]).resolve()
     dirs = workflow_dirs(project_path)
@@ -260,7 +268,10 @@ def write_plan_artifact(
         context_path=context_path,
         artifact_paths={"plan": plan_path},
     )
-    payload = build_execution_plan(requirement, source=source, source_path=source_path)
+    from codepilot.commands.wiki import wiki_context as collect_wiki_context
+
+    wiki = collect_wiki_context(project_info, requirement, enabled=use_wiki, limit=5)
+    payload = build_execution_plan(requirement, source=source, source_path=source_path, wiki_context=wiki)
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     context_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(payload["plan"], encoding="utf-8", newline="\n")
@@ -275,6 +286,7 @@ def write_plan_artifact(
                 "task_candidates": payload["task_candidates"],
                 "risks": payload["risks"],
                 "verification_plan": payload["verification_plan"],
+                "wiki_context": payload["wiki_context"],
                 "state": state,
             },
             ensure_ascii=False,
@@ -295,6 +307,7 @@ def write_plan_artifact(
         "task_candidates": payload["task_candidates"],
         "risks": payload["risks"],
         "verification_plan": payload["verification_plan"],
+        "wiki_context": payload["wiki_context"],
     }
 
 
@@ -302,9 +315,17 @@ def write_plan_artifact(
 @click.argument("requirement", nargs=-1, required=False)
 @click.option("--project", "-p", help="项目名称；不指定则按当前目录匹配")
 @click.option("--from-spec", "from_spec", type=click.Path(path_type=str), help="从项目内 clarify spec 生成计划")
+@click.option("--use-wiki/--no-wiki", default=True, show_default=True, help="是否读取项目 wiki 作为只读上下文")
 @click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
 @click.pass_context
-def plan(ctx: click.Context, requirement: tuple[str, ...], project: str | None, from_spec: str | None, json_mode: bool) -> None:
+def plan(
+    ctx: click.Context,
+    requirement: tuple[str, ...],
+    project: str | None,
+    from_spec: str | None,
+    use_wiki: bool,
+    json_mode: bool,
+) -> None:
     """生成可审查执行计划，不创建 backlog、不启动执行。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     text = " ".join(requirement).strip()
@@ -322,7 +343,7 @@ def plan(ctx: click.Context, requirement: tuple[str, ...], project: str | None, 
         source = "spec"
         source_path = str(spec_path)
 
-    result = write_plan_artifact(project_info, text, source=source, source_path=source_path)
+    result = write_plan_artifact(project_info, text, source=source, source_path=source_path, use_wiki=use_wiki)
     if json_mode:
         emit_json_payload("plan", ok=True, data=result)
         return

@@ -70,7 +70,7 @@ STOP_WORDS = {
     "where",
 }
 MUTATING_PATTERNS = (
-    r"\b(delete|remove|rm|write|modify|change|update|fix|implement|create|add|install|start|stop|commit|push|merge|run|execute|test|pytest|npm|pip)\b",
+    r"\b(delete|remove|rm|write|modify|change|update|fix|implement|create|add|install|start|stop|commit|push|merge|run|execute|test)\b",
     r"(删除|移除|写入|修改|更改|更新|修复|实现|新增|创建|安装|启动|停止|提交|推送|合并|执行|运行|测试)",
 )
 SHELL_META_PATTERN = re.compile(r"(\|\||&&|;|`|\$\(|>|<)")
@@ -410,6 +410,7 @@ def explore_project(
     *,
     project: str | None = None,
     cwd: Path | None = None,
+    use_wiki: bool = True,
 ) -> dict[str, Any]:
     """Collect bounded read-only evidence for a project query."""
     normalized_query = (query or "").strip()
@@ -453,6 +454,24 @@ def explore_project(
     file_list = _file_list_evidence(root, terms)
     evidence.append(file_list)
     sources.extend({"type": "file", "path": path} for path in file_list.get("files", [])[:MAX_SOURCE_ITEMS])
+
+    if use_wiki:
+        try:
+            from codepilot.commands.wiki import wiki_context
+
+            wiki = wiki_context(project_info, normalized_query, enabled=True, limit=5)
+            if wiki.get("results"):
+                evidence.append(
+                    {
+                        "kind": "wiki_context",
+                        "title": "Wiki 上下文",
+                        "summary": f"匹配到 {len(wiki['results'])} 条项目 wiki 记忆。",
+                        "results": wiki["results"],
+                    }
+                )
+                sources.extend({"type": "wiki", "path": item["path"]} for item in wiki["results"])
+        except Exception as exc:
+            limitations.append(f"wiki context 读取失败：{_shorten(str(exc))}")
 
     file_matches = _rg_search(root, terms, limitations)
     if file_matches:
@@ -519,16 +538,24 @@ def _print_human_result(result: dict[str, Any]) -> None:
 @click.argument("query_parts", nargs=-1)
 @click.option("--prompt", "prompt", default=None, help="要探索的问题；等价于位置参数")
 @click.option("--project", "-p", default=None, help="项目名称；不传则按当前目录自动识别")
+@click.option("--use-wiki/--no-wiki", default=True, show_default=True, help="是否读取项目 wiki 作为只读上下文")
 @click.option("--json", "json_mode", is_flag=True, help="以 JSON 输出结构化 evidence")
 @click.pass_context
-def explore(ctx: click.Context, query_parts: tuple[str, ...], prompt: str | None, project: str | None, json_mode: bool) -> None:
+def explore(
+    ctx: click.Context,
+    query_parts: tuple[str, ...],
+    prompt: str | None,
+    project: str | None,
+    use_wiki: bool,
+    json_mode: bool,
+) -> None:
     """只读探索项目文件、Git、任务和 inspect 信号."""
     json_mode = resolve_json_mode(ctx, json_mode)
     query = (prompt or " ".join(query_parts)).strip()
     if not query:
         raise click.ClickException("需要提供探索问题，例如 codepilot explore --prompt \"find task template\"")
 
-    result = explore_project(query, project=project)
+    result = explore_project(query, project=project, use_wiki=use_wiki)
     if result.get("status") == "error":
         if json_mode:
             emit_json_payload("explore", ok=False, data=result, error=(result.get("limitations") or ["探索失败"])[-1], error_code="project_required")

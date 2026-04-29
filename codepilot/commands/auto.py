@@ -282,6 +282,26 @@ def _clarify_requirement_for_go(
     return refined or (pending_state or clarify_state).get("original_title") or seed_title
 
 
+def _augment_requirement_with_wiki_context(text: str, *, project_info: dict, use_wiki: bool) -> str:
+    if not use_wiki:
+        return text
+    try:
+        from codepilot.commands.wiki import wiki_context
+
+        context = wiki_context(project_info, text, enabled=True, limit=3)
+    except Exception:
+        return text
+    results = context.get("results") or []
+    if not results:
+        return text
+    lines = ["", "项目 wiki 只读引用："]
+    for item in results[:3]:
+        title = item.get("title") or item.get("path") or "wiki"
+        summary = item.get("summary") or ""
+        lines.append(f"- {item.get('path')}: {title} - {summary}")
+    return text.rstrip() + "\n" + "\n".join(lines)
+
+
 @click.command("auto")
 @click.option("--project", "-p", callback=_resolve_project_strict, help="项目名称")
 @click.option("--title", "-t", required=True, help="高层目标或任务标题")
@@ -365,6 +385,7 @@ def auto(
 )
 @click.option("--auto-commit/--no-auto-commit", default=None, help="是否自动提交；默认跟随配置")
 @click.option("--max-retries", type=int, default=0, help="最大重试次数；0 表示读取配置")
+@click.option("--use-wiki/--no-wiki", default=True, show_default=True, help="是否允许后续规划读取项目 wiki 只读上下文")
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
 def go(
@@ -379,6 +400,7 @@ def go(
     executor: Optional[str],
     auto_commit: Optional[bool],
     max_retries: int,
+    use_wiki: bool,
     json_mode: bool,
 ):
     """接收纯文本需求，判定复杂度后自动规划或直接执行."""
@@ -449,6 +471,7 @@ def go(
             project_info=project_info,
             planner=effective["planner"],
         )
+        text = _augment_requirement_with_wiki_context(text, project_info=project_info, use_wiki=use_wiki)
         max_tasks_override = 1 if intent == "task" else effective["max_tasks"]
         try:
             run_requirement_workflow(
