@@ -50,6 +50,11 @@
       "purpose": "检索项目本地 wiki 中沉淀的构建命令、架构事实、失败模式和人工决策。"
     },
     {
+      "command": "codepilot note show -p <项目名> --json",
+      "format": "json",
+      "purpose": "读取项目持久工作记忆，恢复跨会话关键上下文。"
+    },
+    {
       "command": "codepilot task find <关键词> -p <项目名> --json",
       "format": "json",
       "purpose": "搜索任务并获取结构化结果。"
@@ -277,6 +282,18 @@
         "codepilot wiki add -p codepilot-dev --title \"构建命令\" --body \"pytest tests\"",
         "codepilot wiki query -p codepilot-dev \"构建\" --json",
         "codepilot wiki lint -p codepilot-dev --json"
+      ]
+    },
+    {
+      "name": "note",
+      "syntax": "codepilot note <add|show|prune|clear> ...",
+      "purpose": "维护项目持久工作记忆 `.codepilot/notepad.md`，保存跨会话关键上下文。",
+      "when_to_use": "需要记录当前任务的短期上下文、人工约束、后续必须记住的事实，避免上下文压缩或换会话后丢失时。",
+      "examples": [
+        "codepilot note add -p codepilot-dev \"pytest tests 是当前主验证命令\"",
+        "codepilot note add -p codepilot-dev --priority \"项目使用 Python 3.11\"",
+        "codepilot note show -p codepilot-dev --json",
+        "codepilot note prune -p codepilot-dev --days 7"
       ]
     },
     {

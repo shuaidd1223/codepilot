@@ -37,6 +37,13 @@ codepilot hud -p <项目名> --preset full
 codepilot hud --watch
 ```
 
+记录跨会话工作记忆：
+
+```bash
+codepilot note add -p <项目名> "当前验证命令是 pytest tests"
+codepilot note show -p <项目名>
+```
+
 任务运维（统一入口 `task`）：
 
 ```bash

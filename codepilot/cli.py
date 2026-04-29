@@ -34,6 +34,7 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "inspect": ("codepilot.commands.inspect", "inspect"),
     "explore": ("codepilot.commands.explore", "explore"),
     "wiki": ("codepilot.commands.wiki", "wiki_group"),
+    "note": ("codepilot.commands.note", "note_group"),
     "webhook": ("codepilot.commands.webhook", "webhook"),
     "feishu": ("codepilot.commands.feishu", "feishu_group"),
     "workflow": ("codepilot.commands.workflow", "workflow_group"),

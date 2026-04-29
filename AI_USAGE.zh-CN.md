@@ -74,7 +74,18 @@ codepilot wiki lint -p <项目名> --json
 
 适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
 
-### 3.4 生成执行前需求规格
+### 3.4 项目持久工作记忆
+
+```bash
+codepilot note add -p <项目名> "当前验证命令是 pytest tests"
+codepilot note add -p <项目名> --priority "项目使用 Python 3.11"
+codepilot note show -p <项目名> --json
+codepilot note prune -p <项目名> --days 7
+```
+
+`note` 写入 `.codepilot/notepad.md`，适合记录跨会话仍要保留的短上下文。Priority Context 应保持短小；Working Memory 可裁剪；Manual 由人工维护。不要写入 secret、token 或密码。
+
+### 3.5 生成执行前需求规格
 
 ```bash
 codepilot clarify -p <项目名> "改进 doctor" --json
@@ -82,7 +93,7 @@ codepilot clarify -p <项目名> "改进 doctor" --json
 
 `clarify` 只生成 `.codepilot/specs/clarify-*.md` 和 context artifact，写入 workflow state，不创建 backlog 任务、不启动执行器。适合先把模糊需求整理成目标、范围、非目标、约束、验收标准和待确认问题。
 
-### 3.5 生成可审查执行计划
+### 3.6 生成可审查执行计划
 
 ```bash
 codepilot plan -p <项目名> "新增 explore" --json

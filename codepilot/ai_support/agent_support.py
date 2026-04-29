@@ -110,6 +110,11 @@ def command_manifest(
                 "purpose": "检索项目本地 wiki 中沉淀的构建命令、架构事实、失败模式和人工决策。",
             },
             {
+                "command": _cmd(command, "note show -p <项目名> --json"),
+                "format": "json",
+                "purpose": "读取项目持久工作记忆，恢复跨会话关键上下文。",
+            },
+            {
                 "command": _cmd(command, "task find <关键词> -p <项目名> --json"),
                 "format": "json",
                 "purpose": "搜索任务并获取结构化结果。",
@@ -322,6 +327,18 @@ def command_manifest(
                 ],
             },
             {
+                "name": "note",
+                "syntax": _cmd(command, "note <add|show|prune|clear> ..."),
+                "purpose": "维护项目持久工作记忆 `.codepilot/notepad.md`，保存跨会话关键上下文。",
+                "when_to_use": "需要记录当前任务的短期上下文、人工约束、后续必须记住的事实，避免上下文压缩或换会话后丢失时。",
+                "examples": [
+                    _cmd(command, 'note add -p codepilot-dev "pytest tests 是当前主验证命令"'),
+                    _cmd(command, 'note add -p codepilot-dev --priority "项目使用 Python 3.11"'),
+                    _cmd(command, "note show -p codepilot-dev --json"),
+                    _cmd(command, "note prune -p codepilot-dev --days 7"),
+                ],
+            },
+            {
                 "name": "webhook",
                 "syntax": _cmd(command, "webhook [--host 127.0.0.1] [--port 8765]"),
                 "purpose": "启动轻量 HTTP Webhook 服务，接收外部系统任务投递；任务状态通知支持 Feishu interactive 卡片、企业微信和 generic JSON。",
@@ -530,7 +547,18 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 
 适合写入 wiki 的内容包括稳定构建命令、架构事实、巡检发现、常见失败、人工决策和项目约定。不要写入 secret、API key、token、Feishu app_secret 或临时大段日志。
 
-### 3.4 生成执行前需求规格
+### 3.4 项目持久工作记忆
+
+```bash
+{_cmd(command, 'note add -p <项目名> "当前验证命令是 pytest tests"')}
+{_cmd(command, 'note add -p <项目名> --priority "项目使用 Python 3.11"')}
+{_cmd(command, "note show -p <项目名> --json")}
+{_cmd(command, "note prune -p <项目名> --days 7")}
+```
+
+`note` 写入 `.codepilot/notepad.md`，适合记录跨会话仍要保留的短上下文。Priority Context 应保持短小；Working Memory 可裁剪；Manual 由人工维护。不要写入 secret、token 或密码。
+
+### 3.5 生成执行前需求规格
 
 ```bash
 {_cmd(command, 'clarify -p <项目名> "改进 doctor" --json')}
@@ -538,7 +566,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 
 `clarify` 只生成 `.codepilot/specs/clarify-*.md` 和 context artifact，写入 workflow state，不创建 backlog 任务、不启动执行器。适合先把模糊需求整理成目标、范围、非目标、约束、验收标准和待确认问题。
 
-### 3.5 生成可审查执行计划
+### 3.6 生成可审查执行计划
 
 ```bash
 {_cmd(command, 'plan -p <项目名> "新增 explore" --json')}
