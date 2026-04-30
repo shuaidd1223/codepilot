@@ -80,6 +80,83 @@ def collect_ruff(project_path: Path, limit: int = 30) -> str:
         return f"（ruff 执行失败：{exc}）"
 
 
+def _summarize_pytest_collect_output(lines: list[str], limit: int = 30) -> str:
+    stripped = [ln for ln in lines if ln.strip()]
+    if not stripped:
+        return "（pytest collect 无输出）"
+
+    def _nodeid_file(line: str) -> str | None:
+        if "::" not in line:
+            return None
+        path_text = line.split("::", 1)[0].replace("\\", "/")
+        if not path_text.endswith(".py"):
+            return None
+        return path_text
+
+    def _is_diagnostic_line(line: str) -> bool:
+        if _nodeid_file(line) is not None:
+            return False
+        lowered = line.lower()
+        return (
+            lowered.startswith("error")
+            or lowered.startswith("warning")
+            or " error " in lowered
+            or " warning " in lowered
+        )
+
+    status_lines = [
+        ln
+        for ln in stripped
+        if _nodeid_file(ln) is None
+        and (
+            " collected" in ln.lower()
+            or " deselected" in ln.lower()
+            or " error" in ln.lower()
+            or " failed" in ln.lower()
+        )
+    ]
+    warnings_and_errors = [
+        ln
+        for ln in stripped
+        if _is_diagnostic_line(ln)
+    ]
+
+    file_counts: dict[str, int] = {}
+    for line in stripped:
+        path_text = _nodeid_file(line)
+        if path_text is None:
+            continue
+        file_counts[path_text] = file_counts.get(path_text, 0) + 1
+
+    if not file_counts:
+        interesting = warnings_and_errors or [
+            ln
+            for ln in stripped
+            if " collected" in ln.lower()
+            or " deselected" in ln.lower()
+            or "test" in ln.lower()
+        ]
+        picked = interesting[:limit] if interesting else stripped[-limit:]
+        return "\n".join(picked)
+
+    summary: list[str] = []
+    if status_lines:
+        summary.append(status_lines[-1])
+    if warnings_and_errors:
+        summary.extend(warnings_and_errors[: max(1, min(5, limit))])
+
+    summary.append(f"{len(file_counts)} test files collected:")
+    file_lines = [f"{path} ({count} tests)" for path, count in file_counts.items()]
+    visible_count = max(1, limit - len(summary) - 1)
+    summary.extend(file_lines[:visible_count])
+
+    omitted = list(file_counts.keys())[visible_count:]
+    if omitted:
+        summary.append(f"... {len(omitted)} more test files: {', '.join(omitted)}")
+
+    return "\n".join(summary)
+
+
 def collect_pytest_collect(project_path: Path, limit: int = 30) -> str:
     """Run pytest --collect-only to surface collection errors and test count."""
     if not _which("pytest"):
@@ -96,15 +173,7 @@ def collect_pytest_collect(project_path: Path, limit: int = 30) -> str:
         )
         output = decode_subprocess_text(result.stdout) + decode_subprocess_text(result.stderr)
         lines = [ln for ln in output.splitlines() if ln.strip()]
-        if not lines:
-            return "（pytest collect 无输出）"
-        interesting = [
-            ln
-            for ln in lines
-            if "error" in ln.lower() or "warning" in ln.lower() or "test" in ln.lower()
-        ]
-        picked = interesting[:limit] if interesting else lines[-limit:]
-        return "\n".join(picked)
+        return _summarize_pytest_collect_output(lines, limit=limit)
     except Exception as exc:
         return f"（pytest collect 失败：{exc}）"
 
