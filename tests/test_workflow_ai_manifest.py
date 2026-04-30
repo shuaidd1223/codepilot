@@ -5,6 +5,7 @@ import sys
 import types
 from pathlib import Path
 from zipfile import ZipFile
+import re
 
 import click
 import pytest
@@ -13,6 +14,7 @@ from click.testing import CliRunner
 from codepilot.ai_support.agent_support import ai_guide_markdown, command_manifest
 from codepilot.binary_support import manager as binary_mod
 from codepilot.binary_support import paths as binary_paths_mod
+from codepilot.core.task_template import missing_task_template_sections, unreplaced_task_template_placeholders
 from codepilot.storage import database as db
 from codepilot.ai_support import service as ai_mod
 from codepilot.core import progress_bus
@@ -119,6 +121,38 @@ def test_ai_template_json_returns_structured_schema():
     assert isinstance(batch["example"], list) and batch["example"]
     assert payload["validation"]["required_headings"]
     assert "{goal}" in payload["validation"]["placeholder_tokens"]
+
+
+def test_ai_template_json_batch_example_is_import_ready():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "template", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    placeholder_names = [item["name"] for item in payload["placeholders"]]
+
+    for item in payload["batch_import"]["example"]:
+        assert item.get("title")
+        assert item.get("content")
+        assert missing_task_template_sections(item["content"]) == []
+        assert unreplaced_task_template_placeholders(
+            item["content"],
+            placeholder_names=placeholder_names,
+        ) == []
+
+
+def test_ai_template_json_batch_example_matches_full_template_structure():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "template", "--format", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    template_headings = re.findall(r"^##\s+(.+?)\s*$", payload["template_markdown"], flags=re.MULTILINE)
+
+    for item in payload["batch_import"]["example"]:
+        content = item["content"]
+        for heading in template_headings:
+            assert f"## {heading}" in content
 
 
 def test_ai_template_guide_renders_chinese_markdown():

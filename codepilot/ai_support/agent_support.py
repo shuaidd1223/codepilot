@@ -1101,6 +1101,62 @@ def _task_template_markdown() -> str:
     return TASK_TEMPLATE_PATH.read_text(encoding="utf-8", errors="replace")
 
 
+def _task_template_example_content() -> str:
+    """Render an import-ready example from the canonical task template."""
+
+    replacements = {
+        "title": "Builder 子进程日志实时推送",
+        "agent": "dual",
+        "priority": "P0",
+        "depends_on": "T3",
+        "risk_level": "中",
+        "scope_budget": "最多 3 个文件、约 180 行",
+        "owner": "未指派",
+        "goal": "让 Builder 子进程 stdout/stderr 能实时转发到 progress_bus，并在 Web UI 任务详情中持续显示最新日志。",
+        "builder_responsibilities": (
+            "- 捕获 Builder 子进程 stdout/stderr 增量输出\n"
+            "- 将日志增量发布为 progress_bus 事件\n"
+            "- 在 Web UI 任务详情实时追加日志"
+        ),
+        "not_in_scope": (
+            "- 不重构执行器调度流程\n"
+            "- 不修改任务数据库 schema"
+        ),
+        "forbidden": (
+            "- 不提交密钥、令牌或本机路径配置\n"
+            "- 不吞掉子进程退出码或失败异常"
+        ),
+        "files": (
+            "- `codepilot/commands/run_live_runner.py`\n"
+            "- `codepilot/core/progress_bus.py`\n"
+            "- `codepilot/web/components/TaskDetail.js`"
+        ),
+        "evidence": "现有任务详情依赖 progress_bus 事件刷新，Builder 子进程输出需要通过同一通道进入 Web UI。",
+        "notes": (
+            "- 实时日志转发要避免阻塞子进程退出\n"
+            "- 失败路径仍需保留原始退出码和错误信息"
+        ),
+        "criteria": (
+            "- [ ] Builder 运行时 stdout/stderr 能在任务详情中持续追加显示\n"
+            "- [ ] 子进程失败时仍保留原始退出码和错误信息"
+        ),
+        "ac_matrix": (
+            "| AC | Command | Expected | Evidence |\n"
+            "| :--- | :--- | :--- | :--- |\n"
+            "| AC1 | `pytest tests/test_run_orchestrator.py -q` | 通过并覆盖实时日志事件 | pytest 输出 |\n"
+            "| AC2 | `pytest tests/test_webui_api.py -q` | 通过并覆盖任务详情刷新 | pytest 输出 |"
+        ),
+        "reviewer_responsibilities": (
+            "- 检查日志转发不会阻塞子进程退出\n"
+            "- 检查失败路径仍能展示错误并保留退出码"
+        ),
+    }
+    content = _task_template_markdown()
+    for name, value in replacements.items():
+        content = content.replace("{" + name + "}", value)
+    return content
+
+
 def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
     """Return a machine-readable description of the task template.
 
@@ -1154,7 +1210,7 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
     ]
     batch_fields = [
         {"name": "title", "required": True, "type": "string", "description": "任务标题，作为唯一必填字段。"},
-        {"name": "content", "required": False, "type": "string",
+        {"name": "content", "required": True, "type": "string",
          "aliases": ["body", "description"],
          "description": "完整的任务正文 markdown。若提供则跳过 AI 生成；建议按 task-template.md 渲染后填入。JSON 批量导入时强烈建议直接提供该字段。"},
         {"name": "agent", "required": False, "type": "string",
@@ -1165,6 +1221,7 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
          "aliases": ["depends_on", "dependsOn"],
          "description": "依赖的 task id 列表，可传数组、逗号分隔字符串或单个整数。"},
     ]
+    batch_example_content = _task_template_example_content()
     return {
         "template_path": str(TASK_TEMPLATE_PATH),
         "template_markdown": _task_template_markdown(),
@@ -1194,7 +1251,7 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
                     "title": "Builder 子进程日志实时推送",
                     "priority": "P0",
                     "agent": "dual",
-                    "content": "# Builder 子进程日志实时推送\n\n## Task Goal\n...\n## Acceptance Criteria\n- [ ] ...",
+                    "content": batch_example_content,
                     "depends": [3],
                 }
             ],
