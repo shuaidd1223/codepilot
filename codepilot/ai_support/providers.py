@@ -11,7 +11,6 @@ import platform
 import shutil
 import subprocess
 import time
-import importlib.util
 import json
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -21,13 +20,13 @@ from typing import Any, Callable, Optional
 import urllib.request
 
 from codepilot.ai_support.planner_context import collect_planner_context
+from codepilot.ai_support.provider_adapters import (
+    ANTHROPIC_AVAILABLE,
+    OPENAI_AVAILABLE,
+    build_api_client,
+)
 from codepilot.core.config import load_project_config
 from codepilot.core.text_decode import decode_subprocess_text
-
-# API support libs (optional and lazily imported).
-# Keep availability flags cheap so CLI startup does not import heavy SDK trees.
-OPENAI_AVAILABLE = importlib.util.find_spec("openai") is not None
-ANTHROPIC_AVAILABLE = importlib.util.find_spec("anthropic") is not None
 
 
 @dataclass
@@ -88,48 +87,7 @@ class APIProvider:
 
     def build_client(self):
         """构建 API 客户端."""
-        api_key = self.resolve_api_key()
-
-        if self.provider_type == "openai":
-            if not OPENAI_AVAILABLE:
-                raise RuntimeError(
-                    f"当前无法使用 {self.name}，因为本机没有安装 openai 依赖。"
-                    "请先执行: pip install openai"
-                )
-            if self.requires_api_key() and not api_key:
-                env_names = " / ".join(self.api_env_vars) or "对应的 API Key 环境变量"
-                raise RuntimeError(
-                    f"当前无法使用 {self.name}，因为还没有配置 API Key。"
-                    f"请先设置 {env_names}。"
-                )
-            from openai import OpenAI
-
-            client = OpenAI(
-                api_key=api_key,
-                base_url=self.base_url or None,
-            )
-            return client, "chat.completions"
-        elif self.provider_type == "anthropic":
-            if not ANTHROPIC_AVAILABLE:
-                raise RuntimeError(
-                    f"当前无法使用 {self.name}，因为本机没有安装 anthropic 依赖。"
-                    "请先执行: pip install anthropic"
-                )
-            if self.requires_api_key() and not api_key:
-                env_names = " / ".join(self.api_env_vars) or "对应的 API Key 环境变量"
-                raise RuntimeError(
-                    f"当前无法使用 {self.name}，因为还没有配置 API Key。"
-                    f"请先设置 {env_names}。"
-                )
-            from anthropic import Anthropic
-
-            client = Anthropic(
-                api_key=api_key,
-                base_url=self.base_url or None,
-            )
-            return client, "messages"
-        else:
-            raise ValueError(f"不支持的 provider_type: {self.provider_type}")
+        return build_api_client(self)
 
 
 
