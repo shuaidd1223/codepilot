@@ -115,6 +115,55 @@ def test_openai_sync_usage_is_recorded(tmp_path, monkeypatch):
     assert usage["by_model"]["configured-complex-model"]["total_tokens"] == 12
 
 
+def test_openai_stream_usage_is_recorded(tmp_path, monkeypatch):
+    from codepilot.ai_support.providers import API_PROVIDERS, _run_api_provider
+    from codepilot.core import progress_bus
+    from codepilot.webapp.payloads import ai_status_payload
+
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+
+    class _FakeChatCompletions:
+        def create(self, **kwargs):
+            assert kwargs["stream"] is True
+            assert kwargs["stream_options"] == {"include_usage": True}
+            return [
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="ok"))],
+                    usage=None,
+                ),
+                SimpleNamespace(
+                    choices=[],
+                    usage={
+                        "prompt_tokens": 11,
+                        "completion_tokens": 4,
+                        "total_tokens": 15,
+                        "completion_tokens_details": {"reasoning_tokens": 2},
+                    },
+                ),
+            ]
+
+    provider = copy(API_PROVIDERS["deepseek"])
+    provider.api_key = "sk-test"
+    provider.simple_model = "configured-simple-model"
+    provider.build_client = lambda: (
+        SimpleNamespace(chat=SimpleNamespace(completions=_FakeChatCompletions())),
+        "chat.completions",
+    )
+
+    progress_bus.clear_subscribers_for_tests()
+    with progress_bus.subscription(lambda _event: None):
+        assert _run_api_provider(provider, "总结这个标题") == "ok"
+
+    usage = ai_status_payload()["usage"]["deepseek"]
+    assert usage["requests"] == 1
+    assert usage["prompt_tokens"] == 11
+    assert usage["completion_tokens"] == 4
+    assert usage["total_tokens"] == 15
+    assert usage["reasoning_tokens"] == 2
+    assert usage["by_model"]["configured-simple-model"]["requests"] == 1
+    assert usage["by_model"]["configured-simple-model"]["total_tokens"] == 15
+
+
 def test_deepseek_balance_fetches_user_balance(monkeypatch):
     from codepilot.ai_support.providers import API_PROVIDERS
     from codepilot.webapp.payloads import ai_status_payload

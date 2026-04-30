@@ -19,6 +19,7 @@ from codepilot.gateway.resolution import (
 from tests.ai_gateway_testkit import (
     CompletedProcessStub,
     FakeAPIProvider,
+    FakeCLIProvider,
     STRUCTURED_SCHEMA,
     gateway_state,
 )
@@ -371,6 +372,32 @@ def test_call_structured_marks_unavailable_api_before_cli_fallback(gateway_state
     ]
 
 
+def test_call_structured_falls_back_to_cli_when_api_returns_non_json(gateway_state, monkeypatch):
+    provider = FakeAPIProvider(needs_key=True, api_key="sk-test")
+    gateway_state["registry"]["openai"] = provider
+    monkeypatch.setattr(
+        "codepilot.ai_support.providers._run_api_provider",
+        lambda *_args, **_kwargs: "not json",
+    )
+
+    resp = ai_gateway.call_structured(
+        GatewayRequest(
+            prompt="hi",
+            schema=STRUCTURED_SCHEMA,
+            classifier_provider="openai",
+            planner="claude",
+            project_path="D:/project",
+            config_ref="D:/config/AGENTS.toml",
+        )
+    )
+
+    assert resp.ok is True
+    assert resp.source == "cli:claude"
+    assert resp.payload == {"intent": "requirement", "reason": "from claude CLI"}
+    assert gateway_state["cli_calls"][0]["kwargs"]["project_path"] == "D:/project"
+    assert gateway_state["cli_calls"][0]["kwargs"]["config_ref"] == "D:/config/AGENTS.toml"
+
+
 def test_call_structured_passes_config_ref_to_cli(gateway_state):
     resp = ai_gateway.call_structured(
         GatewayRequest(
@@ -405,4 +432,64 @@ def test_call_text_prefers_api_when_key_available(gateway_state):
     assert resp.source == "api:openai"
     assert resp.text == '{"intent": "task", "reason": "from api"}'
     assert gateway_state["cli_calls"] == []
+
+
+def test_call_text_marks_api_failure_then_runs_project_codex_cli(gateway_state, monkeypatch):
+    marks: list[dict[str, object]] = []
+    provider = FakeAPIProvider(needs_key=False, raises=True)
+    gateway_state["registry"]["localcustom"] = provider
+
+    def _fake_resolve_cli_provider(cli_name, provider_ref):
+        assert provider_ref == "D:/config/AGENTS.toml"
+        if cli_name == "claude":
+            return FakeCLIProvider(exe="")
+        return FakeCLIProvider(exe="C:/bin/codex.exe")
+
+    calls: list[dict[str, object]] = []
+
+    def _fake_subprocess_run(cmd, **kwargs):
+        calls.append({"cmd": cmd, **kwargs})
+        return CompletedProcessStub(returncode=0, stdout=" project answer ", stderr="")
+
+    monkeypatch.setattr("codepilot.ai_support.providers.resolve_cli_provider", _fake_resolve_cli_provider)
+    monkeypatch.setattr("codepilot.gateway.execute.subprocess.run", _fake_subprocess_run)
+    monkeypatch.setattr(
+        "codepilot.gateway.api.mark_provider_unavailable",
+        lambda provider_key, provider_obj, reason, **kwargs: marks.append(
+            {
+                "provider_key": provider_key,
+                "provider": provider_obj,
+                "reason": reason,
+                "source": kwargs.get("source"),
+                "project_path": kwargs.get("project_path"),
+            }
+        ),
+    )
+
+    resp = ai_gateway.call_text(
+        GatewayRequest(
+            prompt="hi",
+            classifier_provider="localcustom",
+            planner="codex",
+            project_path="D:/project",
+            config_ref="D:/config/AGENTS.toml",
+            timeout=12,
+        )
+    )
+
+    assert resp.ok is True
+    assert resp.source == "cli:codex"
+    assert resp.text == "project answer"
+    assert marks == [
+        {
+            "provider_key": "localcustom",
+            "provider": provider,
+            "reason": "boom",
+            "source": "gateway",
+            "project_path": "D:/project",
+        }
+    ]
+    assert calls[0]["cmd"][:3] == ["C:/bin/codex.exe", "-C", "D:/project"]
+    assert calls[0]["input"] == b"hi"
+    assert calls[0]["timeout"] == 12
 
