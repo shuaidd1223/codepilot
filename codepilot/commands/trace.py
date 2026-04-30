@@ -74,6 +74,178 @@ def _workflow_states(project_path: str | Path) -> list[dict[str, Any]]:
     return states
 
 
+def _filter_tasks(tasks: list[dict[str, Any]], task_id: int | None) -> list[dict[str, Any]]:
+    if task_id is None:
+        return tasks
+    return [task for task in tasks if int(task["id"]) == int(task_id)]
+
+
+def _task_lifecycle_events(project: str, task: dict[str, Any]) -> list[dict[str, Any]]:
+    tid = int(task["id"])
+    title = str(task.get("title") or "")
+    status = str(task.get("status") or "")
+    phase = str(task.get("run_phase") or "")
+    events: list[dict[str, Any]] = []
+
+    if task.get("created_at"):
+        events.append(
+            _event(
+                timestamp=task["created_at"],
+                source="task",
+                event="task.created",
+                project=project,
+                task_id=tid,
+                status=status,
+                message=f"#{tid} 创建任务：{title}",
+            )
+        )
+    if task.get("started_at"):
+        events.append(
+            _event(
+                timestamp=task["started_at"],
+                source="task",
+                event="task.started",
+                project=project,
+                task_id=tid,
+                status=status,
+                phase=phase,
+                message=f"#{tid} 开始执行：{title}",
+            )
+        )
+    if task.get("heartbeat_at"):
+        events.append(
+            _event(
+                timestamp=task["heartbeat_at"],
+                source="task",
+                event="task.heartbeat",
+                project=project,
+                task_id=tid,
+                status=status,
+                phase=phase,
+                message=f"#{tid} 心跳：{title}",
+                detail=str(task.get("last_output") or ""),
+            )
+        )
+    if task.get("completed_at"):
+        events.append(
+            _event(
+                timestamp=task["completed_at"],
+                source="task",
+                event="task.completed",
+                project=project,
+                task_id=tid,
+                status=status,
+                message=f"#{tid} 结束：{title}",
+                detail=str(task.get("error_message") or task.get("delivery_record") or ""),
+            )
+        )
+
+    return events
+
+
+def _task_log_events(project: str, task_id: int) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for log in db.list_task_logs(task_id):
+        phase = str(log.get("phase") or "")
+        if log.get("started_at"):
+            events.append(
+                _event(
+                    timestamp=log["started_at"],
+                    source="task_log",
+                    event="task_log.started",
+                    project=project,
+                    task_id=task_id,
+                    phase=phase,
+                    message=f"#{task_id} 阶段开始：{phase}",
+                    detail=str(log.get("output") or ""),
+                )
+            )
+        if log.get("finished_at"):
+            exit_code = log.get("exit_code")
+            events.append(
+                _event(
+                    timestamp=log["finished_at"],
+                    source="task_log",
+                    event="task_log.finished",
+                    project=project,
+                    task_id=task_id,
+                    phase=phase,
+                    status=f"exit={exit_code}" if exit_code is not None else "",
+                    message=f"#{task_id} 阶段结束：{phase}",
+                    detail=str(log.get("output") or ""),
+                )
+            )
+    return events
+
+
+def _collect_task_events(project: str, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for task in tasks:
+        tid = int(task["id"])
+        events.extend(_task_lifecycle_events(project, task))
+        events.extend(_task_log_events(project, tid))
+    return events
+
+
+def _service_events(project: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for state in db.list_service_states():
+        scope = str(state.get("scope") or "").strip()
+        if scope not in {"", project}:
+            continue
+        service = str(state.get("service") or "")
+        label = f"{service}:{scope}" if scope else service
+        timestamp = str(state.get("heartbeat_at") or state.get("updated_at") or "")
+        if not timestamp:
+            continue
+        events.append(
+            _event(
+                timestamp=timestamp,
+                source="service",
+                event="service.heartbeat",
+                project=project,
+                status=str(state.get("status") or ""),
+                message=f"服务心跳：{label}",
+                detail=str(state.get("log_path") or ""),
+            )
+        )
+    return events
+
+
+def _workflow_event(project: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    timestamp = str(state.get("updated_at") or state.get("started_at") or state.get("completed_at") or "")
+    if not timestamp:
+        return None
+    mode = str(state.get("mode") or state.get("_path") or "")
+    active = state.get("active")
+    return _event(
+        timestamp=timestamp,
+        source="workflow",
+        event="workflow.updated",
+        project=project,
+        status="active" if active is True else "inactive" if active is False else "",
+        phase=str(state.get("current_phase") or ""),
+        message=f"workflow 更新：{mode}",
+        detail=str(state.get("context_path") or state.get("_path") or ""),
+    )
+
+
+def _workflow_events(project: str, project_path: str | Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for state in _workflow_states(project_path):
+        event = _workflow_event(project, state)
+        if event is not None:
+            events.append(event)
+    return events
+
+
+def _sort_and_limit_events(events: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    sorted_events = sorted(events, key=lambda item: item["timestamp"], reverse=True)
+    if limit > 0:
+        return sorted_events[:limit]
+    return sorted_events
+
+
 def collect_trace_events(
     project_info: dict,
     *,
@@ -85,144 +257,16 @@ def collect_trace_events(
     """Collect a merged activity timeline from local CodePilot state."""
     project = project_info["name"]
     project_path = project_info["path"]
-    tasks = db.list_tasks(project=project)
-    if task_id is not None:
-        tasks = [task for task in tasks if int(task["id"]) == int(task_id)]
+    tasks = _filter_tasks(db.list_tasks(project=project), task_id)
+    events = _collect_task_events(project, tasks)
 
-    events: list[dict[str, Any]] = []
-    for task in tasks:
-        tid = int(task["id"])
-        title = str(task.get("title") or "")
-        status = str(task.get("status") or "")
-        if task.get("created_at"):
-            events.append(
-                _event(
-                    timestamp=task["created_at"],
-                    source="task",
-                    event="task.created",
-                    project=project,
-                    task_id=tid,
-                    status=status,
-                    message=f"#{tid} 创建任务：{title}",
-                )
-            )
-        if task.get("started_at"):
-            events.append(
-                _event(
-                    timestamp=task["started_at"],
-                    source="task",
-                    event="task.started",
-                    project=project,
-                    task_id=tid,
-                    status=status,
-                    phase=str(task.get("run_phase") or ""),
-                    message=f"#{tid} 开始执行：{title}",
-                )
-            )
-        if task.get("heartbeat_at"):
-            events.append(
-                _event(
-                    timestamp=task["heartbeat_at"],
-                    source="task",
-                    event="task.heartbeat",
-                    project=project,
-                    task_id=tid,
-                    status=status,
-                    phase=str(task.get("run_phase") or ""),
-                    message=f"#{tid} 心跳：{title}",
-                    detail=str(task.get("last_output") or ""),
-                )
-            )
-        if task.get("completed_at"):
-            events.append(
-                _event(
-                    timestamp=task["completed_at"],
-                    source="task",
-                    event="task.completed",
-                    project=project,
-                    task_id=tid,
-                    status=status,
-                    message=f"#{tid} 结束：{title}",
-                    detail=str(task.get("error_message") or task.get("delivery_record") or ""),
-                )
-            )
-        for log in db.list_task_logs(tid):
-            phase = str(log.get("phase") or "")
-            if log.get("started_at"):
-                events.append(
-                    _event(
-                        timestamp=log["started_at"],
-                        source="task_log",
-                        event="task_log.started",
-                        project=project,
-                        task_id=tid,
-                        phase=phase,
-                        message=f"#{tid} 阶段开始：{phase}",
-                        detail=str(log.get("output") or ""),
-                    )
-                )
-            if log.get("finished_at"):
-                exit_code = log.get("exit_code")
-                events.append(
-                    _event(
-                        timestamp=log["finished_at"],
-                        source="task_log",
-                        event="task_log.finished",
-                        project=project,
-                        task_id=tid,
-                        phase=phase,
-                        status=f"exit={exit_code}" if exit_code is not None else "",
-                        message=f"#{tid} 阶段结束：{phase}",
-                        detail=str(log.get("output") or ""),
-                    )
-                )
+    if task_id is None:
+        if include_services:
+            events.extend(_service_events(project))
+        if include_workflow:
+            events.extend(_workflow_events(project, project_path))
 
-    if include_services and task_id is None:
-        for state in db.list_service_states():
-            scope = str(state.get("scope") or "").strip()
-            if scope not in {"", project}:
-                continue
-            service = str(state.get("service") or "")
-            label = f"{service}:{scope}" if scope else service
-            timestamp = str(state.get("heartbeat_at") or state.get("updated_at") or "")
-            if timestamp:
-                events.append(
-                    _event(
-                        timestamp=timestamp,
-                        source="service",
-                        event="service.heartbeat",
-                        project=project,
-                        status=str(state.get("status") or ""),
-                        message=f"服务心跳：{label}",
-                        detail=str(state.get("log_path") or ""),
-                    )
-                )
-
-    if include_workflow and task_id is None:
-        for state in _workflow_states(project_path):
-            timestamp = str(state.get("updated_at") or state.get("started_at") or state.get("completed_at") or "")
-            if not timestamp:
-                continue
-            mode = str(state.get("mode") or state.get("_path") or "")
-            phase = str(state.get("current_phase") or "")
-            active = state.get("active")
-            events.append(
-                _event(
-                    timestamp=timestamp,
-                    source="workflow",
-                    event="workflow.updated",
-                    project=project,
-                    status="active" if active is True else "inactive" if active is False else "",
-                    phase=phase,
-                    message=f"workflow 更新：{mode}",
-                    detail=str(state.get("context_path") or state.get("_path") or ""),
-                )
-            )
-
-    sorted_events = sorted(events, key=lambda item: item["timestamp"], reverse=True)
-    if limit > 0:
-        return sorted_events[:limit]
-    return sorted_events
+    return _sort_and_limit_events(events, limit)
 
 
 def render_trace(events: list[dict[str, Any]]) -> None:

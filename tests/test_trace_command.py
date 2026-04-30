@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 
 from click.testing import CliRunner
 
+import codepilot.commands.trace as trace_cmd
 from codepilot.cli import main
 from codepilot.commands.trace import collect_trace_events
 from codepilot.core.workflow_state import start_workflow
@@ -18,6 +21,8 @@ def _seed_trace(tmp_path, monkeypatch):
     project = db.register_project("demo", str(project_path))
 
     task = db.create_task("demo", "实现 trace", "content", agent="codex", priority="P1")
+    with db.get_write_conn() as conn:
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", ("2026-04-29 09:59:00", task["id"]))
     db.update_task(
         task["id"],
         status="in_progress",
@@ -88,3 +93,27 @@ def test_trace_task_filter_excludes_service_and_workflow_events(tmp_path, monkey
     assert events
     assert {event["source"] for event in events} == {"task", "task_log"}
     assert all(event["task_id"] == task["id"] for event in events)
+
+
+def test_collect_trace_events_respects_optional_project_sources(tmp_path, monkeypatch):
+    project, _task = _seed_trace(tmp_path, monkeypatch)
+
+    events = collect_trace_events(project, limit=0, include_services=False, include_workflow=False)
+
+    assert events
+    assert {event["source"] for event in events} == {"task", "task_log"}
+
+
+def test_collect_trace_events_delegates_collection_branches():
+    tree = ast.parse(inspect.getsource(trace_cmd.collect_trace_events))
+    branch_nodes = (
+        ast.If,
+        ast.For,
+        ast.While,
+        ast.Try,
+        ast.IfExp,
+        ast.BoolOp,
+        ast.comprehension,
+    )
+
+    assert sum(isinstance(node, branch_nodes) for node in ast.walk(tree)) <= 6
