@@ -119,6 +119,32 @@ def test_run_api_provider_falls_back_to_openai_sync_when_streaming_fails():
     assert [call.get("stream", False) for call in calls] == [True, False]
 
 
+def test_api_endpoint_strategy_owns_stream_fallback(monkeypatch):
+    from codepilot.ai_support.providers import _APIEndpointStrategy
+
+    calls: list[str] = []
+
+    def _stream(_ctx):
+        calls.append("stream")
+        raise RuntimeError("stream down")
+
+    def _sync(_ctx):
+        calls.append("sync")
+        return "sync fallback"
+
+    monkeypatch.setattr("codepilot.ai_support.providers._should_stream_llm_progress", lambda: True)
+
+    strategy = _APIEndpointStrategy(
+        endpoint="fake",
+        sync_runner=_sync,
+        stream_runner=_stream,
+    )
+    text = strategy.run(SimpleNamespace(provider=SimpleNamespace(name="fake-provider")))
+
+    assert text == "sync fallback"
+    assert calls == ["stream", "sync"]
+
+
 def test_run_api_provider_routes_anthropic_streaming_events():
     from codepilot.ai_support.providers import _run_api_provider
 

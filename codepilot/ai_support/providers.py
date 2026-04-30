@@ -17,7 +17,7 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 import urllib.request
 
 from codepilot.ai_support.planner_context import collect_planner_context
@@ -1138,29 +1138,54 @@ def _run_anthropic_stream(ctx: _APIRunContext) -> str:
     return output
 
 
-_API_ENDPOINT_RUNNERS = {
-    "chat.completions": (_run_openai_sync, _run_openai_stream),
-    "messages": (_run_anthropic_sync, _run_anthropic_stream),
+@dataclass(frozen=True)
+class _APIEndpointStrategy:
+    endpoint: str
+    sync_runner: Callable[[_APIRunContext], str]
+    stream_runner: Callable[[_APIRunContext], str]
+
+    def run(self, ctx: _APIRunContext) -> str:
+        should_stream = _should_stream_llm_progress()
+        output = self._run_with_optional_stream(ctx, should_stream=should_stream)
+        return self._require_output(ctx, output)
+
+    def _run_with_optional_stream(self, ctx: _APIRunContext, *, should_stream: bool) -> str:
+        if not should_stream:
+            return self.sync_runner(ctx)
+        try:
+            return self.stream_runner(ctx)
+        except Exception:
+            return self.sync_runner(ctx)
+
+    def _require_output(self, ctx: _APIRunContext, output: str) -> str:
+        if not output:
+            raise RuntimeError(f"{ctx.provider.name} 返回了空内容")
+        return output
+
+
+_API_ENDPOINT_STRATEGIES = {
+    "chat.completions": _APIEndpointStrategy(
+        endpoint="chat.completions",
+        sync_runner=_run_openai_sync,
+        stream_runner=_run_openai_stream,
+    ),
+    "messages": _APIEndpointStrategy(
+        endpoint="messages",
+        sync_runner=_run_anthropic_sync,
+        stream_runner=_run_anthropic_stream,
+    ),
 }
 
 
-def _run_api_endpoint(ctx: _APIRunContext, endpoint: str) -> str:
-    runners = _API_ENDPOINT_RUNNERS.get(endpoint)
-    if runners is None:
+def _resolve_api_endpoint_strategy(endpoint: str) -> _APIEndpointStrategy:
+    strategy = _API_ENDPOINT_STRATEGIES.get(endpoint)
+    if strategy is None:
         raise ValueError(f"未知端点类型: {endpoint}")
+    return strategy
 
-    sync_runner, stream_runner = runners
-    should_stream = _should_stream_llm_progress()
-    try:
-        output = stream_runner(ctx) if should_stream else sync_runner(ctx)
-    except Exception:
-        if not should_stream:
-            raise
-        output = sync_runner(ctx)
 
-    if not output:
-        raise RuntimeError(f"{ctx.provider.name} 返回了空内容")
-    return output
+def _run_api_endpoint(ctx: _APIRunContext, endpoint: str) -> str:
+    return _resolve_api_endpoint_strategy(endpoint).run(ctx)
 
 
 def _run_api_provider(
