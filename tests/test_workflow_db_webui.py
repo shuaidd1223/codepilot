@@ -20,6 +20,7 @@ from codepilot.ai_support import service as ai_mod
 from codepilot.core import progress_bus
 from codepilot.gateway.service import GatewayResponse
 from codepilot.core import runtime as runtime_mod
+from codepilot.webapp import action_requirements as requirement_actions
 from codepilot.webapp import server as webui_mod
 from codepilot.cli import main
 from codepilot.commands import add as add_cmd
@@ -496,6 +497,56 @@ def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeyp
     assert "任务执行服务已启动" in jobs[0]["summary"]
     task = db.get_task(jobs[0]["task_ids"][0])
     assert task["title"] == "让 Web UI 直接接收需求"
+
+
+def test_requirement_job_context_validates_persisted_request(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path), default_mode="codex")
+
+    with webui_mod._UI_LOCK:
+        webui_mod._UI_JOBS.clear()
+        webui_mod._UI_JOB_SEQ = 30
+        webui_mod._UI_JOBS[30] = {
+            "id": 30,
+            "project": "demo",
+            "title": "拆分需求执行",
+            "planner": "claude",
+            "priority": "P1",
+            "request": {
+                "project": "demo",
+                "title": "拆分需求执行",
+                "execute": False,
+                "max_tasks": 2,
+                "task_source": "inspector",
+            },
+        }
+    webui_mod._update_job(30)
+
+    context = requirement_actions._load_requirement_job_context(30)
+
+    assert context.job_id == 30
+    assert context.project == "demo"
+    assert context.title == "拆分需求执行"
+    assert context.planner == "claude"
+    assert context.priority == "P1"
+    assert context.execute is False
+    assert context.max_tasks == 2
+    assert context.task_source == "inspector"
+    assert context.project_info["path"] == str(project_path)
+
+    with webui_mod._UI_LOCK:
+        webui_mod._UI_JOBS[31] = {
+            "id": 31,
+            "project": "demo",
+            "title": "",
+            "request": {"project": "demo", "title": ""},
+        }
+    webui_mod._update_job(31)
+
+    with pytest.raises(RuntimeError, match="缺少项目或标题"):
+        requirement_actions._load_requirement_job_context(31)
 
 
 def test_webui_requirement_jobs_survive_ui_state_reset(tmp_path, monkeypatch):

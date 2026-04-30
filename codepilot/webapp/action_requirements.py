@@ -162,6 +162,25 @@ class _GoalDispatchContext:
     forced_intent: Optional[str]
 
 
+@dataclass(frozen=True)
+class _RequirementJobContext:
+    job_id: int
+    job: dict
+    request: dict
+    project: str
+    title: str
+    project_info: dict
+    execute: bool
+    planner: str
+    agent: object
+    priority: str
+    max_tasks: int
+    executor: str
+    auto_commit: bool
+    max_retries: int
+    task_source: str
+
+
 def _dispatch_with_intent_handlers(
     intent: str,
     *,
@@ -417,166 +436,243 @@ def _job_result_summary(result: dict, execute: bool) -> str:
     return " | ".join(parts)
 
 
-def run_requirement_job_worker(job_id: int) -> dict | None:
-    """Run one persisted requirement-planning job in this process."""
-    shell = _shell()
-    import codepilot.ai_support.service as _ai_module
-    from codepilot.core import progress_bus
-    import time
+def _job_request_value(request: dict, job: dict, key: str, default=None):
+    if key in request and request.get(key) not in (None, ""):
+        return request.get(key)
+    if key in job and job.get(key) not in (None, ""):
+        return job.get(key)
+    return default
 
+
+def _load_requirement_job_context(job_id: int) -> _RequirementJobContext:
+    job_id = int(job_id)
     db.init_db()
-    job = _get_job(int(job_id))
+    job = _get_job(job_id)
     if not job:
         raise RuntimeError(f"需求 #{job_id} 不存在。")
     request = job.get("request") if isinstance(job.get("request"), dict) else {}
-    project = str(request.get("project") or job.get("project") or "")
-    normalized_title = str(request.get("title") or job.get("title") or "").strip()
-    if not project or not normalized_title:
+    project = str(_job_request_value(request, job, "project", ""))
+    title = str(_job_request_value(request, job, "title", "")).strip()
+    if not project or not title:
         raise RuntimeError(f"需求 #{job_id} 缺少项目或标题。")
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
 
-    execute = bool(request.get("execute", True))
-    effective_planner = str(request.get("planner") or job.get("planner") or "codex")
-    agent = request.get("agent") or None
-    normalized_priority = str(request.get("priority") or job.get("priority") or "P2")
-    max_tasks = int(request.get("max_tasks") or 5)
-    executor = str(request.get("executor") or "auto")
-    auto_commit = bool(request.get("auto_commit", False))
-    max_retries = int(request.get("max_retries") or 3)
-    task_source = str(request.get("task_source") or "user")
+    return _RequirementJobContext(
+        job_id=job_id,
+        job=job,
+        request=request,
+        project=project,
+        title=title,
+        project_info=project_info,
+        execute=bool(_job_request_value(request, {}, "execute", True)),
+        planner=str(_job_request_value(request, job, "planner", "codex")),
+        agent=request.get("agent") or None,
+        priority=str(_job_request_value(request, job, "priority", "P2")),
+        max_tasks=int(_job_request_value(request, {}, "max_tasks", 5) or 5),
+        executor=str(_job_request_value(request, {}, "executor", "auto")),
+        auto_commit=bool(_job_request_value(request, {}, "auto_commit", False)),
+        max_retries=int(_job_request_value(request, {}, "max_retries", 3) or 3),
+        task_source=str(_job_request_value(request, {}, "task_source", "user")),
+    )
 
-    def _append_job_log(line: str) -> None:
-        _append_requirement_job_log(int(job_id), line, project=project)
 
-    def _finalize_cancelled() -> dict | None:
-        current = _get_job(int(job_id)) or {}
-        if str(current.get("status") or "") == "cancelled" and current.get("finished_at"):
-            return current
-        _append_job_log("已按用户请求停止需求规划。")
-        updated = _update_job(
-            int(job_id),
-            status="cancelled",
-            phase="cancelled",
-            updated_at=_now_iso(),
-            finished_at=_now_iso(),
-            cancel_requested=True,
-            error="用户请求停止需求规划",
-        )
-        _append_event(f"需求 #{job_id} 已停止：{normalized_title}", level="warning", project=project)
-        return updated
+def _finalize_cancelled_requirement_job(
+    context: _RequirementJobContext,
+    append_job_log: Callable[[str], None],
+) -> dict | None:
+    current = _get_job(context.job_id) or {}
+    if str(current.get("status") or "") == "cancelled" and current.get("finished_at"):
+        return current
+    append_job_log("已按用户请求停止需求规划。")
+    updated = _update_job(
+        context.job_id,
+        status="cancelled",
+        phase="cancelled",
+        updated_at=_now_iso(),
+        finished_at=_now_iso(),
+        cancel_requested=True,
+        error="用户请求停止需求规划",
+    )
+    _append_event(f"需求 #{context.job_id} 已停止：{context.title}", level="warning", project=context.project)
+    return updated
 
-    if _is_job_cancel_requested(int(job_id)):
-        return _finalize_cancelled()
-    _update_job(int(job_id), status="running", phase="planning", updated_at=_now_iso())
-    _append_job_log(f"开始规划：{normalized_title}")
-    _append_job_log(f"使用规划器：{effective_planner}")
+
+def _start_requirement_job(context: _RequirementJobContext, append_job_log: Callable[[str], None]) -> None:
+    _update_job(context.job_id, status="running", phase="planning", updated_at=_now_iso())
+    append_job_log(f"开始规划：{context.title}")
+    append_job_log(f"使用规划器：{context.planner}")
+
+
+def _start_requirement_job_heartbeat(
+    context: _RequirementJobContext,
+    append_job_log: Callable[[str], None],
+):
+    import time
+
     heartbeat_stop = _actions().threading.Event()
 
     def _job_heartbeat() -> None:
         started = time.monotonic()
         while not heartbeat_stop.wait(15):
-            current = _get_job(int(job_id))
+            current = _get_job(context.job_id)
             if not current:
                 return
             if str(current.get("status") or "") not in {"running", "planning", "cancelling"}:
                 return
             elapsed = int(time.monotonic() - started)
             phase = str(current.get("phase") or "planning")
-            _append_job_log(
+            append_job_log(
                 f"规划仍在进行：已等待 {elapsed}s，当前阶段 {phase}；"
                 "如果底层 AI 暂时没有输出，页面会继续保持心跳。"
             )
 
     heartbeat_thread = _actions().threading.Thread(
         target=_job_heartbeat,
-        name=f"codepilot-requirement-job-heartbeat-{job_id}",
+        name=f"codepilot-requirement-job-heartbeat-{context.job_id}",
         daemon=True,
     )
     heartbeat_thread.start()
+    return heartbeat_stop
 
-    def _bus_listener(event: dict) -> None:
-        stage = event.get("stage") or "?"
-        message = event.get("message") or ""
-        extra = event.get("extra") or {}
-        if stage in {"ui-state", "job-log"} or extra.get("kind") in {"event", "job", "job_log"}:
-            return
-        if extra.get("task_log_stream"):
-            return
-        round_hint = ""
-        if "round" in extra and "round_total" in extra:
-            round_hint = f" (round {extra['round']}/{extra['round_total']})"
-        _append_job_log(f"[{stage}{round_hint}] {message}")
 
+def _append_requirement_bus_event(event: dict, append_job_log: Callable[[str], None]) -> None:
+    stage = event.get("stage") or "?"
+    message = event.get("message") or ""
+    extra = event.get("extra") or {}
+    if stage in {"ui-state", "job-log"} or extra.get("kind") in {"event", "job", "job_log"}:
+        return
+    if extra.get("task_log_stream"):
+        return
+    round_hint = ""
+    if "round" in extra and "round_total" in extra:
+        round_hint = f" (round {extra['round']}/{extra['round_total']})"
+    append_job_log(f"[{stage}{round_hint}] {message}")
+
+
+def _execute_requirement_planning(context: _RequirementJobContext, shell) -> dict:
+    return shell.run_requirement_workflow(
+        project_info=db.get_project(context.project) or context.project_info,
+        title=context.title,
+        planner=context.planner,
+        task_agent=context.agent or None,
+        priority=context.priority,
+        max_tasks=context.max_tasks,
+        execute=False,
+        executor=context.executor,
+        auto_commit=context.auto_commit,
+        max_retries=context.max_retries,
+        json_mode=False,
+        task_source=context.task_source,
+    )
+
+
+def _start_requirement_tasks_if_needed(
+    context: _RequirementJobContext,
+    result: dict,
+    task_ids: list[int],
+    append_job_log: Callable[[str], None],
+) -> str:
+    if not context.execute or not task_ids:
+        return ""
+    service_status, service_error = _request_task_service_start(context.project)
+    if service_error:
+        append_job_log(f"任务执行服务启动失败：{service_error}")
+        result["run_service_error"] = service_error
+        return service_error
+    result["run_service"] = service_status or {}
+    state = "已启动" if service_status and service_status.get("started") else "已在运行"
+    append_job_log(f"任务执行服务{state}，等待 daemon 领取 backlog")
+    return ""
+
+
+def _finalize_requirement_job_success(
+    context: _RequirementJobContext,
+    result: dict,
+    task_ids: list[int],
+    service_error: str,
+) -> dict:
+    status = "attention" if service_error else "succeeded"
+    updated = _update_job(
+        context.job_id,
+        status=status,
+        phase="done" if status == "succeeded" else "attention",
+        updated_at=_now_iso(),
+        finished_at=_now_iso(),
+        summary=_job_result_summary(result, context.execute),
+        task_ids=task_ids,
+        error=service_error,
+    )
+    _append_event(
+        f"需求处理完成：{context.title}",
+        level="warning" if status == "attention" else "info",
+        project=context.project,
+        task_id=task_ids[0] if task_ids else None,
+    )
+    return updated
+
+
+def _finalize_requirement_job_failure(
+    context: _RequirementJobContext,
+    exc: Exception,
+    append_job_log: Callable[[str], None],
+) -> dict:
+    append_job_log(f"失败：{exc}")
+    updated = _update_job(
+        context.job_id,
+        status="failed",
+        phase="failed",
+        updated_at=_now_iso(),
+        finished_at=_now_iso(),
+        error=str(exc),
+    )
+    _append_event(f"需求执行失败：{context.title} | {exc}", level="error", project=context.project)
+    return updated
+
+
+def _run_requirement_job_steps(
+    context: _RequirementJobContext,
+    shell,
+    append_job_log: Callable[[str], None],
+) -> dict | None:
+    if _is_job_cancel_requested(context.job_id):
+        return _finalize_cancelled_requirement_job(context, append_job_log)
+    _start_requirement_job(context, append_job_log)
+    result = _execute_requirement_planning(context, shell)
+    if _is_job_cancel_requested(context.job_id):
+        return _finalize_cancelled_requirement_job(context, append_job_log)
+    task_ids = [item["id"] for item in (result.get("tasks") or [])]
+    append_job_log(f"规划完成，创建 {len(task_ids)} 个任务")
+    if context.execute and task_ids and _is_job_cancel_requested(context.job_id):
+        return _finalize_cancelled_requirement_job(context, append_job_log)
+    service_error = _start_requirement_tasks_if_needed(context, result, task_ids, append_job_log)
+    return _finalize_requirement_job_success(context, result, task_ids, service_error)
+
+
+def run_requirement_job_worker(job_id: int) -> dict | None:
+    """Run one persisted requirement-planning job in this process."""
+    shell = _shell()
+    import codepilot.ai_support.service as _ai_module
+    from codepilot.core import progress_bus
+
+    context = _load_requirement_job_context(job_id)
+
+    def _append_job_log(line: str) -> None:
+        _append_requirement_job_log(context.job_id, line, project=context.project)
+
+    heartbeat_stop = _start_requirement_job_heartbeat(context, _append_job_log)
     prev_callback = _ai_module._planner_progress_callback
     _ai_module._planner_progress_callback = _append_job_log
 
     try:
-        with progress_bus.subscription(_bus_listener):
+        with progress_bus.subscription(lambda event: _append_requirement_bus_event(event, _append_job_log)):
             try:
-                result = shell.run_requirement_workflow(
-                    project_info=db.get_project(project) or project_info,
-                    title=normalized_title,
-                    planner=effective_planner,
-                    task_agent=agent or None,
-                    priority=normalized_priority,
-                    max_tasks=max_tasks,
-                    execute=False,
-                    executor=executor,
-                    auto_commit=auto_commit,
-                    max_retries=max_retries,
-                    json_mode=False,
-                    task_source=task_source,
-                )
-                if _is_job_cancel_requested(int(job_id)):
-                    return _finalize_cancelled()
-                task_ids = [item["id"] for item in (result.get("tasks") or [])]
-                _append_job_log(f"规划完成，创建 {len(task_ids)} 个任务")
-                service_error = ""
-                if execute and task_ids:
-                    if _is_job_cancel_requested(int(job_id)):
-                        return _finalize_cancelled()
-                    service_status, service_error = _request_task_service_start(project)
-                    if service_error:
-                        _append_job_log(f"任务执行服务启动失败：{service_error}")
-                        result["run_service_error"] = service_error
-                    else:
-                        result["run_service"] = service_status or {}
-                        state = "已启动" if service_status and service_status.get("started") else "已在运行"
-                        _append_job_log(f"任务执行服务{state}，等待 daemon 领取 backlog")
-                status = "attention" if service_error else "succeeded"
-                updated = _update_job(
-                    int(job_id),
-                    status=status,
-                    phase="done" if status == "succeeded" else "attention",
-                    updated_at=_now_iso(),
-                    finished_at=_now_iso(),
-                    summary=_job_result_summary(result, execute),
-                    task_ids=task_ids,
-                    error=service_error,
-                )
-                _append_event(
-                    f"需求处理完成：{normalized_title}",
-                    level="warning" if status == "attention" else "info",
-                    project=project,
-                    task_id=task_ids[0] if task_ids else None,
-                )
-                return updated
+                return _run_requirement_job_steps(context, shell, _append_job_log)
             except Exception as exc:
-                if _is_job_cancel_requested(int(job_id)):
-                    return _finalize_cancelled()
-                _append_job_log(f"失败：{exc}")
-                updated = _update_job(
-                    int(job_id),
-                    status="failed",
-                    phase="failed",
-                    updated_at=_now_iso(),
-                    finished_at=_now_iso(),
-                    error=str(exc),
-                )
-                _append_event(f"需求执行失败：{normalized_title} | {exc}", level="error", project=project)
-                return updated
+                if _is_job_cancel_requested(context.job_id):
+                    return _finalize_cancelled_requirement_job(context, _append_job_log)
+                return _finalize_requirement_job_failure(context, exc, _append_job_log)
     finally:
         heartbeat_stop.set()
         _ai_module._planner_progress_callback = prev_callback
