@@ -13,6 +13,7 @@ import pytest
 
 from codepilot.storage import database as db
 from codepilot.webapp import payloads as webui_payloads
+from codepilot.webapp import task_payloads
 from codepilot.webapp.schema import (
     DashboardPayload,
     ProjectStats,
@@ -56,6 +57,13 @@ def test_task_detail_includes_list_item_keys(fresh_db):
     payload = webui_payloads.task_detail_payload(fresh_db["task_id"])
     assert payload_keys(TaskListItem).issubset(payload.keys())
     assert set(payload.keys()) == payload_keys(TaskDetail)
+
+
+def test_split_task_detail_payload_matches_compatibility_facade(fresh_db):
+    split_payload = task_payloads.task_detail_payload(fresh_db["task_id"])
+    facade_payload = webui_payloads.task_detail_payload(fresh_db["task_id"])
+
+    assert split_payload == facade_payload
 
 
 def test_dashboard_payload_shape(fresh_db, monkeypatch):
