@@ -59,6 +59,25 @@ QUESTION_LOOKUP_PLAN_SCHEMA = {
 }
 
 
+_ALL_PROJECT_KEYWORDS = ("所有项目", "全部项目", "各项目", "每个项目")
+_PROJECT_LIST_KEYWORDS = ("有哪些项目", "项目列表", "项目清单", "注册项目")
+_SERVICE_STATUS_KEYWORDS = ("轮询", "巡检", "服务", "daemon", "inspect")
+_TASK_STATS_KEYWORDS = ("完成", "失败", "进度", "状态", "多少", "几个", "统计")
+_RUNNING_TASK_KEYWORDS = ("执行中", "运行中", "在跑", "进行中")
+_FAILED_TASK_KEYWORDS = ("失败任务", "失败的任务", "报错任务", "异常任务", "失败", "报错", "异常")
+_TASK_LIST_KEYWORDS = ("任务列表", "任务清单", "有哪些任务", "哪些任务", "列出任务", "看看任务", "最近任务")
+_TASK_LIST_STATUS_KEYWORDS = (
+    ("done", ("已完成", "完成的", "done")),
+    ("in_progress", _RUNNING_TASK_KEYWORDS),
+    ("failed", ("失败", "报错", "异常")),
+    ("backlog", ("待办", "未完成", "未做", "backlog")),
+)
+
+
+def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
 def _resolve_question_project(project_path: str = "") -> Optional[dict]:
     project = db.find_project_by_path(project_path) if project_path else None
     if project:
@@ -141,44 +160,46 @@ def _add_question_lookup(plan: list[dict], tool: str, *, status: str | None = No
     plan.append(entry)
 
 
+def _heuristic_project_scope(normalized: str) -> str:
+    return "all" if _contains_any(normalized, _ALL_PROJECT_KEYWORDS) else "current"
+
+
+def _heuristic_task_list_status(normalized: str) -> str:
+    if not _contains_any(normalized, _TASK_LIST_KEYWORDS):
+        return ""
+    for status, keywords in _TASK_LIST_STATUS_KEYWORDS:
+        if _contains_any(normalized, keywords):
+            return status
+    return "all"
+
+
+def _heuristic_question_needs_task_stats(normalized: str) -> bool:
+    return "任务" in normalized or _contains_any(normalized, _TASK_STATS_KEYWORDS)
+
+
 def _heuristic_question_runtime_plan(question: str, *, project_path: str = "") -> dict:
     normalized = _normalize_question_key(question)
     lookups: list[dict] = []
-    scope = "current"
+    scope = _heuristic_project_scope(normalized)
 
-    if any(keyword in normalized for keyword in ("所有项目", "全部项目", "各项目", "每个项目")):
-        scope = "all"
-
-    if any(keyword in normalized for keyword in ("有哪些项目", "项目列表", "项目清单", "注册项目")):
+    if _contains_any(normalized, _PROJECT_LIST_KEYWORDS):
         scope = "all"
         _add_question_lookup(lookups, "project_list")
 
-    if any(keyword in normalized for keyword in ("轮询", "巡检", "服务", "daemon", "inspect")):
+    if _contains_any(normalized, _SERVICE_STATUS_KEYWORDS):
         _add_question_lookup(lookups, "service_status")
 
-    if "任务" in normalized or any(keyword in normalized for keyword in ("完成", "失败", "进度", "状态", "多少", "几个", "统计")):
+    if _heuristic_question_needs_task_stats(normalized):
         _add_question_lookup(lookups, "task_stats")
 
-    if any(keyword in normalized for keyword in ("执行中", "运行中", "在跑", "进行中")):
+    if _contains_any(normalized, _RUNNING_TASK_KEYWORDS):
         _add_question_lookup(lookups, "running_tasks", limit=8)
 
-    if any(keyword in normalized for keyword in ("失败任务", "失败的任务", "报错任务", "异常任务", "失败", "报错", "异常")):
+    if _contains_any(normalized, _FAILED_TASK_KEYWORDS):
         _add_question_lookup(lookups, "failed_tasks", limit=8)
 
-    wants_task_list = any(
-        keyword in normalized
-        for keyword in ("任务列表", "任务清单", "有哪些任务", "哪些任务", "列出任务", "看看任务", "最近任务")
-    )
-    if wants_task_list:
-        task_status = "all"
-        if any(keyword in normalized for keyword in ("已完成", "完成的", "done")):
-            task_status = "done"
-        elif any(keyword in normalized for keyword in ("执行中", "运行中", "在跑", "进行中")):
-            task_status = "in_progress"
-        elif any(keyword in normalized for keyword in ("失败", "报错", "异常")):
-            task_status = "failed"
-        elif any(keyword in normalized for keyword in ("待办", "未完成", "未做", "backlog")):
-            task_status = "backlog"
+    task_status = _heuristic_task_list_status(normalized)
+    if task_status:
         _add_question_lookup(lookups, "task_list", status=task_status, limit=10)
 
     if not lookups and _question_likely_needs_runtime_data(question):
@@ -346,44 +367,76 @@ def _service_status_lookup_items(snapshots: list[dict]) -> list[dict]:
     return [{"project": snapshot["name"], "services": snapshot["services"]} for snapshot in snapshots]
 
 
+def _task_stats_lookup_handler(snapshots: list[dict], *, status: str, limit: int) -> list[dict]:
+    return _task_stats_lookup_items(snapshots)
+
+
+def _task_list_lookup_handler(snapshots: list[dict], *, status: str, limit: int) -> list[dict]:
+    return _task_list_lookup_items(snapshots, status=status, limit=limit)
+
+
+def _running_tasks_lookup_handler(snapshots: list[dict], *, status: str, limit: int) -> list[dict]:
+    return _status_task_lookup_items(
+        snapshots,
+        status="in_progress",
+        limit=limit,
+        fields=("priority",),
+    )
+
+
+def _failed_tasks_lookup_handler(snapshots: list[dict], *, status: str, limit: int) -> list[dict]:
+    return _status_task_lookup_items(
+        snapshots,
+        status="failed",
+        limit=limit,
+        fields=("priority", "error_message"),
+    )
+
+
+def _service_status_lookup_handler(snapshots: list[dict], *, status: str, limit: int) -> list[dict]:
+    return _service_status_lookup_items(snapshots)
+
+
+_RUNTIME_LOOKUP_HANDLERS = {
+    "task_stats": _task_stats_lookup_handler,
+    "task_list": _task_list_lookup_handler,
+    "running_tasks": _running_tasks_lookup_handler,
+    "failed_tasks": _failed_tasks_lookup_handler,
+    "service_status": _service_status_lookup_handler,
+}
+
+
+def _lookup_request_tool(request: dict) -> str:
+    return str(request.get("tool") or "")
+
+
+def _lookup_request_status(request: dict) -> str:
+    return str(request.get("status") or "all")
+
+
+def _lookup_request_limit_value(request: dict) -> int:
+    return int(request.get("limit") or 5)
+
+
+def _project_runtime_snapshots(projects: list[dict]) -> list[dict]:
+    return [_project_runtime_snapshot(project) for project in projects]
+
+
 def _execute_runtime_lookup_request(request: dict, target_projects: list[dict]) -> dict | None:
-    tool = str(request.get("tool") or "")
+    tool = _lookup_request_tool(request)
     if tool == "project_list":
         return None
 
-    snapshots = [_project_runtime_snapshot(project) for project in target_projects]
-    limit = int(request.get("limit") or 5)
-    status = str(request.get("status") or "all")
-
-    if tool == "service_status":
-        return {"tool": tool, "items": _service_status_lookup_items(snapshots)}
-    if not target_projects:
+    handler = _RUNTIME_LOOKUP_HANDLERS.get(tool)
+    if handler is None:
         return None
-    if tool == "task_stats":
-        return {"tool": tool, "items": _task_stats_lookup_items(snapshots)}
-    if tool == "task_list":
-        return {"tool": tool, "items": _task_list_lookup_items(snapshots, status=status, limit=limit)}
-    if tool == "running_tasks":
-        return {
-            "tool": tool,
-            "items": _status_task_lookup_items(
-                snapshots,
-                status="in_progress",
-                limit=limit,
-                fields=("priority",),
-            ),
-        }
-    if tool == "failed_tasks":
-        return {
-            "tool": tool,
-            "items": _status_task_lookup_items(
-                snapshots,
-                status="failed",
-                limit=limit,
-                fields=("priority", "error_message"),
-            ),
-        }
-    return None
+    if not target_projects and tool != "service_status":
+        return None
+
+    limit = _lookup_request_limit_value(request)
+    status = _lookup_request_status(request)
+    snapshots = _project_runtime_snapshots(target_projects)
+    return {"tool": tool, "items": handler(snapshots, status=status, limit=limit)}
 
 
 def _execute_question_runtime_lookups(plan: dict, *, project_path: str = "") -> dict:
@@ -546,20 +599,38 @@ def _render_project_list_fallback(data: dict) -> str:
     return f"当前已注册项目有 {len(projects)} 个：{names}。" if names else ""
 
 
+def _render_running_tasks_lookup(question: str, items: list, *, project_name: str) -> list[str]:
+    return _render_status_task_lookup(items, label="当前执行中的任务有", empty_text="当前没有执行中的任务。")
+
+
+def _render_failed_tasks_lookup(question: str, items: list, *, project_name: str) -> list[str]:
+    return _render_status_task_lookup(items, label="当前失败任务有", empty_text="当前没有失败任务。")
+
+
+def _render_task_list_lookup_entry(question: str, items: list, *, project_name: str) -> list[str]:
+    return _render_task_list_lookup(items)
+
+
+def _render_service_status_lookup_entry(question: str, items: list, *, project_name: str) -> list[str]:
+    return _render_service_status_lookup(items)
+
+
+_RUNTIME_LOOKUP_RENDERERS = {
+    "task_stats": _render_task_stats_lookup,
+    "running_tasks": _render_running_tasks_lookup,
+    "failed_tasks": _render_failed_tasks_lookup,
+    "task_list": _render_task_list_lookup_entry,
+    "service_status": _render_service_status_lookup_entry,
+}
+
+
 def _render_runtime_lookup_entry(question: str, entry: dict, *, project_name: str) -> list[str]:
     tool = str(entry.get("tool") or "").strip()
     items = _lookup_entry_items(entry)
-    if tool == "task_stats":
-        return _render_task_stats_lookup(question, items, project_name=project_name)
-    if tool == "running_tasks":
-        return _render_status_task_lookup(items, label="当前执行中的任务有", empty_text="当前没有执行中的任务。")
-    if tool == "failed_tasks":
-        return _render_status_task_lookup(items, label="当前失败任务有", empty_text="当前没有失败任务。")
-    if tool == "task_list":
-        return _render_task_list_lookup(items)
-    if tool == "service_status":
-        return _render_service_status_lookup(items)
-    return []
+    renderer = _RUNTIME_LOOKUP_RENDERERS.get(tool)
+    if renderer is None:
+        return []
+    return renderer(question, items, project_name=project_name)
 
 
 def _render_runtime_lookup_answer(question: str, bundle: dict) -> str:
