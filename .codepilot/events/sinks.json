@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "sinks": [
+    {
+      "name": "local-jsonl",
+      "type": "jsonl",
+      "enabled": false,
+      "path": ".codepilot/events/events.jsonl",
+      "events": [
+        "*"
+      ]
+    }
+  ]
+}
