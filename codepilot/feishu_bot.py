@@ -55,6 +55,12 @@ from codepilot.feishu_commands import (
     parse_task_id as _parse_task_id,
     parse_task_ids as _parse_task_ids,
 )
+from codepilot.feishu_interactions import (
+    card_action_chat_id as _card_action_chat_id,
+    card_action_command as _card_action_command,
+    card_action_event as _card_action_event,
+    inbound_dedupe_key as _inbound_dedupe_key,
+)
 from codepilot.nl_command_router import (
     infer_goal_from_text,
     pick_command_option,
@@ -93,16 +99,6 @@ _PENDING_GOAL_TEXT_KEY = "pending_goal_text"
 _PENDING_CONFIRM_SERVICE = "feishu_confirm"
 _PENDING_CONFIRM_DIRECT_SCOPE = "__direct__"
 _PENDING_CONFIRM_TTL_SECONDS = 120
-
-
-def _inbound_dedupe_key(payload: dict[str, Any]) -> str:
-    event_id = str(payload.get("event_id") or "").strip()
-    if event_id:
-        return f"event:{event_id}"
-    message_id = str(payload.get("message_id") or "").strip()
-    if message_id:
-        return f"msg:{message_id}"
-    return ""
 
 
 def _chat_scope(chat_id: str) -> str:
@@ -2773,32 +2769,6 @@ def handle_command_text(
     if reply is not None:
         return reply
     return _reply_card(build_help_card(prefix=cfg.command_prefix, error=f"`{command_text}`"))
-
-
-def _card_action_event(payload: dict[str, Any]) -> dict[str, Any]:
-    event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
-    return event if isinstance(event, dict) else {}
-
-
-def _card_action_chat_id(event: dict[str, Any]) -> str:
-    context = event.get("context") if isinstance(event.get("context"), dict) else {}
-    return str(
-        event.get("chat_id")
-        or event.get("open_chat_id")
-        or context.get("open_chat_id")
-        or context.get("chat_id")
-        or ""
-    ).strip()
-
-
-def _card_action_command(event: dict[str, Any]) -> str:
-    action = event.get("action") if isinstance(event.get("action"), dict) else {}
-    value = action.get("value") if isinstance(action.get("value"), dict) else {}
-    for key in ("command", "cmd", "text"):
-        command = str(value.get(key) or "").strip()
-        if command:
-            return command
-    return ""
 
 
 def handle_card_action_payload(payload: dict[str, Any], *, config_path: Path | None = None) -> dict[str, Any]:
