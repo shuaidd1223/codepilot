@@ -27,7 +27,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import ParseResult, parse_qs, unquote, urlparse
 
 from codepilot.storage import database as db
 # Re-exported so tests that monkeypatch ``webui_mod.run_requirement_workflow``
@@ -373,92 +373,153 @@ class DashboardHandler(BaseHTTPRequestHandler):
         finally:
             progress_bus.unsubscribe(token)
 
-    def do_GET(self) -> None:  # noqa: N802
-        parsed = urlparse(self.path)
-        path = parsed.path
+    @staticmethod
+    def _query_value(parsed: ParseResult, name: str, default: str = "") -> str:
+        query = parse_qs(parsed.query)
+        return (query.get(name) or [default])[0]
+
+    @classmethod
+    def _query_project(cls, parsed: ParseResult) -> str | None:
+        return cls._query_value(parsed, "project").strip() or None
+
+    @classmethod
+    def _query_bool(cls, parsed: ParseResult, name: str, default: str = "0") -> bool:
+        return cls._query_value(parsed, name, default).strip().lower() in {"1", "true", "yes"}
+
+    @classmethod
+    def _query_int(cls, parsed: ParseResult, name: str, default: int) -> int:
+        try:
+            return int(cls._query_value(parsed, name, str(default)) or str(default))
+        except ValueError:
+            return default
+
+    def _handle_get_health(self, _parsed: ParseResult) -> None:
+        self._send_json({"ok": True})
+
+    def _handle_get_daemon_health(self, parsed: ParseResult) -> None:
+        self._send_json(daemon_health_payload(self._query_project(parsed)))
+
+    def _handle_get_ai_status(self, parsed: ParseResult) -> None:
+        self._send_json(
+            ai_status_payload(
+                self._query_project(parsed),
+                refresh_balance=self._query_bool(parsed, "refresh"),
+            )
+        )
+
+    def _handle_get_event_stream(self, _parsed: ParseResult) -> None:
+        # Server-sent events: push live progress to the dashboard so the
+        # user sees builder/reviewer output in real time instead of polling.
+        self._stream_progress_events()
+
+    def _handle_get_projects(self, _parsed: ParseResult) -> None:
+        self._send_json(dashboard_payload())
+
+    def _handle_get_task_template(self, _parsed: ParseResult) -> None:
+        self._send_json(get_task_template_schema_action())
+
+    def _handle_get_sessions(self, parsed: ParseResult) -> None:
+        qs = parse_qs(parsed.query)
+        proj = qs.get("project", [""])[0]
+        query = qs.get("q", [""])[0]
+        limit = self._query_int(parsed, "limit", 50)
+        try:
+            self._send_json(list_sessions_action(proj, query=query, limit=limit))
+        except RuntimeError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+
+    def _dispatch_get_asset(self, path: str) -> bool:
         if path == "/":
             self._send_html_file()
-            return
+            return True
         if path.startswith("/static/"):
             rel = path[len("/static/"):]
             if self._serve_static(rel):
-                return
+                return True
             self._send_json({"error": "未找到文件。"}, status=404)
-            return
+            return True
         if path == "/favicon.ico":
             self._send_bytes(b"", "image/x-icon", HTTPStatus.NO_CONTENT)
-            return
-        if path == "/api/health":
-            self._send_json({"ok": True})
-            return
-        if path == "/api/daemon/health":
-            query = parse_qs(parsed.query)
-            project = (query.get("project") or [""])[0].strip() or None
-            self._send_json(daemon_health_payload(project))
-            return
-        if path == "/api/ai/status":
-            query = parse_qs(parsed.query)
-            project = (query.get("project") or [""])[0].strip() or None
-            refresh = (query.get("refresh") or ["0"])[0].strip().lower() in {"1", "true", "yes"}
-            self._send_json(ai_status_payload(project, refresh_balance=refresh))
-            return
-        if path == "/api/events/stream":
-            # Server-sent events: push live progress to the dashboard so the
-            # user sees builder/reviewer output in real time instead of polling.
-            self._stream_progress_events()
-            return
-        if path == "/api/projects":
-            self._send_json(dashboard_payload())
-            return
-        if path == "/api/task-template":
-            self._send_json(get_task_template_schema_action())
-            return
+            return True
+        return False
+
+    def _dispatch_get_exact(self, path: str, parsed: ParseResult) -> bool:
+        handlers: dict[str, Callable[[ParseResult], None]] = {
+            "/api/health": self._handle_get_health,
+            "/api/daemon/health": self._handle_get_daemon_health,
+            "/api/ai/status": self._handle_get_ai_status,
+            "/api/events/stream": self._handle_get_event_stream,
+            "/api/projects": self._handle_get_projects,
+            "/api/task-template": self._handle_get_task_template,
+            "/api/sessions": self._handle_get_sessions,
+        }
+        handler = handlers.get(path)
+        if not handler:
+            return False
+        handler(parsed)
+        return True
+
+    def _dispatch_get_project_detail(self, path: str) -> bool:
         match = re.fullmatch(r"/api/projects/([^/]+)", path)
-        if match:
-            self._send_json(dashboard_payload(unquote(match.group(1))))
-            return
+        if not match:
+            return False
+        self._send_json(dashboard_payload(unquote(match.group(1))))
+        return True
+
+    def _dispatch_get_task_detail(self, path: str) -> bool:
         match = re.fullmatch(r"/api/tasks/(\d+)", path)
-        if match:
-            try:
-                self._send_json(task_detail_payload(int(match.group(1))))
-            except RuntimeError as exc:
-                self._send_json({"error": str(exc)}, status=404)
-            return
-        # Incremental log fetch — frontend tracks its own offset and polls
-        # (or refetches on SSE event) to append only the new bytes.
+        if not match:
+            return False
+        try:
+            self._send_json(task_detail_payload(int(match.group(1))))
+        except RuntimeError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        return True
+
+    def _dispatch_get_task_log(self, path: str, parsed: ParseResult) -> bool:
         match = re.fullmatch(r"/api/tasks/(\d+)/log", path)
-        if match:
-            qs = parse_qs(parsed.query)
-            try:
-                offset = int((qs.get("offset", ["0"]) or ["0"])[0] or "0")
-            except ValueError:
-                offset = 0
-            try:
-                self._send_json(task_log_delta(int(match.group(1)), offset=offset))
-            except RuntimeError as exc:
-                self._send_json({"error": str(exc)}, status=404)
-            return
-        # Session endpoints
-        match = re.fullmatch(r"/api/sessions", path)
-        if match:
-            qs = parse_qs(parsed.query)
-            proj = qs.get("project", [""])[0]
-            query = qs.get("q", [""])[0]
-            try:
-                limit = int(qs.get("limit", ["50"])[0] or "50")
-            except ValueError:
-                limit = 50
-            try:
-                self._send_json(list_sessions_action(proj, query=query, limit=limit))
-            except RuntimeError as exc:
-                self._send_json({"error": str(exc)}, status=400)
-            return
+        if not match:
+            return False
+        try:
+            self._send_json(
+                task_log_delta(
+                    int(match.group(1)),
+                    offset=self._query_int(parsed, "offset", 0),
+                )
+            )
+        except RuntimeError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        return True
+
+    def _dispatch_get_session_detail(self, path: str) -> bool:
         match = re.fullmatch(r"/api/sessions/(\d+)", path)
-        if match:
-            try:
-                self._send_json(get_session_action(int(match.group(1))))
-            except RuntimeError as exc:
-                self._send_json({"error": str(exc)}, status=404)
+        if not match:
+            return False
+        try:
+            self._send_json(get_session_action(int(match.group(1))))
+        except RuntimeError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        return True
+
+    def _dispatch_get_pattern(self, path: str, parsed: ParseResult) -> bool:
+        if self._dispatch_get_project_detail(path):
+            return True
+        if self._dispatch_get_task_detail(path):
+            return True
+        if self._dispatch_get_task_log(path, parsed):
+            return True
+        return self._dispatch_get_session_detail(path)
+
+    def _dispatch_get(self, parsed: ParseResult) -> bool:
+        path = parsed.path
+        if self._dispatch_get_asset(path):
+            return True
+        if self._dispatch_get_exact(path, parsed):
+            return True
+        return self._dispatch_get_pattern(path, parsed)
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self._dispatch_get(urlparse(self.path)):
             return
         self._send_json({"error": "未找到页面。"}, status=404)
 

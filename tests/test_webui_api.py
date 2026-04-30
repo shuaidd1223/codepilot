@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
+import textwrap
 import threading
 import urllib.parse
 import urllib.request
@@ -113,6 +116,16 @@ def _valid_task_content(title: str) -> str:
 
 
 # ─── GET endpoints ──────────────────────────────────────────────────────────
+
+def _branch_count(func) -> int:
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    branch_nodes = (ast.If, ast.For, ast.While, ast.Try, ast.Match, ast.BoolOp)
+    return sum(isinstance(node, branch_nodes) for node in ast.walk(tree))
+
+
+def test_dashboard_get_handler_keeps_route_dispatch_simple():
+    assert _branch_count(webui_mod.DashboardHandler.do_GET) <= 3
+
 
 def test_health_endpoint(ui_server):
     status, body = _get(f"{ui_server}/api/health")
@@ -363,6 +376,20 @@ def test_task_detail_404_for_nonexistent(ui_server):
     status, body = _get(f"{ui_server}/api/tasks/99999")
     assert status == 404
     assert "error" in body
+
+
+def test_task_log_endpoint_returns_delta_from_offset(ui_server, tmp_path):
+    task = db.create_task("demo", "log task", agent="codex")
+    log_path = tmp_path / "task.log"
+    log_path.write_bytes(b"line-1\nline-2\n")
+    db.update_task(task["id"], status="in_progress", current_log_path=str(log_path))
+
+    status, body = _get(f"{ui_server}/api/tasks/{task['id']}/log?offset=7")
+
+    assert status == 200
+    assert body["offset"] == 7
+    assert body["text"] == "line-2\n"
+    assert body["next_offset"] == log_path.stat().st_size
 
 
 def test_unknown_path_returns_404(ui_server):
