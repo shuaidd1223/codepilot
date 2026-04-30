@@ -72,6 +72,11 @@ def _supported_provider(raw: Any) -> dict[str, Any] | None:
             "base_url": "",
             "max_tokens": 4096,
             "temperature": 0.7,
+            "auto_model_selection": False,
+            "simple_model": "",
+            "complex_model": "",
+            "thinking": "",
+            "reasoning_effort": "",
         }
     if not isinstance(raw, dict):
         return None
@@ -82,6 +87,11 @@ def _supported_provider(raw: Any) -> dict[str, Any] | None:
         "base_url": _string(raw.get("base_url"), ""),
         "max_tokens": _int(raw.get("max_tokens"), 4096, min_value=1),
         "temperature": _float(raw.get("temperature"), 0.7),
+        "auto_model_selection": _bool(raw.get("auto_model_selection"), False),
+        "simple_model": _string(raw.get("simple_model"), ""),
+        "complex_model": _string(raw.get("complex_model"), ""),
+        "thinking": _choice(raw.get("thinking"), {"", "auto", "enabled", "disabled"}, ""),
+        "reasoning_effort": _choice(raw.get("reasoning_effort"), {"", "auto", "high", "max"}, ""),
     }
 
 
@@ -241,7 +251,8 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
 
     classifier_provider = _optional_string(classifier.get("provider"))
     if classifier_provider and classifier_provider not in canonical["providers"]:
-        canonical["providers"][classifier_provider] = _supported_provider({}) or {}
+        example = PROVIDER_EXAMPLES.get(classifier_provider, {})
+        canonical["providers"][classifier_provider] = _supported_provider(example) or _supported_provider({}) or {}
 
     return canonical
 
@@ -370,11 +381,16 @@ PROVIDER_EXAMPLES: dict[str, dict[str, Any]] = {
     },
     "deepseek": {
         "enabled": False,
-        "model": "deepseek-chat",
+        "model": "",
         "base_url": "https://api.deepseek.com",
         "api_key": "",
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "temperature": 0.7,
+        "auto_model_selection": True,
+        "simple_model": "deepseek-v4-flash",
+        "complex_model": "deepseek-v4-pro",
+        "thinking": "auto",
+        "reasoning_effort": "auto",
     },
     "ollama": {
         "enabled": False,
@@ -427,6 +443,16 @@ def _emit_provider_section(lines: list[str], name: str, values: dict[str, Any]) 
     lines.append(f"max_tokens = {_toml_value(values.get('max_tokens', 4096))}")
     lines.append("# 采样温度。")
     lines.append(f"temperature = {_toml_value(values.get('temperature', 0.7))}")
+    lines.append("# 是否按任务难度自动切换模型。")
+    lines.append(f"auto_model_selection = {_toml_value(values.get('auto_model_selection', False))}")
+    lines.append("# 简单任务使用的模型；留空则使用 provider 默认模型。")
+    lines.append(f"simple_model = {_toml_value(values.get('simple_model', ''))}")
+    lines.append("# 复杂任务使用的模型；DeepSeek 推荐 deepseek-v4-pro。")
+    lines.append(f"complex_model = {_toml_value(values.get('complex_model', ''))}")
+    lines.append("# 思考模式：auto / enabled / disabled；非 DeepSeek provider 可留空。")
+    lines.append(f"thinking = {_toml_value(values.get('thinking', ''))}")
+    lines.append("# 思考强度：auto / high / max；thinking=enabled 时生效。")
+    lines.append(f"reasoning_effort = {_toml_value(values.get('reasoning_effort', ''))}")
     lines.append("")
 
 

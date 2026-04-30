@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from codepilot.gateway.types import GatewayRequest
+from codepilot.ai_support.providers import mark_provider_unavailable
 
 
 _CLAUDE_PLANNERS = {
@@ -60,11 +61,20 @@ def resolve_api_call(request: GatewayRequest) -> Optional[ResolvedAPICall]:
     provider = resolve_api_provider(provider_key, _provider_ref(request))
     if request.classifier_model:
         provider.model = request.classifier_model
+        if hasattr(provider, "auto_model_selection"):
+            provider.auto_model_selection = False
     if request.api_key:
         provider.api_key = request.api_key
     if request.base_url:
         provider.base_url = request.base_url
     if provider.requires_api_key() and not provider.resolve_api_key():
+        mark_provider_unavailable(
+            provider_key,
+            provider,
+            "missing api key",
+            source="gateway",
+            project_path=request.project_path or request.config_ref or "",
+        )
         return None
 
     return ResolvedAPICall(

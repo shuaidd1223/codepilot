@@ -136,6 +136,44 @@ def test_daemon_health_endpoint_passes_project_query(ui_server, monkeypatch):
     assert body["alive"] is True
 
 
+def test_ai_status_endpoint_passes_project_and_refresh(ui_server, monkeypatch):
+    calls = []
+
+    def fake_ai_status(project=None, *, refresh_balance=False):
+        calls.append((project, refresh_balance))
+        return {"ok": True, "balances": {"deepseek": {}}, "usage": {"deepseek": {"total_tokens": 0}}}
+
+    monkeypatch.setattr(webui_mod, "ai_status_payload", fake_ai_status)
+
+    status, body = _get(f"{ui_server}/api/ai/status?project=demo&refresh=1")
+
+    assert status == 200
+    assert calls == [("demo", True)]
+    assert body["ok"] is True
+
+
+def test_ai_status_endpoint_surfaces_provider_unavailable_marker(ui_server):
+    db.upsert_service_state(
+        "ai_provider",
+        "openai-gpt4o",
+        status="unavailable",
+        meta={
+            "provider": "openai-gpt4o",
+            "reason": "missing api key",
+            "source": "gateway",
+            "updated_at": "2026-04-30T11:00:00",
+        },
+    )
+
+    status, body = _get(f"{ui_server}/api/ai/status?project=demo")
+
+    assert status == 200
+    marker = body["availability"]["openai-gpt4o"]
+    assert marker["status"] == "unavailable"
+    assert marker["reason"] == "missing api key"
+    assert body["providers"]["openai-gpt4o"]["availability"] == marker
+
+
 def test_daemon_health_reads_project_service_state_from_db(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     db.init_db()

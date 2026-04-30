@@ -12,10 +12,13 @@ import shutil
 import subprocess
 import time
 import importlib.util
+import json
 from collections import deque
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+import urllib.request
 
 from codepilot.ai_support.planner_context import collect_planner_context
 from codepilot.core.config import load_project_config
@@ -57,6 +60,13 @@ class APIProvider:
     max_tokens: int = 4096
     temperature: float = 0.7
     api_env_vars: tuple[str, ...] = ()
+    usage_key: str = ""
+    auto_model_selection: bool = False
+    simple_model: str = ""
+    complex_model: str = ""
+    thinking: str = ""  # "", "auto", "enabled", "disabled"
+    reasoning_effort: str = ""  # "", "auto", "high", "max"
+    balance_endpoint: str = ""
 
     def requires_api_key(self) -> bool:
         """Whether this provider needs an API key."""
@@ -255,10 +265,17 @@ API_PROVIDERS: dict[str, APIProvider] = {
     "deepseek": APIProvider(
         name="DeepSeek",
         provider_type="openai",
-        model="deepseek-chat",
+        model="",
         base_url="https://api.deepseek.com",
-        max_tokens=4096,
+        max_tokens=8192,
         api_env_vars=("DEEPSEEK_API_KEY",),
+        usage_key="deepseek",
+        auto_model_selection=True,
+        simple_model="deepseek-v4-flash",
+        complex_model="deepseek-v4-pro",
+        thinking="auto",
+        reasoning_effort="auto",
+        balance_endpoint="/user/balance",
     ),
     # 本地 Ollama
     "ollama": APIProvider(
@@ -307,8 +324,21 @@ def resolve_api_provider(
         provider.api_key = provider_cfg.api_key.strip()
     if provider_cfg.model:
         provider.model = provider_cfg.model.strip()
+        provider.auto_model_selection = False
     if provider_cfg.base_url:
         provider.base_url = provider_cfg.base_url.strip()
+    provider.max_tokens = int(provider_cfg.max_tokens or provider.max_tokens)
+    provider.temperature = float(provider_cfg.temperature)
+    if provider_cfg.auto_model_selection is not None:
+        provider.auto_model_selection = bool(provider_cfg.auto_model_selection)
+    if provider_cfg.simple_model:
+        provider.simple_model = provider_cfg.simple_model.strip()
+    if provider_cfg.complex_model:
+        provider.complex_model = provider_cfg.complex_model.strip()
+    if provider_cfg.thinking:
+        provider.thinking = provider_cfg.thinking.strip().lower()
+    if provider_cfg.reasoning_effort:
+        provider.reasoning_effort = provider_cfg.reasoning_effort.strip().lower()
     return provider
 _PROJECT_MARKER_FILES = (
     "AGENTS.toml",
@@ -679,6 +709,18 @@ class _APIRunContext:
     system_prompt: Optional[str]
     messages: list[dict[str, str]]
     started_at: float
+    model: str
+    difficulty: str = "simple"
+    thinking: str = ""
+    reasoning_effort: str = ""
+
+
+@dataclass(frozen=True)
+class _APIRequestProfile:
+    model: str
+    difficulty: str
+    thinking: str = ""
+    reasoning_effort: str = ""
 
 
 def _build_api_messages(prompt: str, system_prompt: Optional[str] = None) -> list[dict[str, str]]:
@@ -704,6 +746,168 @@ def _estimate_tokens(text: str) -> int:
     if not content:
         return 0
     return max(1, (len(content.encode("utf-8")) + 3) // 4)
+
+
+_COMPLEX_TASK_KEYWORDS = (
+    "架构",
+    "重构",
+    "迁移",
+    "兼容",
+    "回归",
+    "并发",
+    "数据库",
+    "调度",
+    "发布",
+    "安全",
+    "权限",
+    "多模块",
+    "高风险",
+    "性能",
+    "分布式",
+    "integration",
+    "migration",
+    "architecture",
+    "refactor",
+    "compatibility",
+    "concurrency",
+    "database",
+    "security",
+    "regression",
+)
+
+_SIMPLE_TASK_KEYWORDS = (
+    "总结",
+    "翻译",
+    "分类",
+    "一句话",
+    "解释",
+    "摘要",
+    "summarize",
+    "translate",
+    "classify",
+)
+
+
+def _classify_prompt_difficulty(prompt: str, system_prompt: Optional[str] = None) -> str:
+    """Small deterministic heuristic for routing cost/quality-sensitive API calls."""
+    text = f"{system_prompt or ''}\n{prompt or ''}".lower()
+    char_count = len(text)
+    score = 0
+    if char_count > 12000:
+        score += 5
+    elif char_count > 6000:
+        score += 4
+    elif char_count > 2500:
+        score += 2
+    elif char_count > 900:
+        score += 1
+
+    keyword_hits = sum(1 for word in _COMPLEX_TASK_KEYWORDS if word in text)
+    score += min(5, keyword_hits)
+    if keyword_hits >= 5:
+        score += 2
+    if any(word in text for word in _SIMPLE_TASK_KEYWORDS) and char_count < 1200:
+        score -= 2
+
+    if score >= 7:
+        return "xhard"
+    if score >= 4:
+        return "hard"
+    if score >= 2:
+        return "medium"
+    return "simple"
+
+
+def _provider_usage_key(provider: Any) -> str:
+    explicit = str(getattr(provider, "usage_key", "") or "").strip()
+    if explicit:
+        return explicit
+    name = str(getattr(provider, "name", "") or "").strip().lower()
+    return name.replace(" ", "-") or "unknown"
+
+
+def mark_provider_unavailable(
+    provider_key: str,
+    provider: Any = None,
+    reason: str = "",
+    *,
+    source: str = "",
+    project_path: str = "",
+) -> None:
+    """Persist a lightweight marker when an API provider is skipped or fails."""
+    scope = str(provider_key or "").strip() or _provider_usage_key(provider)
+    if not scope:
+        return
+    try:
+        from codepilot.storage import database as db
+
+        db.init_db()
+        existing = db.get_service_state("ai_provider", scope) or {}
+        meta = existing.get("meta") if isinstance(existing.get("meta"), dict) else {}
+        meta = dict(meta or {})
+        meta.update(
+            {
+                "provider": scope,
+                "name": str(getattr(provider, "name", "") or scope),
+                "reason": str(reason or "provider unavailable"),
+                "source": str(source or ""),
+                "project_path": str(project_path or ""),
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        db.upsert_service_state("ai_provider", scope, status="unavailable", meta=meta)
+    except Exception:
+        return
+
+
+def _is_deepseek_provider(provider: Any) -> bool:
+    base_url = str(getattr(provider, "base_url", "") or "").lower()
+    return _provider_usage_key(provider) == "deepseek" or "api.deepseek.com" in base_url
+
+
+def _build_api_request_profile(
+    provider: Any,
+    prompt: str,
+    system_prompt: Optional[str] = None,
+) -> _APIRequestProfile:
+    base_model = str(getattr(provider, "model", "") or "").strip()
+    difficulty = _classify_prompt_difficulty(prompt, system_prompt)
+    model = base_model
+    thinking = ""
+    reasoning_effort = ""
+
+    if _is_deepseek_provider(provider):
+        simple_model = str(getattr(provider, "simple_model", "") or "").strip()
+        complex_model = str(getattr(provider, "complex_model", "") or "").strip()
+        if bool(getattr(provider, "auto_model_selection", False)):
+            if not simple_model or not complex_model:
+                raise RuntimeError(
+                    f"{getattr(provider, 'name', 'provider')} 已开启自动模型切换，"
+                    "但 simple_model / complex_model 未配置完整。"
+                )
+            model = complex_model if difficulty in {"hard", "xhard"} else simple_model
+        else:
+            model = base_model or simple_model or complex_model
+
+        configured_thinking = str(getattr(provider, "thinking", "") or "auto").strip().lower()
+        if configured_thinking in {"enabled", "disabled"}:
+            thinking = configured_thinking
+        elif configured_thinking == "auto":
+            thinking = "enabled" if difficulty in {"hard", "xhard"} else "disabled"
+
+        configured_effort = str(getattr(provider, "reasoning_effort", "") or "auto").strip().lower()
+        if thinking == "enabled":
+            if configured_effort in {"high", "max"}:
+                reasoning_effort = configured_effort
+            else:
+                reasoning_effort = "max" if difficulty == "xhard" else "high"
+
+    return _APIRequestProfile(
+        model=model,
+        difficulty=difficulty,
+        thinking=thinking,
+        reasoning_effort=reasoning_effort,
+    )
 
 
 def _emit_llm_heartbeat(ctx: _APIRunContext, text: str, *, final: bool = False) -> None:
@@ -735,7 +939,10 @@ def _emit_llm_heartbeat(ctx: _APIRunContext, text: str, *, final: bool = False) 
             extra={
                 "llm_heartbeat": True,
                 "provider": ctx.provider.name,
-                "model": ctx.provider.model,
+                "model": ctx.model,
+                "difficulty": ctx.difficulty,
+                "thinking": ctx.thinking,
+                "reasoning_effort": ctx.reasoning_effort,
                 "elapsed_seconds": elapsed,
                 "estimated_tokens": estimated_tokens,
                 "text_chars": len(text or ""),
@@ -769,13 +976,95 @@ def _extract_openai_chunk_text(chunk: Any) -> str:
     return "".join(pieces)
 
 
+def _openai_request_kwargs(ctx: _APIRunContext, *, stream: bool = False) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": ctx.model,
+        "messages": ctx.messages,
+        "max_tokens": ctx.provider.max_tokens,
+        "temperature": ctx.provider.temperature,
+    }
+    if ctx.thinking:
+        kwargs["thinking"] = {"type": ctx.thinking}
+    if ctx.reasoning_effort:
+        kwargs["reasoning_effort"] = ctx.reasoning_effort
+    if stream:
+        kwargs["stream"] = True
+        if _is_deepseek_provider(ctx.provider):
+            kwargs["stream_options"] = {"include_usage": True}
+    return kwargs
+
+
+def _usage_get(usage: Any, key: str, default: Any = 0) -> Any:
+    if usage is None:
+        return default
+    if isinstance(usage, dict):
+        return usage.get(key, default)
+    return getattr(usage, key, default)
+
+
+def _extract_token_usage(usage: Any) -> dict[str, int]:
+    if usage is None:
+        return {}
+    details = _usage_get(usage, "completion_tokens_details", {}) or {}
+    values = {
+        "prompt_tokens": _usage_get(usage, "prompt_tokens", 0),
+        "completion_tokens": _usage_get(usage, "completion_tokens", 0),
+        "total_tokens": _usage_get(usage, "total_tokens", 0),
+        "prompt_cache_hit_tokens": _usage_get(usage, "prompt_cache_hit_tokens", 0),
+        "prompt_cache_miss_tokens": _usage_get(usage, "prompt_cache_miss_tokens", 0),
+        "reasoning_tokens": _usage_get(details, "reasoning_tokens", 0),
+    }
+    out: dict[str, int] = {}
+    for key, value in values.items():
+        try:
+            out[key] = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            out[key] = 0
+    if not any(out.values()):
+        return {}
+    if out["total_tokens"] <= 0:
+        out["total_tokens"] = out["prompt_tokens"] + out["completion_tokens"]
+    return out
+
+
+def _record_api_usage(ctx: _APIRunContext, usage: Any) -> None:
+    values = _extract_token_usage(usage)
+    if not values:
+        return
+    try:
+        from codepilot.storage import database as db
+
+        db.init_db()
+        scope = _provider_usage_key(ctx.provider)
+        existing = db.get_service_state("ai_usage", scope) or {}
+        meta = existing.get("meta") if isinstance(existing.get("meta"), dict) else {}
+        meta = dict(meta or {})
+        meta["provider"] = scope
+        meta["name"] = str(getattr(ctx.provider, "name", "") or scope)
+        meta["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        meta["requests"] = int(meta.get("requests") or 0) + 1
+        for key, value in values.items():
+            meta[key] = int(meta.get(key) or 0) + int(value or 0)
+
+        by_model = meta.get("by_model") if isinstance(meta.get("by_model"), dict) else {}
+        model_stats = by_model.get(ctx.model) if isinstance(by_model.get(ctx.model), dict) else {}
+        model_stats["requests"] = int(model_stats.get("requests") or 0) + 1
+        model_stats["difficulty"] = ctx.difficulty
+        model_stats["thinking"] = ctx.thinking
+        model_stats["reasoning_effort"] = ctx.reasoning_effort
+        for key, value in values.items():
+            model_stats[key] = int(model_stats.get(key) or 0) + int(value or 0)
+        by_model[ctx.model] = model_stats
+        meta["by_model"] = by_model
+
+        db.upsert_service_state("ai_usage", scope, status="active", meta=meta)
+    except Exception:
+        return
+
+
 def _run_openai_sync(ctx: _APIRunContext) -> str:
-    response = ctx.client.chat.completions.create(
-        model=ctx.provider.model,
-        messages=ctx.messages,
-        max_tokens=ctx.provider.max_tokens,
-        temperature=ctx.provider.temperature,
-    )
+    response = ctx.client.chat.completions.create(**_openai_request_kwargs(ctx))
+    _record_api_usage(ctx, getattr(response, "usage", None))
     return (response.choices[0].message.content or "").strip()
 
 
@@ -783,14 +1072,12 @@ def _run_openai_stream(ctx: _APIRunContext) -> str:
     parts: list[str] = []
     last_emit_at = 0.0
     _emit_llm_heartbeat(ctx, "", final=False)
-    stream = ctx.client.chat.completions.create(
-        model=ctx.provider.model,
-        messages=ctx.messages,
-        max_tokens=ctx.provider.max_tokens,
-        temperature=ctx.provider.temperature,
-        stream=True,
-    )
+    stream_usage = None
+    stream = ctx.client.chat.completions.create(**_openai_request_kwargs(ctx, stream=True))
     for chunk in stream:
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            stream_usage = usage
         piece = _extract_openai_chunk_text(chunk)
         if piece:
             parts.append(piece)
@@ -799,6 +1086,7 @@ def _run_openai_stream(ctx: _APIRunContext) -> str:
             _emit_llm_heartbeat(ctx, "".join(parts), final=False)
             last_emit_at = now
     output = "".join(parts).strip()
+    _record_api_usage(ctx, stream_usage)
     if output:
         _emit_llm_heartbeat(ctx, output, final=True)
     return output
@@ -882,6 +1170,7 @@ def _run_api_provider(
 ) -> str:
     """执行 API Provider."""
     client, endpoint = provider.build_client()
+    profile = _build_api_request_profile(provider, prompt, system_prompt)
     ctx = _APIRunContext(
         provider=provider,
         client=client,
@@ -889,12 +1178,42 @@ def _run_api_provider(
         system_prompt=system_prompt,
         messages=_build_api_messages(prompt, system_prompt),
         started_at=time.monotonic(),
+        model=profile.model,
+        difficulty=profile.difficulty,
+        thinking=profile.thinking,
+        reasoning_effort=profile.reasoning_effort,
     )
 
     try:
         return _run_api_endpoint(ctx, endpoint)
     except Exception as e:
         raise RuntimeError(f"{provider.name} API 调用失败: {e}")
+
+
+def fetch_provider_balance(provider: APIProvider, *, timeout: float = 4.0) -> dict[str, Any]:
+    """Fetch balance for providers that expose a compatible balance endpoint."""
+    endpoint = str(getattr(provider, "balance_endpoint", "") or "").strip()
+    if not endpoint:
+        return {"available": False, "error": "provider does not expose balance endpoint"}
+    api_key = provider.resolve_api_key()
+    if provider.requires_api_key() and not api_key:
+        return {"available": False, "error": "missing api key"}
+    base_url = (provider.base_url or "https://api.deepseek.com").rstrip("/")
+    url = endpoint if endpoint.startswith("http") else f"{base_url}{endpoint}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    payload = json.loads(raw or "{}")
+    if isinstance(payload, dict):
+        payload.setdefault("available", True)
+        return payload
+    return {"available": False, "error": "invalid balance response"}
 
 
 

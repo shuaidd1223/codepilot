@@ -149,6 +149,11 @@ class ProviderAPIConfig:
     base_url: str = ""  # 自定义端点
     max_tokens: int = 4096
     temperature: float = 0.7
+    auto_model_selection: Optional[bool] = None
+    simple_model: str = ""
+    complex_model: str = ""
+    thinking: str = ""
+    reasoning_effort: str = ""
 
 
 @dataclass
@@ -215,6 +220,15 @@ class AgentsConfig:
                     base_url=cfg.get("base_url", ""),
                     max_tokens=cfg.get("max_tokens", 4096),
                     temperature=cfg.get("temperature", 0.7),
+                    auto_model_selection=(
+                        cfg.get("auto_model_selection")
+                        if isinstance(cfg.get("auto_model_selection"), bool)
+                        else None
+                    ),
+                    simple_model=str(cfg.get("simple_model", "") or ""),
+                    complex_model=str(cfg.get("complex_model", "") or ""),
+                    thinking=str(cfg.get("thinking", "") or ""),
+                    reasoning_effort=str(cfg.get("reasoning_effort", "") or ""),
                 )
             else:
                 providers_config[name] = ProviderAPIConfig(enabled=bool(cfg))
@@ -865,10 +879,15 @@ planner = ""
 # DeepSeek
 # [providers.deepseek]
 # enabled = false
-# model = "deepseek-chat"
+# model = ""  # 显式单模型覆盖；自动切换时留空
+# auto_model_selection = true
+# simple_model = "deepseek-v4-flash"
+# complex_model = "deepseek-v4-pro"
+# thinking = "auto"  # auto / enabled / disabled
+# reasoning_effort = "auto"  # auto / high / max
 # base_url = "https://api.deepseek.com"
 # api_key = ""  # 设置环境变量 DEEPSEEK_API_KEY
-# max_tokens = 4096
+# max_tokens = 8192
 # temperature = 0.7
 
 # Ollama (本地)

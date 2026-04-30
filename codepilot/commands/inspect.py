@@ -18,6 +18,7 @@ from codepilot.ai_support.service import (
     _run_claude_schema_prompt,
     _run_codex_schema_prompt,
     build_task_markdown_from_plan,
+    mark_provider_unavailable,
     normalize_agent_name,
 )
 from codepilot.commands.add import _resolve_project_strict
@@ -430,22 +431,42 @@ def _call_llm(
         provider = replace(API_PROVIDERS[classifier_provider])
         if classifier_model:
             provider.model = classifier_model
+            if hasattr(provider, "auto_model_selection"):
+                provider.auto_model_selection = False
         if api_key:
             provider.api_key = api_key
         if base_url:
             provider.base_url = base_url
-        if not provider.requires_api_key() or provider.resolve_api_key():
-            raw = _run_api_provider(provider, prompt).strip()
-            if raw.startswith("```"):
-                raw = raw.strip("`")
-                if "\n" in raw:
-                    raw = raw.split("\n", 1)[1]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
-            start, end = raw.find("{"), raw.rfind("}")
-            if start != -1 and end > start:
-                raw = raw[start : end + 1]
-            return json.loads(raw)
+        if provider.requires_api_key() and not provider.resolve_api_key():
+            mark_provider_unavailable(
+                classifier_provider,
+                provider,
+                "missing api key",
+                source="inspect",
+                project_path=project_path,
+            )
+        else:
+            try:
+                raw = _run_api_provider(provider, prompt).strip()
+            except Exception as exc:
+                mark_provider_unavailable(
+                    classifier_provider,
+                    provider,
+                    str(exc),
+                    source="inspect",
+                    project_path=project_path,
+                )
+            else:
+                if raw.startswith("```"):
+                    raw = raw.strip("`")
+                    if "\n" in raw:
+                        raw = raw.split("\n", 1)[1]
+                    if raw.endswith("```"):
+                        raw = raw[:-3]
+                start, end = raw.find("{"), raw.rfind("}")
+                if start != -1 and end > start:
+                    raw = raw[start : end + 1]
+                return json.loads(raw)
 
     # 2) Fall back to local CLI — default claude (faster for analysis/inspection).
     normalized = normalize_agent_name(planner) if planner else "claude"

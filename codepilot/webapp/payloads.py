@@ -18,6 +18,7 @@ from codepilot.storage import database as db
 from codepilot.commands.reviewer_output import parse_reviewer_output
 from codepilot.webapp.display_sort import TASK_STATUS_ORDER, sort_tasks_for_display
 from codepilot.core.runtime import runtime_summary
+from codepilot.core.config import resolve_project_config_reference
 
 
 STATUS_ORDER = TASK_STATUS_ORDER
@@ -51,6 +52,100 @@ def _read_text(path: str | None) -> str:
     if not target.exists():
         return ""
     return target.read_text(encoding="utf-8", errors="replace")
+
+
+def _usage_stats_from_service_state() -> dict:
+    out: dict[str, dict] = {}
+    try:
+        for state in db.list_service_states("ai_usage"):
+            meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
+            provider = str(meta.get("provider") or state.get("scope") or "").strip()
+            if not provider:
+                continue
+            out[provider] = {
+                "provider": provider,
+                "name": str(meta.get("name") or provider),
+                "requests": int(meta.get("requests") or 0),
+                "prompt_tokens": int(meta.get("prompt_tokens") or 0),
+                "completion_tokens": int(meta.get("completion_tokens") or 0),
+                "total_tokens": int(meta.get("total_tokens") or 0),
+                "reasoning_tokens": int(meta.get("reasoning_tokens") or 0),
+                "prompt_cache_hit_tokens": int(meta.get("prompt_cache_hit_tokens") or 0),
+                "prompt_cache_miss_tokens": int(meta.get("prompt_cache_miss_tokens") or 0),
+                "updated_at": str(meta.get("updated_at") or state.get("updated_at") or ""),
+                "by_model": meta.get("by_model") if isinstance(meta.get("by_model"), dict) else {},
+            }
+    except Exception:
+        return out
+    return out
+
+
+def _provider_availability_from_service_state() -> dict:
+    out: dict[str, dict] = {}
+    try:
+        for state in db.list_service_states("ai_provider"):
+            scope = str(state.get("scope") or "").strip()
+            meta = state.get("meta") if isinstance(state.get("meta"), dict) else {}
+            provider = str(meta.get("provider") or scope).strip()
+            if not provider:
+                continue
+            out[provider] = {
+                "status": str(state.get("status") or ""),
+                "reason": str(meta.get("reason") or ""),
+                "source": str(meta.get("source") or ""),
+                "updated_at": str(meta.get("updated_at") or state.get("updated_at") or ""),
+            }
+    except Exception:
+        return out
+    return out
+
+
+def ai_status_payload(project: str | None = None, *, refresh_balance: bool = False) -> dict:
+    """Return AI provider balance and local token usage stats for Web UI."""
+    db.init_db()
+    project_info = db.get_project(project) if project else None
+    provider_ref = resolve_project_config_reference(project_info) if project_info else None
+    providers: dict[str, dict] = {}
+    balances: dict[str, dict] = {}
+    availability = _provider_availability_from_service_state()
+
+    try:
+        from codepilot.ai_support.providers import API_PROVIDERS, fetch_provider_balance, resolve_api_provider
+
+        for key in sorted(API_PROVIDERS):
+            provider = resolve_api_provider(key, provider_ref)
+            configured = bool(provider.resolve_api_key() or not provider.requires_api_key())
+            providers[key] = {
+                "name": provider.name,
+                "type": provider.provider_type,
+                "model": provider.model,
+                "base_url": provider.base_url,
+                "configured": configured,
+                "has_balance": bool(getattr(provider, "balance_endpoint", "")),
+                "availability": availability.get(key, {}),
+            }
+            if key == "deepseek" and configured and refresh_balance:
+                try:
+                    balances[key] = fetch_provider_balance(provider)
+                except Exception as exc:  # noqa: BLE001
+                    balances[key] = {"available": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": str(exc),
+            "providers": providers,
+            "balances": balances,
+            "usage": _usage_stats_from_service_state(),
+            "availability": availability,
+        }
+
+    return {
+        "ok": True,
+        "providers": providers,
+        "balances": balances,
+        "usage": _usage_stats_from_service_state(),
+        "availability": availability,
+    }
 
 
 def _find_live_output_header(lines: list[str]) -> int:

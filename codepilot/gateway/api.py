@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+from codepilot.ai_support.providers import mark_provider_unavailable
 from codepilot.gateway.execute import execute_api_prompt
 from codepilot.gateway.resolution import resolve_api_call
 from codepilot.gateway.types import GatewayMode, GatewayRequest, GatewayResponse
@@ -54,6 +55,13 @@ def try_api(request: GatewayRequest, mode: GatewayMode) -> Optional[GatewayRespo
     try:
         raw = execute_api_prompt(resolved.provider, request.prompt)
     except Exception as exc:  # noqa: BLE001
+        mark_provider_unavailable(
+            resolved.provider_key,
+            resolved.provider,
+            str(exc),
+            source="gateway",
+            project_path=request.project_path or request.config_ref or "",
+        )
         return GatewayResponse(
             ok=False,
             source=resolved.source,

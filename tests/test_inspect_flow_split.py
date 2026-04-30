@@ -234,6 +234,55 @@ def test_run_inspection_short_circuits_when_all_signals_empty(tmp_path, monkeypa
     assert "硬规划" in result["note"]
 
 
+def test_call_llm_skips_unavailable_api_and_marks_fallback(tmp_path, monkeypatch):
+    calls: dict[str, object] = {"api": 0, "marks": []}
+
+    def _api_unavailable(*_args, **_kwargs):
+        calls["api"] = int(calls["api"]) + 1
+        raise RuntimeError("invalid api key")
+
+    def _local_cli(*_args, **_kwargs):
+        return {"candidates": []}
+
+    def _mark(provider_key, provider, reason, **kwargs):
+        calls["marks"].append(
+            {
+                "provider_key": provider_key,
+                "provider": provider.name,
+                "reason": reason,
+                "source": kwargs.get("source"),
+                "project_path": kwargs.get("project_path"),
+            }
+        )
+
+    monkeypatch.setattr(inspect_cmd, "_run_api_provider", _api_unavailable)
+    monkeypatch.setattr(inspect_cmd, "_run_claude_schema_prompt", _local_cli)
+    monkeypatch.setattr(inspect_cmd, "mark_provider_unavailable", _mark)
+
+    payload = inspect_cmd._call_llm(
+        "prompt",
+        "openai-gpt4o",
+        "",
+        "sk-invalid",
+        None,
+        str(tmp_path),
+        5,
+        planner="claude",
+    )
+
+    assert payload == {"candidates": []}
+    assert calls["api"] == 1
+    assert calls["marks"] == [
+        {
+            "provider_key": "openai-gpt4o",
+            "provider": "OpenAI GPT-4o",
+            "reason": "invalid api key",
+            "source": "inspect",
+            "project_path": str(tmp_path),
+        }
+    ]
+
+
 def test_filter_candidates_drops_generic_overlong_and_ungrounded():
     signal_results = [
         inspect_cmd.InspectSignalResult(

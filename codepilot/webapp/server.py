@@ -76,6 +76,7 @@ from codepilot.webapp.payloads import (  # noqa: F401 (re-export)
     _sorted_tasks,
     _tail_text,
     _task_payload,
+    ai_status_payload,
     daemon_health_payload,
     dashboard_payload,
     project_summary,
@@ -394,6 +395,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             project = (query.get("project") or [""])[0].strip() or None
             self._send_json(daemon_health_payload(project))
+            return
+        if path == "/api/ai/status":
+            query = parse_qs(parsed.query)
+            project = (query.get("project") or [""])[0].strip() or None
+            refresh = (query.get("refresh") or ["0"])[0].strip().lower() in {"1", "true", "yes"}
+            self._send_json(ai_status_payload(project, refresh_balance=refresh))
             return
         if path == "/api/events/stream":
             # Server-sent events: push live progress to the dashboard so the

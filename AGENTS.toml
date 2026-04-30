@@ -17,6 +17,21 @@ per_task_branch = false
 [inspect]
 signals = ["git_log", "failed_tasks", "todos", "deps", "ruff", "pytest", "code_metrics"]
 
+
+[providers]
+
+[providers.deepseek]
+enabled = false
+api_key = ""
+model = ""
+base_url = "https://api.deepseek.com"
+max_tokens = 8192
+temperature = 0.7
+auto_model_selection = true
+simple_model = "deepseek-v4-flash"
+complex_model = "deepseek-v4-pro"
+thinking = "auto"
+reasoning_effort = "auto"
 [feishu_bot]
 enabled = true
 app_id = "cli_a9653cd84db9dcc4"

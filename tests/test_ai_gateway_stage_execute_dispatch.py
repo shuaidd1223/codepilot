@@ -304,6 +304,47 @@ def test_call_structured_route_matrix(gateway_state, provider_key, provider_kwar
         assert resp.payload == {"intent": "task", "reason": "from api"}
 
 
+def test_call_structured_marks_unavailable_api_before_cli_fallback(gateway_state, monkeypatch):
+    marks: list[dict[str, object]] = []
+    provider = FakeAPIProvider(needs_key=False, raises=True)
+    gateway_state["registry"]["localcustom"] = provider
+
+    def _mark(provider_key, provider_obj, reason, **kwargs):
+        marks.append(
+            {
+                "provider_key": provider_key,
+                "provider": provider_obj,
+                "reason": reason,
+                "source": kwargs.get("source"),
+                "project_path": kwargs.get("project_path"),
+            }
+        )
+
+    monkeypatch.setattr("codepilot.gateway.api.mark_provider_unavailable", _mark)
+
+    resp = ai_gateway.call_structured(
+        GatewayRequest(
+            prompt="hi",
+            schema=STRUCTURED_SCHEMA,
+            classifier_provider="localcustom",
+            planner="codex",
+            project_path="D:/project",
+        )
+    )
+
+    assert resp.ok is True
+    assert resp.source == "cli:codex"
+    assert marks == [
+        {
+            "provider_key": "localcustom",
+            "provider": provider,
+            "reason": "boom",
+            "source": "gateway",
+            "project_path": "D:/project",
+        }
+    ]
+
+
 def test_call_structured_passes_config_ref_to_cli(gateway_state):
     resp = ai_gateway.call_structured(
         GatewayRequest(

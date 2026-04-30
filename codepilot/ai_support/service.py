@@ -28,6 +28,7 @@ from codepilot.ai_support.providers import (  # noqa: F401 (re-export)
     _load_project_config,
     _run_api_provider,
     _run_cli_provider,
+    mark_provider_unavailable,
     resolve_api_provider,
     resolve_cli_provider,
 )

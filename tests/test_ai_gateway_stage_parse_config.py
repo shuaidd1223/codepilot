@@ -50,9 +50,21 @@ def test_resolve_api_call_applies_overrides_and_prefers_config_ref(monkeypatch):
 
 
 def test_resolve_api_call_returns_none_when_required_key_missing(monkeypatch):
+    marks: list[dict[str, object]] = []
     provider = FakeAPIProvider(needs_key=True, api_key="")
     monkeypatch.setattr("codepilot.ai_support.providers.API_PROVIDERS", {"openai": object()})
     monkeypatch.setattr("codepilot.ai_support.providers.resolve_api_provider", lambda *_: provider)
+    monkeypatch.setattr(
+        "codepilot.gateway.resolution.mark_provider_unavailable",
+        lambda provider_key, provider_obj, reason, **kwargs: marks.append(
+            {
+                "provider_key": provider_key,
+                "provider": provider_obj,
+                "reason": reason,
+                "source": kwargs.get("source"),
+            }
+        ),
+    )
 
     resolved = resolve_api_call(
         GatewayRequest(
@@ -62,6 +74,14 @@ def test_resolve_api_call_returns_none_when_required_key_missing(monkeypatch):
     )
 
     assert resolved is None
+    assert marks == [
+        {
+            "provider_key": "openai",
+            "provider": provider,
+            "reason": "missing api key",
+            "source": "gateway",
+        }
+    ]
 
 
 def test_resolve_structured_cli_call_preserves_claude_variant():

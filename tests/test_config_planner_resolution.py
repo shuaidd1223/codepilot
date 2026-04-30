@@ -192,7 +192,9 @@ provider = "deepseek"
     assert parsed["classifier"]["provider"] == "deepseek"
     assert parsed["providers"]["deepseek"]["api_key"] == ""
     assert parsed["providers"]["deepseek"]["model"] == ""
-    assert parsed["providers"]["deepseek"]["base_url"] == ""
+    assert parsed["providers"]["deepseek"]["base_url"] == "https://api.deepseek.com"
+    assert parsed["providers"]["deepseek"]["auto_model_selection"] is True
+    assert parsed["providers"]["deepseek"]["complex_model"] == "deepseek-v4-pro"
 
 
 def test_config_sync_moves_inline_feishu_app_secret_to_sibling_secrets_file(tmp_path, monkeypatch):
