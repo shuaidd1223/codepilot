@@ -551,7 +551,9 @@ CP.sse = {
   open(url, onEvent, onError) {
     let es = null;
     let closed = false;
-    let lastEventId = '';
+    CP.sseLastEventIds = CP.sseLastEventIds || {};
+    const streamKey = url.split('?')[0];
+    let lastEventId = CP.sseLastEventIds[streamKey] || '';
     const connectUrl = () => {
       if (!lastEventId) return url;
       const sep = url.includes('?') ? '&' : '?';
@@ -567,7 +569,10 @@ CP.sse = {
       }
       es.onmessage = (ev) => {
         if (!ev || !ev.data) return;
-        if (ev.lastEventId) lastEventId = String(ev.lastEventId);
+        if (ev.lastEventId) {
+          lastEventId = String(ev.lastEventId);
+          CP.sseLastEventIds[streamKey] = lastEventId;
+        }
         try {
           onEvent(JSON.parse(ev.data));
         } catch (err) {

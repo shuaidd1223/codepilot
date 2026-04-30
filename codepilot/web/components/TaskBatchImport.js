@@ -12,6 +12,17 @@ CP.Components.TaskBatchImport = Vue.defineComponent({
       const validation = (this.schema && this.schema.validation) || {};
       return (validation.required_headings || []).map(item => item.label).filter(Boolean);
     },
+    templateHeadings() {
+      const markdown = String((this.schema && this.schema.template_markdown) || '');
+      const headings = [];
+      const rx = /^##\s+(.+?)\s*$/gm;
+      let match;
+      while ((match = rx.exec(markdown)) !== null) {
+        const label = String(match[1] || '').trim();
+        if (label) headings.push(label);
+      }
+      return headings.length ? headings : this.requiredHeadings;
+    },
     placeholderTokens() {
       const validation = (this.schema && this.schema.validation) || {};
       return (validation.placeholder_tokens || []).slice(0, 8);
@@ -104,10 +115,10 @@ CP.Components.TaskBatchImport = Vue.defineComponent({
           </div>
 
           <div class="batch-import-panel">
-            <div class="batch-import-panel-head">模板要求</div>
-            <div class="tiny muted">以下章节必须出现在每条任务的 <code>content</code> 中。</div>
+            <div class="batch-import-panel-head">完整模板结构</div>
+            <div class="tiny muted">以下章节来自真实 task-template，每条任务的 <code>content</code> 应保持这些结构。</div>
             <div class="chip-row mt-sm">
-              <cp-chip v-for="label in requiredHeadings" :key="label">{{ label }}</cp-chip>
+              <cp-chip v-for="label in templateHeadings" :key="label">{{ label }}</cp-chip>
             </div>
 
             <div v-if="placeholderTokens.length" class="batch-import-notes">

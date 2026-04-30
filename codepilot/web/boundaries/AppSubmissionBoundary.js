@@ -16,6 +16,7 @@ CP.createAppSubmissionBoundary = (options = {}) => {
   const confirmDialog = options.confirmDialog || (async () => false);
   const buildClarifyStateFromPayload = options.buildClarifyStateFromPayload || (() => null);
   const renderClarifyMessage = options.renderClarifyMessage || ((message) => message || '');
+  const deleteProjectDraft = options.deleteProjectDraft || (() => {});
 
   async function submitGoal() {
     if (!state.nav.project) {
@@ -250,6 +251,7 @@ CP.createAppSubmissionBoundary = (options = {}) => {
         state.sessionDetail = null;
         state.sessionMessages = [];
       }
+      deleteProjectDraft(name);
       await loadDashboard();
       pushToast(out.message || '项目已删除', 'success');
     } catch (err) {

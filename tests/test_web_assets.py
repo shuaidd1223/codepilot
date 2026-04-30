@@ -142,6 +142,21 @@ def test_web_ui_daemon_banner_points_to_ui_start_command():
     assert "codepilot webui start" not in app
 
 
+def test_metrics_panel_renders_deepseek_balance_and_token_usage():
+    metrics_panel = Path("codepilot/web/components/MetricsPanel.js").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "aiStatus" in app_state
+    assert "loadAIStatus" in app_state
+    assert "/api/ai/status" in app_state
+    assert "DeepSeek API 余额" in metrics_panel
+    assert "总 tokens" in metrics_panel
+    assert "思考" in metrics_panel
+    assert ".ai-meter" in styles
+    assert ".ai-usage-grid" in styles
+
+
 def test_app_state_rebinds_daemon_health_when_project_changes():
     app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
 
@@ -149,6 +164,44 @@ def test_app_state_rebinds_daemon_health_when_project_changes():
     assert "loadDaemonHealth();" in app_state
     assert "closeEventStream();" in app_state
     assert "openEventStream();" in app_state
+
+
+def test_app_state_filters_task_state_notifications_to_current_project():
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+
+    task_state_branch = app_state.split("if (event && event.stage === 'task-state') {", 1)[1].split(
+        "state.liveEvents.push(event);",
+        1,
+    )[0]
+    assert "const extra = event.extra || {};" in task_state_branch
+    assert "if (!projectMatchesCurrent(extra.project)) return;" in task_state_branch
+
+
+def test_sse_remembers_last_event_id_across_project_stream_reopens():
+    utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
+
+    assert "CP.sseLastEventIds = CP.sseLastEventIds || {};" in utils
+    assert "const streamKey = url.split('?')[0];" in utils
+    assert "let lastEventId = CP.sseLastEventIds[streamKey] || '';" in utils
+    assert "CP.sseLastEventIds[streamKey] = lastEventId;" in utils
+
+
+def test_app_state_keeps_project_form_drafts_scoped_by_project():
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+
+    assert "const PROJECT_DRAFTS_STORAGE_KEY = 'cp-project-drafts-v1';" in app_state
+    assert "function saveProjectDraft(project" in app_state
+    assert "function loadProjectDraft(project" in app_state
+    assert "saveProjectDraft(prevProject);" in app_state
+    assert "loadProjectDraft(partial.project);" in app_state
+    for marker in (
+        "goalText: state.goalText",
+        "goalCategory: state.goalCategory",
+        "composerMode: state.composerMode",
+        "composer: cloneProjectDraftValue(state.composer)",
+        "batchComposer: cloneProjectDraftValue(state.batchComposer)",
+    ):
+        assert marker in app_state
 
 
 def test_web_ui_uses_in_app_confirm_dialog_instead_of_browser_dialogs():
@@ -305,6 +358,15 @@ def test_project_view_wires_batch_task_import_panel():
     assert "loadTaskTemplateSchema();" in batch_component
     assert "submitTaskBatch(this.validation);" in batch_component
     assert "CP.validateTaskBatchImport" in utils
+
+
+def test_batch_task_import_panel_shows_full_template_structure():
+    batch_component = Path("codepilot/web/components/TaskBatchImport.js").read_text(encoding="utf-8")
+
+    assert "templateHeadings()" in batch_component
+    assert "schema.template_markdown" in batch_component
+    assert "完整模板结构" in batch_component
+    assert "v-for=\"label in templateHeadings\"" in batch_component
 
 
 def test_agent_log_splits_rendering_and_interaction_state_into_boundaries():

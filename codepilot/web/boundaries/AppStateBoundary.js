@@ -44,6 +44,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       liveEvents: [],
 
       daemonHealth: { alive: true, running: false, pid: 0, reason: '', stale_seconds: 0 },
+      aiStatus: { ok: true, providers: {}, balances: {}, usage: {} },
 
       goalText: '', goalCategory: 'auto', goalClarify: null,
       projectForm: { open: false, path: '', name: '', noConfig: false },
@@ -54,6 +55,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       taskTemplateLoading: false,
       taskTemplateError: '',
       batchComposer: { raw: '' },
+      projectDrafts: {},
       chatText: '', chatCategory: 'auto',
       clarifyDrafts: {},
     });
@@ -105,6 +107,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
     const NAV_STORAGE_KEY = 'cp-nav-v1';
     const EXPAND_STORAGE_KEY = 'cp-expand-v1';
+    const PROJECT_DRAFTS_STORAGE_KEY = 'cp-project-drafts-v1';
     const CATEGORY_VIEWS = ['sessions', 'tasks', 'jobs'];
     const FALLBACK_REFRESH_MS = 30000;
     const REFRESH_DEBOUNCE_MS = 250;
@@ -150,6 +153,124 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       return null;
     }
 
+    function cloneProjectDraftValue(value) {
+      if (value == null) return value;
+      try {
+        return JSON.parse(JSON.stringify(value));
+      } catch (_e) {
+        return value;
+      }
+    }
+
+    function defaultProjectDraft() {
+      return {
+        answer: null,
+        goalText: '',
+        goalCategory: 'auto',
+        goalClarify: null,
+        composerMode: 'requirement',
+        composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
+        composerClarify: null,
+        batchComposer: { raw: '' },
+        chatText: '',
+        chatCategory: 'auto',
+      };
+    }
+
+    function normalizeProjectDraft(draft) {
+      const fallback = defaultProjectDraft();
+      const source = (draft && typeof draft === 'object') ? draft : {};
+      const composer = (source.composer && typeof source.composer === 'object') ? source.composer : {};
+      const batchComposer = (source.batchComposer && typeof source.batchComposer === 'object') ? source.batchComposer : {};
+      return {
+        answer: source.answer == null ? null : String(source.answer),
+        goalText: typeof source.goalText === 'string' ? source.goalText : fallback.goalText,
+        goalCategory: typeof source.goalCategory === 'string' ? source.goalCategory : fallback.goalCategory,
+        goalClarify: cloneProjectDraftValue(source.goalClarify || null),
+        composerMode: typeof source.composerMode === 'string' ? source.composerMode : fallback.composerMode,
+        composer: {
+          title: typeof composer.title === 'string' ? composer.title : fallback.composer.title,
+          content: typeof composer.content === 'string' ? composer.content : fallback.composer.content,
+          priority: typeof composer.priority === 'string' ? composer.priority : fallback.composer.priority,
+          agent: typeof composer.agent === 'string' ? composer.agent : fallback.composer.agent,
+          planner: typeof composer.planner === 'string' ? composer.planner : fallback.composer.planner,
+          execute: typeof composer.execute === 'boolean' ? composer.execute : fallback.composer.execute,
+        },
+        composerClarify: cloneProjectDraftValue(source.composerClarify || null),
+        batchComposer: {
+          raw: typeof batchComposer.raw === 'string' ? batchComposer.raw : fallback.batchComposer.raw,
+        },
+        chatText: typeof source.chatText === 'string' ? source.chatText : fallback.chatText,
+        chatCategory: typeof source.chatCategory === 'string' ? source.chatCategory : fallback.chatCategory,
+      };
+    }
+
+    function currentProjectDraftSnapshot() {
+      return {
+        answer: state.answer,
+        goalText: state.goalText,
+        goalCategory: state.goalCategory,
+        goalClarify: cloneProjectDraftValue(state.goalClarify),
+        composerMode: state.composerMode,
+        composer: cloneProjectDraftValue(state.composer),
+        composerClarify: cloneProjectDraftValue(state.composerClarify),
+        batchComposer: cloneProjectDraftValue(state.batchComposer),
+        chatText: state.chatText,
+        chatCategory: state.chatCategory,
+      };
+    }
+
+    function persistProjectDrafts() {
+      try { localStorage.setItem(PROJECT_DRAFTS_STORAGE_KEY, JSON.stringify(state.projectDrafts)); } catch (_e) { /* ignore */ }
+    }
+
+    function readStoredProjectDrafts() {
+      try {
+        const raw = localStorage.getItem(PROJECT_DRAFTS_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          Object.assign(state.projectDrafts, parsed);
+        }
+      } catch (_e) { /* ignore */ }
+    }
+
+    function saveProjectDraft(project = state.nav.project) {
+      if (!project) return;
+      state.projectDrafts[project] = currentProjectDraftSnapshot();
+      persistProjectDrafts();
+    }
+
+    function loadProjectDraft(project = state.nav.project) {
+      const draft = normalizeProjectDraft(project ? state.projectDrafts[project] : null);
+      state.answer = draft.answer;
+      state.goalText = draft.goalText;
+      state.goalCategory = draft.goalCategory;
+      state.goalClarify = draft.goalClarify;
+      state.composerMode = draft.composerMode;
+      state.composer = draft.composer;
+      state.composerClarify = draft.composerClarify;
+      state.batchComposer = draft.batchComposer;
+      state.chatText = draft.chatText;
+      state.chatCategory = draft.chatCategory;
+    }
+
+    function deleteProjectDraft(project) {
+      if (!project || !Object.prototype.hasOwnProperty.call(state.projectDrafts, project)) return;
+      delete state.projectDrafts[project];
+      persistProjectDrafts();
+    }
+
+    let projectDraftSaveQueued = false;
+    function queueProjectDraftSave() {
+      if (!state.nav.project || projectDraftSaveQueued) return;
+      projectDraftSaveQueued = true;
+      requestAnimationFrame(() => {
+        projectDraftSaveQueued = false;
+        saveProjectDraft(state.nav.project);
+      });
+    }
+
     function openProjectCategory(project, view) {
       CP.StateBoundary.openProjectCategory(state, project, view, CATEGORY_VIEWS);
     }
@@ -164,9 +285,11 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
     function applyRestoredNav(restored) {
       if (!restored || !restored.project) return;
-      state.nav.project = restored.project;
-      state.nav.view = restored.view || 'overview';
-      state.nav.id = restored.id ?? null;
+      setNav({
+        project: restored.project,
+        view: restored.view || 'overview',
+        id: restored.id ?? null,
+      });
       state.expanded[restored.project] = true;
       const restoredCategory = viewToCategory(restored.view);
       if (restoredCategory) openProjectCategory(restored.project, restoredCategory);
@@ -180,9 +303,13 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
     function setNav(partial) {
       const prevProject = state.nav.project;
+      if (partial.project !== undefined && partial.project !== prevProject) {
+        saveProjectDraft(prevProject);
+      }
       Object.assign(state.nav, partial);
       if (partial.project !== undefined && partial.project !== prevProject) {
         CP.StateBoundary.pivotProjectAliases(state, partial.project);
+        loadProjectDraft(partial.project);
       }
       persistNav();
     }
@@ -264,9 +391,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         const active = state.nav.project || data.selected_project || null;
         CP.StateBoundary.pivotProjectAliases(state, active);
         if (!state.nav.project && data.selected_project) {
-          state.nav.project = data.selected_project;
+          setNav({ project: data.selected_project, view: state.nav.view || 'overview', id: state.nav.id ?? null });
           state.expanded[data.selected_project] = true;
-          persistNav();
         }
         await loadSessions();
         if (reqId !== dashboardReqSeq) return;
@@ -277,6 +403,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
             await loadTaskDetail({ silent: true });
           }
         }
+        loadAIStatus();
       } catch (err) {
         pushToast(err.message, 'error');
       } finally {
@@ -313,6 +440,17 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         const qs = state.nav.project ? `?project=${encodeURIComponent(state.nav.project)}` : '';
         const data = await CP.api.get(`/api/daemon/health${qs}`);
         state.daemonHealth = data || state.daemonHealth;
+      } catch (_e) { /* silent */ }
+    }
+
+    async function loadAIStatus(options = {}) {
+      try {
+        const refresh = options.refresh ? '1' : '0';
+        const qs = state.nav.project
+          ? `?project=${encodeURIComponent(state.nav.project)}&refresh=${refresh}`
+          : `?refresh=${refresh}`;
+        const data = await CP.api.get(`/api/ai/status${qs}`);
+        state.aiStatus = data || state.aiStatus;
       } catch (_e) { /* silent */ }
     }
 
@@ -388,6 +526,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         confirmDialog,
         buildClarifyStateFromPayload,
         renderClarifyMessage,
+        deleteProjectDraft,
       });
       return submissionBoundary;
     }
@@ -528,11 +667,13 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
           return;
         }
         if (event && event.stage === 'task-state') {
-          const changes = (event.extra && Array.isArray(event.extra.changes)) ? event.extra.changes : [];
+          const extra = event.extra || {};
+          if (!projectMatchesCurrent(extra.project)) return;
+          const changes = Array.isArray(extra.changes) ? extra.changes : [];
           scheduleRefresh({ immediate: true });
           const taskId = state.nav.view === 'task' ? state.nav.id : null;
           if (taskId) {
-            const ids = (event.extra && Array.isArray(event.extra.changed_task_ids)) ? event.extra.changed_task_ids : [];
+            const ids = Array.isArray(extra.changed_task_ids) ? extra.changed_task_ids : [];
             if (!ids.length || ids.some((id) => Number(id) === Number(taskId))) {
               loadTaskDetail({ silent: true });
               loadTaskLog(taskId);
@@ -570,6 +711,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
     watch(() => state.nav.project, (nextProject, prevProject) => {
       if (nextProject === prevProject) return;
       loadDaemonHealth();
+      loadAIStatus({ refresh: true });
       if (!mounted) return;
       closeEventStream();
       openEventStream();
@@ -637,6 +779,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         }
       } catch (_e) { /* ignore */ }
 
+      readStoredProjectDrafts();
+
       let expandSaveQueued = false;
       watch(() => state.expanded, () => {
         if (expandSaveQueued) return;
@@ -651,13 +795,28 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
       const restored = readStoredNav();
       if (restored && restored.project) {
-        state.nav.project = restored.project;
-        state.nav.view = restored.view || 'overview';
-        state.nav.id = restored.id ?? null;
+        setNav({
+          project: restored.project,
+          view: restored.view || 'overview',
+          id: restored.id ?? null,
+        });
         state.expanded[restored.project] = true;
         const restoredCategory = viewToCategory(state.nav.view);
         if (restoredCategory) openProjectCategory(restored.project, restoredCategory);
       }
+
+      watch(() => [
+        state.answer,
+        state.goalText,
+        state.goalCategory,
+        state.goalClarify,
+        state.composerMode,
+        state.composer,
+        state.composerClarify,
+        state.batchComposer,
+        state.chatText,
+        state.chatCategory,
+      ], queueProjectDraftSave, { deep: true });
 
       loadDashboard().then(() => {
         for (const project of state.projects || []) {
@@ -672,6 +831,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       });
 
       loadDaemonHealth();
+      loadAIStatus({ refresh: true });
       schedule();
       openEventStream();
       installKeyboardShortcuts();
@@ -680,6 +840,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
     onUnmounted(() => {
       mounted = false;
+      saveProjectDraft(state.nav.project);
       clearInterval(state.timer);
       closeEventStream();
       window.removeEventListener('hashchange', onHashChange);
@@ -721,7 +882,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       selectSession, selectTask, selectJob,
       toggleAuto, toggleDark,
 
-      loadDashboard, loadTaskDetail, loadTaskLog, loadSessions, loadSessionChat, loadDaemonHealth,
+      loadDashboard, loadTaskDetail, loadTaskLog, loadSessions, loadSessionChat, loadDaemonHealth, loadAIStatus,
       loadTaskTemplateSchema,
 
       taskAction, submitGoal, submitComposer, submitTaskBatch,
