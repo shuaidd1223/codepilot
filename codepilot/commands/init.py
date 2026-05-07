@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 
 from codepilot.core import config
+from codepilot.core.gitignore import ensure_gitignore_entry
 from codepilot.storage import database as db_module
 from codepilot.storage.database import register_project
 from codepilot.core.output import echo
@@ -40,6 +41,7 @@ def initialize_project(path: Path, project_name: str | None = None, *, no_config
     if existing:
         if not no_config:
             _update_config(config_file, existing["name"])
+            ensure_gitignore_entry(resolved_path, config.CONFIG_FILENAME)
         return {
             "created": False,
             "project": existing,
@@ -57,6 +59,7 @@ def initialize_project(path: Path, project_name: str | None = None, *, no_config
     )
     if not no_config:
         _update_config(config_file, requested_name)
+        ensure_gitignore_entry(resolved_path, config.CONFIG_FILENAME)
     return {
         "created": True,
         "project": project,

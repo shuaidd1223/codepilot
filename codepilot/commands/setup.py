@@ -11,6 +11,7 @@ import click
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core import config as config_mod
 from codepilot.core import event_plugins
+from codepilot.core.gitignore import ensure_gitignore_entry
 from codepilot.core import skill_catalog
 from codepilot.core.output import echo, safe
 from codepilot.storage import database as db
@@ -140,6 +141,12 @@ def _setup_directories(root: Path, *, dry_run: bool) -> list[dict[str, Any]]:
     return actions
 
 
+def _setup_gitignore(root: Path, *, dry_run: bool) -> dict[str, Any]:
+    status = ensure_gitignore_entry(root, config_mod.CONFIG_FILENAME, dry_run=dry_run)
+    detail = "确保 AGENTS.toml 不被提交到项目仓库。"
+    return _action("gitignore", root / ".gitignore", root, status, detail)
+
+
 def _setup_event_registry(root: Path, *, dry_run: bool) -> dict[str, Any]:
     result = event_plugins.ensure_event_registry(root, dry_run=dry_run)
     return _action(
@@ -202,6 +209,7 @@ def setup_project(path: Path, project_name: str | None = None, *, dry_run: bool 
 
     actions: list[dict[str, Any]] = []
     actions.extend(_setup_config(root, resolved_name, dry_run=dry_run))
+    actions.append(_setup_gitignore(root, dry_run=dry_run))
     actions.extend(_setup_directories(root, dry_run=dry_run))
     actions.append(_setup_event_registry(root, dry_run=dry_run))
     actions.append(_setup_skill_catalog(root, dry_run=dry_run))

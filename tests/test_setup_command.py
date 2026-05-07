@@ -49,6 +49,7 @@ def test_setup_creates_project_codepilot_layout_config_and_registration(tmp_path
     _init_test_env(tmp_path, monkeypatch)
     project = tmp_path / "demo"
     project.mkdir()
+    (project / ".gitignore").write_text(".env*\n", encoding="utf-8")
 
     result = CliRunner().invoke(main, ["setup", str(project), "--json"])
 
@@ -73,6 +74,9 @@ def test_setup_creates_project_codepilot_layout_config_and_registration(tmp_path
     config_text = (project / "AGENTS.toml").read_text(encoding="utf-8")
     assert 'name = "demo"' in config_text
     assert "app_secret =" not in config_text
+    gitignore_lines = (project / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert ".env*" in gitignore_lines
+    assert gitignore_lines.count("AGENTS.toml") == 1
     registered = db.get_project("demo")
     assert registered is not None
     assert registered["path"] == str(project.resolve())
@@ -81,6 +85,26 @@ def test_setup_creates_project_codepilot_layout_config_and_registration(tmp_path
     statuses = {item["status"] for item in payload["data"]["actions"]}
     assert "created" in statuses
     assert "registered" in statuses
+
+
+def test_setup_adds_agents_toml_to_gitignore_once(tmp_path, monkeypatch):
+    _init_test_env(tmp_path, monkeypatch)
+    project = tmp_path / "demo"
+    project.mkdir()
+
+    first = CliRunner().invoke(main, ["setup", str(project), "--json"])
+    second = CliRunner().invoke(main, ["setup", str(project), "--json"])
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    gitignore_lines = (project / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert gitignore_lines.count("AGENTS.toml") == 1
+
+    payload = json.loads(second.output)
+    assert any(
+        item["kind"] == "gitignore" and item["status"] == "exists"
+        for item in payload["data"]["actions"]
+    )
 
 
 def test_setup_is_idempotent_and_preserves_existing_codex_hooks(tmp_path, monkeypatch):
