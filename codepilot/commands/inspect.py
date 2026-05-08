@@ -17,6 +17,7 @@ from codepilot.ai_support.service import (
     _run_api_provider,
     _run_claude_schema_prompt,
     _run_codex_schema_prompt,
+    _run_opencode_schema_prompt,
     build_task_markdown_from_plan,
     mark_provider_unavailable,
     normalize_agent_name,
@@ -469,12 +470,31 @@ def _call_llm(
                 return json.loads(raw)
 
     # 2) Fall back to local CLI — default claude (faster for analysis/inspection).
+    # Dispatch via the family registry so opencode (and future families) work too.
+    from codepilot.ai_support.cli_families import get_family
+
     normalized = normalize_agent_name(planner) if planner else "claude"
-    if normalized in {"claude", "claude-node", "claude-sonnet", "claude-opus", "claude-haiku"}:
+    family = get_family(normalized)
+    family_name = family.name if family else None
+    if family_name is None:
+        lowered = normalized.strip().lower()
+        for candidate in ("claude", "codex", "opencode"):
+            if lowered.startswith(candidate + "-") or lowered == candidate:
+                family_name = candidate
+                break
+
+    if family_name == "claude":
         return _run_claude_schema_prompt(
             prompt,
             INSPECT_SCHEMA,
             planner=normalized,
+            project_path=project_path,
+            timeout=timeout,
+        )
+    if family_name == "opencode":
+        return _run_opencode_schema_prompt(
+            prompt,
+            INSPECT_SCHEMA,
             project_path=project_path,
             timeout=timeout,
         )

@@ -3,7 +3,63 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
+
+
+def _dispatch_schema_prompt(
+    planner_normalized: str,
+    *,
+    runners: dict[str, Callable[..., dict]],
+    prompt: str,
+    schema: dict,
+    project_path: str,
+    config_ref: Any,
+) -> dict:
+    """Pick the right schema-prompt runner via the CLI family registry.
+
+    ``runners`` is a ``{family_name: callable}`` map keyed by canonical
+    family name (claude / codex / opencode / …). Claude variants
+    (claude-sonnet / opus / haiku / claude-node) all dispatch to the
+    ``claude`` runner — the runner itself picks the model alias.
+    """
+    from codepilot.ai_support.cli_families import get_family
+
+    family = get_family(planner_normalized)
+    if family is None:
+        # Try prefix-matching (claude-sonnet -> claude) before giving up.
+        lowered = (planner_normalized or "").strip().lower()
+        for name in runners:
+            if lowered.startswith(name + "-") or lowered == name:
+                family_name = name
+                break
+        else:
+            raise RuntimeError(
+                f"当前自动拆分暂时不支持规划器 `{planner_normalized}`。"
+                "请改用 claude / codex / opencode 之一。"
+            )
+    else:
+        family_name = family.name
+
+    runner = runners.get(family_name)
+    if runner is None:
+        raise RuntimeError(
+            f"未注入 `{family_name}` 的 schema_prompt runner。这是 service 层的接线遗漏。"
+        )
+
+    if family_name == "claude":
+        return runner(
+            prompt,
+            schema,
+            planner=planner_normalized,
+            project_path=project_path,
+            config_ref=config_ref,
+        )
+    return runner(
+        prompt,
+        schema,
+        project_path=project_path,
+        config_ref=config_ref,
+    )
 
 
 def build_task_markdown_from_plan(
@@ -103,6 +159,7 @@ def run_recon_stage(
     progress_prefix: str = "  [recon]",
     run_claude_schema_prompt: Callable[..., dict],
     run_codex_schema_prompt: Callable[..., dict],
+    run_opencode_schema_prompt: Callable[..., dict] | None = None,
     validate_recon_payload: Callable[[dict, str, str], tuple[dict, list[str]]],
     get_progress_callback: Callable[[], Callable[[str], None] | None],
 ) -> dict:
@@ -121,24 +178,30 @@ def run_recon_stage(
         except Exception:
             pass
 
+    runners: dict[str, Callable[..., dict]] = {
+        "claude": run_claude_schema_prompt,
+        "codex": run_codex_schema_prompt,
+    }
+    if run_opencode_schema_prompt is not None:
+        runners["opencode"] = run_opencode_schema_prompt
+
     try:
-        if planner_normalized in {"claude", "claude-node", "claude-sonnet", "claude-opus", "claude-haiku"}:
-            payload = run_claude_schema_prompt(
-                prompt,
-                RECON_SCHEMA,
-                planner=planner_normalized,
-                project_path=project_path,
-                config_ref=config_ref,
-            )
-        elif planner_normalized == "codex":
-            payload = run_codex_schema_prompt(
-                prompt,
-                RECON_SCHEMA,
-                project_path=project_path,
-                config_ref=config_ref,
-            )
-        else:
-            payload = {}
+        payload = _dispatch_schema_prompt(
+            planner_normalized,
+            runners=runners,
+            prompt=prompt,
+            schema=RECON_SCHEMA,
+            project_path=project_path,
+            config_ref=config_ref,
+        )
+    except RuntimeError as runtime_exc:
+        # Recon is best-effort: unknown planner / missing runner shouldn't block planning.
+        if callback:
+            try:
+                callback(f"{progress_prefix} 跳过侦察：{runtime_exc}")
+            except Exception:
+                pass
+        return {}
     except Exception as exc:
         if callback:
             try:
@@ -233,6 +296,7 @@ def generate_task_breakdown(
     format_recon_block_fn: Callable[[dict], str],
     run_claude_schema_prompt: Callable[..., dict],
     run_codex_schema_prompt: Callable[..., dict],
+    run_opencode_schema_prompt: Callable[..., dict] | None = None,
     parse_automation_planner_result_fn: Callable[..., dict],
 ) -> dict:
     """Generate a structured subtask breakdown for a high-level goal."""
@@ -262,23 +326,21 @@ def generate_task_breakdown(
         max_tasks=max_tasks,
     )
 
-    if normalized in {"claude", "claude-node", "claude-sonnet", "claude-opus", "claude-haiku"}:
-        breakdown = run_claude_schema_prompt(
-            prompt,
-            TASK_BREAKDOWN_SCHEMA,
-            planner=normalized,
-            project_path=project_path,
-            config_ref=config_ref,
-        )
-    elif normalized == "codex":
-        breakdown = run_codex_schema_prompt(
-            prompt,
-            TASK_BREAKDOWN_SCHEMA,
-            project_path=project_path,
-            config_ref=config_ref,
-        )
-    else:
-        raise RuntimeError(f"当前自动拆分暂时不支持规划器 `{planner}`。请改用 claude 或 codex。")
+    runners: dict[str, Callable[..., dict]] = {
+        "claude": run_claude_schema_prompt,
+        "codex": run_codex_schema_prompt,
+    }
+    if run_opencode_schema_prompt is not None:
+        runners["opencode"] = run_opencode_schema_prompt
+
+    breakdown = _dispatch_schema_prompt(
+        normalized,
+        runners=runners,
+        prompt=prompt,
+        schema=TASK_BREAKDOWN_SCHEMA,
+        project_path=project_path,
+        config_ref=config_ref,
+    )
 
     if not parse_result:
         return breakdown

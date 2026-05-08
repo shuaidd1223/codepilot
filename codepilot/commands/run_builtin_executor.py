@@ -36,10 +36,12 @@ def _resolve_builtin_single_agent(agent_mode: str) -> tuple[str, Optional[str]]:
         return normalized, None
     if normalized in {"claude-sonnet", "claude-opus", "claude-haiku"}:
         return "claude", normalized.split("-", 1)[1]
+    if normalized == "opencode":
+        return "opencode", None
 
     raise RuntimeError(
         f"内置执行器暂时不支持任务智能体 `{agent_mode}`。"
-        "请改用 codex、claude、claude-node、claude-sonnet、claude-opus、claude-haiku 或 dual。"
+        "请改用 codex、claude、claude-node、claude-sonnet、claude-opus、claude-haiku、opencode 或 dual。"
     )
 
 
@@ -285,23 +287,53 @@ def _run_builtin_phase(
             )
         cmd.append(str(cli_js))
 
-    cmd.extend(["-p", "--output-format", "text", "--dangerously-skip-permissions"])
-    if model:
-        cmd.extend(["--model", model])
+    if runner == "opencode":
+        # OpenCode is provider-agnostic; backend keys come from cfg.providers and
+        # are injected as env vars before launch. Reads prompt from stdin like claude.
+        from codepilot.ai_support.opencode_runtime import build_opencode_env
+        from codepilot.core.config import load_project_config
 
-    if task_id:
-        exit_code, console = runner_mod._run_command_live(
-            cmd,
-            task_id=task_id,
-            phase=heartbeat_phase,
-            log_path=console_log,
-            cwd=project_path,
-            timeout=timeout,
-            input_text=prompt,
-            silence_timeout_seconds=silence_timeout_seconds,
-        )
+        cfg = load_project_config(provider_ref)
+        if cfg is None:
+            raise RuntimeError(
+                "OpenCode 需要 AGENTS.toml 中的 [providers.*] 配置以选择 backend。"
+            )
+        env_overrides = build_opencode_env(cfg)
+        cmd.append("run")
     else:
-        exit_code, console = runner_mod._run_command(cmd, cwd=project_path, timeout=timeout, input_text=prompt)
+        env_overrides = None
+        cmd.extend(["-p", "--output-format", "text", "--dangerously-skip-permissions"])
+        if model:
+            cmd.extend(["--model", model])
+
+    # OpenCode picks up its API key vars from os.environ; restore on the way out
+    # so a failed phase doesn't leak credentials to subsequent unrelated subprocesses.
+    saved_env: dict[str, Optional[str]] = {}
+    if env_overrides:
+        for k, v in env_overrides.items():
+            saved_env[k] = os.environ.get(k)
+            os.environ[k] = v
+
+    try:
+        if task_id:
+            exit_code, console = runner_mod._run_command_live(
+                cmd,
+                task_id=task_id,
+                phase=heartbeat_phase,
+                log_path=console_log,
+                cwd=project_path,
+                timeout=timeout,
+                input_text=prompt,
+                silence_timeout_seconds=silence_timeout_seconds,
+            )
+        else:
+            exit_code, console = runner_mod._run_command(cmd, cwd=project_path, timeout=timeout, input_text=prompt)
+    finally:
+        for k, original in saved_env.items():
+            if original is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = original
     label = runner if phase == "builder" else f"{runner}-review"
     return label, exit_code, console
 

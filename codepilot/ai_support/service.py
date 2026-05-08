@@ -71,6 +71,7 @@ BUILTIN_PHASE_AGENTS = {
     "claude-sonnet",
     "claude-opus",
     "claude-haiku",
+    "opencode",
 }
 
 
@@ -257,7 +258,7 @@ def check_provider_availability(agent: str, project_path: str | Path | dict | No
                 False,
                 "当前无法使用 dual 模式："
                 f"{details} 超出内置执行器支持范围。"
-                "请改用 codex、claude、claude-node、claude-sonnet、claude-opus 或 claude-haiku。",
+                "请改用 codex、claude、claude-node、claude-sonnet、claude-opus、claude-haiku 或 opencode。",
             )
 
         builder_ok, builder_msg = check_provider_availability(builder_agent, project_path=project_path)
@@ -509,6 +510,7 @@ def _run_recon_stage(
         progress_prefix=progress_prefix,
         run_claude_schema_prompt=_run_claude_schema_prompt,
         run_codex_schema_prompt=_run_codex_schema_prompt,
+        run_opencode_schema_prompt=_run_opencode_schema_prompt,
         validate_recon_payload=validate_recon_payload,
         get_progress_callback=lambda: _planner_progress_callback,
     )
@@ -567,6 +569,7 @@ def generate_task_breakdown(
         format_recon_block_fn=_format_recon_block,
         run_claude_schema_prompt=_run_claude_schema_prompt,
         run_codex_schema_prompt=_run_codex_schema_prompt,
+        run_opencode_schema_prompt=_run_opencode_schema_prompt,
         parse_automation_planner_result_fn=parse_automation_planner_result,
     )
 
