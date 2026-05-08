@@ -1,12 +1,15 @@
 """codepilot doctor — environment self-check command."""
 
 from __future__ import annotations
+import json
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import click
 
@@ -20,7 +23,7 @@ from codepilot.storage import database as db
 class CheckResult:
     """Single diagnostic check result."""
 
-    __slots__ = ("name", "ok", "severity", "detail", "fix")
+    __slots__ = ("name", "ok", "severity", "detail", "fix", "extra")
 
     def __init__(
         self,
@@ -30,6 +33,7 @@ class CheckResult:
         fix: Optional[str] = None,
         *,
         severity: Optional[str] = None,
+        extra: Optional[dict] = None,
     ):
         resolved_severity = severity or ("ok" if ok else "error")
         if resolved_severity not in {"ok", "warning", "error"}:
@@ -39,6 +43,7 @@ class CheckResult:
         self.severity = resolved_severity
         self.detail = detail
         self.fix = fix  # suggested remediation command / hint
+        self.extra = dict(extra or {})
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -49,6 +54,9 @@ class CheckResult:
         }
         if self.fix:
             d["fix"] = self.fix
+        for key, value in self.extra.items():
+            if key not in d:
+                d[key] = value
         return d
 
 
@@ -175,22 +183,343 @@ def _check_agents_toml() -> CheckResult:
 
 def _check_cli_tools() -> list[CheckResult]:
     """codex / claude / opencode CLI on PATH."""
+    from codepilot.ai_support.providers import resolve_cli_provider
+
     results: list[CheckResult] = []
     install_hints = {
         "codex": "npm install -g @openai/codex",
-        "claude": "npm install -g @anthropic-ai/claude-code",
+        "claude": "codepilot setup --install-claude",
         # OpenCode is the bottom-tier fallback; absence is a warning, not an error.
         "opencode": "npm install -g opencode-ai (or visit https://opencode.ai)",
     }
     for tool in ("codex", "claude", "opencode"):
-        found = shutil.which(tool)
-        if found:
-            results.append(CheckResult(f"cli_{tool}", True, f"{tool} -> {found}"))
+        try:
+            provider = resolve_cli_provider(tool)
+            found_path = provider.find_executable()
+        except Exception:
+            found = shutil.which(tool)
+            found_path = Path(found) if found else None
+        if found_path:
+            results.append(CheckResult(f"cli_{tool}", True, f"{tool} -> {found_path}"))
         else:
             results.append(CheckResult(
                 f"cli_{tool}", False, f"'{tool}' 不在 PATH 中",
                 fix=install_hints.get(tool, f"install {tool}"),
             ))
+    return results
+
+
+BundledVersionRunner = Callable[[Path, list[str]], str]
+_BUNDLED_VERSION_RE = re.compile(r"\b\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?\b")
+_WINDOWS_EXECUTABLE_SUFFIXES = {".exe", ".cmd", ".bat", ".ps1"}
+
+
+def _bundled_cli_manifest_candidates(install_dir: str | Path | None = None) -> list[Path]:
+    """Return possible installed/bundled vendor manifest locations."""
+    from codepilot.binary_support.paths import default_install_dir, running_binary_path
+    from codepilot.binary_support.vendor_fetcher import BUNDLED_VENDOR_MANIFEST
+
+    candidates: list[Path] = []
+    if install_dir:
+        root = Path(install_dir).expanduser().resolve()
+        candidates.append(root / "vendor" / BUNDLED_VENDOR_MANIFEST)
+        candidates.append(root / "bin" / "vendor" / BUNDLED_VENDOR_MANIFEST)
+
+    running_binary = running_binary_path()
+    if running_binary:
+        binary_dir = running_binary.parent
+        candidates.append(binary_dir / "vendor" / BUNDLED_VENDOR_MANIFEST)
+        candidates.append(binary_dir / "bin" / "vendor" / BUNDLED_VENDOR_MANIFEST)
+        candidates.append(binary_dir.parent / "vendor" / BUNDLED_VENDOR_MANIFEST)
+
+    try:
+        default_root = default_install_dir()
+        candidates.append(default_root / "vendor" / BUNDLED_VENDOR_MANIFEST)
+    except Exception:
+        pass
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = os.path.normcase(os.path.normpath(str(candidate)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _read_bundled_cli_manifest(install_dir: str | Path | None = None) -> tuple[Path | None, dict | None, str]:
+    for candidate in _bundled_cli_manifest_candidates(install_dir):
+        if not candidate.is_file():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return candidate, None, f"vendor manifest 无法解析: {safe(str(exc))}"
+        if not isinstance(payload, dict):
+            return candidate, None, "vendor manifest 顶层结构不是对象"
+        return candidate, payload, ""
+    return None, None, ""
+
+
+def _manifest_root(manifest_path: Path) -> Path:
+    if manifest_path.parent.name.lower() == "vendor" and manifest_path.parent.parent.name.lower() == "bin":
+        return manifest_path.parent.parent.parent
+    if manifest_path.parent.name.lower() == "vendor":
+        return manifest_path.parent.parent
+    return manifest_path.parent
+
+
+def _resolve_vendor_entry_path(root: Path, raw_path: str, provider: str) -> Path:
+    relative = Path(str(raw_path or "").replace("\\", "/"))
+    if not relative.name:
+        relative = Path("vendor") / provider
+    candidates = [(root / relative).resolve()]
+    if len(relative.parts) > 1 and relative.parts[0].lower() == "bin":
+        candidates.append((root / Path(*relative.parts[1:])).resolve())
+    if relative.parts and relative.parts[0].lower() != "vendor":
+        candidates.append((root / "vendor" / relative.name).resolve())
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def _is_bundled_cli_executable(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if platform.system().lower() == "windows":
+        return path.suffix.lower() in _WINDOWS_EXECUTABLE_SUFFIXES or path.suffix == ""
+    return bool(path.stat().st_mode & 0o111) and os.access(path, os.X_OK)
+
+
+def _default_bundled_version_runner(command: Path, args: list[str]) -> str:
+    from codepilot.core.text_decode import decode_subprocess_text
+
+    result = subprocess.run(
+        [str(command), *args],
+        capture_output=True,
+        text=False,
+        timeout=20,
+    )
+    stdout = decode_subprocess_text(result.stdout).strip()
+    stderr = decode_subprocess_text(result.stderr).strip()
+    if result.returncode != 0:
+        raise RuntimeError(stderr or stdout or f"exit code {result.returncode}")
+    return stdout or stderr
+
+
+def _base_semver(value: str) -> str:
+    match = re.search(r"\d+(?:\.\d+){1,3}", value or "")
+    return match.group(0) if match else value.strip()
+
+
+def _observed_version(output: str) -> str:
+    match = _BUNDLED_VERSION_RE.search(output or "")
+    return match.group(0) if match else ""
+
+
+def _version_matches_manifest(expected: str, output: str) -> tuple[bool, str]:
+    expected_version = str(expected or "").strip()
+    observed = _observed_version(output)
+    if not expected_version:
+        return False, observed
+    if expected_version in (output or ""):
+        return True, observed or expected_version
+    if observed and observed == expected_version:
+        return True, observed
+    if observed and _base_semver(observed) == _base_semver(expected_version):
+        return True, observed
+    return False, observed
+
+
+def _bundled_cli_result(
+    provider: str,
+    ok: bool,
+    detail: str,
+    *,
+    status: str,
+    severity: str | None = None,
+    fix: str | None = None,
+    manifest_path: Path | None = None,
+    executable_path: Path | None = None,
+    expected_version: str = "",
+    observed_version: str = "",
+) -> CheckResult:
+    extra = {
+        "provider": provider,
+        "kind": "bundled_cli",
+        "status": status,
+    }
+    if manifest_path:
+        extra["manifest_path"] = str(manifest_path)
+    if executable_path:
+        extra["path"] = str(executable_path)
+    if expected_version:
+        extra["expected_version"] = expected_version
+    if observed_version:
+        extra["observed_version"] = observed_version
+    return CheckResult(
+        f"bundled_cli_{provider}",
+        ok,
+        detail,
+        fix=fix,
+        severity=severity,
+        extra=extra,
+    )
+
+
+def _check_bundled_cli_tools(
+    *,
+    install_dir: str | Path | None = None,
+    version_runner: BundledVersionRunner | None = None,
+) -> list[CheckResult]:
+    """Check installed bundled opencode/codex vendor binaries against their manifest."""
+    from codepilot.binary_support.vendor_fetcher import SUPPORTED_BUNDLED_CLI_PROVIDERS
+
+    manifest_path, manifest, manifest_error = _read_bundled_cli_manifest(install_dir)
+    if manifest_error:
+        return [
+            CheckResult(
+                "bundled_cli_manifest",
+                False,
+                manifest_error,
+                fix="重新运行 codepilot binary install 或 codepilot self-update --providers all。",
+                severity="error",
+                extra={"kind": "bundled_cli", "status": "invalid_manifest", "manifest_path": str(manifest_path)},
+            )
+        ]
+    if manifest_path is None or manifest is None:
+        return [
+            CheckResult(
+                "bundled_cli_manifest",
+                True,
+                "未找到 bundled CLI vendor manifest；可能是源码运行或旧版安装，跳过 bundled CLI 检查。",
+                fix="如需 bundled CLI，可运行 codepilot binary build --bundle-cli=opencode,codex 后重新安装。",
+                severity="warning",
+                extra={"kind": "bundled_cli", "status": "manifest_missing"},
+            )
+        ]
+
+    raw_providers = manifest.get("providers")
+    if not isinstance(raw_providers, list):
+        return [
+            CheckResult(
+                "bundled_cli_manifest",
+                False,
+                f"vendor manifest 缺少 providers 列表 ({manifest_path})",
+                fix="重新运行 codepilot binary install 或 codepilot self-update --providers all。",
+                severity="error",
+                extra={"kind": "bundled_cli", "status": "invalid_manifest", "manifest_path": str(manifest_path)},
+            )
+        ]
+
+    runner = version_runner or _default_bundled_version_runner
+    root = _manifest_root(manifest_path)
+    entries: dict[str, dict] = {}
+    for item in raw_providers:
+        if not isinstance(item, dict):
+            continue
+        provider = str(item.get("provider") or "").strip().lower()
+        if provider in SUPPORTED_BUNDLED_CLI_PROVIDERS:
+            entries[provider] = item
+
+    results: list[CheckResult] = []
+    for provider in SUPPORTED_BUNDLED_CLI_PROVIDERS:
+        entry = entries.get(provider)
+        if not entry:
+            results.append(
+                _bundled_cli_result(
+                    provider,
+                    True,
+                    f"{provider} 未包含在 bundled CLI manifest 中",
+                    status="not_bundled",
+                    severity="warning",
+                    manifest_path=manifest_path,
+                )
+            )
+            continue
+
+        expected_version = str(entry.get("version") or "").strip()
+        executable_path = _resolve_vendor_entry_path(root, str(entry.get("path") or ""), provider)
+        if not executable_path.exists():
+            results.append(
+                _bundled_cli_result(
+                    provider,
+                    False,
+                    f"{provider} bundled vendor 文件不存在: {executable_path}",
+                    status="missing",
+                    fix="重新运行 codepilot binary install 或 codepilot self-update --providers all。",
+                    manifest_path=manifest_path,
+                    executable_path=executable_path,
+                    expected_version=expected_version,
+                )
+            )
+            continue
+        if not _is_bundled_cli_executable(executable_path):
+            results.append(
+                _bundled_cli_result(
+                    provider,
+                    False,
+                    f"{provider} bundled vendor 文件不可执行: {executable_path}",
+                    status="not_executable",
+                    fix=f"检查文件权限，或重新运行 codepilot self-update --providers {provider}。",
+                    manifest_path=manifest_path,
+                    executable_path=executable_path,
+                    expected_version=expected_version,
+                )
+            )
+            continue
+
+        try:
+            version_output = runner(executable_path, ["--version"])
+        except Exception as exc:
+            results.append(
+                _bundled_cli_result(
+                    provider,
+                    False,
+                    f"{provider} --version 执行失败: {safe(str(exc))}",
+                    status="version_failed",
+                    fix=f"重新运行 codepilot self-update --providers {provider}。",
+                    manifest_path=manifest_path,
+                    executable_path=executable_path,
+                    expected_version=expected_version,
+                )
+            )
+            continue
+
+        version_ok, observed = _version_matches_manifest(expected_version, str(version_output or ""))
+        if not version_ok:
+            results.append(
+                _bundled_cli_result(
+                    provider,
+                    False,
+                    f"{provider} bundled 版本不匹配: manifest={expected_version or '-'} actual={observed or safe(str(version_output or '')[:120]) or '-'}",
+                    status="version_mismatch",
+                    fix=f"重新运行 codepilot self-update --providers {provider}。",
+                    manifest_path=manifest_path,
+                    executable_path=executable_path,
+                    expected_version=expected_version,
+                    observed_version=observed,
+                )
+            )
+            continue
+
+        results.append(
+            _bundled_cli_result(
+                provider,
+                True,
+                f"{provider} bundled CLI 正常 ({executable_path}, version {observed or expected_version})",
+                status="healthy",
+                manifest_path=manifest_path,
+                executable_path=executable_path,
+                expected_version=expected_version,
+                observed_version=observed or expected_version,
+            )
+        )
+
     return results
 
 
@@ -367,6 +696,7 @@ def run_all_checks() -> list[CheckResult]:
     results.extend(_check_git(None))
     results.append(_check_agents_toml())
     results.extend(_check_cli_tools())
+    results.extend(_check_bundled_cli_tools())
     results.extend(_check_api_keys())
     results.append(_check_db_path())
     results.append(_check_console_encoding())
