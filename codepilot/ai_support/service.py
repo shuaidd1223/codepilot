@@ -443,6 +443,40 @@ def _run_codex_schema_prompt(
     )
 
 
+def _run_opencode_schema_prompt(
+    prompt: str,
+    schema: dict,
+    *,
+    project_path: str = "",
+    config_ref: str | Path | None = None,
+    timeout: int = 240,
+) -> dict:
+    """Use OpenCode CLI as the bottom-tier fallback planner.
+
+    Auto-selects the LLM backend (anthropic / deepseek / openai-compat) by
+    inspecting the user's configured ``[providers.*]`` keys, then invokes
+    ``opencode run`` headless with a schema-baked prompt.
+    """
+    from codepilot.core.config import load_project_config
+
+    return _planner_execution.run_opencode_schema_prompt(
+        prompt,
+        schema,
+        project_path=project_path,
+        config_ref=config_ref,
+        timeout=timeout,
+        cfg_loader=lambda ref: load_project_config(ref),
+        resolve_cli_provider=resolve_cli_provider,
+        subprocess_module=subprocess,
+        planner_process_group_kwargs_fn=_planner_process_group_kwargs,
+        decode_planner_chunk=_decode_planner_chunk,
+        kill_process_tree_fn=_kill_process_tree,
+        terminate_planner_process_fn=_terminate_planner_process,
+        extract_error_hint=_extract_error_hint,
+        get_progress_callback=lambda: _planner_progress_callback,
+    )
+
+
 def build_task_markdown_from_plan(task: dict) -> str:
     """Convert a structured plan item into task markdown using task templates."""
     return _task_planning.build_task_markdown_from_plan(
