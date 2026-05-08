@@ -10,6 +10,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import time
 import json
 from collections import deque
@@ -579,10 +580,86 @@ def _configured_cli_command(provider_key: str, project_path: str | Path | dict |
     return configured
 
 
+def _platform_executable_name(name: str) -> str:
+    if platform.system().lower() != "windows":
+        return name
+    lowered = name.lower()
+    if lowered.endswith((".exe", ".cmd", ".bat", ".ps1")):
+        return name
+    return f"{name}.exe"
+
+
+def _bundled_relative_path(raw_path: str) -> Path:
+    relative = Path(raw_path)
+    if not relative.name:
+        return relative
+    return relative.with_name(_platform_executable_name(relative.name))
+
+
+def _running_binary_dir() -> Path | None:
+    if not getattr(sys, "frozen", False):
+        return None
+    executable = str(getattr(sys, "executable", "") or "").strip()
+    if not executable:
+        return None
+    return Path(executable).expanduser().resolve().parent
+
+
+def _bundled_cli_candidates(bundled_path: str) -> list[Path]:
+    if not bundled_path:
+        return []
+    binary_dir = _running_binary_dir()
+    if binary_dir is None:
+        return []
+
+    relative = _bundled_relative_path(bundled_path)
+    candidates = [
+        binary_dir / relative,
+        binary_dir.parent / relative,
+    ]
+    if len(relative.parts) > 1 and relative.parts[0].lower() == "bin":
+        candidates.append(binary_dir / Path(*relative.parts[1:]))
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = os.path.normcase(os.path.normpath(str(candidate)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _is_executable_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if platform.system().lower() == "windows":
+        return True
+    return os.access(path, os.X_OK)
+
+
+def _bundled_cli_command(provider_key: str) -> str:
+    from codepilot.ai_support.cli_families import get_family
+
+    family = get_family(provider_key)
+    if family is None:
+        return ""
+    for candidate in _bundled_cli_candidates(family.bundled_path):
+        if _is_executable_file(candidate):
+            return str(candidate.resolve())
+    return ""
+
+
 def resolve_cli_provider(provider_key: str, project_path: str | Path | dict | None = None) -> CLIProvider:
     """Return the effective CLI provider with project-local command overrides applied."""
     provider = CLI_PROVIDERS[provider_key]
     config_key = "claude" if provider_key == "claude" else provider_key
+    bundled = _bundled_cli_command(config_key)
+    if bundled:
+        return replace(provider, cmd=bundled)
+    if shutil.which(provider.cmd):
+        return provider
     override = _configured_cli_command(config_key, project_path)
     if override and override != provider.cmd:
         return replace(provider, cmd=override)

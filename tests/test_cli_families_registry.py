@@ -34,6 +34,22 @@ def test_registry_entries_are_cli_family_instances():
         assert fam.env_var.startswith("CODEPILOT_")
 
 
+def test_cli_family_bundled_path_defaults_are_backward_compatible():
+    family = CLIFamily(
+        name="custom",
+        provider_key="custom",
+        env_var="CODEPILOT_CUSTOM_CMD",
+    )
+
+    assert family.bundled_path == ""
+
+
+def test_cli_family_bundled_paths_match_vendor_manifest_layout():
+    assert CLI_FAMILIES["claude"].bundled_path == ""
+    assert CLI_FAMILIES["codex"].bundled_path == "bin/vendor/codex"
+    assert CLI_FAMILIES["opencode"].bundled_path == "bin/vendor/opencode"
+
+
 def test_get_family_canonical_name():
     fam = get_family("claude")
     assert fam is not None

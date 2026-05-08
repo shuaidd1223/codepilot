@@ -75,6 +75,8 @@ class CLIFamily:
                       families are planners today.
         env_bridge:   optional API-key env bridge consumed by
                       ``family_runtime`` when native CLI auth is absent.
+        bundled_path: optional executable path relative to the binary bundle
+                      root for vendored CLI binaries.
     """
 
     name: str
@@ -83,6 +85,7 @@ class CLIFamily:
     aliases: tuple[str, ...] = ()
     is_planner: bool = True
     env_bridge: EnvBridge | None = None
+    bundled_path: str = ""
 
 
 CLI_FAMILIES: dict[str, CLIFamily] = {
@@ -103,6 +106,7 @@ CLI_FAMILIES: dict[str, CLIFamily] = {
         provider_key="codex",
         env_var="CODEPILOT_CODEX_CMD",
         aliases=("openai-codex",),
+        bundled_path="bin/vendor/codex",
         env_bridge=EnvBridge(
             family_name="codex",
             target_var="OPENAI_API_KEY",
@@ -115,6 +119,7 @@ CLI_FAMILIES: dict[str, CLIFamily] = {
         provider_key="opencode",
         env_var="CODEPILOT_OPENCODE_CMD",
         aliases=("oc", "open-code"),
+        bundled_path="bin/vendor/opencode",
         env_bridge=EnvBridge(
             family_name="opencode",
             target_var="",

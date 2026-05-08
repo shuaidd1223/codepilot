@@ -14,6 +14,7 @@ from codepilot.ai_support.agent_support import ai_guide_markdown, command_manife
 from codepilot.binary_support import manager as binary_mod
 from codepilot.binary_support import paths as binary_paths_mod
 from codepilot.storage import database as db
+from codepilot.ai_support import providers as providers_mod
 from codepilot.ai_support import service as ai_mod
 from codepilot.core import progress_bus
 from codepilot.gateway.service import GatewayResponse
@@ -201,7 +202,7 @@ def test_run_backlog_builtin_dirty_workspace_requeues_without_retry(tmp_path, mo
     assert "未提交改动" in (current["error_message"] or "")
 
 
-def test_generate_task_content_uses_project_configured_codex_command(tmp_path, monkeypatch):
+def test_generate_task_content_uses_project_configured_codex_command_when_path_missing(tmp_path, monkeypatch):
     project_path = tmp_path / "project"
     project_path.mkdir()
     fake_codex = tmp_path / "tools" / "codex.cmd"
@@ -220,6 +221,7 @@ codex = "{fake_codex.as_posix()}"
 
     captured = {}
     monkeypatch.setattr(ai_mod, "_collect_project_context", lambda project_path: "")
+    monkeypatch.setattr(providers_mod.shutil, "which", lambda cmd: None)
 
     def fake_run_cli_provider(provider, prompt, env_overrides=None):
         captured["provider_cmd"] = provider.cmd
@@ -239,7 +241,7 @@ codex = "{fake_codex.as_posix()}"
     assert "实现一个自动重试机制" in captured["prompt"]
 
 
-def test_run_builtin_phase_uses_project_configured_codex_command(monkeypatch, tmp_path):
+def test_run_builtin_phase_uses_project_configured_codex_command_when_path_missing(monkeypatch, tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()
     fake_codex = tmp_path / "tools" / "codex.cmd"
@@ -258,6 +260,7 @@ codex = "{fake_codex.as_posix()}"
 
     captured = {}
     monkeypatch.setattr(run_cmd, "check_provider_availability", lambda agent, project_path=None: (True, f"ok:{agent}"))
+    monkeypatch.setattr(providers_mod.shutil, "which", lambda cmd: None)
 
     def fake_run_command(cmd, **kwargs):
         captured["cmd"] = cmd
