@@ -43,6 +43,95 @@ class CompletedProcessStub:
     stderr: str = ""
 
 
+class _StreamingBytes:
+    def __init__(self, chunks):
+        self._chunks = [chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8") for chunk in chunks]
+        self._index = 0
+        self._offset = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self._index >= len(self._chunks)
+
+    def read(self, size=-1):
+        if self.exhausted:
+            return b""
+        if size is None or size < 0:
+            remaining = self._chunks[self._index :]
+            self._index = len(self._chunks)
+            self._offset = 0
+            return b"".join(remaining)
+
+        current = self._chunks[self._index]
+        end = min(self._offset + size, len(current))
+        piece = current[self._offset : end]
+        self._offset = end
+        if self._offset >= len(current):
+            self._index += 1
+            self._offset = 0
+        return piece
+
+    def __iter__(self):
+        while not self.exhausted:
+            yield self.read()
+
+
+class _WritableBytes:
+    def __init__(self):
+        self.data = b""
+        self.closed = False
+
+    def write(self, data):
+        self.data += data
+
+    def close(self):
+        self.closed = True
+
+
+class StreamingSchemaSubprocess:
+    """Subprocess stub whose stdout arrives in caller-provided chunks."""
+
+    DEVNULL = -3
+    PIPE = -1
+
+    class TimeoutExpired(Exception):
+        def __init__(self, cmd, timeout):
+            super().__init__(f"timeout {timeout} for {cmd!r}")
+            self.cmd = cmd
+            self.timeout = timeout
+
+    def __init__(self, stdout_chunks, *, returncode: int = 0):
+        self.stdout_chunks = stdout_chunks
+        self.returncode = returncode
+        self.last_cmd = None
+        self.last_stdin = None
+        self.process = None
+
+    def Popen(self, cmd, **_kwargs):
+        stdout = _StreamingBytes(self.stdout_chunks)
+        process = type("StreamingProcess", (), {})()
+        process.pid = 1234
+        process.stdout = stdout
+        process.stderr = _StreamingBytes([])
+        process.stdin = _WritableBytes()
+        process.returncode = self.returncode
+
+        def _poll():
+            if not stdout.exhausted:
+                return None
+            return process.returncode
+
+        def _wait(timeout=None):
+            return process.returncode
+
+        process.poll = _poll
+        process.wait = _wait
+        self.last_cmd = list(cmd)
+        self.last_stdin = process.stdin
+        self.process = process
+        return process
+
+
 def build_gateway_capture(*, answer_text: str):
     captured: dict[str, dict] = {}
 

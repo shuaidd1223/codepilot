@@ -20,6 +20,7 @@ from tests.ai_gateway_testkit import (
     CompletedProcessStub,
     FakeAPIProvider,
     FakeCLIProvider,
+    StreamingSchemaSubprocess,
     STRUCTURED_SCHEMA,
     gateway_state,
 )
@@ -219,6 +220,74 @@ def test_execute_structured_cli_call_dispatches_claude_variant(monkeypatch):
     assert captured["kwargs"]["project_path"] == "D:/demo/project"
     assert captured["kwargs"]["config_ref"] == "D:/demo/config/AGENTS.toml"
     assert captured["kwargs"]["timeout"] == 42
+
+
+def test_claude_schema_prompt_streams_stdout_chunks_before_json_parse(monkeypatch):
+    from codepilot.ai_support import service as service_mod
+
+    fake_subprocess = StreamingSchemaSubprocess(
+        [b'{"intent":', b' "task", "reason": "streamed"}']
+    )
+    streamed: list[str] = []
+
+    monkeypatch.setattr(
+        service_mod,
+        "resolve_cli_provider",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            name="Claude Code",
+            find_executable=lambda: "claude",
+        ),
+    )
+    monkeypatch.setattr(service_mod, "subprocess", fake_subprocess)
+
+    result = service_mod._run_claude_schema_prompt(
+        "plan",
+        STRUCTURED_SCHEMA,
+        planner="claude",
+        timeout=2,
+        stream_callback=streamed.append,
+    )
+
+    assert result == {"intent": "task", "reason": "streamed"}
+    assert streamed
+    assert "}" not in streamed[0]
+    assert "".join(streamed) == '{"intent": "task", "reason": "streamed"}'
+    assert fake_subprocess.process is not None
+
+
+def test_codex_schema_prompt_streams_stdout_chunks_and_keeps_sync_result(monkeypatch):
+    from codepilot.ai_support import service as service_mod
+
+    fake_subprocess = StreamingSchemaSubprocess(
+        [b'{"intent":', b' "requirement", "reason": "codex streamed"}']
+    )
+    streamed: list[str] = []
+
+    monkeypatch.setattr(
+        service_mod,
+        "check_provider_availability",
+        lambda *_args, **_kwargs: (True, "ok"),
+    )
+    monkeypatch.setattr(
+        service_mod,
+        "resolve_cli_provider",
+        lambda *_args, **_kwargs: FakeCLIProvider(exe="codex"),
+    )
+    monkeypatch.setattr(service_mod, "subprocess", fake_subprocess)
+
+    result = service_mod._run_codex_schema_prompt(
+        "plan",
+        STRUCTURED_SCHEMA,
+        timeout=2,
+        stream_callback=streamed.append,
+    )
+
+    assert result == {"intent": "requirement", "reason": "codex streamed"}
+    assert streamed
+    assert "}" not in streamed[0]
+    assert "".join(streamed) == '{"intent": "requirement", "reason": "codex streamed"}'
+    assert fake_subprocess.last_stdin is not None
+    assert fake_subprocess.last_stdin.data == b"plan"
 
 
 def test_execute_text_cli_candidate_reports_success(monkeypatch):

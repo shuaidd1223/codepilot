@@ -100,6 +100,35 @@ class _PlannerSubprocessSpec:
     stdin_data: bytes | None = None
     stdout_strategy: str = "stream"  # "stream" | "read_at_end"
     suggested_fallback: str = ""
+    stdout_chunk_callback: Callable[[str], None] | None = None
+
+
+def _iter_stdout_chunks(stream: Any):
+    read = getattr(stream, "read", None)
+    if callable(read):
+        read_supported = True
+        while True:
+            try:
+                chunk = read(4096)
+            except TypeError:
+                read_supported = False
+                break
+            if not chunk:
+                return
+            yield chunk
+        if read_supported:
+            return
+    for chunk in stream:
+        yield chunk
+
+
+def _emit_stdout_chunk(message: str, callback: Callable[[str], None] | None) -> None:
+    if callback is None or not message:
+        return
+    try:
+        callback(message)
+    except Exception:
+        pass
 
 
 def _run_planner_subprocess(
@@ -162,11 +191,17 @@ def _run_planner_subprocess(
         else:
             def _read_stdout() -> None:
                 assert process.stdout is not None
-                for line in process.stdout:
+                stdout_iter = (
+                    _iter_stdout_chunks(process.stdout)
+                    if spec.stdout_chunk_callback is not None
+                    else process.stdout
+                )
+                for line in stdout_iter:
                     decoded_line = decode_planner_chunk(line)
                     stdout_chunks.append(decoded_line)
                     if decoded_line:
                         last_activity[0] = _time.monotonic()
+                        _emit_stdout_chunk(decoded_line, spec.stdout_chunk_callback)
 
         def _stream_stderr() -> None:
             assert process.stderr is not None
@@ -273,6 +308,7 @@ def run_claude_schema_prompt(
     terminate_planner_process_fn: Callable[[Any], None],
     extract_error_hint: Callable[[str], str],
     get_progress_callback: Callable[[], Callable[[str], None] | None],
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """Use Claude CLI to produce schema-constrained JSON output."""
     normalized = normalize_agent_name(planner)
@@ -318,8 +354,9 @@ def run_claude_schema_prompt(
         provider_name=provider.name,
         family_label="claude",
         timeout=timeout,
-        stdout_strategy="read_at_end",
+        stdout_strategy="stream" if stream_callback is not None else "read_at_end",
         suggested_fallback="codex",
+        stdout_chunk_callback=stream_callback,
     )
     result_stdout, result_stderr, result_returncode = _run_planner_subprocess(
         spec,
@@ -361,6 +398,7 @@ def run_codex_schema_prompt(
     terminate_planner_process_fn: Callable[[Any], None],
     extract_error_hint: Callable[[str], str],
     get_progress_callback: Callable[[], Callable[[str], None] | None],
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """Use Codex CLI with a JSON schema output contract."""
     provider_ref = config_ref or project_path
@@ -402,6 +440,7 @@ def run_codex_schema_prompt(
             stdin_data=prompt.encode("utf-8"),
             stdout_strategy="stream",
             suggested_fallback="claude",
+            stdout_chunk_callback=stream_callback,
         )
         codex_stdout, codex_stderr, codex_returncode = _run_planner_subprocess(
             spec,
@@ -445,6 +484,7 @@ def run_opencode_schema_prompt(
     terminate_planner_process_fn: Callable[[Any], None],
     extract_error_hint: Callable[[str], str],
     get_progress_callback: Callable[[], Callable[[str], None] | None],
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """Use OpenCode CLI to produce schema-constrained JSON output.
 
@@ -488,6 +528,7 @@ def run_opencode_schema_prompt(
         env=env,
         stdout_strategy="stream",
         suggested_fallback="claude / codex",
+        stdout_chunk_callback=stream_callback,
     )
     result_stdout, result_stderr, result_returncode = _run_planner_subprocess(
         spec,

@@ -370,6 +370,7 @@ def _run_claude_schema_prompt(
     project_path: str = "",
     config_ref: str | Path | None = None,
     timeout: int = 240,
+    stream_callback: Optional[callable] = None,
 ) -> dict:
     """Use Claude CLI to produce schema-constrained JSON output."""
     return _planner_execution.run_claude_schema_prompt(
@@ -389,6 +390,7 @@ def _run_claude_schema_prompt(
         terminate_planner_process_fn=_terminate_planner_process,
         extract_error_hint=_extract_error_hint,
         get_progress_callback=lambda: _planner_progress_callback,
+        stream_callback=stream_callback,
     )
 
 
@@ -424,6 +426,7 @@ def _run_codex_schema_prompt(
     project_path: str = "",
     config_ref: str | Path | None = None,
     timeout: int = 240,
+    stream_callback: Optional[callable] = None,
 ) -> dict:
     """Use Codex CLI with a JSON schema output contract."""
     return _planner_execution.run_codex_schema_prompt(
@@ -441,6 +444,7 @@ def _run_codex_schema_prompt(
         terminate_planner_process_fn=_terminate_planner_process,
         extract_error_hint=_extract_error_hint,
         get_progress_callback=lambda: _planner_progress_callback,
+        stream_callback=stream_callback,
     )
 
 
@@ -451,6 +455,7 @@ def _run_opencode_schema_prompt(
     project_path: str = "",
     config_ref: str | Path | None = None,
     timeout: int = 240,
+    stream_callback: Optional[callable] = None,
 ) -> dict:
     """Use OpenCode CLI as the bottom-tier fallback planner.
 
@@ -475,6 +480,7 @@ def _run_opencode_schema_prompt(
         terminate_planner_process_fn=_terminate_planner_process,
         extract_error_hint=_extract_error_hint,
         get_progress_callback=lambda: _planner_progress_callback,
+        stream_callback=stream_callback,
     )
 
 
