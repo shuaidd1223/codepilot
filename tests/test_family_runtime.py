@@ -7,6 +7,7 @@ from codepilot.ai_support.family_runtime import (
     build_env_for_family,
 )
 from codepilot.ai_support.cli_families import get_family
+from codepilot.ai_support.opencode_runtime import build_opencode_env
 from codepilot.core.config import AgentsConfig
 
 
@@ -101,6 +102,27 @@ def test_opencode_native_auth_file_suppresses_config_key_injection(tmp_path, mon
     cfg = _cfg({"deepseek": {"api_key": "sk-ds-test", "base_url": "https://api.deepseek.com"}})
 
     assert build_env_for_family("opencode", cfg) == {}
+
+
+def test_legacy_opencode_env_wrapper_matches_family_runtime_native_auth(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    auth_file = home / ".local" / "share" / "opencode" / "auth.json"
+    auth_file.parent.mkdir(parents=True)
+    auth_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    cfg = _cfg(
+        {
+            "deepseek": {
+                "api_key": "sk-ds-test",
+                "base_url": "https://api.deepseek.com",
+            }
+        }
+    )
+
+    assert build_opencode_env(cfg) == build_env_for_family("opencode", cfg)
 
 
 def test_missing_key_without_native_auth_raises_clear_error(tmp_path, monkeypatch):

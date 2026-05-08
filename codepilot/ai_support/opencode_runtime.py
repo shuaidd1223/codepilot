@@ -125,7 +125,9 @@ def build_opencode_env(cfg: AgentsConfig) -> dict[str, str]:
     The caller is expected to merge this dict on top of the inherited process
     environment when launching ``opencode run``.
     """
-    return dict(select_opencode_backend(cfg).env)
+    from codepilot.ai_support.family_runtime import build_env_for_family
+
+    return build_env_for_family("opencode", cfg)
 
 
 def wrap_schema_prompt(prompt: str, schema: dict) -> str:

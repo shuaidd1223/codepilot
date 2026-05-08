@@ -7,7 +7,6 @@ subprocess. If the CLI already has native auth on disk, no API key is injected.
 from __future__ import annotations
 
 from codepilot.ai_support.cli_families import CLI_FAMILIES, EnvBridge, get_family
-from codepilot.ai_support.opencode_runtime import build_opencode_env
 from codepilot.core.config import AgentsConfig, ProviderAPIConfig
 
 
@@ -50,6 +49,12 @@ def _build_direct_family_env(bridge: EnvBridge, cfg: AgentsConfig) -> dict[str, 
     )
 
 
+def _build_smart_pick_family_env(cfg: AgentsConfig) -> dict[str, str]:
+    from codepilot.ai_support.opencode_runtime import select_opencode_backend
+
+    return dict(select_opencode_backend(cfg).env)
+
+
 def build_env_for_family(family_name: str, cfg: AgentsConfig) -> dict[str, str]:
     """Return only env vars that should be overlaid onto a family subprocess.
 
@@ -65,6 +70,6 @@ def build_env_for_family(family_name: str, cfg: AgentsConfig) -> dict[str, str]:
         return {}
 
     if bridge.source_providers == "smart_pick":
-        return build_opencode_env(cfg)
+        return _build_smart_pick_family_env(cfg)
 
     return _build_direct_family_env(bridge, cfg)
