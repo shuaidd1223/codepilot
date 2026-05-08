@@ -215,6 +215,26 @@ def _format_command(command: list[str]) -> str:
     return " ".join(command)
 
 
+def install_claude_code_cli(npm_registry: str | None) -> list[str]:
+    """Install or refresh Claude Code CLI through npm."""
+    display_command = _claude_install_command(npm_registry)
+    npm_path = _find_first_command(("npm", "npm.cmd"))
+    if not npm_path:
+        raise SetupError(
+            "未在 PATH 中找到 npm，无法自动安装 Claude Code CLI。"
+            "请先安装 Node.js/npm，或手动执行: "
+            + " ".join(display_command)
+        )
+
+    run_command = [npm_path, *display_command[1:]]
+    try:
+        _run_command(run_command)
+    except subprocess.CalledProcessError as exc:
+        output = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise SetupError(f"Claude Code 安装失败：{output}") from exc
+    return display_command
+
+
 def _setup_claude_auto_install(
     root: Path,
     *,
@@ -256,20 +276,7 @@ def _setup_claude_auto_install(
             detail=detail,
         )
 
-    npm_path = _find_first_command(("npm", "npm.cmd"))
-    if not npm_path:
-        raise SetupError(
-            "未在 PATH 中找到 npm，无法自动安装 Claude Code CLI。"
-            "请先安装 Node.js/npm，或手动执行: "
-            + " ".join(display_command)
-        )
-
-    run_command = [npm_path, *display_command[1:]]
-    try:
-        _run_command(run_command)
-    except subprocess.CalledProcessError as exc:
-        output = (exc.stderr or exc.stdout or str(exc)).strip()
-        raise SetupError(f"Claude Code 安装失败：{output}") from exc
+    install_claude_code_cli(npm_registry)
 
     return _command_action(
         "claude_auto_install",

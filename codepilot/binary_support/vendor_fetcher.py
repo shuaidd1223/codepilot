@@ -305,6 +305,48 @@ def bundle_vendor_clis(
     return BundledVendorResult(vendor_dir=vendor_dir, manifest_path=manifest_path, providers=entries)
 
 
+def update_installed_vendor_clis(
+    providers: Iterable[str],
+    *,
+    target_dir: str | Path,
+    cache_dir: str | Path,
+    json_fetcher: JsonFetcher | None = None,
+    downloader: Downloader | None = None,
+) -> BundledVendorResult:
+    """Refresh installed vendor CLI binaries under an install ``vendor`` dir."""
+    normalized = parse_bundle_cli_list(",".join(providers))
+    install_dir = Path(target_dir).expanduser().resolve()
+    vendor_dir = install_dir / "vendor"
+    vendor_dir.mkdir(parents=True, exist_ok=True)
+    platform_info = normalize_vendor_platform()
+    entries: list[BundledVendorEntry] = []
+
+    for provider in normalized:
+        info = resolve_download_info(provider, json_fetcher=json_fetcher)
+        fetched = fetch_vendor_binary(info, cache_dir=cache_dir, downloader=downloader)
+        executable_path = extract_vendor_binary(fetched.cache_path, provider=provider, vendor_dir=vendor_dir)
+        entries.append(
+            BundledVendorEntry(
+                provider=provider,
+                version=info.version,
+                platform=platform_info.npm_platform,
+                arch=platform_info.npm_arch,
+                path=_relative_posix(executable_path, install_dir),
+                checksum=_hash_file(executable_path, "sha256"),
+                package_name=info.package_name,
+                root_package=info.root_package,
+            )
+        )
+
+    manifest_path = vendor_dir / BUNDLED_VENDOR_MANIFEST
+    manifest_payload = {
+        "schema": "codepilot-installed-cli-v1",
+        "providers": [entry.__dict__ for entry in entries],
+    }
+    manifest_path.write_text(json.dumps(manifest_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return BundledVendorResult(vendor_dir=vendor_dir, manifest_path=manifest_path, providers=entries)
+
+
 def extract_vendor_binary(
     archive_path: str | Path,
     *,

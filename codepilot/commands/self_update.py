@@ -8,12 +8,16 @@ from typing import Any
 
 import click
 
+from codepilot.binary_support import paths as binary_paths
+from codepilot.binary_support import vendor_fetcher
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.output import echo
 from codepilot.storage import database as db
 
 
 SUPPORTED_PROVIDERS = ("codex", "claude", "opencode", "gemini", "custom")
+SELF_UPDATE_PROVIDER_CHOICES = ("all", "opencode", "codex", "claude")
+VENDOR_UPDATE_PROVIDERS = ("opencode", "codex")
 
 
 class SelfUpdateError(ValueError):
@@ -196,10 +200,107 @@ def run_self_update(
     }
 
 
+def _provider_update_list(provider: str) -> tuple[str, ...]:
+    provider_key = provider.lower()
+    if provider_key == "all":
+        return ("opencode", "codex", "claude")
+    return (provider_key,)
+
+
+def _provider_result(provider: str, status: str, **extra: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {"provider": provider, "status": status}
+    result.update(extra)
+    return result
+
+
+def _update_vendor_providers(
+    providers: tuple[str, ...],
+    *,
+    target_dir: Path,
+    cache_dir: Path,
+) -> tuple[list[dict[str, Any]], Path | None]:
+    if not providers:
+        return [], None
+    try:
+        bundle = vendor_fetcher.update_installed_vendor_clis(
+            providers=providers,
+            target_dir=target_dir,
+            cache_dir=cache_dir,
+        )
+    except Exception as exc:
+        return [_provider_result(provider, "failed", error=str(exc)) for provider in providers], None
+
+    entry_by_provider = {entry.provider: entry for entry in bundle.providers}
+    results: list[dict[str, Any]] = []
+    for provider in providers:
+        entry = entry_by_provider.get(provider)
+        if entry is None:
+            results.append(_provider_result(provider, "failed", error="vendor fetcher 未返回更新结果。"))
+            continue
+        results.append(
+            _provider_result(
+                provider,
+                "updated",
+                version=entry.version,
+                path=entry.path,
+                checksum=entry.checksum,
+                package_name=entry.package_name,
+                root_package=entry.root_package,
+            )
+        )
+    return results, bundle.manifest_path
+
+
+def _update_claude_provider(npm_registry: str | None) -> dict[str, Any]:
+    from codepilot.commands import setup as setup_cmd
+
+    try:
+        command = setup_cmd.install_claude_code_cli(npm_registry)
+    except Exception as exc:
+        return _provider_result("claude", "failed", error=str(exc))
+    return _provider_result("claude", "updated", command=command)
+
+
+def run_self_update_providers(
+    provider: str,
+    *,
+    npm_registry: str | None = None,
+    target_dir: Path | None = None,
+    cache_dir: Path | None = None,
+) -> dict[str, Any]:
+    requested = _provider_update_list(provider)
+    install_dir = (target_dir or binary_paths.default_install_dir()).expanduser().resolve()
+    resolved_cache_dir = cache_dir or (Path.cwd() / ".codepilot" / "vendor-cache")
+    vendor_providers = tuple(item for item in requested if item in VENDOR_UPDATE_PROVIDERS)
+
+    results: list[dict[str, Any]] = []
+    vendor_results, manifest_path = _update_vendor_providers(
+        vendor_providers,
+        target_dir=install_dir,
+        cache_dir=resolved_cache_dir,
+    )
+    results.extend(vendor_results)
+    if "claude" in requested:
+        results.append(_update_claude_provider(npm_registry))
+
+    failed = [item for item in results if item["status"] != "updated"]
+    return {
+        "mode": "providers",
+        "requested": list(requested),
+        "target_dir": str(install_dir),
+        "cache_dir": str(resolved_cache_dir),
+        "manifest_path": str(manifest_path) if manifest_path else "",
+        "results": results,
+        "ok": not failed,
+    }
+
+
 @click.command("self-update")
-@click.argument("goal_parts", nargs=-1, required=True)
+@click.argument("goal_parts", nargs=-1, required=False)
 @click.option("--project", "-p", help="项目名称，不指定则按当前目录匹配")
 @click.option("--provider", "providers", multiple=True, type=click.Choice(SUPPORTED_PROVIDERS, case_sensitive=False), help="要预检的 provider，可重复；默认 codex")
+@click.option("--providers", "update_providers", type=click.Choice(SELF_UPDATE_PROVIDER_CHOICES, case_sensitive=False), default=None, help="更新本机 provider: all/opencode/codex/claude")
+@click.option("--npm-registry", default=None, help="更新 Claude Code CLI 时使用的 npm registry")
 @click.option("--dry-run", is_flag=True, help="只做预检、证据采集和内存计划，不修改项目")
 @click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
 @click.pass_context
@@ -208,11 +309,35 @@ def self_update(
     goal_parts: tuple[str, ...],
     project: str | None,
     providers: tuple[str, ...],
+    update_providers: str | None,
+    npm_registry: str | None,
     dry_run: bool,
     json_mode: bool,
 ) -> None:
-    """项目内自我迭代 dry-run：预检、收集证据并生成下一步计划。"""
+    """项目内自我迭代 dry-run，或刷新本机 provider CLI。"""
     json_mode = resolve_json_mode(ctx, json_mode)
+    if update_providers:
+        data = run_self_update_providers(update_providers, npm_registry=npm_registry)
+        if json_mode:
+            emit_json_payload(
+                "self-update",
+                ok=data["ok"],
+                data=data,
+                error="部分 provider 更新失败。" if not data["ok"] else None,
+                error_code="self_update_provider_error" if not data["ok"] else None,
+            )
+            if not data["ok"]:
+                ctx.exit(1)
+            return
+        for item in data["results"]:
+            if item["status"] == "updated":
+                echo(f"[green]updated[/green] {item['provider']}")
+            else:
+                echo(f"[red]failed[/red]  {item['provider']}: {item.get('error', '')}")
+        if not data["ok"]:
+            raise click.ClickException("部分 provider 更新失败。")
+        return
+
     try:
         project_info = _resolve_project(project)
         data = run_self_update(
