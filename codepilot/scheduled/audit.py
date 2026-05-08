@@ -49,6 +49,14 @@ def append_agent_job_audit(
         "cost": float(entry.get("cost") or 0.0),
         "exit_code": entry.get("exit_code"),
     }
+    if entry.get("token_usage"):
+        record["token_usage"] = entry.get("token_usage") or {}
+    if entry.get("agent_chain"):
+        record["agent_chain"] = entry.get("agent_chain") or []
+    if entry.get("guard"):
+        record["guard"] = entry.get("guard") or {}
+    if entry.get("notification"):
+        record["notification"] = entry.get("notification") or {}
     if "dry_run" in entry:
         record["dry_run"] = bool(entry.get("dry_run"))
     if entry.get("job_name"):

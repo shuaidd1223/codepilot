@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from codepilot.ai_support.cli_families import get_family
 from codepilot.ai_support.providers import CLI_PROVIDERS
 from codepilot.scheduled.audit import append_agent_job_audit
+from codepilot.scheduled.guards import GuardCheck, finalize_agent_job_guards, preflight_agent_job_guards
 
 
 SubprocessRun = Callable[..., Any]
@@ -30,6 +32,10 @@ class AgentJobResult:
     tools: list[dict[str, Any]]
     dry_run: bool
     audit_log_path: str = ""
+    guard_status: str = "ok"
+    guard_reason: str = ""
+    notification: dict[str, Any] = field(default_factory=dict)
+    agent_chain: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -148,6 +154,7 @@ def run_agent_job(
     commands: dict[str, str] | None = None,
     mcp_servers: Any | None = None,
     timeout_seconds: int | None = None,
+    now: datetime | None = None,
 ) -> AgentJobResult:
     """Run or dry-run one ``agent_job`` payload and append its audit record."""
 
@@ -158,6 +165,30 @@ def run_agent_job(
     agent, command, default_timeout = _build_command(str(job.get("agent") or ""), prompt, commands)
     timeout = int(timeout_seconds or default_timeout)
     env = _build_env(mcp_servers)
+    preflight = preflight_agent_job_guards(project_root, job, now=now)
+    if preflight.should_skip:
+        result = AgentJobResult(
+            agent=agent,
+            command=command,
+            stdout="",
+            stderr=f"scheduled agent guard skipped execution: {preflight.reason}",
+            exit_code=None,
+            tool_call_count=0,
+            token_usage={},
+            cost=0.0,
+            tools=[],
+            dry_run=dry_run,
+            guard_status=preflight.status,
+            guard_reason=preflight.reason,
+            notification=preflight.notification,
+            agent_chain=preflight.agent_chain,
+        )
+        audit_path = append_agent_job_audit(
+            project_root,
+            _audit_entry(job, result, prompt=prompt),
+            now=now,
+        )
+        return _with_audit_path(result, audit_path)
 
     if dry_run:
         result = AgentJobResult(
@@ -171,10 +202,12 @@ def run_agent_job(
             cost=0.0,
             tools=[],
             dry_run=True,
+            agent_chain=preflight.agent_chain,
         )
         audit_path = append_agent_job_audit(
             project_root,
             _audit_entry(job, result, prompt=prompt),
+            now=now,
         )
         return _with_audit_path(result, audit_path)
 
@@ -211,8 +244,18 @@ def run_agent_job(
         cost=cost,
         tools=tools,
         dry_run=False,
+        agent_chain=preflight.agent_chain,
     )
-    audit_path = append_agent_job_audit(project_root, _audit_entry(job, result, prompt=prompt))
+    guard = finalize_agent_job_guards(
+        project_root,
+        job,
+        token_usage=token_usage,
+        cost=cost,
+        agent_chain=preflight.agent_chain,
+        now=now,
+    )
+    result = _with_guard(result, guard)
+    audit_path = append_agent_job_audit(project_root, _audit_entry(job, result, prompt=prompt), now=now)
     return _with_audit_path(result, audit_path)
 
 
@@ -223,10 +266,17 @@ def _audit_entry(job: dict[str, Any], result: AgentJobResult, *, prompt: str) ->
         "prompt": prompt,
         "tools": result.tools,
         "cost": result.cost,
+        "token_usage": result.token_usage,
         "exit_code": result.exit_code,
         "dry_run": result.dry_run,
         "job_name": job.get("name") or "",
         "project": job.get("project") or "",
+        "agent_chain": result.agent_chain,
+        "guard": {
+            "status": result.guard_status,
+            "reason": result.guard_reason,
+        },
+        "notification": result.notification,
     }
 
 
@@ -243,4 +293,28 @@ def _with_audit_path(result: AgentJobResult, path: Path) -> AgentJobResult:
         tools=result.tools,
         dry_run=result.dry_run,
         audit_log_path=str(path),
+        guard_status=result.guard_status,
+        guard_reason=result.guard_reason,
+        notification=result.notification,
+        agent_chain=result.agent_chain,
+    )
+
+
+def _with_guard(result: AgentJobResult, guard: GuardCheck) -> AgentJobResult:
+    return AgentJobResult(
+        agent=result.agent,
+        command=result.command,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        exit_code=result.exit_code,
+        tool_call_count=result.tool_call_count,
+        token_usage=result.token_usage,
+        cost=result.cost,
+        tools=result.tools,
+        dry_run=result.dry_run,
+        audit_log_path=result.audit_log_path,
+        guard_status=guard.status,
+        guard_reason=guard.reason,
+        notification=guard.notification,
+        agent_chain=guard.agent_chain,
     )
