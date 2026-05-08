@@ -83,6 +83,7 @@ def _spawn_detached_inspect(
     agent: str,
     planner: str | None,
     interval: int | None,
+    legacy_classifier: bool = False,
 ) -> object:
     return inspect_service.spawn_detached_inspect(
         project,
@@ -91,6 +92,7 @@ def _spawn_detached_inspect(
         agent=agent,
         planner=planner,
         interval=interval,
+        legacy_classifier=legacy_classifier,
         state_dir=INSPECT_STATE_DIR,
         now_iso_fn=_now_iso,
     )
@@ -104,6 +106,7 @@ def start_inspect_service(
     agent: str = "codex",
     planner: str | None = None,
     interval: int | None = None,
+    legacy_classifier: bool = False,
 ) -> dict:
     if not project:
         raise RuntimeError("启动巡检必须指定项目。")
@@ -119,6 +122,7 @@ def start_inspect_service(
         agent=agent,
         planner=planner,
         interval=interval,
+        legacy_classifier=legacy_classifier,
     )
     time.sleep(0.8)
     if proc.poll() is not None:
@@ -705,6 +709,7 @@ def run_inspection(
     planner: str = "claude",
     dry_run: bool = False,
     timeout: int = 120,
+    legacy_classifier: bool = False,
 ) -> dict:
     project_name = project_info["name"]
     project_path = Path(project_info["path"])
@@ -734,12 +739,17 @@ def run_inspection(
     )
 
     cfg = load_project_config(project_info)
-    classifier_cfg = getattr(cfg, "classifier", None)
-    provider_key = classifier_cfg.provider if classifier_cfg else ""
-    model = classifier_cfg.model if classifier_cfg else ""
-    api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
-    provider_cfg = cfg.providers.get(provider_key) if provider_key else None
-    base_url = provider_cfg.base_url if provider_cfg else None
+    provider_key = ""
+    model = ""
+    api_key = None
+    base_url = None
+    if legacy_classifier:
+        classifier_cfg = getattr(cfg, "classifier", None)
+        provider_key = classifier_cfg.provider if classifier_cfg else ""
+        model = classifier_cfg.model if classifier_cfg else ""
+        api_key = cfg.get_provider_api_key(provider_key) if provider_key else None
+        provider_cfg = cfg.providers.get(provider_key) if provider_key else None
+        base_url = provider_cfg.base_url if provider_cfg else None
 
     try:
         payload = _call_llm(
@@ -892,6 +902,7 @@ def _emit_inspection_result(result: dict, *, dry_run: bool, json_mode: bool) -> 
 @click.option("--foreground", is_flag=True, help="以前台持续巡检模式运行")
 @click.option("--status", "show_status", is_flag=True, help="查看项目巡检进程状态")
 @click.option("--stop", "stop_service", is_flag=True, help="停止项目巡检进程")
+@click.option("--legacy-classifier", is_flag=True, help="启用旧版 [classifier] API 优先回退路径")
 @click.pass_context
 def inspect(
     ctx: click.Context,
@@ -906,6 +917,7 @@ def inspect(
     foreground: bool,
     show_status: bool,
     stop_service: bool,
+    legacy_classifier: bool,
 ) -> None:
     """扫描项目信号，将可优化点作为候选任务产出.
 
@@ -940,6 +952,7 @@ def inspect(
         json_mode=json_mode,
         show_status=show_status,
         stop_service=stop_service,
+        legacy_classifier=legacy_classifier,
     )
     try:
         handled, exit_code = inspect_lifecycle.handle_service_lifecycle(
@@ -978,6 +991,7 @@ def inspect(
         dry_run=dry_run,
         once=once,
         json_mode=json_mode,
+        legacy_classifier=legacy_classifier,
     )
     inspect_lifecycle.run_foreground_inspection_loop(
         loop_options,

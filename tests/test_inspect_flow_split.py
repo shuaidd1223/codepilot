@@ -234,6 +234,108 @@ def test_run_inspection_short_circuits_when_all_signals_empty(tmp_path, monkeypa
     assert "硬规划" in result["note"]
 
 
+def test_run_inspection_skips_classifier_provider_by_default(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        inspect_cmd,
+        "collect_inspection_signal_results",
+        lambda *_args, **_kwargs: [
+            inspect_cmd.InspectSignalResult(
+                key="todos",
+                title="代码里的 TODO/FIXME/XXX",
+                order=1,
+                enabled=True,
+                content="codepilot/foo.py:42: TODO handle timeout",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        inspect_cmd,
+        "load_project_config",
+        lambda *_args: type(
+            "Cfg",
+            (),
+            {
+                "classifier": type(
+                    "Classifier",
+                    (),
+                    {"enabled": True, "provider": "openai-gpt4o", "model": "gpt-test"},
+                )(),
+                "providers": {},
+                "get_provider_api_key": lambda self, _provider: "sk-test",
+            },
+        )(),
+    )
+
+    def _capture_llm(_prompt, classifier_provider, classifier_model, *_args, **_kwargs):
+        captured["classifier_provider"] = classifier_provider
+        captured["classifier_model"] = classifier_model
+        return {"candidates": []}
+
+    monkeypatch.setattr(inspect_cmd, "_call_llm", _capture_llm)
+
+    result = inspect_cmd.run_inspection({"name": "demo", "path": str(project)}, dry_run=True)
+
+    assert result["candidates_total"] == 0
+    assert captured == {"classifier_provider": "", "classifier_model": ""}
+
+
+def test_run_inspection_uses_classifier_provider_when_legacy_enabled(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        inspect_cmd,
+        "collect_inspection_signal_results",
+        lambda *_args, **_kwargs: [
+            inspect_cmd.InspectSignalResult(
+                key="todos",
+                title="代码里的 TODO/FIXME/XXX",
+                order=1,
+                enabled=True,
+                content="codepilot/foo.py:42: TODO handle timeout",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        inspect_cmd,
+        "load_project_config",
+        lambda *_args: type(
+            "Cfg",
+            (),
+            {
+                "classifier": type(
+                    "Classifier",
+                    (),
+                    {"enabled": True, "provider": "openai-gpt4o", "model": "gpt-test"},
+                )(),
+                "providers": {},
+                "get_provider_api_key": lambda self, _provider: "sk-test",
+            },
+        )(),
+    )
+
+    def _capture_llm(_prompt, classifier_provider, classifier_model, *_args, **_kwargs):
+        captured["classifier_provider"] = classifier_provider
+        captured["classifier_model"] = classifier_model
+        return {"candidates": []}
+
+    monkeypatch.setattr(inspect_cmd, "_call_llm", _capture_llm)
+
+    result = inspect_cmd.run_inspection(
+        {"name": "demo", "path": str(project)},
+        dry_run=True,
+        legacy_classifier=True,
+    )
+
+    assert result["candidates_total"] == 0
+    assert captured == {"classifier_provider": "openai-gpt4o", "classifier_model": "gpt-test"}
+
+
 def test_call_llm_skips_unavailable_api_and_marks_fallback(tmp_path, monkeypatch):
     calls: dict[str, object] = {"api": 0, "marks": []}
 

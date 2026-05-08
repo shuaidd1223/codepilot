@@ -386,6 +386,7 @@ def auto(
 @click.option("--auto-commit/--no-auto-commit", default=None, help="是否自动提交；默认跟随配置")
 @click.option("--max-retries", type=int, default=0, help="最大重试次数；0 表示读取配置")
 @click.option("--use-wiki/--no-wiki", default=True, show_default=True, help="是否允许后续规划读取项目 wiki 只读上下文")
+@click.option("--legacy-classifier", is_flag=True, help="启用旧版独立意图分类器回退路径")
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
 def go(
@@ -401,6 +402,7 @@ def go(
     auto_commit: Optional[bool],
     max_retries: int,
     use_wiki: bool,
+    legacy_classifier: bool,
     json_mode: bool,
 ):
     """接收纯文本需求，判定复杂度后自动规划或直接执行."""
@@ -424,6 +426,7 @@ def go(
             max_tasks = root_obj.get("max_tasks", 0)
         if not max_retries:
             max_retries = root_obj.get("max_retries", 0)
+        legacy_classifier = legacy_classifier or bool(root_obj.get("legacy_classifier", False))
 
         project_info = resolve_project_for_prompt(
             project,
@@ -448,6 +451,7 @@ def go(
                 "project_info": project_info,
                 "category": "auto",
                 "gateway_options": shared_gateway_options,
+                "legacy_classifier": legacy_classifier,
             },
             fallback_intent="requirement",
         )
@@ -507,6 +511,7 @@ def go(
 @click.option("--auto-commit/--no-auto-commit", default=None, help="是否自动提交；默认跟随配置")
 @click.option("--max-tasks", type=int, default=0, help="最大拆分任务数；0 表示读取配置")
 @click.option("--max-retries", type=int, default=0, help="最大重试次数；0 表示读取配置")
+@click.option("--legacy-classifier", is_flag=True, help="启用旧版独立意图分类器回退路径")
 @click.option("--ui/--no-ui", "enable_ui", default=True, help="是否自动启动 Web UI（默认开启）")
 @click.option("--ui-port", type=int, default=8766, help="Web UI 端口")
 @click.pass_context
@@ -520,6 +525,7 @@ def chat(
     auto_commit: Optional[bool],
     max_tasks: int,
     max_retries: int,
+    legacy_classifier: bool,
     enable_ui: bool,
     ui_port: int,
 ):
@@ -537,6 +543,7 @@ def chat(
         max_tasks = root_obj.get("max_tasks", 0)
     if not max_retries:
         max_retries = root_obj.get("max_retries", 0)
+    legacy_classifier = legacy_classifier or bool(root_obj.get("legacy_classifier", False))
 
     run_chat_session(
         project=project,
@@ -547,6 +554,7 @@ def chat(
         auto_commit=auto_commit,
         max_tasks=max_tasks,
         max_retries=max_retries,
+        legacy_classifier=legacy_classifier,
         enable_ui=enable_ui,
         ui_port=ui_port,
     )

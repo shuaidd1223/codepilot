@@ -21,6 +21,7 @@ class InspectServiceLifecycleOptions:
     json_mode: bool
     show_status: bool
     stop_service: bool
+    legacy_classifier: bool = False
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class ForegroundInspectLoopOptions:
     dry_run: bool
     once: bool
     json_mode: bool
+    legacy_classifier: bool = False
 
 
 def handle_service_lifecycle(
@@ -92,14 +94,16 @@ def handle_service_lifecycle(
         return True, None
 
     if not options.once and not options.foreground and not options.json_mode:
-        result = start_inspect_service_fn(
-            project,
-            max_new=options.max_new,
-            dry_run=options.dry_run,
-            agent=options.agent,
-            planner=options.planner,
-            interval=options.interval,
-        )
+        start_kwargs = {
+            "max_new": options.max_new,
+            "dry_run": options.dry_run,
+            "agent": options.agent,
+            "planner": options.planner,
+            "interval": options.interval,
+        }
+        if options.legacy_classifier:
+            start_kwargs["legacy_classifier"] = True
+        result = start_inspect_service_fn(project, **start_kwargs)
         if result["started"]:
             echo_fn(f"[green]项目 {project} 巡检已后台启动[/green]  PID={result['pid']}")
         else:
@@ -155,6 +159,7 @@ def run_foreground_inspection_loop(
                 agent=options.agent,
                 planner=options.planner,
                 dry_run=options.dry_run,
+                legacy_classifier=options.legacy_classifier,
             )
             emit_inspection_result_fn(result, dry_run=options.dry_run, json_mode=options.json_mode)
 

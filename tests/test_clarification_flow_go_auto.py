@@ -165,7 +165,7 @@ def test_go_task_intent_forces_single_task_planning(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_mod, "run_requirement_workflow", fake_run_requirement_workflow)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["go", "修复登录 bug", "--max-tasks", "9"])
+    result = runner.invoke(main, ["go", "--legacy-classifier", "修复登录 bug", "--max-tasks", "9"])
 
     assert result.exit_code == 0
     assert captured["max_tasks"] == 1

@@ -151,6 +151,7 @@ def _cn_help_option():
 @click.option("--auto-commit/--no-auto-commit", default=None, help="纯文本模式下是否自动提交，默认读取配置")
 @click.option("--max-tasks", type=int, default=0, help="纯文本模式下最大拆分任务数，0 表示读取配置")
 @click.option("--max-retries", type=int, default=0, help="纯文本模式下最大重试次数，0 表示读取配置")
+@click.option("--legacy-classifier", is_flag=True, help="纯文本模式下启用旧版独立意图分类器回退路径")
 @click.pass_context
 def main(
     ctx: click.Context,
@@ -163,6 +164,7 @@ def main(
     auto_commit: bool | None,
     max_tasks: int,
     max_retries: int,
+    legacy_classifier: bool,
 ):
     """CodePilot —— 面向本地工程工作流的纯文本任务规划与执行工具."""
     ctx.ensure_object(dict)
@@ -175,6 +177,7 @@ def main(
     ctx.obj["auto_commit"] = auto_commit
     ctx.obj["max_tasks"] = max_tasks
     ctx.obj["max_retries"] = max_retries
+    ctx.obj["legacy_classifier"] = legacy_classifier
 
     if not json_mode and ctx.invoked_subcommand != "setup":
         init_db()

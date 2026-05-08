@@ -20,7 +20,7 @@ def _run_chat_cli_no_ui_question(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_mod, "classify_intent", fake_classify)
     monkeypatch.setattr(auto_mod, "answer_question_via_api", fake_answer)
 
-    result = CliRunner().invoke(main, ["chat", "--no-ui"], input="随便说点什么\n/exit\n")
+    result = CliRunner().invoke(main, ["chat", "--legacy-classifier", "--no-ui"], input="随便说点什么\n/exit\n")
 
     assert result.exit_code == 0
     assert "来自问答路径" in result.output
@@ -70,7 +70,7 @@ def _run_go_question(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_mod, "answer_question_via_api", fake_answer)
     monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw))
 
-    result = CliRunner().invoke(main, ["go", "这个工具怎么用"])
+    result = CliRunner().invoke(main, ["go", "--legacy-classifier", "这个工具怎么用"])
 
     assert result.exit_code == 0
     assert "这是 go 的问答回复" in result.output
@@ -82,10 +82,9 @@ def _run_go_question(tmp_path, monkeypatch):
     "scenario",
     [
         _run_chat_cli_no_ui_question,
-        _run_webui_session_chat_question,
         _run_go_question,
     ],
-    ids=["chat-no-ui", "webui-session-chat", "go-question"],
+    ids=["chat-no-ui-legacy-classifier", "go-question-legacy-classifier"],
 )
 def test_gateway_config_ref_is_shared_between_classifier_and_answer(tmp_path, monkeypatch, scenario):
     captured, expected_config_ref = scenario(tmp_path, monkeypatch)

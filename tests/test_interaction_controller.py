@@ -38,6 +38,50 @@ def test_resolve_turn_intent_prefers_overrides_then_classifier_then_fallback():
     assert resolve_turn_intent("x", classify_fn=lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom"))) == "requirement"
 
 
+def test_classify_entry_intent_skips_classifier_by_default(monkeypatch):
+    from codepilot.commands import auto as auto_cmd
+
+    calls: list[str] = []
+
+    def _classifier_should_not_run(text, **_kwargs):
+        calls.append(text)
+        return {"intent": "task", "source": "unexpected"}
+
+    monkeypatch.setattr(auto_cmd, "classify_intent", _classifier_should_not_run)
+
+    intent = resolve_turn_intent(
+        "ambiguous input",
+        category="auto",
+        classify_fn=auto_cmd.classify_entry_intent,
+        classify_kwargs={"project_info": {"name": "demo", "path": "D:/repo/demo"}},
+        fallback_intent="requirement",
+    )
+
+    assert intent == "requirement"
+    assert calls == []
+
+
+def test_classify_entry_intent_uses_classifier_when_legacy_enabled(monkeypatch):
+    from codepilot.commands import auto as auto_cmd
+
+    calls: list[str] = []
+
+    def _fake_classifier(text, **_kwargs):
+        calls.append(text)
+        return {"intent": "task", "source": "test"}
+
+    monkeypatch.setattr(auto_cmd, "classify_intent", _fake_classifier)
+
+    intent = auto_cmd.classify_entry_intent(
+        "legacy classifier input",
+        project_info={"name": "demo", "path": "D:/repo/demo"},
+        legacy_classifier=True,
+    )
+
+    assert intent == "task"
+    assert calls == ["legacy classifier input"]
+
+
 def test_should_continue_pending_clarification_only_for_auto_unforced_non_question_prefix():
     pending = {"original_title": "优化一下"}
     assert should_continue_pending_clarification(

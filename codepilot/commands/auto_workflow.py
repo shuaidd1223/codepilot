@@ -30,6 +30,7 @@ from codepilot.ai_support.clarification_protocol import (
     normalize_text as _normalize_protocol_text,
     render_clarification_questions,
 )
+from codepilot.ai_support.intent_rules import _heuristic_intent
 from codepilot.commands import auto_project_resolution as _project_resolution
 from codepilot.commands import auto_workflow_planning as _planning_flow
 from codepilot.core.config import (
@@ -466,12 +467,22 @@ def classify_entry_intent(
     project_info: dict,
     category: str = "auto",
     gateway_options: Optional[GatewayCallOptions] = None,
+    legacy_classifier: bool = False,
+    default_intent: str = "requirement",
 ) -> str:
     """Classify user input intent using the shared auto/chat/webui chain."""
     forced = (category or "auto").strip().lower()
     valid = {"question", "task", "requirement", "command"}
     if forced in valid:
         return forced
+
+    if not legacy_classifier:
+        try:
+            guess = _heuristic_intent(text)
+        except Exception:
+            guess = None
+        fallback = (default_intent or "").strip().lower()
+        return guess if guess in valid else (fallback if fallback in valid else "")
 
     shared_options = gateway_options or resolve_shared_gateway_options(project_info)
     shell = _shell()

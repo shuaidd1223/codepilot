@@ -86,6 +86,7 @@ def spawn_detached_inspect(
     agent: str,
     planner: str | None,
     interval: int | None,
+    legacy_classifier: bool = False,
     state_dir: Path = INSPECT_STATE_DIR,
     now_iso_fn: Callable[[], str],
 ) -> DetachedProcessHandle:
@@ -111,6 +112,8 @@ def spawn_detached_inspect(
         cmd.extend(["--planner", planner])
     if interval is not None:
         cmd.extend(["--interval", str(interval)])
+    if legacy_classifier:
+        cmd.append("--legacy-classifier")
 
     pid = spawn_detached_command_via_launcher(cmd, log_file=log_file)
     return DetachedProcessHandle(pid)
