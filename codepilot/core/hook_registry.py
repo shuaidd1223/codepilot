@@ -13,7 +13,7 @@ SCHEMA_VERSION = 1
 REGISTRY_RELATIVE_PATH = Path(".codepilot") / "hooks" / "registry.json"
 WRAPPER_RELATIVE_PATH = Path(".codepilot") / "hooks" / "codepilot-hook-wrapper"
 HOOK_TARGETS = ("agent.prompt.submitted", "agent.tool.started", "agent.tool.finished", "agent.run.stopped", "agent.run.failed")
-SUPPORTED_PROVIDERS = ("codex", "claude", "gemini", "custom")
+SUPPORTED_PROVIDERS = ("codex", "claude", "opencode", "gemini", "custom")
 HOOK_LOG_RELATIVE_PATH = Path(".codepilot") / "hooks" / "logs" / "hook-events.jsonl"
 
 

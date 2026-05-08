@@ -7,7 +7,7 @@ import re
 
 _LIVE_HEAD_RE = re.compile(r"^\s*##\s+Live Output\s*$", re.IGNORECASE)
 _FENCE_RE = re.compile(r"^\s*(```+|~~~+)\s*([A-Za-z0-9_-]+)?\s*$")
-_ROLE_MARK_RE = re.compile(r"^(user|codex|claude|assistant)$", re.IGNORECASE)
+_ROLE_MARK_RE = re.compile(r"^(user|codex|claude|opencode|assistant)$", re.IGNORECASE)
 
 
 def _find_live_output_header(lines: list[str]) -> int:

@@ -174,17 +174,22 @@ def _check_agents_toml() -> CheckResult:
 
 
 def _check_cli_tools() -> list[CheckResult]:
-    """codex / claude CLI on PATH."""
+    """codex / claude / opencode CLI on PATH."""
     results: list[CheckResult] = []
-    for tool in ("codex", "claude"):
+    install_hints = {
+        "codex": "npm install -g @openai/codex",
+        "claude": "npm install -g @anthropic-ai/claude-code",
+        # OpenCode is the bottom-tier fallback; absence is a warning, not an error.
+        "opencode": "npm install -g opencode-ai (or visit https://opencode.ai)",
+    }
+    for tool in ("codex", "claude", "opencode"):
         found = shutil.which(tool)
         if found:
             results.append(CheckResult(f"cli_{tool}", True, f"{tool} -> {found}"))
         else:
             results.append(CheckResult(
                 f"cli_{tool}", False, f"'{tool}' 不在 PATH 中",
-                fix=f"npm install -g @openai/codex" if tool == "codex"
-                else "npm install -g @anthropic-ai/claude-code",
+                fix=install_hints.get(tool, f"install {tool}"),
             ))
     return results
 

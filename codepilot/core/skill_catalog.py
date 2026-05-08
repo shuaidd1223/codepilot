@@ -11,7 +11,7 @@ from typing import Any
 SCHEMA_VERSION = 1
 CATALOG_RELATIVE_PATH = Path(".codepilot") / "skills" / "catalog.json"
 SAFE_SKILL_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
-SUPPORTED_PROVIDERS = ("codex", "claude", "gemini", "custom")
+SUPPORTED_PROVIDERS = ("codex", "claude", "opencode", "gemini", "custom")
 
 
 class SkillCatalogError(ValueError):

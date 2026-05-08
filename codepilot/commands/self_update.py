@@ -13,7 +13,7 @@ from codepilot.core.output import echo
 from codepilot.storage import database as db
 
 
-SUPPORTED_PROVIDERS = ("codex", "claude", "gemini", "custom")
+SUPPORTED_PROVIDERS = ("codex", "claude", "opencode", "gemini", "custom")
 
 
 class SelfUpdateError(ValueError):

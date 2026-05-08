@@ -18,15 +18,18 @@ from codepilot.core.output import echo
 from codepilot.storage import database as db
 
 
-SUPPORTED_PROVIDERS = ("codex", "claude", "gemini", "custom")
+SUPPORTED_PROVIDERS = ("codex", "claude", "opencode", "gemini", "custom")
 DEFAULT_PROVIDER_COMMANDS = {
     "codex": "codex",
     "claude": "claude",
+    "opencode": "opencode",
     "gemini": "gemini",
 }
 PROVIDER_ENV_HINTS = {
     "codex": ("OPENAI_API_KEY",),
     "claude": ("ANTHROPIC_API_KEY",),
+    # OpenCode auto-picks ANTHROPIC_API_KEY > OPENAI_API_KEY > DeepSeek (OpenAI-compatible).
+    "opencode": ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"),
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
 }
 EXEC_LOG_RELATIVE_PATH = Path(".codepilot") / "exec" / "exec.jsonl"

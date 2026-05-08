@@ -7,7 +7,7 @@ CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {
   const SECTION_HEAD_RE = /^##\s+/;
   const LIVE_HEAD_RE = /^##\s+Live Output\s*$/i;
   const FENCE_RE = /^\s*(```+|~~~+)/;
-  const ROLE_MARK_RE = /^(user|codex|claude|assistant)$/i;
+  const ROLE_MARK_RE = /^(user|codex|claude|opencode|assistant)$/i;
   const COLLAPSE_LANG_RE = /\blanguage-(shell|bash|sh|powershell|ps1|cmd|zsh|console)\b/i;
   const DIFF_LANG_RE = /\blanguage-diff\b/i;
   const DIFF_COLLAPSE_MIN_LINES = 16;
