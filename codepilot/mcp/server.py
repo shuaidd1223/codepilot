@@ -132,9 +132,23 @@ class CodePilotMCPServer:
         arguments: dict[str, Any],
         progress_callback: ProgressCallback | None,
     ) -> Any:
-        tool = self.registry.get(name)
+        try:
+            tool = self.registry.get(name)
+        except KeyError as exc:
+            raise CodePilotToolError(
+                f"MCP tool not found: {name}",
+                code="tool_not_found",
+                details={"tool": name},
+            ) from exc
         signature = inspect.signature(tool.func)
-        bound = signature.bind(**arguments)
+        try:
+            bound = signature.bind(**arguments)
+        except TypeError as exc:
+            raise CodePilotToolError(
+                str(exc),
+                code="invalid_arguments",
+                details={"tool": name, "arguments": arguments},
+            ) from exc
         bound.apply_defaults()
         result = tool.func(*bound.args, **bound.kwargs)
 

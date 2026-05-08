@@ -8,6 +8,7 @@ import click
 
 from codepilot.core.output import echo
 from codepilot.mcp.server import MCPProjectContext, create_mcp_server
+from codepilot.mcp.tool_registry import default_registry
 from codepilot.storage import database as db
 
 
@@ -38,8 +39,10 @@ def mcp_group() -> None:
 @click.option("--project", "-p", help="项目名称；不指定时尝试使用当前目录所属项目")
 def serve(transport: str, port: int, project: str | None) -> None:
     """Start a CodePilot MCP server."""
+    import codepilot.mcp.tools.tasks  # noqa: F401
+
     context = _resolve_context(project)
-    server = create_mcp_server(context)
+    server = create_mcp_server(context, registry=default_registry)
     normalized_transport = transport.lower()
 
     try:
