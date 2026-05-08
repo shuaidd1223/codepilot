@@ -80,6 +80,15 @@ def normalize_agent_name(name: str) -> str:
     if name == "dual":
         return "dual"
 
+    # CLI family registry takes priority — keeps aliases for new families
+    # (opencode/oc, …) in one place. Only return when the family also has
+    # a registered CLI provider, otherwise fall through to fuzzy matching.
+    from codepilot.ai_support.cli_families import get_family
+
+    family = get_family(name)
+    if family is not None and family.provider_key in CLI_PROVIDERS:
+        return family.name
+
     # 直接匹配
     if name in CLI_PROVIDERS or name in API_PROVIDERS:
         return name

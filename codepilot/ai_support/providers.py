@@ -121,6 +121,14 @@ CLI_PROVIDERS: dict[str, CLIProvider] = {
         ],
         timeout=180,
     ),
+    # OpenCode CLI (sst/opencode) — provider-agnostic; backend selected by env vars
+    # injected via codepilot.ai_support.opencode_runtime when invoked.
+    "opencode": CLIProvider(
+        name="OpenCode",
+        cmd="opencode",
+        args_template=["run", "{prompt}"],
+        timeout=180,
+    ),
     # Google Gemini CLI（如果有）
     "gemini": CLIProvider(
         name="Google Gemini CLI",
@@ -256,10 +264,15 @@ API_PROVIDERS: dict[str, APIProvider] = {
 }
 
 
-CLI_COMMAND_ENV_VARS: dict[str, str] = {
-    "codex": "CODEPILOT_CODEX_CMD",
-    "claude": "CODEPILOT_CLAUDE_CMD",
-}
+# Built dynamically from the family registry so adding a new family in
+# cli_families.py automatically wires its env-var override here.
+def _build_cli_command_env_vars() -> dict[str, str]:
+    from codepilot.ai_support.cli_families import CLI_FAMILIES
+
+    return {family.name: family.env_var for family in CLI_FAMILIES.values()}
+
+
+CLI_COMMAND_ENV_VARS: dict[str, str] = _build_cli_command_env_vars()
 
 
 def resolve_api_provider(
