@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,16 @@ class SetupError(ValueError):
     """Raised when setup cannot safely continue."""
 
 
+def _find_command(name: str) -> str | None:
+    """Thin wrapper so tests can inject PATH probing."""
+    return shutil.which(name)
+
+
+def _run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Thin wrapper so tests can inject command execution."""
+    return subprocess.run(args, check=True, capture_output=True, text=True)
+
+
 def _relative(path: Path, root: Path) -> str:
     try:
         return path.resolve().relative_to(root.resolve()).as_posix()
@@ -55,6 +67,20 @@ def _action(kind: str, path: Path, root: Path, status: str, detail: str = "") ->
     }
     if detail:
         item["detail"] = detail
+    return item
+
+
+def _command_action(
+    kind: str,
+    path: Path,
+    root: Path,
+    status: str,
+    *,
+    command: list[str],
+    detail: str = "",
+) -> dict[str, Any]:
+    item = _action(kind, path, root, status, detail)
+    item["command"] = command
     return item
 
 
@@ -169,6 +195,92 @@ def _setup_skill_catalog(root: Path, *, dry_run: bool) -> dict[str, Any]:
     )
 
 
+def _find_first_command(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        found = _find_command(name)
+        if found:
+            return found
+    return None
+
+
+def _claude_install_command(npm_registry: str | None) -> list[str]:
+    command = ["npm", "install", "-g", "@anthropic-ai/claude-code"]
+    registry = (npm_registry or "").strip()
+    if registry:
+        command.extend(["--registry", registry])
+    return command
+
+
+def _format_command(command: list[str]) -> str:
+    return " ".join(command)
+
+
+def _setup_claude_auto_install(
+    root: Path,
+    *,
+    dry_run: bool,
+    install_claude: bool,
+    npm_registry: str | None,
+) -> dict[str, Any]:
+    claude_path = _find_first_command(("claude", "claude.cmd"))
+    action_path = root / "claude"
+    if claude_path:
+        return _command_action(
+            "claude_auto_install",
+            action_path,
+            root,
+            "exists",
+            command=[],
+            detail=f"已检测到 Claude Code CLI：{claude_path}",
+        )
+
+    display_command = _claude_install_command(npm_registry)
+    detail = "未在 PATH 中找到 claude；可执行 npm install -g @anthropic-ai/claude-code 安装。"
+    if dry_run:
+        return _command_action(
+            "claude_auto_install",
+            action_path,
+            root,
+            "would_install",
+            command=display_command,
+            detail=detail,
+        )
+
+    if not install_claude:
+        return _command_action(
+            "claude_auto_install",
+            action_path,
+            root,
+            "missing",
+            command=display_command,
+            detail=detail,
+        )
+
+    npm_path = _find_first_command(("npm", "npm.cmd"))
+    if not npm_path:
+        raise SetupError(
+            "未在 PATH 中找到 npm，无法自动安装 Claude Code CLI。"
+            "请先安装 Node.js/npm，或手动执行: "
+            + " ".join(display_command)
+        )
+
+    run_command = [npm_path, *display_command[1:]]
+    try:
+        _run_command(run_command)
+    except subprocess.CalledProcessError as exc:
+        output = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise SetupError(f"Claude Code 安装失败：{output}") from exc
+
+    return _command_action(
+        "claude_auto_install",
+        action_path,
+        root,
+        "installed",
+        command=display_command,
+        detail="已通过 npm 安装 Claude Code CLI。",
+    )
+
+
 def _setup_registration(root: Path, project_name: str, *, dry_run: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     config_path = root / config_mod.CONFIG_FILENAME
     project_info = {
@@ -200,7 +312,14 @@ def _setup_registration(root: Path, project_name: str, *, dry_run: bool) -> tupl
     return registered, _action("project", root, root, "registered", "已注册项目数据库记录。")
 
 
-def setup_project(path: Path, project_name: str | None = None, *, dry_run: bool = False) -> dict[str, Any]:
+def setup_project(
+    path: Path,
+    project_name: str | None = None,
+    *,
+    dry_run: bool = False,
+    install_claude: bool = False,
+    npm_registry: str | None = None,
+) -> dict[str, Any]:
     """Prepare project-local CodePilot state without installing real Codex hooks."""
     root = _validate_project_path(path)
     resolved_name = (project_name or root.name).strip()
@@ -213,6 +332,14 @@ def setup_project(path: Path, project_name: str | None = None, *, dry_run: bool 
     actions.extend(_setup_directories(root, dry_run=dry_run))
     actions.append(_setup_event_registry(root, dry_run=dry_run))
     actions.append(_setup_skill_catalog(root, dry_run=dry_run))
+    actions.append(
+        _setup_claude_auto_install(
+            root,
+            dry_run=dry_run,
+            install_claude=install_claude,
+            npm_registry=npm_registry,
+        )
+    )
     project_info, project_action = _setup_registration(root, resolved_name, dry_run=dry_run)
     actions.append(project_action)
     actions.append(
@@ -239,13 +366,29 @@ def setup_project(path: Path, project_name: str | None = None, *, dry_run: bool 
 @click.argument("path", required=False, default=".", type=click.Path(file_okay=False, path_type=Path))
 @click.option("--name", "-n", "project_name", help="项目名称（默认取目录名）")
 @click.option("--dry-run", is_flag=True, help="只报告将执行的初始化动作，不写入文件或数据库")
+@click.option("--install-claude", is_flag=True, help="claude 缺失时通过 npm 自动安装 Claude Code CLI")
+@click.option("--npm-registry", default=None, help="安装 Claude Code CLI 时使用的 npm registry")
 @click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
 @click.pass_context
-def setup(ctx: click.Context, path: Path, project_name: str | None, dry_run: bool, json_mode: bool) -> None:
+def setup(
+    ctx: click.Context,
+    path: Path,
+    project_name: str | None,
+    dry_run: bool,
+    install_claude: bool,
+    npm_registry: str | None,
+    json_mode: bool,
+) -> None:
     """初始化项目级 .codepilot 骨架、配置和项目注册记录。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        data = setup_project(path, project_name, dry_run=dry_run)
+        data = setup_project(
+            path,
+            project_name,
+            dry_run=dry_run,
+            install_claude=install_claude,
+            npm_registry=npm_registry,
+        )
     except SetupError as exc:
         if json_mode:
             emit_json_payload("setup", ok=False, data={}, error=str(exc), error_code="setup_error")
@@ -263,3 +406,5 @@ def setup(ctx: click.Context, path: Path, project_name: str | None, dry_run: boo
         echo("  模式: dry-run")
     for item in data["actions"]:
         echo(f"  {safe(item['status']):14s} {safe(item['relative_path'])}")
+        if item.get("kind") == "claude_auto_install" and item.get("command"):
+            echo(f"    命令: {safe(_format_command(item['command']))}")
