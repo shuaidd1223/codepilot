@@ -109,6 +109,42 @@ codepilot binary verify
 codepilot binary where
 ```
 
+## CLI Agent 家族与兜底链
+
+CodePilot 把可调用的 CLI agent 抽成了 family 注册表，目前内置三家：`claude`、`codex`、`opencode`。
+当前面项缺失（未安装/未配置 key/超时）时，按 `[automation] fallback_cli_order` 顺序退到下一家，
+默认是 `["claude", "codex", "opencode"]`——OpenCode 作为最终兜底，靠**已配置的任一 LLM API key 即可工作**。
+
+`AGENTS.toml` 中的相关字段：
+
+```toml
+[agents]
+# planner/builder/reviewer 留空时使用对应场景默认值
+planner = ""
+builder = ""
+reviewer = ""
+
+[agents.commands]
+# CLI family -> 命令名/绝对路径；缺失项默认使用同名命令
+claude = "claude"
+codex = "codex"
+opencode = "opencode"
+
+[automation]
+# 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个
+fallback_cli_order = ["claude", "codex", "opencode"]
+
+# OpenCode 是 provider-agnostic 的；启动时按以下顺序自动挑选可用 backend：
+#   1. anthropic（来自 claude-opus / claude-sonnet / claude-haiku 的 api_key）
+#   2. deepseek（OpenAI 兼容 + base_url）
+#   3. openai（openai-gpt4* 的 api_key）
+[providers.opencode]
+enabled = true
+```
+
+迁移提示：旧版 `[agents] codex_cmd / claude_cmd` 已删除，加载时会抛 `ConfigError` 并给出
+迁移示例。运行 `codepilot config sync -p <项目名>` 可一键重写旧文件到新格式。
+
 ## 已统一的新入口
 
 这些旧入口不要再使用：
