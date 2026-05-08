@@ -7,7 +7,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import click
 
@@ -428,6 +428,7 @@ def _call_llm(
     project_path: str,
     timeout: int,
     planner: str = "claude",
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     # 1) Prefer the configured classifier provider (API with key).
     if classifier_provider and classifier_provider in API_PROVIDERS:
@@ -494,6 +495,7 @@ def _call_llm(
             planner=normalized,
             project_path=project_path,
             timeout=timeout,
+            stream_callback=stream_callback,
         )
     if family_name == "opencode":
         return _run_opencode_schema_prompt(
@@ -501,12 +503,14 @@ def _call_llm(
             INSPECT_SCHEMA,
             project_path=project_path,
             timeout=timeout,
+            stream_callback=stream_callback,
         )
     return _run_codex_schema_prompt(
         prompt,
         INSPECT_SCHEMA,
         project_path=project_path,
         timeout=timeout,
+        stream_callback=stream_callback,
     )
 
 
@@ -710,6 +714,7 @@ def run_inspection(
     dry_run: bool = False,
     timeout: int = 120,
     legacy_classifier: bool = False,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     project_name = project_info["name"]
     project_path = Path(project_info["path"])
@@ -761,6 +766,7 @@ def run_inspection(
             project_path=str(project_path),
             timeout=timeout,
             planner=planner,
+            stream_callback=stream_callback,
         )
     except Exception as exc:
         return {
@@ -977,6 +983,26 @@ def inspect(
     limit = max_new if max_new is not None else ins.max_new_tasks_per_round
     sleep_seconds = interval if interval is not None else ins.interval_seconds
     effective_planner = resolve_planner(cfg, "inspect", explicit=planner)
+    streamed = {"seen": False}
+
+    def _stream_chunk(chunk: str) -> None:
+        if not chunk:
+            return
+        streamed["seen"] = True
+        click.echo(chunk, nl=False)
+
+    def _run_inspection_with_stream(project_info: dict, **kwargs) -> dict:
+        return run_inspection(
+            project_info,
+            **kwargs,
+            stream_callback=None if json_mode else _stream_chunk,
+        )
+
+    def _emit_result_after_stream(result: dict, *, dry_run: bool, json_mode: bool) -> None:
+        if streamed["seen"]:
+            click.echo()
+            streamed["seen"] = False
+        _emit_inspection_result(result, dry_run=dry_run, json_mode=json_mode)
 
     loop_options = inspect_lifecycle.ForegroundInspectLoopOptions(
         project=project,
@@ -999,8 +1025,8 @@ def inspect(
         clear_service_state_fn=db.clear_service_state,
         service_log_path_fn=lambda name: str(_service_log_path(name)),
         print_round_header_fn=_print_round_header,
-        run_inspection_fn=run_inspection,
-        emit_inspection_result_fn=_emit_inspection_result,
+        run_inspection_fn=_run_inspection_with_stream,
+        emit_inspection_result_fn=_emit_result_after_stream,
         echo_fn=echo,
     )
 
