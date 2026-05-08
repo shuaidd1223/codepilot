@@ -779,8 +779,17 @@ def _provider_has_remote_answer_capability(provider_key: str, api_key: Optional[
 
 
 def _has_local_question_answer_agent() -> bool:
-    for key in ("codex", "claude", "claude-node"):
-        provider = CLI_PROVIDERS.get(key)
+    # Read from the family registry so adding a new family in cli_families.py
+    # automatically extends the local-agent fallback discovery.
+    from codepilot.ai_support.cli_families import CLI_FAMILIES
+
+    for family in CLI_FAMILIES.values():
+        provider = CLI_PROVIDERS.get(family.provider_key)
         if provider and provider.find_executable():
             return True
+    # Preserve back-compat with claude-node which is a sibling of claude under
+    # the same family — handled separately because it's a distinct CLI_PROVIDERS key.
+    fallback_provider = CLI_PROVIDERS.get("claude-node")
+    if fallback_provider and fallback_provider.find_executable():
+        return True
     return False

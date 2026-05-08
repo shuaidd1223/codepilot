@@ -245,3 +245,70 @@ def test_builtin_phase_agents_includes_opencode():
     assert "opencode" in BUILTIN_PHASE_AGENTS
     assert is_builtin_phase_agent_supported("opencode") is True
     assert is_builtin_phase_agent_supported("oc") is True  # alias support
+
+
+# --- secondary-path opencode integration ---------------------------------------
+
+
+def test_add_command_agent_choices_include_opencode():
+    """`codepilot add -a opencode` should be accepted as a valid CLI choice."""
+    from codepilot.commands.add import AGENT_CHOICES
+
+    assert "opencode" in AGENT_CHOICES
+    assert "oc" in AGENT_CHOICES
+
+
+def test_task_edit_agent_choice_includes_opencode():
+    """`codepilot task edit -a opencode` should be a valid Click choice."""
+    from codepilot.commands.tasks import edit as edit_cmd
+
+    agent_param = next(p for p in edit_cmd.params if p.name == "agent")
+    assert "opencode" in agent_param.type.choices
+
+
+def test_auto_workflow_accepts_opencode_for_builtin_executor():
+    """auto_workflow._resolve_task_agent's executor=builtin allow-list must include opencode.
+
+    We assert via source inspection because the function depends on
+    project-specific runtime services (provider availability, project
+    config) that are awkward to mock at unit-test scope.
+    """
+    from codepilot.commands import auto_workflow
+    import inspect as _inspect
+
+    src = _inspect.getsource(auto_workflow._resolve_task_agent)
+    assert '"opencode"' in src
+    assert "请改用 codex、claude、claude-node、opencode 或 dual。" in src
+
+
+def test_local_question_answer_agent_iterates_registry(monkeypatch):
+    """_has_local_question_answer_agent must read from cli_families registry,
+    not a hardcoded loop, so opencode counts as a local fallback."""
+    from codepilot.ai_support import question_runtime
+
+    class _FakeProvider:
+        def __init__(self, exe):
+            self._exe = exe
+        def find_executable(self):
+            return self._exe
+
+    fake_providers = {
+        "claude": _FakeProvider(""),
+        "codex": _FakeProvider(""),
+        "opencode": _FakeProvider("/usr/local/bin/opencode"),
+    }
+    monkeypatch.setattr(question_runtime, "CLI_PROVIDERS", fake_providers)
+    assert question_runtime._has_local_question_answer_agent() is True
+
+    fake_providers["opencode"] = _FakeProvider("")
+    assert question_runtime._has_local_question_answer_agent() is False
+
+
+def test_builtin_fallback_candidates_include_opencode():
+    """The builder/reviewer-phase fallback chain must include opencode after claude/codex."""
+    from codepilot.commands import run_builtin_executor as run_mod
+    import inspect as _inspect
+
+    src = _inspect.getsource(run_mod._select_builtin_phase_fallback_agent)
+    # Sanity: opencode is in the candidate list literal.
+    assert '"opencode"' in src

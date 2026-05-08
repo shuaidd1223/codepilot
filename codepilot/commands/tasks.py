@@ -432,7 +432,7 @@ def resume(task_ids: tuple[int, ...]):
                type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled", "archived"], case_sensitive=False),
                help="修改状态")
 @click.option("--agent", "-a",
-               type=click.Choice(["dual", "builder", "reviewer", "claude", "codex"], case_sensitive=False),
+               type=click.Choice(["dual", "builder", "reviewer", "claude", "codex", "opencode"], case_sensitive=False),
                help="修改 Agent 模式")
 @click.option("--depends", "-d", help="修改依赖，格式: 1,2,3（覆盖现有依赖）")
 def edit(task_id: int, title: str | None, priority: str | None,

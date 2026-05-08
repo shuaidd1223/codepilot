@@ -169,7 +169,7 @@ def _select_builtin_phase_fallback_agent(
         return None
 
     preferred = reviewer_agent if phase == "builder" else builder_agent
-    candidates = [preferred, "claude", "claude-node", "codex"]
+    candidates = [preferred, "claude", "claude-node", "codex", "opencode"]
     failed_runner = _agent_label_runner(failed_agent)
     seen: set[str] = set()
     runner_mod = _runner_module()

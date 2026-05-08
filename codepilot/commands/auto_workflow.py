@@ -592,9 +592,10 @@ def _resolve_task_agent(project_info: dict, agent: Optional[str], executor: str)
         "claude-sonnet",
         "claude-opus",
         "claude-haiku",
+        "opencode",
     }:
         raise click.ClickException(
-            f"内置执行器暂时不支持 `{raw_agent}`。请改用 codex、claude、claude-node 或 dual。"
+            f"内置执行器暂时不支持 `{raw_agent}`。请改用 codex、claude、claude-node、opencode 或 dual。"
         )
 
     return normalized

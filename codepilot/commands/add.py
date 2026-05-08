@@ -249,7 +249,7 @@ def _parse_markdown_depends(value: str) -> list[int] | None:
 # 支持的 Agent 选项
 AGENT_CHOICES = [
     # CLI
-    "claude", "claude-node", "codex", "gemini", "cloud",
+    "claude", "claude-node", "codex", "opencode", "oc", "gemini", "cloud",
     # API - OpenAI
     "openai-gpt4", "openai-gpt4o", "openai-gpt35",
     # API - Anthropic
