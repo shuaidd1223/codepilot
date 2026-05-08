@@ -17,15 +17,15 @@ def _integrity_for(payload: bytes, algorithm: str = "sha512") -> str:
 def test_opencode_platform_package_name_maps_supported_hosts():
     assert (
         vendor_fetcher.platform_package_name("opencode", system="Windows", machine="AMD64")
-        == "@opencode/opencode-win32-x64"
+        == "opencode-windows-x64"
     )
     assert (
         vendor_fetcher.platform_package_name("opencode", system="Darwin", machine="arm64")
-        == "@opencode/opencode-darwin-arm64"
+        == "opencode-darwin-arm64"
     )
     assert (
         vendor_fetcher.platform_package_name("opencode", system="Linux", machine="x86_64")
-        == "@opencode/opencode-linux-x64"
+        == "opencode-linux-x64"
     )
 
 
@@ -41,24 +41,21 @@ def test_codex_platform_package_download_info_is_resolved_from_npm_metadata():
                 "versions": {
                     "1.2.3": {
                         "optionalDependencies": {
-                            "@openai/codex-linux-x64": "1.2.3",
-                            "@openai/codex-darwin-arm64": "1.2.3",
+                            "@openai/codex-linux-x64": "npm:@openai/codex@1.2.3-linux-x64",
+                            "@openai/codex-darwin-arm64": "npm:@openai/codex@1.2.3-darwin-arm64",
                         }
-                    }
-                },
-            }
-        if url.endswith("@openai%2Fcodex-linux-x64"):
-            return {
-                "versions": {
-                    "1.2.3": {
+                    },
+                    "1.2.3-linux-x64": {
                         "dist": {
-                            "tarball": "https://registry.example/@openai/codex-linux-x64/-/codex.tgz",
+                            "tarball": "https://registry.example/@openai/codex/-/codex-linux-x64.tgz",
                             "integrity": _integrity_for(payload),
                             "shasum": hashlib.sha1(payload).hexdigest(),
                         }
-                    }
-                }
+                    },
+                },
             }
+        if url.endswith("@openai%2Fcodex-linux-x64"):
+            raise vendor_fetcher.PackageMetadataError("platform alias falls back to root metadata")
         raise AssertionError(f"unexpected url: {url}")
 
     info = vendor_fetcher.resolve_download_info(
@@ -70,8 +67,8 @@ def test_codex_platform_package_download_info_is_resolved_from_npm_metadata():
 
     assert info.root_package == "@openai/codex"
     assert info.package_name == "@openai/codex-linux-x64"
-    assert info.version == "1.2.3"
-    assert info.tarball_url.endswith("/codex.tgz")
+    assert info.version == "1.2.3-linux-x64"
+    assert info.tarball_url.endswith("/codex-linux-x64.tgz")
     assert info.integrity.startswith("sha512-")
     assert calls == [
         "https://registry.npmjs.org/@openai%2Fcodex",
@@ -83,23 +80,23 @@ def test_opencode_platform_package_download_info_is_resolved_from_npm_metadata()
     payload = b"opencode-binary"
 
     def fake_json(url: str):
-        if url.endswith("@opencode%2Fopencode"):
+        if url.endswith("opencode-ai"):
             return {
                 "dist-tags": {"latest": "2.4.0"},
                 "versions": {
                     "2.4.0": {
                         "optionalDependencies": {
-                            "@opencode/opencode-win32-arm64": "2.4.0",
+                            "opencode-windows-arm64": "2.4.0",
                         }
                     }
                 },
             }
-        if url.endswith("@opencode%2Fopencode-win32-arm64"):
+        if url.endswith("opencode-windows-arm64"):
             return {
                 "versions": {
                     "2.4.0": {
                         "dist": {
-                            "tarball": "https://registry.example/@opencode/opencode-win32-arm64/-/opencode.tgz",
+                            "tarball": "https://registry.example/opencode-windows-arm64/-/opencode.tgz",
                             "integrity": _integrity_for(payload),
                         }
                     }
@@ -114,8 +111,8 @@ def test_opencode_platform_package_download_info_is_resolved_from_npm_metadata()
         json_fetcher=fake_json,
     )
 
-    assert info.root_package == "@opencode/opencode"
-    assert info.package_name == "@opencode/opencode-win32-arm64"
+    assert info.root_package == "opencode-ai"
+    assert info.package_name == "opencode-windows-arm64"
     assert info.version == "2.4.0"
     assert info.tarball_url.endswith("/opencode.tgz")
 

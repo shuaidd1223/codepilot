@@ -8,6 +8,8 @@ import json
 import os
 import platform
 import re
+import shutil
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
@@ -17,6 +19,8 @@ from urllib.request import Request, urlopen
 
 NPM_REGISTRY_URL = "https://registry.npmjs.org"
 _CHUNK_SIZE = 1024 * 1024
+SUPPORTED_BUNDLED_CLI_PROVIDERS = ("opencode", "codex")
+BUNDLED_VENDOR_MANIFEST = "manifest.json"
 
 
 class VendorFetcherError(RuntimeError):
@@ -70,6 +74,25 @@ class VendorFetchResult:
     resumed: bool
 
 
+@dataclass(frozen=True)
+class BundledVendorEntry:
+    provider: str
+    version: str
+    platform: str
+    arch: str
+    path: str
+    checksum: str
+    package_name: str
+    root_package: str
+
+
+@dataclass(frozen=True)
+class BundledVendorResult:
+    vendor_dir: Path
+    manifest_path: Path
+    providers: list[BundledVendorEntry]
+
+
 JsonFetcher = Callable[[str], Mapping[str, object]]
 Downloader = Callable[[str, dict[str, str]], DownloadResponse]
 
@@ -111,7 +134,7 @@ def root_package_name(vendor: str) -> str:
     if vendor_key == "codex":
         return "@openai/codex"
     if vendor_key == "opencode":
-        return "@opencode/opencode"
+        return "opencode-ai"
     raise ValueError(f"未知 vendor: {vendor}")
 
 
@@ -121,7 +144,8 @@ def platform_package_name(vendor: str, *, system: str | None = None, machine: st
     if vendor_key == "codex":
         return f"@openai/codex-{resolved.npm_platform}-{resolved.npm_arch}"
     if vendor_key == "opencode":
-        return f"@opencode/opencode-{resolved.npm_platform}-{resolved.npm_arch}"
+        npm_platform = "windows" if resolved.npm_platform == "win32" else resolved.npm_platform
+        return f"opencode-{npm_platform}-{resolved.npm_arch}"
     raise ValueError(f"未知 vendor: {vendor}")
 
 
@@ -143,7 +167,12 @@ def resolve_download_info(
     root_payload = _version_payload(root_metadata, root_version, root_name)
     platform_version = _dependency_version(root_payload, package_name) or root_version
 
-    package_metadata = fetch_json(npm_package_metadata_url(package_name, registry_url=registry_url))
+    try:
+        package_metadata = fetch_json(npm_package_metadata_url(package_name, registry_url=registry_url))
+    except PackageMetadataError:
+        if vendor.lower() != "codex":
+            raise
+        package_metadata = root_metadata
     package_version = _select_version(package_metadata, platform_version)
     package_payload = _version_payload(package_metadata, package_version, package_name)
     dist = package_payload.get("dist")
@@ -205,6 +234,134 @@ def fetch_vendor_binary(
         raise
 
     return VendorFetchResult(info=info, cache_path=cache_path, from_cache=False, checksum_verified=True, resumed=resumed)
+
+
+def parse_bundle_cli_list(raw: str | None) -> list[str]:
+    """Parse a comma-separated bundled CLI provider list."""
+    if not raw:
+        return []
+
+    providers: list[str] = []
+    seen: set[str] = set()
+    unsupported: list[str] = []
+    for item in raw.split(","):
+        provider = item.strip().lower()
+        if not provider:
+            continue
+        if provider not in SUPPORTED_BUNDLED_CLI_PROVIDERS:
+            unsupported.append(provider)
+            continue
+        if provider not in seen:
+            providers.append(provider)
+            seen.add(provider)
+
+    if unsupported:
+        allowed = ", ".join(SUPPORTED_BUNDLED_CLI_PROVIDERS)
+        raise ValueError(f"不支持的 --bundle-cli provider: {', '.join(unsupported)}。仅支持: {allowed}")
+    return providers
+
+
+def bundle_vendor_clis(
+    providers: Iterable[str],
+    *,
+    output_dir: str | Path,
+    platform_tag: str,
+    cache_dir: str | Path,
+    json_fetcher: JsonFetcher | None = None,
+    downloader: Downloader | None = None,
+) -> BundledVendorResult:
+    """Fetch platform vendor packages and write their binaries under ``bin/vendor``."""
+    normalized = parse_bundle_cli_list(",".join(providers))
+    target_root = Path(output_dir).expanduser().resolve()
+    vendor_dir = target_root / "bin" / "vendor"
+    vendor_dir.mkdir(parents=True, exist_ok=True)
+    platform_info = normalize_vendor_platform()
+    entries: list[BundledVendorEntry] = []
+
+    for provider in normalized:
+        info = resolve_download_info(provider, json_fetcher=json_fetcher)
+        fetched = fetch_vendor_binary(info, cache_dir=cache_dir, downloader=downloader)
+        executable_path = extract_vendor_binary(fetched.cache_path, provider=provider, vendor_dir=vendor_dir, platform_tag=platform_tag)
+        entries.append(
+            BundledVendorEntry(
+                provider=provider,
+                version=info.version,
+                platform=platform_info.npm_platform,
+                arch=platform_info.npm_arch,
+                path=_relative_posix(executable_path, target_root),
+                checksum=_hash_file(executable_path, "sha256"),
+                package_name=info.package_name,
+                root_package=info.root_package,
+            )
+        )
+
+    manifest_path = vendor_dir / BUNDLED_VENDOR_MANIFEST
+    manifest_payload = {
+        "schema": "codepilot-bundled-cli-v1",
+        "platform_tag": platform_tag,
+        "providers": [entry.__dict__ for entry in entries],
+    }
+    manifest_path.write_text(json.dumps(manifest_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return BundledVendorResult(vendor_dir=vendor_dir, manifest_path=manifest_path, providers=entries)
+
+
+def extract_vendor_binary(
+    archive_path: str | Path,
+    *,
+    provider: str,
+    vendor_dir: str | Path,
+    platform_tag: str | None = None,
+) -> Path:
+    """Extract the provider executable from an npm platform tarball."""
+    provider_key = provider.lower()
+    if provider_key not in SUPPORTED_BUNDLED_CLI_PROVIDERS:
+        allowed = ", ".join(SUPPORTED_BUNDLED_CLI_PROVIDERS)
+        raise ValueError(f"不支持的 --bundle-cli provider: {provider}。仅支持: {allowed}")
+
+    target_dir = Path(vendor_dir).expanduser().resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    archive = Path(archive_path).expanduser().resolve()
+    try:
+        with tarfile.open(archive, "r:*") as bundle:
+            member = _select_vendor_member(bundle.getmembers(), provider_key)
+            if member is None:
+                raise VendorFetcherError(f"{archive.name} 中没有找到 {provider_key} 可执行文件")
+            extracted = bundle.extractfile(member)
+            if extracted is None:
+                raise VendorFetcherError(f"{archive.name} 中无法读取 {member.name}")
+            target_name = _target_vendor_name(provider_key, member.name, platform_tag)
+            target_path = target_dir / target_name
+            with extracted, target_path.open("wb") as handle:
+                shutil.copyfileobj(extracted, handle)
+    except tarfile.TarError as exc:
+        raise VendorFetcherError(f"无法解包 vendor tarball: {archive}") from exc
+
+    mode = target_path.stat().st_mode
+    if not _is_windows_platform(platform_tag):
+        target_path.chmod(mode | 0o755)
+    return target_path
+
+
+def install_bundled_vendor(source_binary: str | Path, *, target_dir: str | Path) -> list[Path]:
+    """Copy bundled vendor files adjacent to a built binary into the install bin directory."""
+    source = Path(source_binary).expanduser().resolve()
+    source_vendor_dir = source.parent / "bin" / "vendor"
+    if not source_vendor_dir.exists():
+        return []
+
+    destination = Path(target_dir).expanduser().resolve() / "vendor"
+    copied: list[Path] = []
+    for item in source_vendor_dir.rglob("*"):
+        if item.is_dir():
+            continue
+        relative = item.relative_to(source_vendor_dir)
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, target)
+        if item.name != BUNDLED_VENDOR_MANIFEST and not _is_windows_platform():
+            target.chmod(target.stat().st_mode | 0o755)
+        copied.append(target.resolve())
+    return copied
 
 
 def cache_path_for(info: VendorDownloadInfo, cache_dir: str | Path) -> Path:
@@ -300,6 +457,8 @@ def _normalize_version_spec(raw: str | None) -> str | None:
     value = raw.strip()
     if not value or value == "*":
         return None
+    if value.startswith("npm:") and "@" in value[4:]:
+        return value.rsplit("@", 1)[1]
     match = re.match(r"^[~^=v\s]*([0-9][0-9A-Za-z.+-]*)$", value)
     return match.group(1) if match else value
 
@@ -342,3 +501,41 @@ def _tmp_path_for(cache_path: Path) -> Path:
     if cache_path.suffix:
         return cache_path.with_suffix(cache_path.suffix + ".tmp")
     return cache_path.with_name(cache_path.name + ".tmp")
+
+
+def _select_vendor_member(members: Iterable[tarfile.TarInfo], provider: str) -> tarfile.TarInfo | None:
+    candidates: list[tuple[int, tarfile.TarInfo]] = []
+    names = {provider, f"{provider}.exe"}
+    for member in members:
+        if not member.isfile():
+            continue
+        normalized = member.name.replace("\\", "/").lower()
+        basename = Path(normalized).name
+        if basename not in names:
+            continue
+        score = 0
+        if "/bin/" in normalized:
+            score += 10
+        if basename == provider or basename == f"{provider}.exe":
+            score += 5
+        candidates.append((score, member))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item[0], reverse=True)[0][1]
+
+
+def _target_vendor_name(provider: str, member_name: str, platform_tag: str | None) -> str:
+    basename = Path(member_name.replace("\\", "/")).name
+    if basename.lower().endswith(".exe") or _is_windows_platform(platform_tag):
+        return f"{provider}.exe"
+    return provider
+
+
+def _is_windows_platform(platform_tag: str | None = None) -> bool:
+    if platform_tag:
+        return platform_tag.lower().startswith(("windows", "win32"))
+    return platform.system().lower() == "windows"
+
+
+def _relative_posix(path: Path, root: Path) -> str:
+    return str(path.resolve().relative_to(root.resolve())).replace("\\", "/")
