@@ -82,6 +82,15 @@ class CodePilotMCPServer:
             raise RuntimeError("MCP SDK is not available; install the mcp package to run the server") from (
                 self.sdk_error
             )
+        host = kwargs.pop("host", None)
+        port = kwargs.pop("port", None)
+        if host is not None or port is not None:
+            settings = getattr(self.sdk_server, "settings", None)
+            if settings is not None:
+                if host is not None:
+                    settings.host = host
+                if port is not None:
+                    settings.port = port
         return self.sdk_server.run(*args, **kwargs)
 
     def _bind_sdk(self, fastmcp_factory: Callable[[str], Any] | None) -> None:

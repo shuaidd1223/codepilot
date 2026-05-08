@@ -52,6 +52,7 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "skill": ("codepilot.commands.skill", "skill_group"),
     "hud": ("codepilot.commands.hud", "hud"),
     "task": ("codepilot.commands.task", "task_group"),
+    "mcp": ("codepilot.commands.mcp", "mcp_group"),
 }
 
 _REMOVED_COMMAND_HINTS: dict[str, str] = {
