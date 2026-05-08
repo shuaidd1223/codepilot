@@ -2,24 +2,21 @@
 
 This layer decides *what* to call (provider / model / config_ref / fallback
 candidate order) without performing any network or subprocess invocation.
+The CLI family decisions (which families exist, which command they map to,
+what their fallback ordering is) come from the family registry in
+:mod:`codepilot.ai_support.cli_families`, so adding a new family does not
+require touching this module.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
-from codepilot.gateway.types import GatewayRequest
+from codepilot.ai_support.cli_families import CLI_FAMILIES, get_family
 from codepilot.ai_support.providers import mark_provider_unavailable
-
-
-_CLAUDE_PLANNERS = {
-    "claude",
-    "claude-node",
-    "claude-sonnet",
-    "claude-opus",
-    "claude-haiku",
-}
+from codepilot.gateway.types import GatewayRequest
 
 
 @dataclass
@@ -45,6 +42,25 @@ class ResolvedTextCLICandidate:
 
 def _provider_ref(request: GatewayRequest) -> str | None:
     return request.config_ref or request.project_path or None
+
+
+def _planner_to_family_name(planner: str) -> str:
+    """Map a free-form planner name to the canonical CLI family name.
+
+    Falls back to ``codex`` when the input does not match any known family,
+    matching the legacy default for unspecified planners.
+    """
+    if not planner:
+        return "codex"
+    fam = get_family(planner)
+    if fam is not None:
+        return fam.name
+    # Unrecognised inputs (e.g. claude-sonnet) — try to match by prefix.
+    lowered = planner.strip().lower()
+    for fam_name in CLI_FAMILIES:
+        if lowered.startswith(fam_name + "-") or lowered.startswith(fam_name):
+            return fam_name
+    return "codex"
 
 
 def resolve_api_call(request: GatewayRequest) -> Optional[ResolvedAPICall]:
@@ -86,19 +102,12 @@ def resolve_api_call(request: GatewayRequest) -> Optional[ResolvedAPICall]:
 
 def resolve_structured_cli_call(request: GatewayRequest) -> ResolvedStructuredCLICall:
     """Resolve which structured CLI family should run for the request."""
-    from codepilot.ai_support.service import normalize_agent_name  # noqa: WPS433
-
-    normalized = normalize_agent_name(request.planner) if request.planner else "codex"
-    if normalized in _CLAUDE_PLANNERS:
-        return ResolvedStructuredCLICall(
-            cli_name="claude",
-            planner=normalized,
-            source="cli:claude",
-        )
+    family_name = _planner_to_family_name(request.planner or "codex")
+    planner = request.planner or family_name
     return ResolvedStructuredCLICall(
-        cli_name="codex",
-        planner="codex",
-        source="cli:codex",
+        cli_name=family_name,
+        planner=planner,
+        source=f"cli:{family_name}",
     )
 
 
@@ -108,6 +117,7 @@ def _build_text_cli_command(
     executable: str,
     project_path: str,
 ) -> list[str]:
+    """Build the headless text-mode invocation for one CLI family."""
     if cli_name == "codex":
         cmd = [
             executable,
@@ -119,6 +129,11 @@ def _build_text_cli_command(
         if project_path:
             cmd = [executable, "-C", project_path] + cmd[1:]
         return cmd
+    if cli_name == "opencode":
+        # `opencode run` reads the prompt from STDIN when no positional arg is given,
+        # which matches the gateway text-mode runner that pipes via subprocess input=.
+        return [executable, "run"]
+    # claude (and any other family with the standard flag set)
     return [
         executable,
         "-p",
@@ -128,20 +143,45 @@ def _build_text_cli_command(
     ]
 
 
-def resolve_text_cli_candidates(request: GatewayRequest) -> tuple[list[ResolvedTextCLICandidate], str]:
-    """Resolve runnable local CLI candidates for free-form text mode."""
-    from codepilot.ai_support.service import normalize_agent_name  # noqa: WPS433
-    from codepilot.ai_support.providers import resolve_cli_provider  # noqa: WPS433
+def _resolve_fallback_order(request: GatewayRequest) -> list[str]:
+    """Return the de-duplicated fallback CLI family order to try.
 
-    normalized = normalize_agent_name(request.planner) if request.planner else "codex"
-    provider_ref = _provider_ref(request)
+    Reads from ``[automation] fallback_cli_order`` (default
+    ``["claude", "codex", "opencode"]``). The caller's ``planner`` field
+    only influences :func:`resolve_structured_cli_call`; the text-mode
+    fallback chain is config-driven so the user controls priority via
+    AGENTS.toml without per-call gymnastics.
+    """
+    from codepilot.core.config import DEFAULT_FALLBACK_CLI_ORDER, load_project_config
+
+    configured: list[str] = []
+    try:
+        cfg = load_project_config(_provider_ref(request))
+    except Exception:
+        cfg = None
+    if cfg is not None:
+        configured = list(cfg.automation.fallback_cli_order or [])
+    if not configured:
+        configured = list(DEFAULT_FALLBACK_CLI_ORDER)
 
     order: list[str] = []
-    if normalized in _CLAUDE_PLANNERS:
-        order.append("claude")
-    if "claude" not in order:
-        order.append("claude")
-    order.append("codex")
+    for name in configured:
+        if name not in order and name in CLI_FAMILIES:
+            order.append(name)
+    return order
+
+
+def resolve_text_cli_candidates(request: GatewayRequest) -> tuple[list[ResolvedTextCLICandidate], str]:
+    """Resolve runnable local CLI candidates for free-form text mode.
+
+    Reads the candidate order from the family registry plus the configured
+    ``fallback_cli_order``; each family's executable lookup happens via
+    ``resolve_cli_provider`` so missing CLIs degrade gracefully.
+    """
+    from codepilot.ai_support.providers import resolve_cli_provider  # noqa: WPS433
+
+    provider_ref = _provider_ref(request)
+    order = _resolve_fallback_order(request)
 
     candidates: list[ResolvedTextCLICandidate] = []
     last_error = ""
@@ -169,5 +209,3 @@ def resolve_text_cli_candidates(request: GatewayRequest) -> tuple[list[ResolvedT
         )
 
     return candidates, last_error
-
-

@@ -95,10 +95,13 @@ def test_resolve_structured_cli_call_preserves_claude_variant():
 
 
 def test_resolve_text_cli_candidates_builds_codex_command_with_project_path(monkeypatch):
+    """When only codex is installed, the candidate list contains codex with -C path,
+    and the last_error reflects the most recent failed family probe."""
+
     def _fake_resolve_cli_provider(cli_name, _provider_ref):
-        if cli_name == "claude":
-            return FakeCLIProvider(exe="")
-        return FakeCLIProvider(exe="C:/bin/codex.exe")
+        if cli_name == "codex":
+            return FakeCLIProvider(exe="C:/bin/codex.exe")
+        return FakeCLIProvider(exe="")
 
     monkeypatch.setattr("codepilot.ai_support.providers.resolve_cli_provider", _fake_resolve_cli_provider)
 
@@ -110,12 +113,14 @@ def test_resolve_text_cli_candidates_builds_codex_command_with_project_path(monk
         )
     )
 
-    assert len(candidates) == 1
+    cli_names = [c.cli_name for c in candidates]
+    assert cli_names == ["codex"]
     candidate = candidates[0]
     assert candidate.cli_name == "codex"
     assert candidate.source == "cli:codex"
     assert candidate.cmd[:3] == ["C:/bin/codex.exe", "-C", "D:/demo/project"]
-    assert "claude CLI not installed" in last_error
+    # last_error captures the latest probe failure (claude or opencode were missing).
+    assert last_error
 
 
 def test_call_structured_applies_api_overrides(gateway_state):

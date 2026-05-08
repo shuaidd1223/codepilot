@@ -28,12 +28,36 @@ def execute_structured_cli_call(
     request: GatewayRequest,
     resolved: ResolvedStructuredCLICall,
 ) -> dict:
-    """Run schema-constrained CLI planning for the resolved backend family."""
-    from codepilot.ai_support.service import _run_claude_schema_prompt, _run_codex_schema_prompt
+    """Run schema-constrained CLI planning for the resolved backend family.
+
+    Dispatches via the CLI family registry: each registered family points at
+    its own ``_run_<family>_schema_prompt`` thin wrapper in
+    :mod:`codepilot.ai_support.service`. Adding a new family means
+    registering it once in ``cli_families.py`` and providing a matching
+    ``service._run_<family>_schema_prompt`` callable.
+    """
+    from codepilot.ai_support import service as service_mod
+    from codepilot.ai_support.cli_families import CLI_FAMILIES
 
     schema = request.schema or {}
+    if resolved.cli_name not in CLI_FAMILIES:
+        raise ValueError(
+            f"未知的 CLI family: {resolved.cli_name!r}。"
+            "可用 family 在 codepilot.ai_support.cli_families.CLI_FAMILIES 注册。"
+        )
+
+    runner_attr = f"_run_{resolved.cli_name}_schema_prompt"
+    runner = getattr(service_mod, runner_attr, None)
+    if runner is None:
+        raise RuntimeError(
+            f"CLI family {resolved.cli_name!r} 已注册，但缺少 service.{runner_attr}。"
+            "请在 codepilot/ai_support/service.py 补充对应薄壳。"
+        )
+
     if resolved.cli_name == "claude":
-        return _run_claude_schema_prompt(
+        # Claude's planner sub-family (claude-sonnet/opus/haiku) is preserved
+        # so the runner can pick the right --model alias.
+        return runner(
             request.prompt,
             schema,
             planner=resolved.planner,
@@ -41,7 +65,8 @@ def execute_structured_cli_call(
             config_ref=request.config_ref or None,
             timeout=request.timeout,
         )
-    return _run_codex_schema_prompt(
+
+    return runner(
         request.prompt,
         schema,
         project_path=request.project_path,
