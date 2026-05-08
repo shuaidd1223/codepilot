@@ -16,7 +16,46 @@ one logical family in the planner/fallback layers.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Callable, Optional
+
+from codepilot.ai_support.opencode_runtime import (
+    ANTHROPIC_PROVIDER_KEYS,
+    OPENAI_PROVIDER_KEYS,
+)
+
+
+@dataclass(frozen=True)
+class EnvBridge:
+    """Declarative env mapping for a CLI family."""
+
+    family_name: str
+    target_var: str
+    source_providers: tuple[str, ...] | str
+    native_auth_paths: tuple[Callable[[], Path], ...]
+
+    def has_native_auth(self) -> bool:
+        return any(path().is_file() for path in self.native_auth_paths)
+
+
+def _home_path(*parts: str) -> Path:
+    return Path.home().joinpath(*parts)
+
+
+def _claude_auth_path() -> Path:
+    return _home_path(".claude", "auth.json")
+
+
+def _codex_auth_path() -> Path:
+    return _home_path(".codex", "auth.json")
+
+
+def _opencode_auth_path() -> Path:
+    return _home_path(".local", "share", "opencode", "auth.json")
+
+
+def _opencode_legacy_auth_path() -> Path:
+    return _home_path(".opencode", "data", "auth.json")
 
 
 @dataclass(frozen=True)
@@ -34,6 +73,8 @@ class CLIFamily:
         is_planner:   true when this family participates in the structured
                       planner (schema-prompt) path. All three default
                       families are planners today.
+        env_bridge:   optional API-key env bridge consumed by
+                      ``family_runtime`` when native CLI auth is absent.
     """
 
     name: str
@@ -41,6 +82,7 @@ class CLIFamily:
     env_var: str
     aliases: tuple[str, ...] = ()
     is_planner: bool = True
+    env_bridge: EnvBridge | None = None
 
 
 CLI_FAMILIES: dict[str, CLIFamily] = {
@@ -49,18 +91,36 @@ CLI_FAMILIES: dict[str, CLIFamily] = {
         provider_key="claude",
         env_var="CODEPILOT_CLAUDE_CMD",
         aliases=("claude-code", "anthropic-claude"),
+        env_bridge=EnvBridge(
+            family_name="claude",
+            target_var="ANTHROPIC_API_KEY",
+            source_providers=ANTHROPIC_PROVIDER_KEYS,
+            native_auth_paths=(_claude_auth_path,),
+        ),
     ),
     "codex": CLIFamily(
         name="codex",
         provider_key="codex",
         env_var="CODEPILOT_CODEX_CMD",
         aliases=("openai-codex",),
+        env_bridge=EnvBridge(
+            family_name="codex",
+            target_var="OPENAI_API_KEY",
+            source_providers=OPENAI_PROVIDER_KEYS,
+            native_auth_paths=(_codex_auth_path,),
+        ),
     ),
     "opencode": CLIFamily(
         name="opencode",
         provider_key="opencode",
         env_var="CODEPILOT_OPENCODE_CMD",
         aliases=("oc", "open-code"),
+        env_bridge=EnvBridge(
+            family_name="opencode",
+            target_var="",
+            source_providers="smart_pick",
+            native_auth_paths=(_opencode_auth_path, _opencode_legacy_auth_path),
+        ),
     ),
 }
 

@@ -6,11 +6,40 @@ from codepilot.ai_support.family_runtime import (
     FamilyRuntimeUnavailable,
     build_env_for_family,
 )
+from codepilot.ai_support.cli_families import get_family
 from codepilot.core.config import AgentsConfig
 
 
 def _cfg(providers: dict[str, dict[str, str | bool | int]]) -> AgentsConfig:
     return AgentsConfig.from_dict({"providers": providers})
+
+
+def test_cli_families_declare_env_bridge_config():
+    claude = get_family("claude")
+    codex = get_family("codex")
+    opencode = get_family("opencode")
+
+    assert claude is not None
+    assert claude.env_bridge is not None
+    assert claude.env_bridge.target_var == "ANTHROPIC_API_KEY"
+    assert set(claude.env_bridge.source_providers) == {
+        "claude-opus",
+        "claude-sonnet",
+        "claude-haiku",
+    }
+
+    assert codex is not None
+    assert codex.env_bridge is not None
+    assert codex.env_bridge.target_var == "OPENAI_API_KEY"
+    assert set(codex.env_bridge.source_providers) == {
+        "openai-gpt4o",
+        "openai-gpt4",
+        "openai-gpt35",
+    }
+
+    assert opencode is not None
+    assert opencode.env_bridge is not None
+    assert opencode.env_bridge.source_providers == "smart_pick"
 
 
 def test_native_auth_file_takes_priority_over_config_key(tmp_path, monkeypatch):
