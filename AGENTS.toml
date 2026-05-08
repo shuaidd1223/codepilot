@@ -15,6 +15,41 @@ opencode = "opencode"
 task_workspace = "direct"
 per_task_branch = false
 
+[automation.scheduled_agents.todo_sweep]
+enabled = false
+agent = "codex"
+interval = "10m"
+prompt = "Scan TODO comments and propose focused follow-up tasks."
+max_cost_usd = 0.10
+max_daily_cost_usd = 0.50
+
+[automation.scheduled_agents.hourly_health]
+enabled = false
+agent = "claude"
+interval = "1h"
+prompt = "Review failed tasks and project health signals."
+max_cost_usd = 0.20
+max_daily_cost_usd = 1.00
+
+[automation.scheduled_agents.daily_backlog]
+enabled = false
+agent = "codex"
+schedule = "0 9 * * *"
+prompt = """
+Review the backlog.
+Suggest the highest-impact next task.
+"""
+max_cost_usd = 0.30
+max_daily_cost_usd = 1.50
+
+[automation.event_agents.failed_task_triage]
+enabled = false
+trigger = "task.failed"
+agent = "codex"
+prompt = "Task {{ task.id }} failed with {{ task.error }}. Suggest the smallest repair."
+max_cost_usd = 0.10
+max_daily_cost_usd = 0.50
+
 [inspect]
 signals = ["git_log", "failed_tasks", "todos", "deps", "ruff", "pytest", "code_metrics"]
 

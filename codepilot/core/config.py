@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from collections.abc import Mapping
 from copy import deepcopy
@@ -37,6 +38,13 @@ DEFAULT_AGENT_COMMANDS: dict[str, str] = {
 }
 DEFAULT_FALLBACK_CLI_ORDER: list[str] = ["claude", "codex", "opencode"]
 LEGACY_AGENT_COMMAND_KEYS: tuple[str, ...] = ("codex_cmd", "claude_cmd")
+INTERVAL_PATTERN = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
+INTERVAL_MULTIPLIERS: dict[str, int] = {
+    "s": 1,
+    "m": 60,
+    "h": 3600,
+    "d": 86400,
+}
 AGENT_COMMANDS_MIGRATION_HINT = (
     "[agents] codex_cmd / claude_cmd 已被移除，改用 [agents.commands] 映射。"
     "示例：\n\n"
@@ -93,6 +101,111 @@ def _parse_fallback_cli_order(raw: object) -> list[str]:
         )
     cleaned = [str(item).strip() for item in raw if str(item or "").strip()]
     return cleaned or list(DEFAULT_FALLBACK_CLI_ORDER)
+
+
+def _required_config_text(raw: object, path: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        raise ConfigError(f"{path} 必须配置非空字符串。")
+    return text
+
+
+def _optional_config_text(raw: object) -> Optional[str]:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
+def _parse_interval_seconds(raw: object, path: str) -> int:
+    text = _required_config_text(raw, path)
+    match = INTERVAL_PATTERN.match(text)
+    if not match:
+        raise ConfigError(
+            f"{path} 必须使用 10m、1h、1d 这类 interval 格式。"
+        )
+    value = int(match.group(1))
+    if value <= 0:
+        raise ConfigError(f"{path} 必须大于 0。")
+    unit = match.group(2).lower()
+    return value * INTERVAL_MULTIPLIERS[unit]
+
+
+def _parse_optional_cost(raw: object, path: str) -> Optional[float]:
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{path} 必须是非负数字。") from exc
+    if value < 0:
+        raise ConfigError(f"{path} 必须是非负数字。")
+    return value
+
+
+def _parse_named_config_table(raw: object, path: str) -> dict[str, Mapping[str, object]]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ConfigError(f"[{path}] 必须是 TOML table。")
+
+    parsed: dict[str, Mapping[str, object]] = {}
+    for raw_name, raw_cfg in raw.items():
+        name = str(raw_name).strip()
+        if not name:
+            raise ConfigError(f"[{path}] 包含空名称。")
+        if not isinstance(raw_cfg, Mapping):
+            raise ConfigError(f"[{path}.{name}] 必须是 TOML table。")
+        parsed[name] = raw_cfg
+    return parsed
+
+
+def _parse_scheduled_agents(raw: object) -> dict[str, "ScheduledAgentConfig"]:
+    parsed: dict[str, ScheduledAgentConfig] = {}
+    for name, cfg in _parse_named_config_table(raw, "automation.scheduled_agents").items():
+        path = f"automation.scheduled_agents.{name}"
+        agent = _required_config_text(cfg.get("agent"), f"{path}.agent")
+        prompt = _required_config_text(cfg.get("prompt"), f"{path}.prompt")
+        interval = _optional_config_text(cfg.get("interval"))
+        schedule = _optional_config_text(cfg.get("schedule"))
+        if not interval and not schedule:
+            raise ConfigError(f"{path} 必须配置 interval 或 schedule。")
+        parsed[name] = ScheduledAgentConfig(
+            enabled=bool(cfg.get("enabled", True)),
+            agent=agent,
+            prompt=prompt,
+            interval=interval,
+            interval_seconds=(
+                _parse_interval_seconds(interval, f"{path}.interval")
+                if interval is not None
+                else None
+            ),
+            schedule=schedule,
+            max_cost_usd=_parse_optional_cost(cfg.get("max_cost_usd"), f"{path}.max_cost_usd"),
+            max_daily_cost_usd=_parse_optional_cost(
+                cfg.get("max_daily_cost_usd"),
+                f"{path}.max_daily_cost_usd",
+            ),
+        )
+    return parsed
+
+
+def _parse_event_agents(raw: object) -> dict[str, "EventAgentConfig"]:
+    parsed: dict[str, EventAgentConfig] = {}
+    for name, cfg in _parse_named_config_table(raw, "automation.event_agents").items():
+        path = f"automation.event_agents.{name}"
+        parsed[name] = EventAgentConfig(
+            enabled=bool(cfg.get("enabled", True)),
+            trigger=_required_config_text(cfg.get("trigger"), f"{path}.trigger"),
+            agent=_required_config_text(cfg.get("agent"), f"{path}.agent"),
+            prompt=_required_config_text(cfg.get("prompt"), f"{path}.prompt"),
+            max_cost_usd=_parse_optional_cost(cfg.get("max_cost_usd"), f"{path}.max_cost_usd"),
+            max_daily_cost_usd=_parse_optional_cost(
+                cfg.get("max_daily_cost_usd"),
+                f"{path}.max_daily_cost_usd",
+            ),
+        )
+    return parsed
 
 
 def _normalize_optional_agent_name(value: object) -> Optional[str]:
@@ -158,6 +271,30 @@ class DispatchConfig:
 
 
 @dataclass
+class ScheduledAgentConfig:
+    """[automation.scheduled_agents.<name>] 定时智能体配置."""
+    enabled: bool = True
+    agent: str = ""
+    prompt: str = ""
+    interval: Optional[str] = None
+    interval_seconds: Optional[int] = None
+    schedule: Optional[str] = None
+    max_cost_usd: Optional[float] = None
+    max_daily_cost_usd: Optional[float] = None
+
+
+@dataclass
+class EventAgentConfig:
+    """[automation.event_agents.<name>] 事件触发智能体配置."""
+    enabled: bool = True
+    trigger: str = ""
+    agent: str = ""
+    prompt: str = ""
+    max_cost_usd: Optional[float] = None
+    max_daily_cost_usd: Optional[float] = None
+
+
+@dataclass
 class AutomationConfig:
     """[automation] 自动规划和执行配置."""
     planner: str = "codex"
@@ -188,6 +325,8 @@ class AutomationConfig:
     # 文本模式 CLI 兜底顺序：缺失或不可用时按此列表向后退。
     # 默认 ["claude", "codex", "opencode"]，opencode 作为最终兜底（用已配 API key）。
     fallback_cli_order: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_CLI_ORDER))
+    scheduled_agents: dict[str, ScheduledAgentConfig] = field(default_factory=dict)
+    event_agents: dict[str, EventAgentConfig] = field(default_factory=dict)
 
 
 @dataclass
@@ -283,6 +422,8 @@ class AgentsConfig:
         providers = data.get("providers", {})
         commands_map = _parse_agent_commands(agents.get("commands"))
         fallback_cli_order = _parse_fallback_cli_order(automation.get("fallback_cli_order"))
+        scheduled_agents = _parse_scheduled_agents(automation.get("scheduled_agents"))
+        event_agents = _parse_event_agents(automation.get("event_agents"))
 
         # 解析 providers
         providers_config = {}
@@ -342,6 +483,8 @@ class AgentsConfig:
                 max_review_rounds=automation.get("max_review_rounds", 2),
                 agent_silence_timeout_seconds=automation.get("agent_silence_timeout_seconds", 0),
                 fallback_cli_order=fallback_cli_order,
+                scheduled_agents=scheduled_agents,
+                event_agents=event_agents,
             ),
             classifier=ClassifierConfig(
                 provider=classifier.get("provider", ""),
