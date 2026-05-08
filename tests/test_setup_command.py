@@ -165,6 +165,6 @@ planner = "claude"
     parsed = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
     assert parsed["project"]["name"] == "legacy"
     assert parsed["project"]["base_branch"] == "main"
-    assert parsed["agents"]["codex_cmd"] == "codex"
+    assert parsed["agents"]["commands"]["codex"] == "codex"
     assert parsed["automation"]["planner"] == "claude"
     assert "inspect" in parsed

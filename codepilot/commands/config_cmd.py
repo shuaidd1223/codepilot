@@ -63,6 +63,31 @@ def _optional_string(value: Any) -> str | None:
     return text or None
 
 
+def _agent_commands(raw: Any) -> dict[str, str]:
+    """Canonicalize the [agents.commands] map, applying defaults for missing families."""
+    merged = dict(config_mod.DEFAULT_AGENT_COMMANDS)
+    if isinstance(raw, dict):
+        for family, value in raw.items():
+            family_name = str(family).strip()
+            if not family_name:
+                continue
+            cmd = _string(value, "").strip()
+            if cmd:
+                merged[family_name] = cmd
+    return merged
+
+
+def _fallback_cli_order(raw: Any) -> list[str]:
+    """Canonicalize automation.fallback_cli_order. String -> 1-element list. Empty -> defaults."""
+    if isinstance(raw, str):
+        text = raw.strip()
+        return [text] if text else list(config_mod.DEFAULT_FALLBACK_CLI_ORDER)
+    if isinstance(raw, (list, tuple)):
+        cleaned = [str(item).strip() for item in raw if str(item or "").strip()]
+        return cleaned or list(config_mod.DEFAULT_FALLBACK_CLI_ORDER)
+    return list(config_mod.DEFAULT_FALLBACK_CLI_ORDER)
+
+
 def _supported_provider(raw: Any) -> dict[str, Any] | None:
     if isinstance(raw, bool):
         return {
@@ -180,8 +205,7 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
             "bash_path": _string(shell.get("bash_path"), ""),
         },
         "agents": {
-            "codex_cmd": _string(agents.get("codex_cmd"), "codex"),
-            "claude_cmd": _string(agents.get("claude_cmd"), "claude"),
+            "commands": _agent_commands(agents.get("commands")),
             "planner": _string(agents.get("planner"), ""),
             "builder": _string(agents.get("builder"), ""),
             "reviewer": _string(agents.get("reviewer"), ""),
@@ -211,6 +235,7 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
                 0,
                 min_value=0,
             ),
+            "fallback_cli_order": _fallback_cli_order(automation.get("fallback_cli_order")),
         },
         "classifier": {
             "provider": _string(classifier.get("provider"), ""),
@@ -267,6 +292,10 @@ SECTION_COMMENTS: dict[str, list[str]] = {
     "agents": [
         "本地 CLI Agent 配置。planner/builder/reviewer 留空时使用对应场景默认值。",
     ],
+    "agents.commands": [
+        "CLI family 命令映射。键为 family 名（claude/codex/opencode 等），值为命令或绝对路径。",
+        "缺失项默认使用同名命令。",
+    ],
     "dispatch": [
         "外部 dispatch 执行器配置。builtin 执行器也会读取 stale_minutes 等通用超时语义。",
     ],
@@ -301,8 +330,6 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("shell", "preferred"): ["auto / powershell / pwsh / powershell7 / bash / zsh / sh。"],
     ("shell", "powershell_path"): ["自定义 PowerShell 可执行文件路径；留空表示自动查找。"],
     ("shell", "bash_path"): ["自定义 Bash 可执行文件路径；留空表示自动查找。"],
-    ("agents", "codex_cmd"): ["Codex CLI 命令名或完整路径。"],
-    ("agents", "claude_cmd"): ["Claude CLI 命令名或完整路径。"],
     ("agents", "planner"): ["通用规划器；留空时使用场景默认值。"],
     ("agents", "builder"): ["dual 模式 builder；留空时默认 codex。"],
     ("agents", "reviewer"): ["dual 模式 reviewer；留空时默认 claude。"],
@@ -324,6 +351,7 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("automation", "clarify_max_turns"): ["最多澄清轮数，达到后按当前信息规划。"],
     ("automation", "max_review_rounds"): ["Builder/Reviewer 闭环最大轮数；1 等于关闭闭环。"],
     ("automation", "agent_silence_timeout_seconds"): ["CLI 连续无输出多少秒后终止；0 表示关闭保护。"],
+    ("automation", "fallback_cli_order"): ["文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。"],
     ("classifier", "provider"): ["API provider key，例如 openai-gpt4o、claude-sonnet、deepseek；留空走本地 CLI。"],
     ("classifier", "model"): ["覆盖分类/问答/澄清模型；留空使用 provider.model。"],
     ("classifier", "enabled"): ["false 时跳过意图分类，输入默认当作需求处理。"],
@@ -409,6 +437,22 @@ def _append_comments(lines: list[str], comments: list[str]) -> None:
 
 
 def _emit_section(lines: list[str], title: str, values: dict[str, Any]) -> None:
+    _append_comments(lines, SECTION_COMMENTS.get(title, []))
+    lines.append(f"[{title}]")
+    nested: list[tuple[str, dict[str, Any]]] = []
+    for key, value in values.items():
+        if isinstance(value, dict):
+            nested.append((key, value))
+            continue
+        _append_comments(lines, KEY_COMMENTS.get((title, key), []))
+        lines.append(f"{key} = {_toml_value(value)}")
+    lines.append("")
+    for sub_key, sub_values in nested:
+        _emit_subtable(lines, f"{title}.{sub_key}", sub_values)
+
+
+def _emit_subtable(lines: list[str], title: str, values: dict[str, Any]) -> None:
+    """Emit a nested TOML sub-table, e.g. [agents.commands]."""
     _append_comments(lines, SECTION_COMMENTS.get(title, []))
     lines.append(f"[{title}]")
     for key, value in values.items():

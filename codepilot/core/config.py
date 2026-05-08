@@ -26,6 +26,75 @@ SECRETS_PATH_ENV = "CODEPILOT_SECRETS_PATH"
 GLOBAL_CONFIG_PATH_ENV = "CODEPILOT_GLOBAL_CONFIG_PATH"
 
 
+class ConfigError(ValueError):
+    """Raised when AGENTS.toml uses an unsupported or invalid shape."""
+
+
+DEFAULT_AGENT_COMMANDS: dict[str, str] = {
+    "claude": "claude",
+    "codex": "codex",
+    "opencode": "opencode",
+}
+DEFAULT_FALLBACK_CLI_ORDER: list[str] = ["claude", "codex", "opencode"]
+LEGACY_AGENT_COMMAND_KEYS: tuple[str, ...] = ("codex_cmd", "claude_cmd")
+AGENT_COMMANDS_MIGRATION_HINT = (
+    "[agents] codex_cmd / claude_cmd 已被移除，改用 [agents.commands] 映射。"
+    "示例：\n\n"
+    "[agents.commands]\n"
+    'claude = "claude"\n'
+    'codex = "codex"\n'
+    'opencode = "opencode"\n\n'
+    "[automation]\n"
+    'fallback_cli_order = ["claude", "codex", "opencode"]\n'
+)
+
+
+def _check_legacy_agent_command_keys(agents_section: Mapping[str, object]) -> None:
+    """Raise ConfigError when the loaded config still uses the old scalar keys."""
+    legacy_present = [k for k in LEGACY_AGENT_COMMAND_KEYS if k in agents_section]
+    if not legacy_present:
+        return
+    raise ConfigError(
+        "AGENTS.toml 含已废弃字段：" + ", ".join(legacy_present) + "。\n"
+        + AGENT_COMMANDS_MIGRATION_HINT
+    )
+
+
+def _parse_agent_commands(raw: object) -> dict[str, str]:
+    """Parse the `[agents.commands]` table into a dict, applying defaults."""
+    merged = dict(DEFAULT_AGENT_COMMANDS)
+    if raw is None:
+        return merged
+    if not isinstance(raw, Mapping):
+        raise ConfigError(
+            "[agents.commands] 必须是表/字典；请使用 `[agents.commands]` 子表格式。"
+        )
+    for family, value in raw.items():
+        family_name = str(family).strip()
+        if not family_name:
+            continue
+        cmd = str(value or "").strip()
+        if cmd:
+            merged[family_name] = cmd
+    return merged
+
+
+def _parse_fallback_cli_order(raw: object) -> list[str]:
+    """Parse `[automation].fallback_cli_order` with sane defaults."""
+    if raw is None:
+        return list(DEFAULT_FALLBACK_CLI_ORDER)
+    if isinstance(raw, str):
+        # Single string is allowed as a one-element order.
+        return [raw.strip()] if raw.strip() else list(DEFAULT_FALLBACK_CLI_ORDER)
+    if not isinstance(raw, (list, tuple)):
+        raise ConfigError(
+            "[automation].fallback_cli_order 必须是字符串列表，例如 "
+            '["claude", "codex", "opencode"]。'
+        )
+    cleaned = [str(item).strip() for item in raw if str(item or "").strip()]
+    return cleaned or list(DEFAULT_FALLBACK_CLI_ORDER)
+
+
 def _normalize_optional_agent_name(value: object) -> Optional[str]:
     """Normalize an optional agent name from ``[agents]`` config values."""
     if value is None:
@@ -113,9 +182,12 @@ class AutomationConfig:
     # Builder-Reviewer 闭环最大轮数。reviewer 判 FAIL 时, builder 拿 reviewer
     # 反馈再做一次, 循环最多这么多轮。设为 1 等于关闭闭环（老行为）。
     max_review_rounds: int = 2
-    # 子进程 (codex / claude CLI) 连续多少秒没有新输出就认为卡死并 kill，
-    # 0 表示关闭该保护。默认关闭以避免误杀慢任务；运维 daemon 可以按需开启。
+    # 子进程 (codex / claude / opencode CLI) 连续多少秒没有新输出就认为卡死并
+    # kill，0 表示关闭该保护。默认关闭以避免误杀慢任务；运维 daemon 可以按需开启。
     agent_silence_timeout_seconds: int = 0
+    # 文本模式 CLI 兜底顺序：缺失或不可用时按此列表向后退。
+    # 默认 ["claude", "codex", "opencode"]，opencode 作为最终兜底（用已配 API key）。
+    fallback_cli_order: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_CLI_ORDER))
 
 
 @dataclass
@@ -179,8 +251,8 @@ class AgentsConfig:
     planner: Optional[str] = None
     builder: Optional[str] = None
     reviewer: Optional[str] = None
-    codex_cmd: str = "codex"
-    claude_cmd: str = "claude"
+    # CLI family 命令名/路径映射；旧版 codex_cmd/claude_cmd 标量已移除。
+    commands: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_AGENT_COMMANDS))
     interval_seconds: int = 600
     stale_minutes: int = 30
     webhook_url: str = ""
@@ -199,7 +271,8 @@ class AgentsConfig:
     def from_dict(cls, data: dict, config_file_path: Optional[str] = None) -> "AgentsConfig":
         """从字典加载配置."""
         proj = data.get("project", {})
-        agents = data.get("agents", {})
+        agents = data.get("agents", {}) or {}
+        _check_legacy_agent_command_keys(agents)
         dispatch = data.get("dispatch", {})
         automation = data.get("automation", {})
         classifier = data.get("classifier", {})
@@ -208,6 +281,8 @@ class AgentsConfig:
         feishu_bot = data.get("feishu_bot", {})
         shell = data.get("shell", {})
         providers = data.get("providers", {})
+        commands_map = _parse_agent_commands(agents.get("commands"))
+        fallback_cli_order = _parse_fallback_cli_order(automation.get("fallback_cli_order"))
 
         # 解析 providers
         providers_config = {}
@@ -266,6 +341,7 @@ class AgentsConfig:
                 clarify_max_turns=automation.get("clarify_max_turns", 3),
                 max_review_rounds=automation.get("max_review_rounds", 2),
                 agent_silence_timeout_seconds=automation.get("agent_silence_timeout_seconds", 0),
+                fallback_cli_order=fallback_cli_order,
             ),
             classifier=ClassifierConfig(
                 provider=classifier.get("provider", ""),
@@ -293,8 +369,7 @@ class AgentsConfig:
             planner=_normalize_optional_agent_name(agents.get("planner")),
             builder=_normalize_optional_agent_name(agents.get("builder")),
             reviewer=_normalize_optional_agent_name(agents.get("reviewer")),
-            codex_cmd=agents.get("codex_cmd", "codex"),
-            claude_cmd=agents.get("claude_cmd", "claude"),
+            commands=commands_map,
             interval_seconds=dispatch.get("interval_seconds", 600),
             stale_minutes=dispatch.get("stale_minutes", 30),
             webhook_url=notifications.get("webhook_url", ""),
@@ -309,6 +384,15 @@ class AgentsConfig:
             feishu_command_prefix=str(feishu_bot.get("command_prefix", "") or ""),
             config_file_path=config_file_path,
         )
+
+    def command_for(self, family: str) -> str:
+        """Resolve a CLI family name to its configured command/path.
+
+        Falls back to the family name itself when not configured, so callers can
+        rely on a non-empty string and ``which``/``shutil.which`` will surface
+        the missing-binary case downstream.
+        """
+        return (self.commands.get(family, "") or family).strip() or family
 
     def get_provider_api_key(self, provider_name: str) -> Optional[str]:
         """获取 Provider 的 API Key，优先级：配置 > 环境变量."""
@@ -537,6 +621,8 @@ def load_config(config_path: Optional[Path] = None) -> Optional[AgentsConfig]:
 
     try:
         return AgentsConfig.from_dict(data, config_file_path=str(config_path))
+    except ConfigError:
+        raise
     except Exception:
         return None
 
@@ -712,6 +798,8 @@ def load_project_config(
 
     try:
         config = AgentsConfig.from_dict(merged, config_file_path=config_file_path)
+    except ConfigError:
+        raise
     except Exception:
         return None
 
@@ -764,15 +852,18 @@ preferred = "auto"
 # bash_path = "/usr/local/bin/bash"
 
 [agents]
-# CLI Agent 命令配置
-codex_cmd = "codex"
-claude_cmd = "claude"
 # 通用规划器；留空时使用场景默认值
 planner = ""
 # dual 模式 builder；留空时默认 codex
 builder = ""
 # dual 模式 reviewer；留空时默认 claude
 reviewer = ""
+
+[agents.commands]
+# CLI family -> 命令名/绝对路径。OpenCode 作为兜底，会按已配 provider key 自动选择 backend。
+claude = "claude"
+codex = "codex"
+opencode = "opencode"
 
 [dispatch]
 # task-dispatch 脚本路径（留空时先查 ~/.codepilot/data/<project>/scripts/，再查包内置脚本）
@@ -816,6 +907,8 @@ clarify_max_turns = 3
 max_review_rounds = 2
 # 子进程连续多少秒没有新输出就认为卡死并终止；0 表示关闭
 agent_silence_timeout_seconds = 0
+# 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。
+fallback_cli_order = ["claude", "codex", "opencode"]
 
 [classifier]
 # 意图分类器配置；provider 留空则走本地 CLI 兜底
@@ -934,9 +1027,10 @@ base_branch = "dev"
 default_mode = "dual"
 worktree_base = ""
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+claude = "claude"
+codex = "codex"
+opencode = "opencode"
 
 [dispatch]
 dispatch_path = ""

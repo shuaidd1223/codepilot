@@ -100,9 +100,11 @@ preferred = "pwsh"
 unused = true
 
 [agents]
-codex_cmd = "codex-custom"
 planner = "claude"
 unknown_agent = "x"
+
+[agents.commands]
+codex = "codex-custom"
 
 [automation]
 planner = "claude"
@@ -149,7 +151,7 @@ extra = "drop"
     assert parsed["project"]["base_branch"] == "main"
     assert parsed["project"]["default_mode"] == "dual"
     assert parsed["shell"]["preferred"] == "pwsh"
-    assert parsed["agents"]["codex_cmd"] == "codex-custom"
+    assert parsed["agents"]["commands"]["codex"] == "codex-custom"
     assert parsed["agents"]["planner"] == "claude"
     assert parsed["automation"]["planner"] == "claude"
     assert parsed["automation"]["task_agent"] == "dual"

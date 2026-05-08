@@ -201,7 +201,7 @@ def test_run_backlog_builtin_dirty_workspace_requeues_without_retry(tmp_path, mo
     assert "未提交改动" in (current["error_message"] or "")
 
 
-def test_generate_task_content_uses_project_configured_codex_cmd(tmp_path, monkeypatch):
+def test_generate_task_content_uses_project_configured_codex_command(tmp_path, monkeypatch):
     project_path = tmp_path / "project"
     project_path.mkdir()
     fake_codex = tmp_path / "tools" / "codex.cmd"
@@ -212,8 +212,8 @@ def test_generate_task_content_uses_project_configured_codex_cmd(tmp_path, monke
 [project]
 name = "demo"
 
-[agents]
-codex_cmd = "{fake_codex.as_posix()}"
+[agents.commands]
+codex = "{fake_codex.as_posix()}"
 """.strip(),
         encoding="utf-8",
     )
@@ -239,7 +239,7 @@ codex_cmd = "{fake_codex.as_posix()}"
     assert "实现一个自动重试机制" in captured["prompt"]
 
 
-def test_run_builtin_phase_uses_project_configured_codex_cmd(monkeypatch, tmp_path):
+def test_run_builtin_phase_uses_project_configured_codex_command(monkeypatch, tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()
     fake_codex = tmp_path / "tools" / "codex.cmd"
@@ -250,8 +250,8 @@ def test_run_builtin_phase_uses_project_configured_codex_cmd(monkeypatch, tmp_pa
 [project]
 name = "demo"
 
-[agents]
-codex_cmd = "{fake_codex.as_posix()}"
+[agents.commands]
+codex = "{fake_codex.as_posix()}"
 """.strip(),
         encoding="utf-8",
     )

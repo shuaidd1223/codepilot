@@ -562,11 +562,8 @@ def _configured_cli_command(provider_key: str, project_path: str | Path | dict |
     cfg = _load_project_config(project_path)
     if not cfg:
         return ""
-    if provider_key == "codex":
-        return (cfg.codex_cmd or "").strip()
-    if provider_key == "claude":
-        return (cfg.claude_cmd or "").strip()
-    return ""
+    configured = (cfg.commands.get(provider_key, "") or "").strip()
+    return configured
 
 
 def resolve_cli_provider(provider_key: str, project_path: str | Path | dict | None = None) -> CLIProvider:

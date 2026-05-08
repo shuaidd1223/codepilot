@@ -63,9 +63,9 @@ def test_check_api_keys_default_config_marks_missing_keys_optional(_isolate_sour
 name = "demo"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+codex = "codex"
+claude = "claude"
 
 [automation]
 planner = "codex"
@@ -90,9 +90,9 @@ def test_check_api_keys_classifier_enabled_requires_its_provider_bucket(_isolate
 name = "demo"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+codex = "codex"
+claude = "claude"
 
 [automation]
 planner = "codex"
@@ -121,9 +121,9 @@ def test_check_api_keys_disabled_classifier_does_not_require_provider_bucket(_is
 name = "demo"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+codex = "codex"
+claude = "claude"
 
 [automation]
 planner = "codex"
@@ -151,9 +151,9 @@ def test_check_api_keys_ignores_non_cli_planner_values_for_requiredness(_isolate
 name = "demo"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+codex = "codex"
+claude = "claude"
 
 [automation]
 planner = "openai-gpt4o"
@@ -183,9 +183,9 @@ def test_check_api_keys_mixed_bucket_stays_non_green_when_only_one_provider_has_
 name = "demo"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+codex = "codex"
+claude = "claude"
 
 [automation]
 planner = "codex"
@@ -354,9 +354,9 @@ def test_doctor_project_json_includes_project_and_service_checks(_isolate_source
 name = "demo"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+codex = "codex"
+claude = "claude"
 
 [automation]
 planner = "codex"
@@ -385,9 +385,9 @@ def test_doctor_services_json_reports_stale_service_state(_isolate_sources, monk
 name = "demo"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+codex = "codex"
+claude = "claude"
 
 [automation]
 planner = "codex"
@@ -420,9 +420,9 @@ def test_doctor_warns_when_feishu_enabled_without_secret(_isolate_sources, monke
 name = "demo"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+codex = "codex"
+claude = "claude"
 
 [automation]
 planner = "codex"
@@ -518,9 +518,9 @@ def test_doctor_project_json_emits_doctor_checked_event_to_enabled_sink(_isolate
 name = "demo"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+codex = "codex"
+claude = "claude"
 
 [automation]
 planner = "codex"
@@ -574,9 +574,9 @@ def test_doctor_project_json_does_not_write_disabled_default_sink(_isolate_sourc
 name = "demo"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+codex = "codex"
+claude = "claude"
 
 [automation]
 planner = "codex"

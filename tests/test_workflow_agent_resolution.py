@@ -133,8 +133,10 @@ name = "demo"
 [agents]
 builder = "   "
 reviewer = ""
-codex_cmd = "codex"
-claude_cmd = "claude"
+
+[agents.commands]
+codex = "codex"
+claude = "claude"
 """.strip(),
         encoding="utf-8",
     )
@@ -144,6 +146,6 @@ claude_cmd = "claude"
     assert cfg is not None
     assert cfg.builder is None
     assert cfg.reviewer is None
-    assert cfg.codex_cmd == "codex"
-    assert cfg.claude_cmd == "claude"
+    assert cfg.commands["codex"] == "codex"
+    assert cfg.commands["claude"] == "claude"
 

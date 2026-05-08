@@ -5,9 +5,10 @@
 name = "codepilot-dev"
 base_branch = "dev"
 
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
+[agents.commands]
+claude = "claude"
+codex = "codex"
+opencode = "opencode"
 
 # 当前项目任务直接在主工作目录执行，不为每个任务新建分支或 worktree。
 [automation]
