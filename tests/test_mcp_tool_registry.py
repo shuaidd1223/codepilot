@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import pytest
+
+from codepilot.mcp.protocol import (
+    CodePilotToolError,
+    ProgressEvent,
+    normalize_progress_event,
+)
+from codepilot.mcp.tool_registry import ToolRegistry, register_tool
+
+
+def test_register_tool_builds_schema_from_annotations():
+    registry = ToolRegistry()
+
+    @register_tool(registry=registry)
+    def add_project_note(project: str, urgent: bool = False) -> dict[str, str]:
+        """Add a short note to a project."""
+        return {"project": project, "urgent": str(urgent)}
+
+    tool = registry.get("add_project_note")
+
+    assert tool.func is add_project_note
+    assert tool.schema["name"] == "add_project_note"
+    assert tool.schema["description"] == "Add a short note to a project."
+    assert tool.schema["inputSchema"] == {
+        "type": "object",
+        "properties": {
+            "project": {"type": "string"},
+            "urgent": {"type": "boolean", "default": False},
+        },
+        "required": ["project"],
+        "additionalProperties": False,
+    }
+    assert tool.schema["outputSchema"] == {
+        "type": "object",
+        "additionalProperties": {"type": "string"},
+    }
+
+
+def test_register_tool_rejects_missing_parameter_annotation():
+    registry = ToolRegistry()
+
+    with pytest.raises(TypeError, match="project"):
+
+        @register_tool(registry=registry)
+        def invalid_tool(project) -> str:
+            return str(project)
+
+
+def test_register_tool_rejects_unsupported_annotation():
+    registry = ToolRegistry()
+
+    with pytest.raises(TypeError, match="tags"):
+
+        @register_tool(registry=registry)
+        def invalid_tool(tags: set[str]) -> str:
+            return ",".join(tags)
+
+
+def test_codepilot_tool_error_serializes_for_mcp_tool_response():
+    error = CodePilotToolError(
+        "project not found",
+        code="project_missing",
+        details={"project": "demo"},
+    )
+
+    assert error.to_tool_response() == {
+        "isError": True,
+        "content": [{"type": "text", "text": "project not found"}],
+        "structuredContent": {
+            "error": {
+                "code": "project_missing",
+                "message": "project not found",
+                "details": {"project": "demo"},
+            }
+        },
+    }
+
+
+def test_progress_events_are_normalized_from_yielded_values():
+    direct = ProgressEvent(message="starting", progress=0, total=3)
+    from_mapping = {"message": "running", "progress": 1, "total": 3, "data": {"phase": "scan"}}
+    from_text = "finishing"
+
+    assert normalize_progress_event(direct) is direct
+    assert normalize_progress_event(from_mapping).to_dict() == {
+        "type": "progress",
+        "message": "running",
+        "progress": 1,
+        "total": 3,
+        "data": {"phase": "scan"},
+    }
+    assert normalize_progress_event(from_text).to_dict() == {
+        "type": "progress",
+        "message": "finishing",
+    }

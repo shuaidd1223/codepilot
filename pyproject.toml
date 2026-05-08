@@ -10,6 +10,7 @@ keywords = ["automation", "workflow", "claude", "codex", "ai"]
 
 dependencies = [
     "click>=8.1.0",
+    "mcp>=1.27.1",
     "rich>=13.0.0",
     "pydantic>=2.7.0",
     "tomli>=2.0.1; python_version < '3.11'",
