@@ -128,8 +128,19 @@ def test_inspect_project_returns_serializable_signal_results(tmp_path, monkeypat
 
     from codepilot.commands import inspect as inspect_cmd
 
-    monkeypatch.setattr(inspect_cmd, "collect_git_log", lambda *_: "git-log")
-    monkeypatch.setattr(inspect_cmd, "collect_failed_tasks", lambda *_: "failed-tasks")
+    captured: dict[str, Any] = {}
+
+    def _fake_collect(project_name, path, *, signals):
+        captured["project_name"] = project_name
+        captured["path"] = path
+        captured["signals"] = signals
+        return {
+            "git_log": "git-log",
+            "failed_tasks": "failed-tasks",
+            "todos": "（跳过）",
+        }
+
+    monkeypatch.setattr(inspect_cmd, "collect_inspection_signals", _fake_collect)
 
     result = server.call_tool(
         "inspect_project",
@@ -137,10 +148,47 @@ def test_inspect_project_returns_serializable_signal_results(tmp_path, monkeypat
     )
 
     assert result["project"] == "demo"
+    assert result["project_path"] == str(project_path.resolve())
+    assert captured == {
+        "project_name": "demo",
+        "path": project_path,
+        "signals": ("git_log", "failed_tasks"),
+    }
+    assert result["signal_summary"] == {
+        "requested": ["git_log", "failed_tasks"],
+        "returned": 3,
+        "enabled": ["git_log", "failed_tasks"],
+        "errors": [],
+    }
+    assert result["errors"] == []
     enabled = {item["key"]: item for item in result["signals"] if item["enabled"]}
     assert enabled["git_log"]["content"] == "git-log"
     assert enabled["failed_tasks"]["content"] == "failed-tasks"
     assert all(isinstance(item, dict) for item in result["signals"])
+
+
+def test_inspect_project_returns_structured_error_on_inspect_failure(tmp_path, monkeypatch):
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _context_server(project_path)
+
+    from codepilot.commands import inspect as inspect_cmd
+
+    def _fail_collect(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(inspect_cmd, "collect_inspection_signals", _fail_collect)
+
+    result = server.call_tool(
+        "inspect_project",
+        {"project": "demo", "signals": ["git_log"]},
+    )
+
+    assert _error_code(result) == "inspect_error"
+    assert result["structuredContent"]["error"]["details"] == {
+        "project": "demo",
+        "project_path": str(project_path.resolve()),
+        "signals": ["git_log"],
+    }
 
 
 def test_hook_trigger_uses_existing_project_hook_path(tmp_path, monkeypatch):
@@ -191,6 +239,16 @@ def test_context_tools_return_structured_errors(tmp_path, monkeypatch):
         "hook_trigger",
         {"project": "demo", "provider": "bad-provider"},
     )
+    inspect_missing_arg = server.call_tool("inspect_project", {})
+    inspect_missing_project = server.call_tool(
+        "inspect_project",
+        {"project": "missing"},
+    )
+    db.register_project("broken", str(tmp_path / "missing-path"))
+    inspect_bad_path = server.call_tool(
+        "inspect_project",
+        {"project": "broken"},
+    )
 
     assert _error_code(missing) == "invalid_arguments"
     assert _error_code(wrong_type) == "invalid_arguments"
@@ -198,3 +256,6 @@ def test_context_tools_return_structured_errors(tmp_path, monkeypatch):
     assert _error_code(wiki_business) == "wiki_error"
     assert _error_code(note_business) == "note_error"
     assert _error_code(hook_business) == "hook_error"
+    assert _error_code(inspect_missing_arg) == "invalid_arguments"
+    assert _error_code(inspect_missing_project) == "project_not_found"
+    assert _error_code(inspect_bad_path) == "project_path_not_found"
