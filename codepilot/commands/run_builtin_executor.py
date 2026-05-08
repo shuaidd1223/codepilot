@@ -9,8 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from codepilot.ai_support.family_runtime import build_env_for_family
 from codepilot.ai_support.service import _get_node_modules_path, normalize_agent_name
-from codepilot.core.config import load_project_config
+from codepilot.core.config import AgentsConfig, load_project_config
 from codepilot.core.output import echo
 from codepilot.commands.reviewer_output import ReviewerVerdict, format_findings_for_builder, parse_reviewer_output
 from codepilot.commands.run_shell import PreflightSkipError
@@ -111,6 +112,38 @@ def _is_builtin_agent_tooling_failure(agent_label: str, output: str) -> bool:
             "api key",
         )
     )
+
+
+def _family_runtime_name_for_runner(runner: str) -> str:
+    """Map concrete builtin runners to the env-bridge family name."""
+    return "claude" if runner == "claude-node" else runner
+
+
+def _build_builtin_phase_env_overrides(
+    runner: str,
+    provider_ref: str | Path | dict | None,
+) -> dict[str, str]:
+    """Build the minimal env overlay for the CLI family subprocess."""
+    cfg = load_project_config(provider_ref) or AgentsConfig.from_dict({})
+    return build_env_for_family(_family_runtime_name_for_runner(runner), cfg)
+
+
+def _overlay_process_env(env_overrides: dict[str, str]) -> dict[str, Optional[str]]:
+    """Apply temporary process env overrides and return the original values."""
+    saved_env: dict[str, Optional[str]] = {}
+    for key, value in env_overrides.items():
+        saved_env[key] = os.environ.get(key)
+        os.environ[key] = value
+    return saved_env
+
+
+def _restore_process_env(saved_env: dict[str, Optional[str]]) -> None:
+    """Undo a temporary process env overlay."""
+    for key, original in saved_env.items():
+        if original is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = original
 
 
 def _expected_phase_agent_label(
@@ -227,94 +260,76 @@ def _run_builtin_phase(
         raise RuntimeError(message)
 
     console_log = output_path.with_suffix(".console.md")
-
-    if runner == "codex":
-        exe = runner_mod.resolve_cli_provider("codex", provider_ref).find_executable()
-        if not exe:
-            raise RuntimeError("当前无法使用 Codex，因为本机没有找到 `codex` 命令。")
-
-        cmd = [str(exe), "-C", str(project_path), "exec"]
-        if phase == "reviewer":
-            cmd.append("review")
-            cmd.append("--uncommitted")
-            cmd.extend(
-                [
-                    "--ephemeral",
-                    "--dangerously-bypass-approvals-and-sandbox",
-                    "-o",
-                    str(output_path),
-                ]
-            )
-        else:
-            cmd.extend(
-                [
-                    "--skip-git-repo-check",
-                    "--ephemeral",
-                    "--dangerously-bypass-approvals-and-sandbox",
-                    "-o",
-                    str(output_path),
-                    prompt,
-                ]
-            )
-        if task_id:
-            exit_code, console = runner_mod._run_command_live(
-                cmd,
-                task_id=task_id,
-                phase=heartbeat_phase,
-                log_path=console_log,
-                cwd=project_path,
-                timeout=timeout,
-                silence_timeout_seconds=silence_timeout_seconds,
-            )
-        else:
-            exit_code, console = runner_mod._run_command(cmd, cwd=project_path, timeout=timeout)
-        output = runner_mod._read_output_file(output_path) or console
-        label = "codex-review" if phase == "reviewer" else "codex"
-        return label, exit_code, output
-
-    provider = runner_mod.resolve_cli_provider(runner, provider_ref)
-    exe = provider.find_executable()
-    if not exe:
-        raise RuntimeError(message)
-
-    cmd = [str(exe)]
-    if runner == "claude-node":
-        cli_js = Path(_get_node_modules_path()) / "@anthropic-ai" / "claude-code" / "cli.js"
-        if not cli_js.exists():
-            raise RuntimeError(
-                "当前无法使用 Claude Code (Node)，因为没有找到全局安装的 "
-                "`@anthropic-ai/claude-code`。请先执行: npm install -g @anthropic-ai/claude-code"
-            )
-        cmd.append(str(cli_js))
-
-    if runner == "opencode":
-        # OpenCode is provider-agnostic; backend keys come from cfg.providers and
-        # are injected as env vars before launch. Reads prompt from stdin like claude.
-        from codepilot.ai_support.opencode_runtime import build_opencode_env
-        from codepilot.core.config import load_project_config
-
-        cfg = load_project_config(provider_ref)
-        if cfg is None:
-            raise RuntimeError(
-                "OpenCode 需要 AGENTS.toml 中的 [providers.*] 配置以选择 backend。"
-            )
-        env_overrides = build_opencode_env(cfg)
-        cmd.append("run")
-    else:
-        env_overrides = None
-        cmd.extend(["-p", "--output-format", "text", "--dangerously-skip-permissions"])
-        if model:
-            cmd.extend(["--model", model])
-
-    # OpenCode picks up its API key vars from os.environ; restore on the way out
-    # so a failed phase doesn't leak credentials to subsequent unrelated subprocesses.
-    saved_env: dict[str, Optional[str]] = {}
-    if env_overrides:
-        for k, v in env_overrides.items():
-            saved_env[k] = os.environ.get(k)
-            os.environ[k] = v
+    env_overrides = _build_builtin_phase_env_overrides(runner, provider_ref)
+    saved_env = _overlay_process_env(env_overrides)
 
     try:
+        if runner == "codex":
+            exe = runner_mod.resolve_cli_provider("codex", provider_ref).find_executable()
+            if not exe:
+                raise RuntimeError("当前无法使用 Codex，因为本机没有找到 `codex` 命令。")
+
+            cmd = [str(exe), "-C", str(project_path), "exec"]
+            if phase == "reviewer":
+                cmd.append("review")
+                cmd.append("--uncommitted")
+                cmd.extend(
+                    [
+                        "--ephemeral",
+                        "--dangerously-bypass-approvals-and-sandbox",
+                        "-o",
+                        str(output_path),
+                    ]
+                )
+            else:
+                cmd.extend(
+                    [
+                        "--skip-git-repo-check",
+                        "--ephemeral",
+                        "--dangerously-bypass-approvals-and-sandbox",
+                        "-o",
+                        str(output_path),
+                        prompt,
+                    ]
+                )
+            if task_id:
+                exit_code, console = runner_mod._run_command_live(
+                    cmd,
+                    task_id=task_id,
+                    phase=heartbeat_phase,
+                    log_path=console_log,
+                    cwd=project_path,
+                    timeout=timeout,
+                    silence_timeout_seconds=silence_timeout_seconds,
+                )
+            else:
+                exit_code, console = runner_mod._run_command(cmd, cwd=project_path, timeout=timeout)
+            output = runner_mod._read_output_file(output_path) or console
+            label = "codex-review" if phase == "reviewer" else "codex"
+            return label, exit_code, output
+
+        provider = runner_mod.resolve_cli_provider(runner, provider_ref)
+        exe = provider.find_executable()
+        if not exe:
+            raise RuntimeError(message)
+
+        cmd = [str(exe)]
+        if runner == "claude-node":
+            cli_js = Path(_get_node_modules_path()) / "@anthropic-ai" / "claude-code" / "cli.js"
+            if not cli_js.exists():
+                raise RuntimeError(
+                    "当前无法使用 Claude Code (Node)，因为没有找到全局安装的 "
+                    "`@anthropic-ai/claude-code`。请先执行: npm install -g @anthropic-ai/claude-code"
+                )
+            cmd.append(str(cli_js))
+
+        if runner == "opencode":
+            cmd.append("run")
+        else:
+            cmd.extend(["-p", "--output-format", "text", "--dangerously-skip-permissions"])
+            if model:
+                cmd.extend(["--model", model])
+
         if task_id:
             exit_code, console = runner_mod._run_command_live(
                 cmd,
@@ -329,11 +344,7 @@ def _run_builtin_phase(
         else:
             exit_code, console = runner_mod._run_command(cmd, cwd=project_path, timeout=timeout, input_text=prompt)
     finally:
-        for k, original in saved_env.items():
-            if original is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = original
+        _restore_process_env(saved_env)
     label = runner if phase == "builder" else f"{runner}-review"
     return label, exit_code, console
 
