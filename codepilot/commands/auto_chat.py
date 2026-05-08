@@ -542,14 +542,25 @@ def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRunt
 
     spinner = _Spinner("正在评估补充信息")
     spinner.__enter__()
+    streamed = {"seen": False}
+
+    def _stream_chunk(chunk: str) -> None:
+        if not chunk:
+            return
+        streamed["seen"] = True
+        click.echo(chunk, nl=False)
+
     outcome = shell.continue_pending_clarification(
         pending_state,
         answer=answer_text,
         clarify_answers=clarify_answers,
         project_info=runtime.project_info,
         planner=runtime.effective["planner"],
+        stream_callback=_stream_chunk,
     )
     spinner.__exit__(None, None, None)
+    if streamed["seen"]:
+        click.echo()
 
     transition = interpret_clarification_outcome(
         outcome,
@@ -724,12 +735,23 @@ def _dispatch_chat_requirement(
     shell = runtime.shell
     echo("[dim]阶段 2/3：正在评估需求完整度...[/dim]")
     spinner._message = "正在评估需求完整度"
+    streamed = {"seen": False}
+
+    def _stream_chunk(chunk: str) -> None:
+        if not chunk:
+            return
+        streamed["seen"] = True
+        click.echo(chunk, nl=False)
+
     assessment = shell.assess_requirement_for_planning(
         ctx.payload_text,
         project_info=runtime.project_info,
         planner=runtime.effective["planner"],
+        stream_callback=_stream_chunk,
     )
     spinner.__exit__(None, None, None)
+    if streamed["seen"]:
+        click.echo()
 
     runtime.pending_clarification = shell.clarification_state_from_assessment(
         assessment=assessment,

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import click
 
@@ -80,6 +80,7 @@ def clarify_requirement(
     qa_history: Optional[list[dict]] = None,
     planner: str = "codex",
     max_turns: int = 3,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """Assess a requirement and ask for clarification if the intent is vague.
 
@@ -117,6 +118,7 @@ def clarify_requirement(
         base_url=runtime["base_url"],
         planner=planner,
         timeout=runtime["classifier_timeout"] or 30,
+        stream_callback=stream_callback,
     )
     result["qa_history"] = qa_history
     return result
@@ -257,6 +259,7 @@ def continue_pending_clarification(
     max_turns: int = 3,
     intent: str = _DEFAULT_CLARIFICATION_INTENT,
     clarify_fn=None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """Advance one pending-clarification turn with normalized status/errors.
 
@@ -282,6 +285,7 @@ def continue_pending_clarification(
             clarify_answers=clarify_answers,
             max_turns=max_turns,
             clarify_fn=clarify_fn,
+            stream_callback=stream_callback,
         )
     except KeyboardInterrupt:
         return {
@@ -342,6 +346,7 @@ def assess_requirement_for_planning(
     clarify_answers: Optional[list[dict]] = None,
     max_turns: int = 3,
     clarify_fn=None,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """Shared entrypoint for clarification + planning input construction.
 
@@ -368,6 +373,7 @@ def assess_requirement_for_planning(
         qa_history=merged_history,
         planner=planner,
         max_turns=max_turns,
+        stream_callback=stream_callback,
     )
     result = dict(assessment)
     result["seed_title"] = seed_title

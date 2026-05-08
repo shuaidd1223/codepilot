@@ -72,6 +72,36 @@ def test_clarify_marks_workflow_state_complete(tmp_path, monkeypatch):
     assert state["artifact_paths"]["spec"] == json.loads(result.output)["data"]["artifact_path"]
 
 
+def test_clarify_renders_stream_chunk_before_final_output(tmp_path, monkeypatch):
+    _register_demo(tmp_path, monkeypatch)
+
+    def fake_ai(_prompt, *, stream_callback=None, **_kwargs):
+        assert stream_callback is not None
+        stream_callback("S")
+        return {
+            "status": "needs_clarification",
+            "questions": [
+                {
+                    "id": "scope",
+                    "type": "text",
+                    "text": "先澄清哪个模块?",
+                    "options": [],
+                    "allow_free_text": False,
+                }
+            ],
+        }
+
+    monkeypatch.setattr("codepilot.ai_support.clarify._invoke_clarifier_ai", fake_ai)
+
+    result = CliRunner().invoke(main, ["clarify", "-p", "demo", "优化一下"])
+
+    assert result.exit_code == 0, result.output
+    assert "S" in result.output
+    assert "[OK]" in result.output
+    assert result.output.index("S") < result.output.index("[OK]")
+    assert "先澄清哪个模块?" in result.output
+
+
 def test_ai_manifest_includes_clarify_command():
     manifest = command_manifest(command_name="codepilot")
 

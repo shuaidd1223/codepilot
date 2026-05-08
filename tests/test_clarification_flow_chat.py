@@ -250,3 +250,28 @@ def test_chat_pending_clarification_empty_answer_does_not_reenter_clarifier(tmp_
     assert "请至少回答一个澄清问题" in result.output
     assert clarify_calls["count"] == 1
     assert not ran
+
+
+def test_chat_renders_clarifier_stream_chunk_before_final_questions(tmp_path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+
+    def fake_ai(_prompt, *, stream_callback=None, **_kwargs):
+        assert stream_callback is not None
+        stream_callback("S")
+        return {
+            "status": "needs_clarification",
+            "questions": [_q("先优化哪一块?")],
+        }
+
+    monkeypatch.setattr("codepilot.ai_support.clarify._invoke_clarifier_ai", fake_ai)
+
+    result = CliRunner().invoke(
+        main,
+        ["chat", "--no-ui"],
+        input="# 优化一下\n/clear\n/exit\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "S" in result.output
+    assert "为了更好地规划" in result.output
+    assert result.output.index("S") < result.output.index("为了更好地规划")

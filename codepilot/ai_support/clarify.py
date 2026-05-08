@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 import sys
-from typing import Optional
+from typing import Callable, Optional
 
 from codepilot.ai_support.planner_context import collect_planner_context
 from codepilot.ai_support.clarification_protocol import (
@@ -176,6 +176,7 @@ def _invoke_clarifier_ai(
     config_ref: str,
     planner: str,
     timeout: int,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """Route through the unified AI gateway (API → local CLI fallback)."""
     from codepilot.gateway.service import GatewayCallOptions, call_structured_prompt
@@ -192,6 +193,7 @@ def _invoke_clarifier_ai(
             config_ref=config_ref,
             planner=planner or "codex",
             timeout=timeout,
+            stream_callback=stream_callback,
         ),
     )
     if not response.ok:
@@ -212,6 +214,7 @@ def assess_requirement(
     base_url: Optional[str] = None,
     planner: str = "codex",
     timeout: int = 45,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
     """Decide whether the requirement is concrete enough to plan.
 
@@ -284,6 +287,7 @@ def assess_requirement(
                 config_ref=config_ref,
                 planner=planner,
                 timeout=timeout,
+                stream_callback=stream_callback,
             )
     except Exception as exc:
         # On AI failure we fall back to "ready" so the user isn't stuck.

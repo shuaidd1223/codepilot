@@ -18,6 +18,7 @@ class GatewayRequest:
     config_ref: str = ""
     planner: str = "codex"  # CLI fallback family
     timeout: int = 60
+    stream_callback: Optional[Callable[[str], None]] = None
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class GatewayCallOptions:
     config_ref: str = ""
     planner: str = "codex"
     timeout: int = 60
+    stream_callback: Optional[Callable[[str], None]] = None
 
 
 @dataclass

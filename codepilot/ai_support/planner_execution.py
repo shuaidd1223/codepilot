@@ -109,7 +109,7 @@ def _iter_stdout_chunks(stream: Any):
         read_supported = True
         while True:
             try:
-                chunk = read(4096)
+                chunk = read(1)
             except TypeError:
                 read_supported = False
                 break

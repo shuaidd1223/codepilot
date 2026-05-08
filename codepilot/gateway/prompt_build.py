@@ -26,6 +26,7 @@ def build_request(
         config_ref=opts.config_ref,
         planner=opts.planner,
         timeout=opts.timeout,
+        stream_callback=opts.stream_callback,
     )
 
 

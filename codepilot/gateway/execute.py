@@ -64,6 +64,7 @@ def execute_structured_cli_call(
             project_path=request.project_path,
             config_ref=request.config_ref or None,
             timeout=request.timeout,
+            stream_callback=request.stream_callback,
         )
 
     return runner(
@@ -72,6 +73,7 @@ def execute_structured_cli_call(
         project_path=request.project_path,
         config_ref=request.config_ref or None,
         timeout=request.timeout,
+        stream_callback=request.stream_callback,
     )
 
 
@@ -103,4 +105,3 @@ def execute_text_cli_candidate(
         "",
         f"{candidate.cli_name} exit={result.returncode} stderr={stderr[:200]}",
     )
-

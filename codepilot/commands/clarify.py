@@ -6,7 +6,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import click
 
@@ -66,6 +66,39 @@ def _open_questions(requirement: str, *, quick: bool) -> list[str]:
     return questions
 
 
+def _ai_open_questions(
+    requirement: str,
+    *,
+    project_info: dict,
+    stream_callback: Callable[[str], None] | None = None,
+) -> list[str]:
+    if stream_callback is None:
+        return []
+    try:
+        from codepilot.ai_support.clarify import assess_requirement
+
+        assessment = assess_requirement(
+            requirement,
+            project_path=str(project_info.get("path") or ""),
+            config_ref=str(project_info.get("config_file") or project_info.get("path") or ""),
+            planner="codex",
+            timeout=30,
+            stream_callback=stream_callback,
+        )
+    except Exception:
+        return []
+
+    if assessment.get("status") != "needs_clarification":
+        return []
+    questions: list[str] = []
+    for item in assessment.get("questions") or []:
+        if isinstance(item, dict):
+            text = str(item.get("text") or "").strip()
+            if text:
+                questions.append(text)
+    return questions
+
+
 def _collect_evidence(project_info: dict, requirement: str) -> tuple[list[dict[str, Any]], list[str]]:
     limitations: list[str] = []
     try:
@@ -100,10 +133,18 @@ def build_clarify_spec(
     *,
     project_info: dict,
     quick: bool = False,
+    stream_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic clarify specification payload."""
     summary = _summary(requirement)
     questions = _open_questions(requirement, quick=quick)
+    ai_questions = _ai_open_questions(
+        requirement,
+        project_info=project_info,
+        stream_callback=stream_callback,
+    )
+    if ai_questions:
+        questions = ai_questions + [question for question in questions if question not in ai_questions]
     evidence, limitations = _collect_evidence(project_info, requirement)
     acceptance = [
         "需求范围和非目标已被人工确认。",
@@ -147,7 +188,13 @@ def build_clarify_spec(
     }
 
 
-def write_clarify_artifact(project_info: dict, requirement: str, *, quick: bool = False) -> dict[str, Any]:
+def write_clarify_artifact(
+    project_info: dict,
+    requirement: str,
+    *,
+    quick: bool = False,
+    stream_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     project_path = Path(project_info["path"]).resolve()
     dirs = workflow_dirs(project_path)
     slug = f"clarify-{_slugify(requirement)}-{_now_slug()}"
@@ -161,7 +208,12 @@ def write_clarify_artifact(project_info: dict, requirement: str, *, quick: bool 
         context_path=context_path,
         artifact_paths={"spec": spec_path},
     )
-    payload = build_clarify_spec(requirement, project_info=project_info, quick=quick)
+    payload = build_clarify_spec(
+        requirement,
+        project_info=project_info,
+        quick=quick,
+        stream_callback=stream_callback,
+    )
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     context_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(payload["spec"], encoding="utf-8", newline="\n")
@@ -208,10 +260,25 @@ def clarify(ctx: click.Context, requirement: tuple[str, ...], project: str | Non
     if not text:
         raise click.ClickException("需要提供要澄清的需求。")
     project_info = _resolve_project(project)
-    result = write_clarify_artifact(project_info, text, quick=quick)
+    streamed = {"seen": False}
+
+    def _stream_chunk(chunk: str) -> None:
+        if not chunk:
+            return
+        streamed["seen"] = True
+        click.echo(chunk, nl=False)
+
+    result = write_clarify_artifact(
+        project_info,
+        text,
+        quick=quick,
+        stream_callback=None if json_mode else _stream_chunk,
+    )
     if json_mode:
         emit_json_payload("clarify", ok=True, data=result)
         return
+    if streamed["seen"]:
+        click.echo()
     echo(f"[green][OK] 已生成 clarify spec：{result['artifact_path']}[/green]")
     if result["open_questions"]:
         echo("[cyan]待确认问题：[/cyan]")
