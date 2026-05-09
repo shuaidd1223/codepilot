@@ -524,6 +524,29 @@ def _ensure_feishu_service() -> None:
         echo(f"[green]飞书服务已后台启动[/green]  PID={result.get('pid')}")
 
 
+def _run_agent_daemon_tick(project: str | None, *, verbose: bool = False) -> None:
+    from codepilot.scheduled.daemon import run_project_agent_jobs
+
+    projects = [db.get_project(project)] if project else db.list_projects()
+    for project_info in [item for item in projects if item]:
+        try:
+            result = run_project_agent_jobs(project_info)
+        except Exception as exc:
+            echo(
+                f"[yellow]scheduled/event agent 调度失败 "
+                f"{safe(project_info.get('name') or '')}：{safe(exc)}[/yellow]"
+            )
+            continue
+        if verbose:
+            scheduled_count = int(result.get("scheduled", {}).get("job_count") or 0)
+            event_count = int(result.get("events", {}).get("job_count") or 0)
+            if scheduled_count or event_count:
+                echo(
+                    f"[dim]{project_info.get('name')}: "
+                    f"scheduled_agents={scheduled_count} event_agents={event_count}[/dim]"
+                )
+
+
 def _run_loop(
     project: str | None,
     interval: int,
@@ -554,6 +577,8 @@ def _run_loop(
                 reaped = reap_stalled_tasks(project)
                 for task in reaped:
                     echo(f"[yellow]已回收卡住任务 #{task['id']}：{task['title']}[/yellow]")
+
+                _run_agent_daemon_tick(project, verbose=verbose)
 
                 stats = _get_combined_stats(project)
                 if stats["backlog"] == 0:
