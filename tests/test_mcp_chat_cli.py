@@ -6,6 +6,7 @@ from click.testing import CliRunner
 
 from codepilot.cli import main
 from codepilot.storage import database as db
+from pytest_mcp_chat_glob import expand_mcp_chat_test_globs
 
 
 def _isolate(tmp_path: Path, monkeypatch) -> Path:
@@ -84,3 +85,15 @@ def test_chat_rejects_unknown_agent(tmp_path: Path, monkeypatch):
     assert result.exit_code != 0
     assert calls == []
     assert "Invalid value for '--agent'" in result.output
+
+
+def test_pytest_mcp_chat_glob_expands_phase5_verification_entrypoint():
+    args = ["tests/test_mcp_chat_*", "-q"]
+
+    assert expand_mcp_chat_test_globs(args, root=Path.cwd()) == [
+        "tests/test_mcp_chat_agent_switch.py",
+        "tests/test_mcp_chat_cli.py",
+        "tests/test_mcp_chat_launchers.py",
+        "tests/test_mcp_chat_lifecycle.py",
+        "-q",
+    ]
