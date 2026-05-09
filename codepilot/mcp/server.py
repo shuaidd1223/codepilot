@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from codepilot import __version__
+from codepilot.mcp.audit import record_mcp_tool_call
 from codepilot.mcp.protocol import CodePilotToolError, normalize_progress_event
 from codepilot.mcp.tool_registry import ToolDefinition, ToolRegistry, register_tool
 
@@ -72,10 +73,23 @@ class CodePilotMCPServer:
         *,
         progress_callback: ProgressCallback | None = None,
     ) -> Any:
+        call_arguments = dict(arguments or {})
         try:
-            return await self._invoke_tool(name, dict(arguments or {}), progress_callback)
+            result = await self._invoke_tool(name, call_arguments, progress_callback)
         except CodePilotToolError as exc:
+            self._audit_tool_call(
+                name,
+                call_arguments,
+                status="error",
+                error={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            )
             return exc.to_tool_response()
+        self._audit_tool_call(name, call_arguments, status="ok", error=None)
+        return result
 
     def run(self, *args: Any, **kwargs: Any) -> Any:
         if self.sdk_server is None:
@@ -176,6 +190,25 @@ class CodePilotMCPServer:
             except StopIteration as stop:
                 return stop.value
             await _forward_progress(event, progress_callback)
+
+    def _audit_tool_call(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        *,
+        status: str,
+        error: Mapping[str, Any] | None,
+    ) -> None:
+        try:
+            record_mcp_tool_call(
+                project_path=self.context.project_path,
+                tool_name=name,
+                arguments=arguments,
+                status=status,
+                error=error,
+            )
+        except Exception:
+            return
 
 
 def create_mcp_server(
