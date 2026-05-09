@@ -50,6 +50,7 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "self-update": ("codepilot.commands.self_update", "self_update"),
     "build-fix": ("codepilot.commands.build_fix", "build_fix"),
     "skill": ("codepilot.commands.skill", "skill_group"),
+    "scheduled": ("codepilot.commands.scheduled", "scheduled_group"),
     "hud": ("codepilot.commands.hud", "hud"),
     "task": ("codepilot.commands.task", "task_group"),
     "mcp": ("codepilot.commands.mcp", "mcp_group"),
