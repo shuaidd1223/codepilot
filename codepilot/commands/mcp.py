@@ -9,6 +9,7 @@ import click
 from codepilot.core.output import echo
 from codepilot.mcp.server import MCPProjectContext, create_mcp_server
 from codepilot.mcp.tool_registry import default_registry
+from codepilot.mcp.tools import load_default_tools
 from codepilot.storage import database as db
 
 
@@ -37,13 +38,21 @@ def mcp_group() -> None:
     help="HTTP 监听端口",
 )
 @click.option("--project", "-p", help="项目名称；不指定时尝试使用当前目录所属项目")
-def serve(transport: str, port: int, project: str | None) -> None:
+@click.option("--list-tools", is_flag=True, help="列出默认 MCP 工具后退出")
+def serve(transport: str, port: int, project: str | None, list_tools: bool) -> None:
     """Start a CodePilot MCP server."""
-    import codepilot.mcp.tools.context  # noqa: F401
-    import codepilot.mcp.tools.tasks  # noqa: F401
-
+    load_default_tools()
     context = _resolve_context(project)
-    server = create_mcp_server(context, registry=default_registry)
+    server = create_mcp_server(
+        context,
+        registry=default_registry,
+        include_health=not list_tools,
+        bind_sdk=not list_tools,
+    )
+    if list_tools:
+        _print_tool_list(server.list_tools())
+        return
+
     normalized_transport = transport.lower()
 
     try:
@@ -83,3 +92,9 @@ def _resolve_context(project: str | None) -> MCPProjectContext:
             project=str(record["name"]),
         )
     return MCPProjectContext(project_path=Path.cwd(), project=None)
+
+
+def _print_tool_list(tools: list[dict[str, object]]) -> None:
+    click.echo(f"{len(tools)} MCP tools registered:")
+    for tool in tools:
+        click.echo(f"- {tool['name']}")

@@ -10,6 +10,31 @@ from codepilot.mcp.protocol import (
 from codepilot.mcp.tool_registry import ToolRegistry, register_tool
 
 
+DEFAULT_MCP_TOOL_NAMES = {
+    "archive_task",
+    "build_fix",
+    "create_task",
+    "daemon_status",
+    "doctor",
+    "edit_task",
+    "exec",
+    "explore",
+    "feishu_notify",
+    "feishu_send_to_user",
+    "generate_breakdown",
+    "hook_trigger",
+    "inspect_project",
+    "list_tasks",
+    "note_add",
+    "run_once",
+    "show_task",
+    "stop_task",
+    "webhook_invoke",
+    "wiki_add",
+    "wiki_query",
+}
+
+
 def test_register_tool_builds_schema_from_annotations():
     registry = ToolRegistry()
 
@@ -36,6 +61,17 @@ def test_register_tool_builds_schema_from_annotations():
         "type": "object",
         "additionalProperties": {"type": "string"},
     }
+
+
+def test_default_mcp_registry_loads_21_tools_without_duplicates():
+    from codepilot.mcp.tool_registry import default_registry
+    from codepilot.mcp.tools import load_default_tools
+
+    load_default_tools()
+    names = [tool.name for tool in default_registry.list()]
+
+    assert len(names) == len(set(names))
+    assert set(names) == DEFAULT_MCP_TOOL_NAMES
 
 
 def test_register_tool_rejects_missing_parameter_annotation():
