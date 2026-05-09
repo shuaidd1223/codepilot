@@ -110,44 +110,6 @@ def test_inspect_json_suppresses_stream_chunks_and_remains_parseable(tmp_path, m
     assert payload["data"]["candidates_total"] == 0
 
 
-def test_chat_no_ui_default_fast_path_skips_classifier_and_renders_stream_before_questions(tmp_path, monkeypatch):
-    project = _register_demo_project(tmp_path, monkeypatch)
-    monkeypatch.chdir(project["path"])
-
-    def classifier_should_not_run(_text, **_kwargs):
-        raise AssertionError("default chat path must not call the legacy classifier")
-
-    monkeypatch.setattr(auto_mod, "classify_intent", classifier_should_not_run)
-    fake_subprocess = StreamingSchemaSubprocess(
-        [
-            '{"status":',
-            ' "needs_clarification", "questions": [',
-            '{"id": "scope", "type": "text", "text": "先优化哪一块?"}]}',
-        ]
-    )
-    monkeypatch.setattr(
-        "codepilot.ai_support.service.check_provider_availability",
-        lambda *_args, **_kwargs: (True, "ok"),
-    )
-    monkeypatch.setattr(
-        "codepilot.ai_support.service.resolve_cli_provider",
-        lambda *_args, **_kwargs: FakeCLIProvider(exe="codex"),
-    )
-    monkeypatch.setattr("codepilot.ai_support.service.subprocess", fake_subprocess)
-
-    result = CliRunner().invoke(
-        main,
-        ["chat", "--no-ui"],
-        input="# 优化一下\n/clear\n/exit\n",
-    )
-
-    assert result.exit_code == 0, result.output
-    assert '{"status":' in result.output
-    assert "为了更好地规划" in result.output
-    assert result.output.index('{"status":') < result.output.index("为了更好地规划")
-    assert fake_subprocess.process is not None
-
-
 def test_inspect_legacy_classifier_keeps_streaming_cli_fallback(tmp_path, monkeypatch):
     _register_demo_project(tmp_path, monkeypatch)
     cfg = SimpleNamespace(

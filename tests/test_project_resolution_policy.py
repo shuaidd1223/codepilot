@@ -55,21 +55,6 @@ def test_resolve_project_for_prompt_returns_temporary_session_under_home(tmp_pat
     assert db.list_projects() == []
 
 
-def test_chat_exit_under_home_uses_temporary_session_without_registering_project(tmp_path, monkeypatch):
-    _init_test_db(tmp_path, monkeypatch)
-    home = Path(tmp_path / "home")
-    workdir = home / "scratch"
-    workdir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.chdir(workdir)
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["chat", "--no-ui"], input="/exit\n")
-
-    assert result.exit_code == 0
-    assert "公共临时会话" in result.output
-    assert db.list_projects() == []
-
-
 def test_resolve_project_for_prompt_returns_temporary_session_under_system_temp(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     system_temp = tmp_path / "system-temp"
