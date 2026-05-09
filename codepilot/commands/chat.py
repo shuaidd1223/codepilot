@@ -6,8 +6,9 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional, TextIO
 
 import click
 
@@ -19,6 +20,23 @@ from codepilot.storage import database as db
 SUPPORTED_CHAT_AGENTS = ("claude", "codex", "opencode")
 DEFAULT_CHAT_AGENT = "opencode"
 MCP_SERVER_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+AGENT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+
+
+@dataclass(frozen=True)
+class _PreparedChatLaunch:
+    agent: str
+    command: list[str]
+    cwd: Path
+    env: dict[str, str]
+    mcp_process: subprocess.Popen
+
+
+@dataclass(frozen=True)
+class _RunningChatAgent:
+    agent: str
+    process: subprocess.Popen
+    mcp_process: subprocess.Popen
 
 
 def _root_options(ctx: click.Context) -> dict:
@@ -146,6 +164,44 @@ def _kill_codepilot_mcp_server(process: subprocess.Popen) -> None:
         return
 
 
+def _stop_chat_agent_process(process: subprocess.Popen) -> None:
+    poll = getattr(process, "poll", None)
+    if callable(poll) and poll() is not None:
+        return
+    try:
+        process.terminate()
+    except Exception:
+        _kill_chat_agent_process(process)
+        return
+    try:
+        process.wait(timeout=AGENT_SHUTDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _kill_chat_agent_process(process)
+    except Exception:
+        _kill_chat_agent_process(process)
+
+
+def _kill_chat_agent_process(process: subprocess.Popen) -> None:
+    try:
+        process.kill()
+    except Exception:
+        return
+    try:
+        process.wait(timeout=AGENT_SHUTDOWN_TIMEOUT_SECONDS)
+    except Exception:
+        return
+
+
+def _close_chat_agent_stdin(process: subprocess.Popen) -> None:
+    stdin = getattr(process, "stdin", None)
+    if stdin is None:
+        return
+    try:
+        stdin.close()
+    except Exception:
+        return
+
+
 def _write_launch_config_files(config_files: dict[str, str], *, cwd: Path) -> None:
     for raw_path, content in config_files.items():
         path = Path(raw_path)
@@ -155,7 +211,7 @@ def _write_launch_config_files(config_files: dict[str, str], *, cwd: Path) -> No
         path.write_text(content, encoding="utf-8")
 
 
-def _launch_mcp_agent_chat(*, agent: str, project: str | None = None, prompt: str = "") -> int:
+def _prepare_mcp_agent_chat(*, agent: str, project: str | None, prompt: str) -> _PreparedChatLaunch:
     record = _project_record(project)
     cfg = load_project_config(record or Path.cwd())
     cwd = Path(record["path"]).resolve() if record else Path.cwd().resolve()
@@ -171,11 +227,128 @@ def _launch_mcp_agent_chat(*, agent: str, project: str | None = None, prompt: st
     env = os.environ.copy()
     env.update(plan.env)
     mcp_process = _start_codepilot_mcp_server(project=server_project, cwd=cwd, env=env)
+    return _PreparedChatLaunch(
+        agent=agent,
+        command=plan.command,
+        cwd=cwd,
+        env=env,
+        mcp_process=mcp_process,
+    )
+
+
+def _launch_mcp_agent_chat(*, agent: str, project: str | None = None, prompt: str = "") -> int:
+    launch = _prepare_mcp_agent_chat(agent=agent, project=project, prompt=prompt)
     try:
-        completed = subprocess.run(plan.command, cwd=str(cwd), env=env)
+        completed = subprocess.run(launch.command, cwd=str(launch.cwd), env=launch.env)
         return int(completed.returncode)
     finally:
-        _stop_codepilot_mcp_server(mcp_process)
+        _stop_codepilot_mcp_server(launch.mcp_process)
+
+
+def _start_mcp_agent_chat_process(
+    *,
+    agent: str,
+    project: str | None,
+    prompt: str,
+) -> _RunningChatAgent:
+    launch = _prepare_mcp_agent_chat(agent=agent, project=project, prompt=prompt)
+    try:
+        process = subprocess.Popen(
+            launch.command,
+            cwd=str(launch.cwd),
+            env=launch.env,
+            stdin=subprocess.PIPE,
+            text=True,
+        )
+    except Exception:
+        _stop_codepilot_mcp_server(launch.mcp_process)
+        raise
+    return _RunningChatAgent(
+        agent=agent,
+        process=process,
+        mcp_process=launch.mcp_process,
+    )
+
+
+def _parse_agent_switch(line: str) -> str | None:
+    parts = line.strip().split()
+    if len(parts) == 2 and parts[0] == "/agent":
+        return parts[1]
+    return None
+
+
+def _write_agent_input(process: subprocess.Popen, line: str) -> bool:
+    stdin = getattr(process, "stdin", None)
+    if stdin is None:
+        return False
+    try:
+        stdin.write(line)
+        stdin.flush()
+    except (BrokenPipeError, OSError):
+        return False
+    return True
+
+
+def _finish_running_chat_agent(running: _RunningChatAgent) -> int:
+    _close_chat_agent_stdin(running.process)
+    try:
+        return int(running.process.wait())
+    finally:
+        _stop_codepilot_mcp_server(running.mcp_process)
+
+
+def _restart_running_chat_agent(running: _RunningChatAgent) -> None:
+    _stop_chat_agent_process(running.process)
+    _stop_codepilot_mcp_server(running.mcp_process)
+
+
+def _run_mcp_agent_chat_session(
+    *,
+    agent: str,
+    project: str | None = None,
+    prompt: str = "",
+    input_stream: Iterable[str] | TextIO | None = None,
+) -> int:
+    if input_stream is None:
+        return _launch_mcp_agent_chat(agent=agent, project=project, prompt=prompt)
+
+    current_agent = _normalize_chat_agent(agent)
+    current_prompt = prompt
+    while True:
+        running = _start_mcp_agent_chat_process(
+            agent=current_agent,
+            project=project,
+            prompt=current_prompt,
+        )
+        next_agent: str | None = None
+        try:
+            for line in input_stream:
+                requested_agent = _parse_agent_switch(line)
+                if requested_agent is None:
+                    if not _write_agent_input(running.process, line):
+                        return _finish_running_chat_agent(running)
+                    continue
+                try:
+                    normalized_agent = _normalize_chat_agent(requested_agent)
+                except click.ClickException as exc:
+                    click.echo(exc.format_message(), err=True)
+                    continue
+                if normalized_agent == current_agent:
+                    continue
+                next_agent = normalized_agent
+                click.echo(
+                    f"切换 chat agent: {current_agent} -> {next_agent}",
+                    err=True,
+                )
+                _restart_running_chat_agent(running)
+                break
+            if next_agent is None:
+                return _finish_running_chat_agent(running)
+        except Exception:
+            _restart_running_chat_agent(running)
+            raise
+        current_agent = next_agent
+        current_prompt = ""
 
 
 @click.command("chat")
@@ -201,7 +374,13 @@ def chat(
 
     resolved_agent = _resolve_chat_agent(agent, project)
     try:
-        exit_code = _launch_mcp_agent_chat(agent=resolved_agent, project=project, prompt="")
+        input_stream = sys.stdin if getattr(sys.stdin, "isatty", lambda: False)() else None
+        exit_code = _run_mcp_agent_chat_session(
+            agent=resolved_agent,
+            project=project,
+            prompt="",
+            input_stream=input_stream,
+        )
     except click.ClickException:
         raise
     except Exception as exc:
