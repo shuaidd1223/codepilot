@@ -1,6 +1,26 @@
 from __future__ import annotations
 
 
+PHASE_4A_TASK_TOOLS = {
+    "create_task",
+    "list_tasks",
+    "show_task",
+    "edit_task",
+    "stop_task",
+    "archive_task",
+    "generate_breakdown",
+}
+
+PHASE_4A_CONTEXT_TOOLS = {
+    "wiki_query",
+    "wiki_add",
+    "note_add",
+    "explore",
+    "inspect_project",
+    "hook_trigger",
+}
+
+
 def _structured_payload(result: dict) -> dict:
     return result["structuredContent"]
 
@@ -13,8 +33,8 @@ def test_mcp_stdio_smoke_covers_health_task_context_and_errors(mcp_stdio_smoke_s
     tools = {tool["name"] for tool in mcp_stdio_smoke_server.list_tools()}
 
     assert "codepilot.health" in tools
-    assert "create_task" in tools
-    assert "note_add" in tools
+    assert PHASE_4A_TASK_TOOLS <= tools
+    assert PHASE_4A_CONTEXT_TOOLS <= tools
 
     health = _structured_payload(mcp_stdio_smoke_server.call_tool("codepilot.health"))
     assert health["ok"] is True
