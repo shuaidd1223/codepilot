@@ -75,6 +75,44 @@ codepilot build-fix -p <项目名> --task-id <task_id> --json
 codepilot doctor --project <项目名> --services --json
 ```
 
+### Scheduled / Event Agent
+
+`scheduled` 子命令用于查看、手动运行或禁用 `AGENTS.toml` 中声明的定时 agent。
+事件触发 agent 由事件流构造任务，不通过 `scheduled run-once` 直接触发。
+
+```bash
+codepilot scheduled list -p <项目名>
+codepilot scheduled show task_health -p <项目名> --json
+codepilot scheduled run-once task_health --dry-run
+codepilot scheduled run-once task_health -p <项目名> --dry-run
+codepilot scheduled disable task_health -p <项目名>
+```
+
+最小配置示例：
+
+```toml
+[automation.scheduled_agents.task_health]
+enabled = true
+agent = "codex"
+interval = "10m" # 也可使用 schedule = "0 9 * * *"
+prompt = "Review local CodePilot task status and summarize risks."
+max_cost_usd = 0.10
+max_daily_cost_usd = 0.50
+
+[automation.event_agents.failed_task_triage]
+enabled = false
+trigger = "task.failed"
+agent = "codex"
+prompt = "Task {{ task.id }} failed with {{ task.error }}. Suggest the smallest repair."
+max_cost_usd = 0.10
+max_daily_cost_usd = 0.50
+```
+
+本仓库默认提供三个 scheduled agent：`task_health` 检查任务健康，`daily_summary`
+准备日报摘要，`auto_inspect` 生成轻量巡检建议。运行记录写入
+`.codepilot/scheduled/audit.jsonl`，成本和循环护栏状态写入
+`.codepilot/scheduled/guards.json`。
+
 ### Web UI、飞书、Webhook
 
 ```bash
