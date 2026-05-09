@@ -117,6 +117,19 @@ def test_opencode_launcher_uses_config_file_env_injection(tmp_path: Path):
     }
 
 
+def test_opencode_launcher_without_prompt_starts_interactive_cli(tmp_path: Path):
+    config_path = tmp_path / "opencode.mcp.json"
+
+    plan = build_mcp_launch_plan(
+        "opencode",
+        executable="opencode-bin",
+        mcp_servers=_server(tmp_path),
+        config_path=config_path,
+    )
+
+    assert plan.command == ["opencode-bin"]
+
+
 def test_launcher_rejects_unknown_agent_name(tmp_path: Path):
     with pytest.raises(UnsupportedAgentError, match="Unsupported MCP launcher agent"):
         build_mcp_launch_plan(

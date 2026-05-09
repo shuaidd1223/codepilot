@@ -81,6 +81,39 @@ def test_chat_starts_mcp_server_before_agent_and_cleans_up_on_success(
     assert mcp_process.wait_calls == [pytest.approx(5)]
 
 
+def test_chat_uses_detected_current_project_for_mcp_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        chat_cmd,
+        "_project_record",
+        lambda project: {"name": "demo", "path": str(tmp_path)},
+    )
+    monkeypatch.setattr(chat_cmd, "load_project_config", lambda record_or_path: None)
+    monkeypatch.setattr(chat_cmd, "_resolve_agent_executable", lambda agent, cfg: f"{agent}-bin")
+    monkeypatch.setattr(chat_cmd, "_write_launch_config_files", lambda *args, **kwargs: None)
+    events: list[tuple[str, list[str]]] = []
+    mcp_process = FakeMCPProcess()
+
+    def fake_popen(command, **kwargs):
+        events.append(("mcp", list(command)))
+        return mcp_process
+
+    def fake_run(command, **kwargs):
+        events.append(("agent", list(command)))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(chat_cmd.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(chat_cmd.subprocess, "run", fake_run)
+
+    exit_code = chat_cmd._launch_mcp_agent_chat(agent="opencode")
+
+    assert exit_code == 0
+    assert events[0][1][-2:] == ["--project", "demo"]
+
+
 def test_chat_kills_mcp_server_when_terminate_wait_times_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -133,3 +166,10 @@ def test_chat_cleans_up_mcp_server_when_agent_launch_raises(
     assert mcp_process.terminate_calls == 1
     assert mcp_process.kill_calls == 0
     assert mcp_process.wait_calls == [pytest.approx(5)]
+
+
+def test_resolve_agent_executable_expands_path_command(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("OPENCODE_BIN", raising=False)
+    monkeypatch.setattr(chat_cmd.shutil, "which", lambda value: "C:\\tools\\opencode.cmd" if value == "opencode" else None)
+
+    assert chat_cmd._resolve_agent_executable("opencode", None) == "C:\\tools\\opencode.cmd"

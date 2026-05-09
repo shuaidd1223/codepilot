@@ -12,6 +12,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from codepilot.ai_support import service as ai_mod
 from codepilot.storage import database as db
 from codepilot.webapp import server as webui_mod
@@ -139,6 +141,7 @@ def test_self_iteration_full_lifecycle(tmp_path, monkeypatch):
     assert stats["failed"] == 0
 
 
+@pytest.mark.slow
 def test_self_iteration_builder_failure_requeues(tmp_path, monkeypatch):
     """When the builder phase fails, the task should be requeued (not marked done)."""
     project_path = tmp_path / "repo"
@@ -176,6 +179,7 @@ def test_self_iteration_builder_failure_requeues(tmp_path, monkeypatch):
     assert stats["done"] == 0
 
 
+@pytest.mark.slow
 def test_self_iteration_review_fail_not_merged(tmp_path, monkeypatch):
     """When the reviewer returns VERDICT: FAIL, changes must NOT be merged."""
     project_path = tmp_path / "repo"

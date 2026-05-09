@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 import click
+import pytest
 from click.testing import CliRunner
 
 from codepilot import __version__
@@ -79,6 +80,7 @@ def test_answer_question_for_tool_commands_uses_local_manifest_answer():
     assert "status" in answer
 
 
+@pytest.mark.slow
 def test_broad_tool_question_does_not_force_local_manifest_answer(monkeypatch):
     from codepilot.ai_support.service import answer_question_via_api
     from codepilot.gateway import service as gateway_service

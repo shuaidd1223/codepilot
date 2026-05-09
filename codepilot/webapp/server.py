@@ -225,6 +225,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             (self.headers.get("Last-Event-ID") or "").strip()
             or (query.get("last_event_id") or [""])[0].strip()
         )
+        has_last_event_id = bool(last_event_raw)
         try:
             last_event_id = max(0, int(last_event_raw or "0"))
         except ValueError:
@@ -314,13 +315,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 int((int(extra.get("stale_seconds") or 0)) // 10),
             )
 
-        token, replay_events = progress_bus.subscribe_with_backlog(_enqueue_event, after_id=last_event_id)
+        if has_last_event_id:
+            token, replay_events = progress_bus.subscribe_with_backlog(_enqueue_event, after_id=last_event_id)
+        else:
+            token = progress_bus.subscribe(_enqueue_event)
+            replay_events = []
         last_keepalive = time.monotonic()
         last_health_check = 0.0
         last_health_key: tuple | None = None
         try:
-            # Replay buffered progress first when the client reconnects with a
-            # last-seen event id. This closes gaps from transient disconnects.
+            # Replay buffered progress only when the client reconnects with a
+            # last-seen event id. A fresh page load must not re-toast old task
+            # state changes from the in-memory progress history.
             for replay in replay_events:
                 if not _write_event_frame(replay):
                     return

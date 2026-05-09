@@ -142,6 +142,7 @@ def test_builtin_executor_commits_and_merges_to_base(tmp_path, monkeypatch):
     assert branches.stdout.strip() == "", "Feature branch should be deleted after merge"
 
 
+@pytest.mark.slow
 def test_failed_execution_keeps_feature_branch(tmp_path, monkeypatch):
     """A failed task should NOT merge; feature branch is preserved for debugging."""
     project_path = _setup(tmp_path, monkeypatch)

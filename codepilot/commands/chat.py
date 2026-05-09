@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -63,12 +64,17 @@ def _resolve_agent_executable(agent: str, cfg: AgentsConfig | None) -> str:
     if env_var:
         value = os.environ.get(env_var, "").strip()
         if value:
-            return value
+            return _resolve_executable_path(value)
     if cfg:
         configured = str((cfg.commands or {}).get(agent, "") or "").strip()
         if configured:
-            return configured
-    return agent
+            return _resolve_executable_path(configured)
+    return _resolve_executable_path(agent)
+
+
+def _resolve_executable_path(value: str) -> str:
+    resolved = shutil.which(value)
+    return resolved or value
 
 
 def _codepilot_mcp_command(project: str | None) -> list[str]:
@@ -153,17 +159,18 @@ def _launch_mcp_agent_chat(*, agent: str, project: str | None = None, prompt: st
     record = _project_record(project)
     cfg = load_project_config(record or Path.cwd())
     cwd = Path(record["path"]).resolve() if record else Path.cwd().resolve()
+    server_project = project or (str(record.get("name") or "") if record else None)
     executable = _resolve_agent_executable(agent, cfg)
     plan = build_mcp_launch_plan(
         agent,
         executable=executable,
         prompt=prompt,
-        mcp_servers=_codepilot_mcp_servers(project),
+        mcp_servers=_codepilot_mcp_servers(server_project),
     )
     _write_launch_config_files(plan.config_files, cwd=cwd)
     env = os.environ.copy()
     env.update(plan.env)
-    mcp_process = _start_codepilot_mcp_server(project=project, cwd=cwd, env=env)
+    mcp_process = _start_codepilot_mcp_server(project=server_project, cwd=cwd, env=env)
     try:
         completed = subprocess.run(plan.command, cwd=str(cwd), env=env)
         return int(completed.returncode)

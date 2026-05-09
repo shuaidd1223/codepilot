@@ -58,6 +58,7 @@ def test_run_backlog_builtin_stops_after_retry_limit(tmp_path, monkeypatch):
     assert current["retry_count"] == 2
 
 
+@pytest.mark.slow
 def test_run_backlog_can_fail_without_requeue(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

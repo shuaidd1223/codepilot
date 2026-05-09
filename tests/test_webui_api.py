@@ -9,6 +9,7 @@ import textwrap
 import threading
 import urllib.parse
 import urllib.request
+from typing import BinaryIO
 
 import pytest
 
@@ -61,6 +62,17 @@ def _post(url: str, body: dict) -> tuple[int, dict]:
             return resp.status, json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def _read_sse_data(resp: BinaryIO, *, limit: int = 1) -> list[dict]:
+    events: list[dict] = []
+    while len(events) < limit:
+        line = resp.readline().decode("utf-8")
+        if not line:
+            break
+        if line.startswith("data: "):
+            events.append(json.loads(line.removeprefix("data: ").strip()))
+    return events
 
 
 def _delete(url: str) -> tuple[int, dict]:
@@ -315,6 +327,52 @@ def test_publish_task_state_event_is_suppressed_under_pytest_by_default(ui_serve
 
     assert delivered is False
     assert events == []
+
+
+def test_event_stream_skips_task_state_backlog_on_fresh_page_load(ui_server):
+    progress_bus.clear_subscribers_for_tests()
+    progress_bus.emit(
+        stage="task-state",
+        task_id=123,
+        event_type="started",
+        message="started before refresh",
+        extra={
+            "project": "demo",
+            "changed_task_ids": [123],
+            "changes": [{"type": "started", "task": {"id": 123, "status": "in_progress"}}],
+        },
+    )
+
+    with urllib.request.urlopen(f"{ui_server}/api/events/stream?project=demo", timeout=5) as resp:
+        events = _read_sse_data(resp, limit=1)
+
+    assert len(events) == 1
+    assert events[0]["stage"] == "daemon-health"
+
+
+def test_event_stream_replays_backlog_when_last_event_id_is_provided(ui_server):
+    progress_bus.clear_subscribers_for_tests()
+    progress_bus.emit(stage="planner", message="already seen")
+    first_event_id = progress_bus.events_since(0)[0]["id"]
+    progress_bus.emit(
+        stage="task-state",
+        task_id=124,
+        event_type="done",
+        message="finished while disconnected",
+        extra={
+            "project": "demo",
+            "changed_task_ids": [124],
+            "changes": [{"type": "done", "task": {"id": 124, "status": "done"}}],
+        },
+    )
+
+    url = f"{ui_server}/api/events/stream?project=demo&last_event_id={first_event_id}"
+    with urllib.request.urlopen(url, timeout=5) as resp:
+        events = _read_sse_data(resp, limit=1)
+
+    assert len(events) == 1
+    assert events[0]["stage"] == "task-state"
+    assert events[0]["task_id"] == 124
 
 
 def test_ui_state_mutations_emit_refresh_events(ui_server):

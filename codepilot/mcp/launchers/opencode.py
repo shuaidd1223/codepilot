@@ -30,9 +30,9 @@ def build_launch_plan(
         "$schema": "https://opencode.ai/config.json",
         "mcp": _opencode_servers(normalize_mcp_servers(mcp_servers)),
     }
-    command = [executable, "run"]
+    command = [executable]
     if prompt:
-        command.append(prompt)
+        command.extend(["run", prompt])
     merged_env = dict(env or {})
     merged_env["OPENCODE_CONFIG"] = target_path
     return LaunchPlan(

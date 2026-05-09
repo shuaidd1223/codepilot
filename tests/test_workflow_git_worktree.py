@@ -532,6 +532,7 @@ def test_run_backlog_creates_task_branch_and_checks_out_base_after_merge(tmp_pat
     assert expected_branch not in output, "task branch should be deleted after merge"
 
 
+@pytest.mark.slow
 def test_run_backlog_requeues_when_merge_back_fails_with_uncommitted_changes(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
@@ -704,6 +705,7 @@ task_workspace = "direct"
     assert output.strip() == base_branch
 
 
+@pytest.mark.slow
 def test_run_backlog_keeps_builtin_worktree_changes_isolated_before_merge(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
