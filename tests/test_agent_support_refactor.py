@@ -8,8 +8,11 @@ from types import SimpleNamespace
 from click.testing import CliRunner
 
 from codepilot.ai_support import agent_support
+from codepilot.cli import main
+from codepilot.commands import auto as auto_mod
 from codepilot.commands import inspect as inspect_cmd
 from codepilot.storage import database as db
+from tests.ai_gateway_testkit import FakeCLIProvider, StreamingSchemaSubprocess
 from tests.workflow_testkit import init_test_db
 
 
@@ -105,3 +108,90 @@ def test_inspect_json_suppresses_stream_chunks_and_remains_parseable(tmp_path, m
     assert payload["ok"] is True
     assert payload["command"] == "inspect"
     assert payload["data"]["candidates_total"] == 0
+
+
+def test_chat_no_ui_default_fast_path_skips_classifier_and_renders_stream_before_questions(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    monkeypatch.chdir(project["path"])
+
+    def classifier_should_not_run(_text, **_kwargs):
+        raise AssertionError("default chat path must not call the legacy classifier")
+
+    monkeypatch.setattr(auto_mod, "classify_intent", classifier_should_not_run)
+    fake_subprocess = StreamingSchemaSubprocess(
+        [
+            '{"status":',
+            ' "needs_clarification", "questions": [',
+            '{"id": "scope", "type": "text", "text": "先优化哪一块?"}]}',
+        ]
+    )
+    monkeypatch.setattr(
+        "codepilot.ai_support.service.check_provider_availability",
+        lambda *_args, **_kwargs: (True, "ok"),
+    )
+    monkeypatch.setattr(
+        "codepilot.ai_support.service.resolve_cli_provider",
+        lambda *_args, **_kwargs: FakeCLIProvider(exe="codex"),
+    )
+    monkeypatch.setattr("codepilot.ai_support.service.subprocess", fake_subprocess)
+
+    result = CliRunner().invoke(
+        main,
+        ["chat", "--no-ui"],
+        input="# 优化一下\n/clear\n/exit\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert '{"status":' in result.output
+    assert "为了更好地规划" in result.output
+    assert result.output.index('{"status":') < result.output.index("为了更好地规划")
+    assert fake_subprocess.process is not None
+
+
+def test_inspect_legacy_classifier_keeps_streaming_cli_fallback(tmp_path, monkeypatch):
+    _register_demo_project(tmp_path, monkeypatch)
+    cfg = SimpleNamespace(
+        inspect=SimpleNamespace(
+            max_new_tasks_per_round=3,
+            interval_seconds=1800,
+            signals=("todos",),
+            priority="P3",
+            auto_execute=False,
+        ),
+        classifier=SimpleNamespace(
+            enabled=True,
+            provider="openai",
+            model="gpt-test",
+            timeout=30,
+        ),
+        providers={},
+        get_provider_api_key=lambda _provider: "",
+    )
+    monkeypatch.setattr(inspect_cmd, "load_project_config", lambda *_args, **_kwargs: cfg)
+    monkeypatch.setattr(
+        inspect_cmd,
+        "collect_inspection_signal_results",
+        lambda *_args, **_kwargs: [_substantive_signal()],
+    )
+    captured: dict[str, object] = {}
+
+    def fake_call_llm(_prompt, **kwargs):
+        captured.update(kwargs)
+        stream_callback = kwargs.get("stream_callback")
+        assert stream_callback is not None
+        stream_callback("L")
+        return {"candidates": []}
+
+    monkeypatch.setattr(inspect_cmd, "_call_llm", fake_call_llm)
+
+    result = CliRunner().invoke(
+        inspect_cmd.inspect,
+        ["-p", "demo", "--once", "--dry-run", "--planner", "codex", "--legacy-classifier"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["classifier_provider"] == "openai"
+    assert captured["classifier_model"] == "gpt-test"
+    assert "L" in result.output
+    assert "候选总数" in result.output
+    assert result.output.index("L") < result.output.index("候选总数")
