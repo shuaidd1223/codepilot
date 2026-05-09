@@ -215,6 +215,7 @@ def _write_release_archive(
     guide_path: Path,
     ai_guide_path: Path,
     ai_manifest_path: Path,
+    vendor_dir: Path | None = None,
 ) -> None:
     """Create the platform archive with binary, installer, and Chinese guide."""
     if archive_format == "zip":
@@ -224,6 +225,9 @@ def _write_release_archive(
             bundle.write(guide_path, arcname=f"{folder_name}/README.zh-CN.md")
             bundle.write(ai_guide_path, arcname=f"{folder_name}/AI_USAGE.zh-CN.md")
             bundle.write(ai_manifest_path, arcname=f"{folder_name}/AI_MANIFEST.json")
+            for vendor_file in _iter_vendor_files(vendor_dir):
+                relative = str(vendor_file.relative_to(vendor_dir)).replace("\\", "/")
+                bundle.write(vendor_file, arcname=f"{folder_name}/bin/vendor/{relative}")
         return
 
     if archive_format == "tar.gz":
@@ -233,9 +237,30 @@ def _write_release_archive(
             bundle.add(guide_path, arcname=f"{folder_name}/README.zh-CN.md")
             bundle.add(ai_guide_path, arcname=f"{folder_name}/AI_USAGE.zh-CN.md")
             bundle.add(ai_manifest_path, arcname=f"{folder_name}/AI_MANIFEST.json")
+            for vendor_file in _iter_vendor_files(vendor_dir):
+                relative = str(vendor_file.relative_to(vendor_dir)).replace("\\", "/")
+                bundle.add(vendor_file, arcname=f"{folder_name}/bin/vendor/{relative}")
         return
 
     raise RuntimeError(f"不支持的压缩格式：{archive_format}")
+
+
+def _iter_vendor_files(vendor_dir: Path | None) -> list[Path]:
+    if vendor_dir is None or not vendor_dir.exists():
+        return []
+    return sorted(path for path in vendor_dir.rglob("*") if path.is_file())
+
+
+def _stage_vendor_bundle(source_path: Path, artifact_dir: Path) -> Path | None:
+    source_vendor_dir = source_path.parent / "bin" / "vendor"
+    if not source_vendor_dir.exists():
+        return None
+
+    staged_vendor_dir = artifact_dir / "bin" / "vendor"
+    if staged_vendor_dir.exists():
+        shutil.rmtree(staged_vendor_dir)
+    shutil.copytree(source_vendor_dir, staged_vendor_dir)
+    return staged_vendor_dir
 
 
 def _read_archive_members(archive_path: Path, archive_format: str) -> set[str]:
@@ -340,6 +365,7 @@ def create_release_bundle(
         staged_name = source_path.name
         staged_path = artifact_dir / staged_name
         shutil.copy2(source_path, staged_path)
+        vendor_dir = _stage_vendor_bundle(source_path, artifact_dir)
         script_name = _release_script_name(platform_tag)
         script_path = artifact_dir / script_name
         script_path.write_text(_release_script_text(platform_tag, staged_name), encoding="utf-8", newline="\n")
@@ -358,6 +384,7 @@ def create_release_bundle(
             guide_path=guide_path,
             ai_guide_path=ai_guide_path,
             ai_manifest_path=ai_manifest_path,
+            vendor_dir=vendor_dir,
         )
 
         binary_sha = _sha256_file(staged_path)

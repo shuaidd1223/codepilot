@@ -11,7 +11,6 @@ from typing import Optional
 import click
 
 from codepilot.ai_support.cli_families import env_var_for, get_family
-from codepilot.commands.auto import run_chat_session
 from codepilot.core.config import AgentsConfig, load_project_config
 from codepilot.mcp.launchers import build_mcp_launch_plan
 from codepilot.storage import database as db
@@ -19,7 +18,6 @@ from codepilot.storage import database as db
 SUPPORTED_CHAT_AGENTS = ("claude", "codex", "opencode")
 DEFAULT_CHAT_AGENT = "opencode"
 MCP_SERVER_SHUTDOWN_TIMEOUT_SECONDS = 5.0
-DEFAULT_LEGACY_UI_PORT = 8766
 
 
 def _root_options(ctx: click.Context) -> dict:
@@ -71,62 +69,6 @@ def _resolve_agent_executable(agent: str, cfg: AgentsConfig | None) -> str:
         if configured:
             return configured
     return agent
-
-
-def _uses_legacy_session_options(
-    *,
-    legacy: bool,
-    planner: Optional[str],
-    execute: Optional[bool],
-    executor: Optional[str],
-    auto_commit: Optional[bool],
-    max_tasks: int,
-    max_retries: int,
-    legacy_classifier: bool,
-    enable_ui: bool,
-    ui_port: int,
-) -> bool:
-    """Return whether legacy-only flags should route to the old REPL."""
-    return (
-        legacy
-        or planner is not None
-        or execute is not None
-        or executor is not None
-        or auto_commit is not None
-        or bool(max_tasks)
-        or bool(max_retries)
-        or legacy_classifier
-        or not enable_ui
-        or ui_port != DEFAULT_LEGACY_UI_PORT
-    )
-
-
-def _stdin_has_buffered_input() -> bool:
-    """Best-effort detection for scripted legacy REPL input."""
-    stream = click.get_text_stream("stdin")
-    try:
-        if stream.isatty():
-            return False
-    except Exception:
-        return False
-
-    buffer = getattr(stream, "buffer", None)
-    getvalue = getattr(buffer, "getvalue", None)
-    if callable(getvalue):
-        try:
-            return bool(getvalue())
-        except Exception:
-            return False
-
-    try:
-        if not stream.seekable():
-            return False
-        position = stream.tell()
-        chunk = stream.read(1)
-        stream.seek(position)
-        return bool(chunk)
-    except Exception:
-        return False
 
 
 def _codepilot_mcp_command(project: str | None) -> list[str]:
@@ -239,79 +181,16 @@ def _launch_mcp_agent_chat(*, agent: str, project: str | None = None, prompt: st
     default=None,
     help="启动的 MCP chat agent；默认读取 [automation].default_agent，否则 opencode",
 )
-@click.option("--legacy", is_flag=True, help="使用旧版 classifier→plan→exec 交互会话")
-@click.option("--planner", default=None, help="legacy 模式规划器；默认读取配置或使用 codex")
-@click.option("--execute/--no-execute", default=None, help="legacy 模式默认是否自动执行；默认跟随配置")
-@click.option(
-    "--executor",
-    type=click.Choice(["auto", "dispatch", "builtin"], case_sensitive=False),
-    default=None,
-    help="legacy 模式执行器类型；默认跟随配置",
-)
-@click.option("--auto-commit/--no-auto-commit", default=None, help="legacy 模式是否自动提交；默认跟随配置")
-@click.option("--max-tasks", type=int, default=0, help="legacy 模式最大拆分任务数；0 表示读取配置")
-@click.option("--max-retries", type=int, default=0, help="legacy 模式最大重试次数；0 表示读取配置")
-@click.option("--legacy-classifier", is_flag=True, help="legacy 模式启用旧版独立意图分类器回退路径")
-@click.option("--ui/--no-ui", "enable_ui", default=True, help="legacy 模式是否自动启动 Web UI（默认开启）")
-@click.option("--ui-port", type=int, default=DEFAULT_LEGACY_UI_PORT, help="legacy 模式 Web UI 端口")
 @click.pass_context
 def chat(
     ctx: click.Context,
     project: Optional[str],
     agent: Optional[str],
-    legacy: bool,
-    planner: Optional[str],
-    execute: Optional[bool],
-    executor: Optional[str],
-    auto_commit: Optional[bool],
-    max_tasks: int,
-    max_retries: int,
-    legacy_classifier: bool,
-    enable_ui: bool,
-    ui_port: int,
 ):
-    """启动 MCP agent chat；传 --legacy 使用旧交互会话."""
+    """启动 MCP agent chat (claude / codex / opencode)."""
     root_obj = _root_options(ctx)
     project = project or root_obj.get("direct_project")
     agent = agent or root_obj.get("agent")
-    planner = planner or root_obj.get("planner")
-    if execute is None:
-        execute = root_obj.get("execute")
-    executor = executor or root_obj.get("executor")
-    if auto_commit is None:
-        auto_commit = root_obj.get("auto_commit")
-    if not max_tasks:
-        max_tasks = root_obj.get("max_tasks", 0)
-    if not max_retries:
-        max_retries = root_obj.get("max_retries", 0)
-    legacy_classifier = legacy_classifier or bool(root_obj.get("legacy_classifier", False))
-
-    if _uses_legacy_session_options(
-        legacy=legacy,
-        planner=planner,
-        execute=execute,
-        executor=executor,
-        auto_commit=auto_commit,
-        max_tasks=max_tasks,
-        max_retries=max_retries,
-        legacy_classifier=legacy_classifier,
-        enable_ui=enable_ui,
-        ui_port=ui_port,
-    ) or _stdin_has_buffered_input():
-        run_chat_session(
-            project=project,
-            planner=planner,
-            task_agent=agent,
-            execute=execute,
-            executor=executor,
-            auto_commit=auto_commit,
-            max_tasks=max_tasks,
-            max_retries=max_retries,
-            legacy_classifier=legacy_classifier,
-            enable_ui=enable_ui,
-            ui_port=ui_port,
-        )
-        return
 
     resolved_agent = _resolve_chat_agent(agent, project)
     try:

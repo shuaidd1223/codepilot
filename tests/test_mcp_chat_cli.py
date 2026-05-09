@@ -75,46 +75,6 @@ def test_chat_defaults_to_opencode_without_config(tmp_path: Path, monkeypatch):
     assert calls == [{"agent": "opencode", "project": None, "prompt": ""}]
 
 
-def test_chat_legacy_calls_old_session_without_agent_launcher(tmp_path: Path, monkeypatch):
-    _isolate(tmp_path, monkeypatch)
-    calls = _capture_agent_launch(monkeypatch)
-    legacy_calls: list[dict] = []
-
-    from codepilot.commands import chat as chat_cmd
-
-    def fake_legacy(**kwargs):
-        legacy_calls.append(kwargs)
-
-    monkeypatch.setattr(chat_cmd, "run_chat_session", fake_legacy)
-
-    result = CliRunner().invoke(main, ["chat", "--legacy", "--no-ui"])
-
-    assert result.exit_code == 0
-    assert calls == []
-    assert len(legacy_calls) == 1
-    assert legacy_calls[0]["enable_ui"] is False
-
-
-def test_chat_no_ui_keeps_legacy_session_compatibility(tmp_path: Path, monkeypatch):
-    _isolate(tmp_path, monkeypatch)
-    calls = _capture_agent_launch(monkeypatch)
-    legacy_calls: list[dict] = []
-
-    from codepilot.commands import chat as chat_cmd
-
-    def fake_legacy(**kwargs):
-        legacy_calls.append(kwargs)
-
-    monkeypatch.setattr(chat_cmd, "run_chat_session", fake_legacy)
-
-    result = CliRunner().invoke(main, ["chat", "--no-ui"])
-
-    assert result.exit_code == 0
-    assert calls == []
-    assert len(legacy_calls) == 1
-    assert legacy_calls[0]["enable_ui"] is False
-
-
 def test_chat_rejects_unknown_agent(tmp_path: Path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     calls = _capture_agent_launch(monkeypatch)

@@ -13,20 +13,6 @@ from tests.ai_gateway_testkit import build_gateway_capture
 from tests.chat_flow_testkit import init_test_db, register_project
 
 
-def _run_chat_cli_no_ui_question(tmp_path, monkeypatch):
-    project_path = register_project(tmp_path, monkeypatch)
-    captured, fake_classify, fake_answer = build_gateway_capture(answer_text="来自问答路径")
-
-    monkeypatch.setattr(auto_mod, "classify_intent", fake_classify)
-    monkeypatch.setattr(auto_mod, "answer_question_via_api", fake_answer)
-
-    result = CliRunner().invoke(main, ["chat", "--legacy-classifier", "--no-ui"], input="随便说点什么\n/exit\n")
-
-    assert result.exit_code == 0
-    assert "来自问答路径" in result.output
-    return captured, str(project_path)
-
-
 def _run_webui_session_chat_question(tmp_path, monkeypatch):
     init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
@@ -80,11 +66,8 @@ def _run_go_question(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "scenario",
-    [
-        _run_chat_cli_no_ui_question,
-        _run_go_question,
-    ],
-    ids=["chat-no-ui-legacy-classifier", "go-question-legacy-classifier"],
+    [_run_go_question],
+    ids=["go-question-legacy-classifier"],
 )
 def test_gateway_config_ref_is_shared_between_classifier_and_answer(tmp_path, monkeypatch, scenario):
     captured, expected_config_ref = scenario(tmp_path, monkeypatch)
