@@ -16,6 +16,10 @@ dist/
 
 .workbuddy/
 AGENTS.toml
+.codepilot/*
+!.codepilot/notepad.md
+!.codepilot/wiki/
+!.codepilot/wiki/**
 .codepilot.secrets.toml
 tasks.db
 .claude/
