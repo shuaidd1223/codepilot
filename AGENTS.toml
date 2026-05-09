@@ -15,32 +15,40 @@ opencode = "opencode"
 task_workspace = "direct"
 per_task_branch = false
 
-[automation.scheduled_agents.todo_sweep]
-enabled = false
+[automation.scheduled_agents.task_health]
+enabled = true
 agent = "codex"
 interval = "10m"
-prompt = "Scan TODO comments and propose focused follow-up tasks."
+prompt = """
+Review local CodePilot task status, failed tasks, stale in-progress work, and recent scheduler audit records.
+Summarize risks and suggest conservative next checks.
+Do not modify files or call external services.
+"""
 max_cost_usd = 0.10
 max_daily_cost_usd = 0.50
 
-[automation.scheduled_agents.hourly_health]
-enabled = false
-agent = "claude"
-interval = "1h"
-prompt = "Review failed tasks and project health signals."
-max_cost_usd = 0.20
-max_daily_cost_usd = 1.00
-
-[automation.scheduled_agents.daily_backlog]
-enabled = false
+[automation.scheduled_agents.daily_summary]
+enabled = true
 agent = "codex"
-schedule = "0 9 * * *"
+interval = "1d"
 prompt = """
-Review the backlog.
-Suggest the highest-impact next task.
+Prepare a daily project summary for Feishu delivery if Feishu is configured.
+Include completed tasks, failed or risky tasks, and suggested next actions.
+Do not send messages yourself and do not include secrets.
 """
-max_cost_usd = 0.30
-max_daily_cost_usd = 1.50
+max_cost_usd = 0.20
+max_daily_cost_usd = 0.80
+
+[automation.scheduled_agents.auto_inspect]
+enabled = true
+agent = "codex"
+interval = "30m"
+prompt = """
+Run a lightweight project inspection plan using existing CodePilot inspect signals.
+Summarize actionable findings and avoid making code changes.
+"""
+max_cost_usd = 0.15
+max_daily_cost_usd = 0.75
 
 [automation.event_agents.failed_task_triage]
 enabled = false
