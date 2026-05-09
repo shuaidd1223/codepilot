@@ -39,6 +39,7 @@ def mcp_group() -> None:
 @click.option("--project", "-p", help="项目名称；不指定时尝试使用当前目录所属项目")
 def serve(transport: str, port: int, project: str | None) -> None:
     """Start a CodePilot MCP server."""
+    import codepilot.mcp.tools.context  # noqa: F401
     import codepilot.mcp.tools.tasks  # noqa: F401
 
     context = _resolve_context(project)
