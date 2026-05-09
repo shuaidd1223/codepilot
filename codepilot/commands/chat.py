@@ -18,6 +18,7 @@ from codepilot.storage import database as db
 
 SUPPORTED_CHAT_AGENTS = ("claude", "codex", "opencode")
 DEFAULT_CHAT_AGENT = "opencode"
+MCP_SERVER_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 def _root_options(ctx: click.Context) -> dict:
@@ -71,16 +72,73 @@ def _resolve_agent_executable(agent: str, cfg: AgentsConfig | None) -> str:
     return agent
 
 
-def _codepilot_mcp_servers(project: str | None) -> dict[str, dict[str, object]]:
-    args: list[str] = ["-m", "codepilot", "mcp", "serve", "--transport", "stdio"]
+def _codepilot_mcp_command(project: str | None) -> list[str]:
+    command: list[str] = [
+        sys.executable,
+        "-m",
+        "codepilot",
+        "mcp",
+        "serve",
+        "--transport",
+        "stdio",
+    ]
     if project:
-        args.extend(["--project", project])
+        command.extend(["--project", project])
+    return command
+
+
+def _codepilot_mcp_servers(project: str | None) -> dict[str, dict[str, object]]:
+    command = _codepilot_mcp_command(project)
     return {
         "codepilot": {
-            "command": sys.executable,
-            "args": args,
+            "command": command[0],
+            "args": command[1:],
         }
     }
+
+
+def _start_codepilot_mcp_server(
+    *,
+    project: str | None,
+    cwd: Path,
+    env: dict[str, str],
+) -> subprocess.Popen:
+    return subprocess.Popen(
+        _codepilot_mcp_command(project),
+        cwd=str(cwd),
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def _stop_codepilot_mcp_server(process: subprocess.Popen) -> None:
+    poll = getattr(process, "poll", None)
+    if callable(poll) and poll() is not None:
+        return
+    try:
+        process.terminate()
+    except Exception:
+        _kill_codepilot_mcp_server(process)
+        return
+    try:
+        process.wait(timeout=MCP_SERVER_SHUTDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _kill_codepilot_mcp_server(process)
+    except Exception:
+        _kill_codepilot_mcp_server(process)
+
+
+def _kill_codepilot_mcp_server(process: subprocess.Popen) -> None:
+    try:
+        process.kill()
+    except Exception:
+        return
+    try:
+        process.wait(timeout=MCP_SERVER_SHUTDOWN_TIMEOUT_SECONDS)
+    except Exception:
+        return
 
 
 def _write_launch_config_files(config_files: dict[str, str], *, cwd: Path) -> None:
@@ -106,8 +164,12 @@ def _launch_mcp_agent_chat(*, agent: str, project: str | None = None, prompt: st
     _write_launch_config_files(plan.config_files, cwd=cwd)
     env = os.environ.copy()
     env.update(plan.env)
-    completed = subprocess.run(plan.command, cwd=str(cwd), env=env)
-    return int(completed.returncode)
+    mcp_process = _start_codepilot_mcp_server(project=project, cwd=cwd, env=env)
+    try:
+        completed = subprocess.run(plan.command, cwd=str(cwd), env=env)
+        return int(completed.returncode)
+    finally:
+        _stop_codepilot_mcp_server(mcp_process)
 
 
 @click.command("chat")
