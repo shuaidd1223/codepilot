@@ -298,6 +298,79 @@ def test_feishu_tools_return_rate_limit_errors_without_calling_external_api(tmp_
     assert calls == ["notify", "send"]
 
 
+def test_feishu_rate_limit_does_not_block_webhook_tool(tmp_path, monkeypatch):
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _external_server(project_path)
+
+    from codepilot.mcp.tools.external import PerMinuteRateLimiter
+    import codepilot.mcp.tools.external.feishu_notify as notify_tool
+
+    monkeypatch.setattr(
+        notify_tool,
+        "FEISHU_NOTIFY_LIMITER",
+        PerMinuteRateLimiter(limit_per_minute=1, clock=lambda: 300.0),
+    )
+    feishu_calls: list[str] = []
+    webhook_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "codepilot.feishu_bot.notify_feishu_task_event",
+        lambda **_kwargs: feishu_calls.append("notify") or True,
+    )
+    monkeypatch.setattr(
+        "codepilot.webapp.webhook._get_webhook_config",
+        lambda _path: {
+            "enabled": True,
+            "webhook_url": "https://example.invalid/hook",
+            "provider": "generic",
+            "webhook_secret": "",
+        },
+    )
+
+    def fake_webhook(project_path_arg, task_id, task_title, **kwargs):
+        webhook_calls.append(
+            {
+                "project_path": project_path_arg,
+                "task_id": task_id,
+                "task_title": task_title,
+                **kwargs,
+            }
+        )
+        return True
+
+    monkeypatch.setattr("codepilot.webapp.webhook.notify_task_event", fake_webhook)
+
+    first_notify = server.call_tool(
+        "feishu_notify",
+        {"project": "demo", "task_id": 1, "task_title": "一次", "event": "started"},
+    )
+    denied_notify = server.call_tool(
+        "feishu_notify",
+        {"project": "demo", "task_id": 2, "task_title": "二次", "event": "started"},
+    )
+    webhook_result = server.call_tool(
+        "webhook_invoke",
+        {"project": "demo", "task_id": 3, "task_title": "webhook", "event": "started"},
+    )
+
+    assert first_notify["sent"] is True
+    assert _error_code(denied_notify) == "rate_limited"
+    assert webhook_result == {"ok": True, "sent": True, "project": "demo", "task_id": 3}
+    assert feishu_calls == ["notify"]
+    assert webhook_calls == [
+        {
+            "project_path": str(project_path),
+            "task_id": 3,
+            "task_title": "webhook",
+            "event": "started",
+            "phase": "",
+            "level": "info",
+            "message": "",
+            "status": "",
+            "summary": "",
+        }
+    ]
+
+
 def test_external_tools_return_structured_errors_for_bad_arguments_and_missing_config(
     tmp_path,
     monkeypatch,
