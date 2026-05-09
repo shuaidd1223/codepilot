@@ -217,6 +217,7 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
         },
         "automation": {
             "planner": _string(automation.get("planner"), "codex"),
+            "default_agent": _string(automation.get("default_agent"), ""),
             "task_agent": _string(automation.get("task_agent"), "dual"),
             "executor": _choice(automation.get("executor"), {"auto", "dispatch", "builtin"}, "builtin"),
             "auto_execute": _bool(automation.get("auto_execute"), True),
@@ -337,6 +338,7 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("dispatch", "interval_seconds"): ["轮询间隔秒数。"],
     ("dispatch", "stale_minutes"): ["任务无心跳超过该分钟数后视为过期。"],
     ("automation", "planner"): ["自然语言需求默认规划智能体。"],
+    ("automation", "default_agent"): ["chat 默认启动的 MCP agent；留空时使用 opencode。"],
     ("automation", "task_agent"): ["规划出的任务默认执行智能体；显式 --agent / UI 选择会覆盖它。"],
     ("automation", "executor"): ["auto / dispatch / builtin。"],
     ("automation", "auto_execute"): ["输入需求后是否自动开始执行。"],
@@ -622,4 +624,3 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
     click.echo(f"已同步配置: {config_path}")
     if write_secrets:
         click.echo(f"已迁移飞书 App Secret 到: {config_path.parent / config_mod.SECRETS_FILENAME}")
-

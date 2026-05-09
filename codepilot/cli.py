@@ -24,7 +24,7 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "add": ("codepilot.commands.add", "add"),
     "auto": ("codepilot.commands.auto", "auto"),
     "go": ("codepilot.commands.auto", "go"),
-    "chat": ("codepilot.commands.auto", "chat"),
+    "chat": ("codepilot.commands.chat", "chat"),
     "clarify": ("codepilot.commands.clarify", "clarify"),
     "plan": ("codepilot.commands.plan", "plan"),
     "requirement-worker": ("codepilot.commands.requirement_worker", "requirement_worker"),

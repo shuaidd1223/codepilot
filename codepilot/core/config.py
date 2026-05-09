@@ -298,6 +298,7 @@ class EventAgentConfig:
 class AutomationConfig:
     """[automation] 自动规划和执行配置."""
     planner: str = "codex"
+    default_agent: str = ""
     task_agent: str = "dual"
     executor: str = "builtin"
     auto_execute: bool = True
@@ -468,6 +469,7 @@ class AgentsConfig:
             ),
             automation=AutomationConfig(
                 planner=automation.get("planner", "codex"),
+                default_agent=automation.get("default_agent", ""),
                 task_agent=automation.get("task_agent", "dual"),
                 executor=automation.get("executor", "builtin"),
                 auto_execute=automation.get("auto_execute", True),
@@ -1019,6 +1021,8 @@ stale_minutes = 30
 [automation]
 # 纯文本需求模式默认使用 Codex 规划，规划出的任务默认交给 task_agent 执行
 planner = "codex"
+# chat 默认启动的 MCP agent；留空时使用 opencode
+default_agent = ""
 # 自动规划出来的任务默认交给哪个执行智能体
 task_agent = "dual"
 executor = "builtin"
@@ -1182,6 +1186,7 @@ stale_minutes = 30
 
 [automation]
 planner = "codex"
+default_agent = ""
 executor = "builtin"
 auto_execute = true
 confirm_before_execute = false
