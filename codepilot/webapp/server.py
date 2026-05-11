@@ -23,6 +23,7 @@ import os
 import re
 import threading
 import webbrowser
+from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -200,6 +201,43 @@ def _project_upload_dir(project_name: str) -> Path:
     return upload_dir
 
 
+# 默认排除目录
+_IGNORE_DIRS = frozenset({
+    ".git", "node_modules", ".next", ".codepilot", "__pycache__",
+    ".venv", "venv", "env", "dist", "build", ".workbuddy",
+    ".claude", "target", "bin", "obj", ".tox", ".ruff_cache",
+    ".mypy_cache", ".pytest_cache", ".coverage", "htmlcov",
+})
+
+
+@lru_cache(maxsize=32)
+def _get_project_files_cached(project_path: str) -> tuple[tuple[str, str], ...]:
+    """带缓存的项目文件列表扫描（按修改时间倒序）。
+
+    返回 (path, name) 元组组成的元组，便于缓存哈希。
+    缓存 key 是项目路径，最多缓存 32 个项目的文件列表。
+    """
+    root = Path(project_path).resolve()
+    files: list[tuple[str, str]] = []
+    for f in root.rglob("*"):
+        if not f.is_file():
+            continue
+        try:
+            rel = f.relative_to(root)
+            parts = rel.parts
+            if parts and parts[0] in _IGNORE_DIRS:
+                continue
+            if any(p.startswith(".") for p in parts[:-1]):
+                continue
+            files.append((str(rel.as_posix()), f.name, f.stat().st_mtime))
+        except (OSError, ValueError):
+            continue
+    # 按修改时间倒序排序
+    files.sort(key=lambda x: x[2], reverse=True)
+    # 返回时去掉时间戳以节省缓存空间
+    return tuple((path, name) for path, name, _ in files)
+
+
 def _search_project_files(project_name: str, query: str) -> dict:
     """搜索项目下匹配的文件路径，用于 @ 文件引用。"""
     project = db.get_project(project_name)
@@ -207,49 +245,24 @@ def _search_project_files(project_name: str, query: str) -> dict:
         return {"files": [], "error": f"项目 '{project_name}' 不存在"}
     root = Path(project["path"]).resolve()
 
-    # 默认排除目录
-    ignore_dirs = {".git", "node_modules", ".next", ".codepilot", "__pycache__",
-                   ".venv", "venv", "env", "dist", "build", ".workbuddy",
-                   ".claude", "target", "bin", "obj", ".tox", ".ruff_cache",
-                   ".mypy_cache", ".pytest_cache", ".coverage", "htmlcov"}
+    # 使用缓存的文件列表
+    all_files = _get_project_files_cached(str(root))
 
     results: list[dict] = []
     if not query:
         # 无搜索词时返回最近修改的前 30 个文件
-        for f in sorted(root.rglob("*"), key=lambda p: p.stat().st_mtime if p.is_file() else 0, reverse=True):
-            if not f.is_file():
-                continue
-            rel = f.relative_to(root)
-            parts = rel.parts
-            if parts and parts[0] in ignore_dirs:
-                continue
-            if any(p.startswith(".") for p in parts[:-1]):
-                continue
-            results.append({
-                "path": str(rel.as_posix()),
-                "name": f.name,
-            })
+        for path, name in all_files:
+            results.append({"path": path, "name": name})
             if len(results) >= 30:
                 break
         return {"files": results}
 
     # 有搜索词时模糊匹配
     q = query.lower()
-    for f in sorted(root.rglob("*"), key=lambda p: p.stat().st_mtime if p.is_file() else 0, reverse=True):
-        if not f.is_file():
-            continue
-        rel = f.relative_to(root)
-        parts = rel.parts
-        if parts and parts[0] in ignore_dirs:
-            continue
-        if any(p.startswith(".") for p in parts[:-1]):
-            continue
-        rel_str = rel.as_posix().lower()
-        if q in rel_str or q in f.name.lower():
-            results.append({
-                "path": str(rel.as_posix()),
-                "name": f.name,
-            })
+    for path, name in all_files:
+        path_lower = path.lower()
+        if q in path_lower or q in name.lower():
+            results.append({"path": path, "name": name})
             if len(results) >= 20:
                 break
     return {"files": results}
