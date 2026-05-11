@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from codepilot.mcp.launchers import LaunchPlan, MCPServerSpec, normalize_mcp_servers
+from codepilot.mcp.launchers.language import with_chinese_interaction_instructions
 
 
 def build_launch_plan(
@@ -27,8 +28,7 @@ def build_launch_plan(
         "--ephemeral",
         "--dangerously-bypass-approvals-and-sandbox",
     ]
-    if prompt:
-        command.append(prompt)
+    command.append(with_chinese_interaction_instructions(prompt))
     return LaunchPlan(
         agent="codex",
         command=command,

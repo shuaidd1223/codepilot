@@ -12,9 +12,7 @@ import click
 
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core import config as config_mod
-from codepilot.core import event_plugins
 from codepilot.core.gitignore import ensure_gitignore_entry
-from codepilot.core import skill_catalog
 from codepilot.core.output import echo, safe
 from codepilot.storage import database as db
 
@@ -136,10 +134,14 @@ def _setup_config(root: Path, project_name: str, *, dry_run: bool) -> list[dict[
         if write_secrets:
             if dry_run:
                 actions.append(_action("secrets", secrets_path, root, "would_create", "将迁移内联飞书 App Secret。"))
+                status = ensure_gitignore_entry(root, config_mod.SECRETS_FILENAME, dry_run=True)
+                actions.append(_action("gitignore", root / ".gitignore", root, status, "确保 secrets 覆盖文件不被提交。"))
             else:
                 merged_secrets = config_cmd._merge_secret_dicts(existing_secrets, sync_secrets)
                 secrets_path.write_text(config_cmd.render_secrets_toml(merged_secrets), encoding="utf-8")
                 actions.append(_action("secrets", secrets_path, root, "created", "已迁移内联飞书 App Secret。"))
+                status = ensure_gitignore_entry(root, config_mod.SECRETS_FILENAME)
+                actions.append(_action("gitignore", root / ".gitignore", root, status, "确保 secrets 覆盖文件不被提交。"))
         return actions
 
     if dry_run:
@@ -171,28 +173,6 @@ def _setup_gitignore(root: Path, *, dry_run: bool) -> dict[str, Any]:
     status = ensure_gitignore_entry(root, config_mod.CONFIG_FILENAME, dry_run=dry_run)
     detail = "确保 AGENTS.toml 不被提交到项目仓库。"
     return _action("gitignore", root / ".gitignore", root, status, detail)
-
-
-def _setup_event_registry(root: Path, *, dry_run: bool) -> dict[str, Any]:
-    result = event_plugins.ensure_event_registry(root, dry_run=dry_run)
-    return _action(
-        "event_registry",
-        Path(result["path"]),
-        root,
-        str(result["status"]),
-        "项目本地事件 sink registry。",
-    )
-
-
-def _setup_skill_catalog(root: Path, *, dry_run: bool) -> dict[str, Any]:
-    result = skill_catalog.ensure_skill_catalog(root, dry_run=dry_run)
-    return _action(
-        "skill_catalog",
-        Path(result["path"]),
-        root,
-        str(result["status"]),
-        "项目本地 skill catalog。",
-    )
 
 
 def _find_first_command(names: tuple[str, ...]) -> str | None:
@@ -337,8 +317,6 @@ def setup_project(
     actions.extend(_setup_config(root, resolved_name, dry_run=dry_run))
     actions.append(_setup_gitignore(root, dry_run=dry_run))
     actions.extend(_setup_directories(root, dry_run=dry_run))
-    actions.append(_setup_event_registry(root, dry_run=dry_run))
-    actions.append(_setup_skill_catalog(root, dry_run=dry_run))
     actions.append(
         _setup_claude_auto_install(
             root,

@@ -621,6 +621,30 @@ def _check_api_keys() -> list[CheckResult]:
             ))
             continue
 
+        # 检查配置文件中是否有显式启用该 provider 且配置了 api_key
+        # 只有当用户主动启用了某个 provider 但没有配置 api_key 时才提示
+        has_explicit_enabled_provider = False
+        if cfg and cfg.config_file_path:
+            try:
+                if sys.version_info >= (3, 11):
+                    import tomllib
+                else:
+                    import tomli as tomllib
+                with open(cfg.config_file_path, "rb") as f:
+                    config_data = tomllib.load(f)
+                providers_section = config_data.get("providers", {})
+                for provider_name in missing:
+                    provider_config = providers_section.get(provider_name, {})
+                    if provider_config.get("enabled", False) and not provider_config.get("api_key", "").strip():
+                        has_explicit_enabled_provider = True
+                        break
+            except Exception:
+                pass
+
+        # 只有显式启用但未配置 api_key 的才显示提示，否则静默跳过
+        if not has_explicit_enabled_provider:
+            continue
+
         if resolved_names:
             detail = (
                 f"{env_var} 仅部分配置（已配置: {', '.join(resolved_names[:3])}"
@@ -636,7 +660,7 @@ def _check_api_keys() -> list[CheckResult]:
             True,
             detail,
             fix=f"设置环境变量 {env_var}，或在 AGENTS.toml [providers] 中配置 api_key",
-            severity="warning",
+            severity="info",
         ))
 
     return results
@@ -804,7 +828,7 @@ def run_project_checks(project_info: dict | None, *, include_services: bool = Fa
     if project_info:
         results.append(_project_config_check(project_info))
     results.append(_feishu_config_check(project_info))
-    if not include_services and not project_info:
+    if not include_services:
         return results
 
     project_name = str(project_info.get("name") or "") if project_info else ""
@@ -969,4 +993,3 @@ def doctor(ctx: click.Context, json_mode: bool, project: str | None, services: b
         echo()
 
     echo()
-

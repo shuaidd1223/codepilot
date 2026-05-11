@@ -6,20 +6,34 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
+from io import StringIO
+from importlib import import_module
 from pathlib import Path
 from typing import Iterable, Optional, TextIO
 
 import click
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from codepilot.ai_support.cli_families import env_var_for, get_family
 from codepilot.core.config import AgentsConfig, load_project_config
 from codepilot.mcp.launchers import build_mcp_launch_plan
+from codepilot.mcp.server import _missing_mcp_sdk_message
+from codepilot.opencode.env import build_agent_launch_env, build_opencode_config_from_agents_config, clean_agent_env
+from codepilot.opencode.model_state import (
+    load_latest_project_session_id,
+    resolve_project_model_selection,
+    sync_latest_project_model_selection,
+)
+from codepilot.opencode.paths import opencode_runtime_config_path, opencode_runtime_db_path
 from codepilot.storage import database as db
 
 SUPPORTED_CHAT_AGENTS = ("claude", "codex", "opencode")
 DEFAULT_CHAT_AGENT = "opencode"
-MCP_SERVER_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 AGENT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
@@ -29,14 +43,16 @@ class _PreparedChatLaunch:
     command: list[str]
     cwd: Path
     env: dict[str, str]
-    mcp_process: subprocess.Popen
+    opencode_db_path: Path | None = None
+    opencode_scope: str = ""
+    requested_session: str = ""
 
 
 @dataclass(frozen=True)
 class _RunningChatAgent:
     agent: str
     process: subprocess.Popen
-    mcp_process: subprocess.Popen
+    launch: _PreparedChatLaunch
 
 
 def _root_options(ctx: click.Context) -> dict:
@@ -110,58 +126,243 @@ def _codepilot_mcp_command(project: str | None) -> list[str]:
     return command
 
 
-def _codepilot_mcp_servers(project: str | None) -> dict[str, dict[str, object]]:
+def _codepilot_source_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _pythonpath_with_source_root(source_root: Path) -> str:
+    existing = os.environ.get("PYTHONPATH", "").strip()
+    if not existing:
+        return str(source_root)
+    entries = [str(source_root), *[item for item in existing.split(os.pathsep) if item]]
+    return os.pathsep.join(dict.fromkeys(entries))
+
+
+def _codepilot_mcp_servers(
+    project: str | None,
+    *,
+    source_root: Path | None = None,
+) -> dict[str, dict[str, object]]:
     command = _codepilot_mcp_command(project)
+    root = Path(source_root or _codepilot_source_root()).resolve()
     return {
         "codepilot": {
             "command": command[0],
             "args": command[1:],
+            "env": {"PYTHONPATH": _pythonpath_with_source_root(root)},
         }
     }
 
 
-def _start_codepilot_mcp_server(
-    *,
-    project: str | None,
-    cwd: Path,
-    env: dict[str, str],
-) -> subprocess.Popen:
-    return subprocess.Popen(
-        _codepilot_mcp_command(project),
-        cwd=str(cwd),
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+def _ensure_mcp_sdk_available() -> None:
+    try:
+        import_module("mcp.server.fastmcp")
+    except ModuleNotFoundError as exc:
+        missing = str(getattr(exc, "name", "") or "")
+        if missing == "mcp" or missing.startswith("mcp."):
+            raise click.ClickException(_missing_mcp_sdk_message()) from exc
+        raise
+
+
+def _chat_agent_label(agent: str) -> str:
+    labels = {
+        "claude": "Claude",
+        "codex": "Codex",
+        "opencode": "OpenCode",
+    }
+    return labels.get(agent, agent)
+
+
+def _chat_launch_label(launch: _PreparedChatLaunch) -> str:
+    if launch.agent == "opencode":
+        brand_name = str(launch.env.get("CODEPILOT_OPENCODE_BRAND_NAME") or "").strip()
+        if brand_name:
+            return brand_name
+    return _chat_agent_label(launch.agent)
+
+
+def _set_terminal_title(title: str) -> None:
+    if not title or not bool(getattr(sys.stdout, "isatty", lambda: False)()):
+        return
+    try:
+        sys.stdout.write(f"\x1b]0;{title}\x07")
+        sys.stdout.flush()
+    except Exception:
+        return
+
+
+def _reset_terminal_after_tui() -> None:
+    if not bool(getattr(sys.stdout, "isatty", lambda: False)()):
+        return
+    # Defensive cleanup for TUIs that leave mouse/focus reporting enabled.
+    sequence = "".join(
+        (
+            "\x1b[?1000l",  # X10 mouse
+            "\x1b[?1002l",  # button-event mouse
+            "\x1b[?1003l",  # any-event mouse
+            "\x1b[?1005l",  # UTF-8 mouse
+            "\x1b[?1006l",  # SGR mouse
+            "\x1b[?1015l",  # urxvt mouse
+            "\x1b[?1004l",  # focus events
+            "\x1b[?25h",  # show cursor
+            "\x1b[0m",  # reset style
+        )
     )
-
-
-def _stop_codepilot_mcp_server(process: subprocess.Popen) -> None:
-    poll = getattr(process, "poll", None)
-    if callable(poll) and poll() is not None:
-        return
     try:
-        process.terminate()
-    except Exception:
-        _kill_codepilot_mcp_server(process)
-        return
-    try:
-        process.wait(timeout=MCP_SERVER_SHUTDOWN_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        _kill_codepilot_mcp_server(process)
-    except Exception:
-        _kill_codepilot_mcp_server(process)
-
-
-def _kill_codepilot_mcp_server(process: subprocess.Popen) -> None:
-    try:
-        process.kill()
+        sys.stdout.write(sequence)
+        sys.stdout.flush()
     except Exception:
         return
+
+
+def _clear_terminal_screen_for_codepilot() -> None:
+    """Clear stale startup/TUI output before CodePilot renders its own panel."""
+    sequence = "".join(
+        (
+            "\x1b[?1000l",
+            "\x1b[?1002l",
+            "\x1b[?1003l",
+            "\x1b[?1005l",
+            "\x1b[?1006l",
+            "\x1b[?1015l",
+            "\x1b[?1004l",
+            "\x1b[?25h",
+            "\x1b[0m",
+            "\x1b[2J\x1b[H",
+        )
+    )
+    wrote = False
+    for stream in (sys.stderr, sys.stdout):
+        if not bool(getattr(stream, "isatty", lambda: False)()):
+            continue
+        try:
+            stream.write(sequence)
+            stream.flush()
+            wrote = True
+        except Exception:
+            continue
+    if wrote:
+        return
+
+
+def _print_codepilot_resume_hint(launch: _PreparedChatLaunch, *, project: str | None) -> None:
+    if launch.agent != "opencode" or launch.opencode_db_path is None:
+        return
+    session_id = launch.requested_session or load_latest_project_session_id(
+        launch.cwd,
+        db_path=launch.opencode_db_path,
+    )
+    if not session_id:
+        return
+    command = _codepilot_resume_command(session_id, project=project)
+    click.echo(_codepilot_resume_panel(command, session_id=session_id), err=True)
+
+
+def _replace_opencode_exit_screen(launch: _PreparedChatLaunch) -> None:
+    if launch.agent != "opencode":
+        return
+    if not bool(getattr(sys.stdout, "isatty", lambda: False)()):
+        return
     try:
-        process.wait(timeout=MCP_SERVER_SHUTDOWN_TIMEOUT_SECONDS)
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
     except Exception:
         return
+
+
+def _codepilot_resume_command(session_id: str, *, project: str | None = None) -> str:
+    parts = ["codepilot", "chat"]
+    if project:
+        parts.extend(["--project", project])
+    parts.extend(["--session", session_id])
+    return " ".join(parts)
+
+
+def _codepilot_resume_panel(command: str, *, session_id: str = "") -> str:
+    table = Table.grid(padding=(0, 1))
+    table.add_column(justify="right", style="cyan", no_wrap=True)
+    table.add_column(style="white")
+    if session_id:
+        table.add_row("会话", Text(session_id, style="bold green"))
+    table.add_row("恢复", Text(command, style="bold"))
+    output = StringIO()
+    console = Console(
+        file=output,
+        width=88,
+        force_terminal=False,
+        color_system=None,
+        highlight=False,
+        legacy_windows=False,
+        safe_box=False,
+    )
+    console.print(
+        Panel(
+            table,
+            title="CodePilot 会话已暂停",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+    return output.getvalue().rstrip()
+
+
+def _stderr_is_tty() -> bool:
+    return bool(getattr(sys.stderr, "isatty", lambda: False)())
+
+
+@contextmanager
+def _chat_startup_status(message: str):
+    if _stderr_is_tty():
+        console = Console(file=sys.stderr, highlight=False)
+        with console.status(f"[cyan]{message}[/cyan]", spinner="dots"):
+            yield
+        return
+
+    yield
+
+
+def _chat_startup_notice(message: str) -> None:
+    if _stderr_is_tty():
+        try:
+            sys.stderr.write(_chat_startup_frame(message, fill=8, phase=0))
+            sys.stderr.flush()
+        except Exception:
+            return
+        return
+    click.echo(message, err=True)
+
+
+def _clear_chat_startup_notice() -> None:
+    if not _stderr_is_tty():
+        return
+    try:
+        sys.stderr.write("\x1b[?25h\x1b[0m\x1b[?1049l")
+        sys.stderr.flush()
+    except Exception:
+        return
+
+
+def _chat_startup_frame(message: str, *, fill: int, phase: int) -> str:
+    fill = max(0, min(fill, 8))
+    bar = "█" * fill + "░" * (8 - fill)
+    dots = "." * ((phase % 3) + 1)
+    return "\n".join(
+        [
+            "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H",
+            "",
+            "        _____ ____  _____  ______ _____ _____ _      ____ _______",
+            "       / ____/ __ \\|  __ \\|  ____|  __ \\_   _| |    / __ \\__   __|",
+            "      | |   | |  | | |  | | |__  | |__) || | | |   | |  | | | |",
+            "      | |   | |  | | |  | |  __| |  ___/ | | | |   | |  | | | |",
+            "      | |___| |__| | |__| | |____| |    _| |_| |___| |__| | | |",
+            "       \\_____\\____/|_____/|______|_|   |_____|______\\____/  |_|",
+            "",
+            "                                      CODEPILOT",
+            "                         项目工作流智能体正在接入 OpenCode",
+            f"                         {bar}  {message}{dots}",
+            "",
+        ]
+    )
 
 
 def _stop_chat_agent_process(process: subprocess.Popen) -> None:
@@ -211,38 +412,96 @@ def _write_launch_config_files(config_files: dict[str, str], *, cwd: Path) -> No
         path.write_text(content, encoding="utf-8")
 
 
-def _prepare_mcp_agent_chat(*, agent: str, project: str | None, prompt: str) -> _PreparedChatLaunch:
+def _prepare_mcp_agent_chat(
+    *,
+    agent: str,
+    project: str | None,
+    prompt: str,
+    session: str | None = None,
+) -> _PreparedChatLaunch:
     record = _project_record(project)
     cfg = load_project_config(record or Path.cwd())
     cwd = Path(record["path"]).resolve() if record else Path.cwd().resolve()
-    server_project = project or (str(record.get("name") or "") if record else None)
+    server_project = str(record.get("name") or "") if record else None
+    _ensure_mcp_sdk_available()
     executable = _resolve_agent_executable(agent, cfg)
+    family = get_family(agent)
+    runtime_scope = server_project or cwd.name
+    is_opencode = family is not None and family.name == "opencode"
+    source_root = _codepilot_source_root()
+    opencode_db = opencode_runtime_db_path(runtime_scope) if is_opencode else None
+    session_id = str(session or "").strip()
+    config_path = (
+        opencode_runtime_config_path(runtime_scope)
+        if is_opencode
+        else None
+    )
     plan = build_mcp_launch_plan(
         agent,
         executable=executable,
         prompt=prompt,
-        mcp_servers=_codepilot_mcp_servers(server_project),
+        mcp_servers=_codepilot_mcp_servers(server_project, source_root=source_root),
+        config_path=config_path,
+        opencode_config=build_opencode_config_from_agents_config(
+            cfg,
+            preferred_model=resolve_project_model_selection(runtime_scope, cwd, db_path=opencode_db),
+        )
+        if is_opencode
+        else None,
+        opencode_session=session_id if is_opencode else None,
     )
-    _write_launch_config_files(plan.config_files, cwd=cwd)
+    if plan.config_files:
+        _write_launch_config_files(plan.config_files, cwd=cwd)
     env = os.environ.copy()
     env.update(plan.env)
-    mcp_process = _start_codepilot_mcp_server(project=server_project, cwd=cwd, env=env)
+    configured_keys = build_agent_launch_env(agent, cfg)
+    env.update(configured_keys)
+    clean_agent_env(env, cfg)
     return _PreparedChatLaunch(
         agent=agent,
         command=plan.command,
         cwd=cwd,
         env=env,
-        mcp_process=mcp_process,
+        opencode_db_path=opencode_db,
+        opencode_scope=runtime_scope if is_opencode else "",
+        requested_session=session_id,
     )
 
 
-def _launch_mcp_agent_chat(*, agent: str, project: str | None = None, prompt: str = "") -> int:
-    launch = _prepare_mcp_agent_chat(agent=agent, project=project, prompt=prompt)
+def _prepare_chat_launch_with_feedback(
+    *,
+    agent: str,
+    project: str | None,
+    prompt: str,
+    session: str | None = None,
+) -> _PreparedChatLaunch:
+    try:
+        with _chat_startup_status("正在准备 CodePilot MCP 工具..."):
+            return _prepare_mcp_agent_chat(agent=agent, project=project, prompt=prompt, session=session)
+    except Exception:
+        click.echo("CodePilot MCP 配置准备失败。", err=True)
+        raise
+
+
+def _launch_mcp_agent_chat(
+    *,
+    agent: str,
+    project: str | None = None,
+    prompt: str = "",
+    session: str | None = None,
+) -> int:
+    launch = _prepare_chat_launch_with_feedback(agent=agent, project=project, prompt=prompt, session=session)
+    label = _chat_launch_label(launch)
+    _set_terminal_title(label)
+    _chat_startup_notice(f"正在启动 {label} TUI，初始化 MCP 可能需要几秒...")
+    _clear_chat_startup_notice()
     try:
         completed = subprocess.run(launch.command, cwd=str(launch.cwd), env=launch.env)
         return int(completed.returncode)
     finally:
-        _stop_codepilot_mcp_server(launch.mcp_process)
+        _sync_opencode_model_selection(launch)
+        _reset_terminal_after_tui()
+        _print_codepilot_resume_hint(launch, project=project)
 
 
 def _start_mcp_agent_chat_process(
@@ -250,9 +509,14 @@ def _start_mcp_agent_chat_process(
     agent: str,
     project: str | None,
     prompt: str,
+    session: str | None = None,
 ) -> _RunningChatAgent:
-    launch = _prepare_mcp_agent_chat(agent=agent, project=project, prompt=prompt)
+    launch = _prepare_chat_launch_with_feedback(agent=agent, project=project, prompt=prompt, session=session)
     try:
+        label = _chat_launch_label(launch)
+        _set_terminal_title(label)
+        _chat_startup_notice(f"正在启动 {label} TUI，初始化 MCP 可能需要几秒...")
+        _clear_chat_startup_notice()
         process = subprocess.Popen(
             launch.command,
             cwd=str(launch.cwd),
@@ -261,12 +525,11 @@ def _start_mcp_agent_chat_process(
             text=True,
         )
     except Exception:
-        _stop_codepilot_mcp_server(launch.mcp_process)
         raise
     return _RunningChatAgent(
         agent=agent,
         process=process,
-        mcp_process=launch.mcp_process,
+        launch=launch,
     )
 
 
@@ -294,12 +557,29 @@ def _finish_running_chat_agent(running: _RunningChatAgent) -> int:
     try:
         return int(running.process.wait())
     finally:
-        _stop_codepilot_mcp_server(running.mcp_process)
+        _sync_opencode_model_selection(running.launch)
+        _reset_terminal_after_tui()
 
 
 def _restart_running_chat_agent(running: _RunningChatAgent) -> None:
-    _stop_chat_agent_process(running.process)
-    _stop_codepilot_mcp_server(running.mcp_process)
+    try:
+        _stop_chat_agent_process(running.process)
+    finally:
+        _sync_opencode_model_selection(running.launch)
+        _reset_terminal_after_tui()
+
+
+def _sync_opencode_model_selection(launch: _PreparedChatLaunch) -> None:
+    if launch.agent != "opencode" or not launch.opencode_scope or launch.opencode_db_path is None:
+        return
+    try:
+        sync_latest_project_model_selection(
+            launch.opencode_scope,
+            launch.cwd,
+            db_path=launch.opencode_db_path,
+        )
+    except Exception:
+        return
 
 
 def _run_mcp_agent_chat_session(
@@ -307,10 +587,11 @@ def _run_mcp_agent_chat_session(
     agent: str,
     project: str | None = None,
     prompt: str = "",
+    session: str | None = None,
     input_stream: Iterable[str] | TextIO | None = None,
 ) -> int:
     if input_stream is None:
-        return _launch_mcp_agent_chat(agent=agent, project=project, prompt=prompt)
+        return _launch_mcp_agent_chat(agent=agent, project=project, prompt=prompt, session=session)
 
     current_agent = _normalize_chat_agent(agent)
     current_prompt = prompt
@@ -319,6 +600,7 @@ def _run_mcp_agent_chat_session(
             agent=current_agent,
             project=project,
             prompt=current_prompt,
+            session=session if current_agent == "opencode" else None,
         )
         next_agent: str | None = None
         try:
@@ -344,11 +626,15 @@ def _run_mcp_agent_chat_session(
                 break
             if next_agent is None:
                 return _finish_running_chat_agent(running)
+        except KeyboardInterrupt:
+            _restart_running_chat_agent(running)
+            raise
         except Exception:
             _restart_running_chat_agent(running)
             raise
         current_agent = next_agent
         current_prompt = ""
+        session = None
 
 
 @click.command("chat")
@@ -361,26 +647,38 @@ def _run_mcp_agent_chat_session(
     default=None,
     help="启动的 MCP chat agent；默认读取 [automation].default_agent，否则 opencode",
 )
+@click.option(
+    "--session",
+    "-s",
+    "session",
+    default=None,
+    help="恢复 CodePilot 隔离 OpenCode 会话 ID",
+)
 @click.pass_context
 def chat(
     ctx: click.Context,
     project: Optional[str],
     agent: Optional[str],
+    session: Optional[str] = None,
 ):
     """启动 MCP agent chat (claude / codex / opencode)."""
     root_obj = _root_options(ctx)
     project = project or root_obj.get("direct_project")
     agent = agent or root_obj.get("agent")
+    session = session or root_obj.get("chat_session")
 
     resolved_agent = _resolve_chat_agent(agent, project)
     try:
-        input_stream = sys.stdin if getattr(sys.stdin, "isatty", lambda: False)() else None
-        exit_code = _run_mcp_agent_chat_session(
-            agent=resolved_agent,
-            project=project,
-            prompt="",
-            input_stream=input_stream,
-        )
+        input_stream = None if session or getattr(sys.stdin, "isatty", lambda: False)() else sys.stdin
+        launch_kwargs = {
+            "agent": resolved_agent,
+            "project": project,
+            "prompt": "",
+            "input_stream": input_stream,
+        }
+        if session:
+            launch_kwargs["session"] = session
+        exit_code = _run_mcp_agent_chat_session(**launch_kwargs)
     except click.ClickException:
         raise
     except Exception as exc:

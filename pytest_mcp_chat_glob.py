@@ -1,20 +1,24 @@
-"""Pytest argv compatibility for the Phase 5 MCP chat verification entrypoint."""
+"""Pytest argv compatibility for documented verification entrypoint globs."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-_MCP_CHAT_GLOB = "tests/test_mcp_chat_*"
+_KNOWN_TEST_GLOBS = {
+    "tests/test_mcp_chat_*",
+    "tests/test_opencode_*",
+    "tests/test_scheduled_*",
+}
 
 
 def expand_mcp_chat_test_globs(args: list[str], *, root: Path) -> list[str]:
     expanded: list[str] = []
     for arg in args:
         normalized = arg.replace("\\", "/")
-        if normalized == _MCP_CHAT_GLOB:
+        if normalized in _KNOWN_TEST_GLOBS:
             matches = sorted(
                 path.relative_to(root).as_posix()
-                for path in root.glob(_MCP_CHAT_GLOB)
+                for path in root.glob(normalized)
                 if path.is_file()
             )
             expanded.extend(matches or [arg])

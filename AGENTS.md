@@ -28,3 +28,26 @@
 - Python 改动优先运行相关 `pytest`；范围不明确时运行 `pytest -q`。
 - 前端资源改动至少做静态检查或浏览器手工验证，并在结果中说明。
 - 交付说明必须包含改动摘要、涉及文件和验证结果；未运行的检查要说明原因。
+
+## Project-Specific Guidance
+
+### 测试配置
+- 测试运行使用 pytest-xdist 并行（`-n auto --dist loadfile`），同文件内测试留同一 worker
+- 日常开发跳过慢速测试：`pytest -m 'not slow'`
+- 标记为 `slow` 的用例耗时 >10s，用于 git worktree / full pipeline / self iteration
+- 标记为 `serial` 的用例必须串行执行（持有全局锁、共享 daemon、抢端口等）
+
+### 任务执行模式（AGENTS.toml）
+- 当前项目使用 `task_workspace = "direct"`：任务直接在主工作目录执行，不新建分支或 worktree
+- `per_task_branch = false`：禁用每任务分支
+- fallback_cli_order = `["codex", "opencode"]`：codex 不可用时自动降级到 opencode
+
+### 关键入口
+- CLI 入口：`codepilot`（通过 pyproject.toml 定义）
+- MCP 工具通过 `codepilot.mcp` 包提供
+- Web UI：`codepilot ui start`
+- 飞书机器人：`codepilot feishu start`
+
+### 重要约束
+- 不要在 `AGENTS.toml` 中配置 `codex_cmd` / `claude_cmd`（旧格式已废弃）
+- 外部任务投递必须使用 `codepilot add -f` 并符合 `codepilot ai template --format json` 格式

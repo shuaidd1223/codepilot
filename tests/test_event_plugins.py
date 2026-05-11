@@ -21,18 +21,22 @@ def _init_project(tmp_path: Path, monkeypatch) -> Path:
     return project
 
 
-def test_setup_creates_default_event_sink_registry(tmp_path, monkeypatch):
+def test_setup_does_not_materialize_default_event_sink_registry(tmp_path, monkeypatch):
     project = _init_project(tmp_path, monkeypatch)
 
     registry_path = project / ".codepilot" / "events" / "sinks.json"
-    assert registry_path.is_file()
-    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert not registry_path.exists()
+    result = CliRunner().invoke(main, ["event", "list", "-p", "project", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    registry = payload["data"]
 
     assert registry["schema_version"] == 1
     assert registry["sinks"][0]["name"] == "local-jsonl"
     assert registry["sinks"][0]["type"] == "jsonl"
     assert registry["sinks"][0]["enabled"] is False
     assert registry["sinks"][0]["path"] == ".codepilot/events/events.jsonl"
+    assert not registry_path.exists()
 
 
 def test_event_list_outputs_registered_sinks_json(tmp_path, monkeypatch):

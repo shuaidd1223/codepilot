@@ -101,3 +101,29 @@ def test_build_event_agent_jobs_skips_disabled_agents():
     )
 
     assert jobs == []
+
+
+def test_build_event_agent_jobs_preserves_reserved_template_context_keys():
+    configs = {
+        "commit_review": EventAgentConfig(
+            trigger="commit",
+            agent="codex",
+            prompt="event={{ event.id }} payload={{ payload.foo }} top={{ foo }}",
+        ),
+    }
+
+    jobs = build_event_agent_jobs(
+        configs,
+        {
+            "type": "commit",
+            "id": "outer-event",
+            "project": "demo",
+            "payload": {
+                "event": {"id": "payload-event"},
+                "payload": {"foo": "payload-payload"},
+                "foo": "top-value",
+            },
+        },
+    )
+
+    assert jobs[0]["prompt"] == "event=outer-event payload=top-value top=top-value"

@@ -7,6 +7,7 @@ from typing import Any
 
 from codepilot.core.config import load_project_config
 from codepilot.scheduled.daemon import run_project_agent_jobs
+from codepilot.scheduled.templates import render_prompt_template
 
 
 def test_default_scheduled_agents_dry_run_end_to_end(tmp_path: Path, monkeypatch):
@@ -23,6 +24,7 @@ def test_default_scheduled_agents_dry_run_end_to_end(tmp_path: Path, monkeypatch
     assert config is not None
 
     scheduled = config.automation.scheduled_agents
+    event_agents = config.automation.event_agents
     assert set(scheduled) >= {"task_health", "daily_summary", "auto_inspect"}
     assert scheduled["task_health"].enabled is True
     assert scheduled["task_health"].interval == "10m"
@@ -31,6 +33,14 @@ def test_default_scheduled_agents_dry_run_end_to_end(tmp_path: Path, monkeypatch
     assert "Feishu" in scheduled["daily_summary"].prompt
     assert scheduled["auto_inspect"].enabled is True
     assert scheduled["auto_inspect"].interval == "30m"
+    assert "failed_task_triage" in event_agents
+    task_failed_prompt = render_prompt_template(
+        event_agents["failed_task_triage"].prompt,
+        {"task_id": 42, "error_message": "pytest failed"},
+    )
+    assert "[[missing:" not in task_failed_prompt
+    assert "42" in task_failed_prompt
+    assert "pytest failed" in task_failed_prompt
 
     subprocess_calls: list[Any] = []
 

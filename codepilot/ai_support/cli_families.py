@@ -110,7 +110,7 @@ CLI_FAMILIES: dict[str, CLIFamily] = {
         env_bridge=EnvBridge(
             family_name="codex",
             target_var="OPENAI_API_KEY",
-            source_providers=OPENAI_PROVIDER_KEYS,
+            source_providers=tuple(key for key in OPENAI_PROVIDER_KEYS if key != "openai"),
             native_auth_paths=(_codex_auth_path,),
         ),
     ),

@@ -12,7 +12,7 @@ Selection rule (smart auto-pick):
                          Injects ``ANTHROPIC_API_KEY``.
   2. openai-compatible — ``deepseek`` provider has a key + ``base_url``.
                          Injects ``OPENAI_API_KEY`` and ``OPENAI_BASE_URL``.
-  3. openai            — any ``openai-*`` provider has a key.
+  3. openai            — ``openai`` or any ``openai-*`` provider has a key.
                          Injects ``OPENAI_API_KEY`` (+ ``OPENAI_BASE_URL`` only if
                          the provider has a custom ``base_url``).
 
@@ -33,7 +33,7 @@ from typing import Any, Callable
 from codepilot.core.config import AgentsConfig, ProviderAPIConfig
 
 ANTHROPIC_PROVIDER_KEYS = ("claude-opus", "claude-sonnet", "claude-haiku")
-OPENAI_PROVIDER_KEYS = ("openai-gpt4", "openai-gpt4o", "openai-gpt35")
+OPENAI_PROVIDER_KEYS = ("openai", "openai-gpt4", "openai-gpt4o", "openai-gpt35")
 DEEPSEEK_PROVIDER_KEY = "deepseek"
 
 
@@ -115,7 +115,7 @@ def select_opencode_backend(cfg: AgentsConfig) -> OpenCodeBackendSelection:
         "请在 AGENTS.toml / .codepilot.secrets.toml 里至少配置以下任一项："
         "anthropic（claude-opus/sonnet/haiku 任意一个），"
         "deepseek（含 base_url），"
-        "或 openai-gpt4 / openai-gpt4o / openai-gpt35。"
+        "或 openai / openai-gpt4 / openai-gpt4o / openai-gpt35。"
     )
 
 

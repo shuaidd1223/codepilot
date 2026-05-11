@@ -103,7 +103,7 @@ max_daily_cost_usd = 0.50
 enabled = false
 trigger = "task.failed"
 agent = "codex"
-prompt = "Task {{ task.id }} failed with {{ task.error }}. Suggest the smallest repair."
+prompt = "Task {{ task_id }} failed with {{ error_message }}. Suggest the smallest repair."
 max_cost_usd = 0.10
 max_daily_cost_usd = 0.50
 ```
@@ -183,6 +183,20 @@ enabled = true
 迁移提示：旧版 `[agents] codex_cmd / claude_cmd` 已删除，加载时会抛 `ConfigError` 并给出
 迁移示例。运行 `codepilot config sync -p <项目名>` 可一键重写旧文件到新格式。
 
+### OpenCode 专用模式
+
+`codepilot chat -a opencode` 使用官方 OpenCode 二进制作为可更新内核，同时由 CodePilot 在启动前生成
+用户级运行时配置：`~/.codepilot/opencode/<项目标识>/opencode.json`、`tui.json` 和 `config/` 目录，并注入：
+
+- `OPENCODE_CONFIG`：包含 CodePilot MCP、默认 agent、commands、instructions、permission、tools。
+- `OPENCODE_TUI_CONFIG`：包含 TUI theme、滚动、diff、默认关闭 mouse reporting 和 CodePilot 品牌 TUI plugin。
+- `OPENCODE_CONFIG_DIR`：包含 `agents/codepilot.md`、`commands/*.md`、`instructions/*.md`、`tui-plugins/codepilot-brand.tsx`，用于 OpenCode 原生 agent/command/plugin 发现。
+- `OPENCODE_DISABLE_TERMINAL_TITLE=1`：禁用 OpenCode 自己的终端标题更新，由 CodePilot 把终端窗口/标签标题设置为工具品牌。
+
+OpenCode 套壳品牌、TUI、中文交互规则、默认 agent 和内置 commands 都属于 CodePilot 工具级定制，随包代码发布，不需要业务项目在 `AGENTS.toml` 中配置 `[opencode.*]`。业务项目目录不会生成 `.codepilot/opencode/`；运行时文件只写入用户级 `~/.codepilot/opencode/<项目标识>/`，用来落地项目注册名和 MCP 启动命令。
+
+这条路径不修改 OpenCode 源码，升级 OpenCode 时继续使用官方 `opencode` 命令即可。当前项目不维护 OpenCode 源码 overlay 或自定义二进制；如果 OpenCode TUI 内部其他硬编码欢迎语、权限弹窗文案仍显示 OpenCode，先记录为官方二进制不可配置边界。
+
 ## 已统一的新入口
 
 这些旧入口不要再使用：
@@ -190,6 +204,7 @@ enabled = true
 - `codepilot release ...`
 - 顶层 `codepilot show/logs/stop/retry/find/...`
 - `codepilot webui ...`
+- `codepilot chat --no-ui` 旧 REPL
 - `add --no-ai` / `add --allow-empty`
 
 统一改为：
@@ -197,6 +212,7 @@ enabled = true
 - 发布：`codepilot binary ...`
 - 任务：`codepilot task ...`
 - Web UI：`codepilot ui <start|status|logs|stop|restart>`
+- Chat：`codepilot chat -a opencode`
 - 外部任务投递：先读 `codepilot ai template --format json`，再用模板合规内容调用 `codepilot add ...`
 
 ## 文档导航

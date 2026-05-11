@@ -54,7 +54,11 @@ def _bucket(results: list[doctor_mod.CheckResult], name: str) -> doctor_mod.Chec
     return next(item for item in results if item.name == name)
 
 
-def test_check_api_keys_default_config_marks_missing_keys_optional(_isolate_sources, monkeypatch):
+def _bucket_or_none(results: list[doctor_mod.CheckResult], name: str) -> doctor_mod.CheckResult | None:
+    return next((item for item in results if item.name == name), None)
+
+
+def test_check_api_keys_default_config_silently_skips_optional_missing_keys(_isolate_sources, monkeypatch):
     _project(
         _isolate_sources,
         monkeypatch,
@@ -73,11 +77,8 @@ planner = "codex"
     )
 
     results = doctor_mod._check_api_keys()
-    openai = _bucket(results, "api_key_openai_api_key")
 
-    assert openai.ok is True
-    assert openai.severity == "warning"
-    assert "可选" in openai.detail
+    assert _bucket_or_none(results, "api_key_openai_api_key") is None
     assert not any(item.severity == "error" for item in results if item.name.startswith("api_key_"))
 
 
@@ -135,11 +136,8 @@ provider = "openai-gpt4o"
     )
 
     results = doctor_mod._check_api_keys()
-    openai = _bucket(results, "api_key_openai_api_key")
 
-    assert openai.ok is True
-    assert openai.severity == "warning"
-    assert "可选" in openai.detail
+    assert _bucket_or_none(results, "api_key_openai_api_key") is None
 
 
 def test_check_api_keys_ignores_non_cli_planner_values_for_requiredness(_isolate_sources, monkeypatch):
@@ -164,11 +162,8 @@ planner = "openai-gpt4o"
     )
 
     results = doctor_mod._check_api_keys()
-    openai = _bucket(results, "api_key_openai_api_key")
 
-    assert openai.ok is True
-    assert openai.severity == "warning"
-    assert "当前配置必需" not in openai.detail
+    assert _bucket_or_none(results, "api_key_openai_api_key") is None
 
 
 def test_check_api_keys_mixed_bucket_stays_non_green_when_only_one_provider_has_config_key(
@@ -200,13 +195,9 @@ api_key = "sk-from-secrets"
     )
 
     results = doctor_mod._check_api_keys()
-    openai = _bucket(results, "api_key_openai_api_key")
+    openai = _bucket_or_none(results, "api_key_openai_api_key")
 
-    assert openai.ok is True
-    assert openai.severity == "warning"
-    assert "openai-gpt4o" in openai.detail
-    assert "可选" in openai.detail
-    assert "openai-gpt4" in openai.detail or "openai-gpt35" in openai.detail
+    assert openai is None
 
 
 def test_doctor_terminal_summary_separates_errors_and_warnings(monkeypatch):

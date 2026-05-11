@@ -15,7 +15,6 @@ CP.createAppSessionBoundary = (options = {}) => {
   const confirmDialog = options.confirmDialog || (async () => false);
   const selectSession = options.selectSession || (() => {});
   const setNav = options.setNav || (() => {});
-  const buildClarifyStateFromPayload = options.buildClarifyStateFromPayload || (() => null);
   const syncSessionClarifyDraft = options.syncSessionClarifyDraft || (() => {});
 
   async function loadSessionChat() {
@@ -55,17 +54,12 @@ CP.createAppSessionBoundary = (options = {}) => {
 
   async function sendChat() {
     if (state.nav.view !== 'session' || !state.nav.id) return;
-    if (state.clarifyDrafts[state.nav.id]) {
-      pushToast('当前会话正在等待澄清回答，请先提交或取消。', 'warning');
-      return;
-    }
     const text = state.chatText.trim();
     if (!text) return;
     await runScopedAction(ACTION_KEYS.SESSION_SEND, async () => {
       try {
         await CP.api.post(`/api/sessions/${state.nav.id}/messages`, {
           text,
-          category: state.chatCategory,
         });
         state.chatText = '';
         await loadSessionChat();
@@ -135,14 +129,7 @@ CP.createAppSessionBoundary = (options = {}) => {
           category: 'auto',
           clarify_answers: clarifyAnswers,
         });
-        if (out.intent === 'clarify') {
-          state.clarifyDrafts[sessionId] = buildClarifyStateFromPayload(
-            out,
-            { existing: draft },
-          );
-        } else {
-          delete state.clarifyDrafts[sessionId];
-        }
+        delete state.clarifyDrafts[sessionId];
         await loadSessionChat();
         await loadSessions();
       } catch (err) {

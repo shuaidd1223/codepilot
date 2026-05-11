@@ -192,7 +192,7 @@ def _resolve_project(ctx: click.Context, param: str, value: str | None) -> str |
     if not proj:
         echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
         raise click.Abort()
-    return value
+    return str(proj["name"])
 
 
 @click.command(context_settings={"allow_interspersed_args": False})

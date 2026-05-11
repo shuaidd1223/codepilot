@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from codepilot.cli import main
@@ -67,6 +68,37 @@ def test_mcp_serve_stdio_starts_server_with_project_context(tmp_path, monkeypatc
     assert captured["context"].project == "demo"
     assert captured["context"].project_path == project_path.resolve()
     assert captured["run_kwargs"] == {"transport": "stdio"}
+
+
+def test_mcp_serve_stdio_accepts_directory_alias_and_uses_registered_name(tmp_path, monkeypatch):
+    db_path = tmp_path / "tasks.db"
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(db_path))
+    db.init_db()
+    project_path = tmp_path / "flower"
+    project_path.mkdir()
+    db.register_project("codepilot-dev", str(project_path))
+    captured: dict[str, object] = {}
+
+    from codepilot.commands import mcp as mcp_cmd
+
+    class FakeServer:
+        def run(self, **kwargs):
+            captured["run_kwargs"] = kwargs
+
+    def fake_create_mcp_server(context, **kwargs):
+        captured["context"] = context
+        return FakeServer()
+
+    monkeypatch.setattr(mcp_cmd, "create_mcp_server", fake_create_mcp_server)
+
+    result = CliRunner().invoke(
+        main,
+        ["mcp", "serve", "--transport", "stdio", "--project", "flower"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["context"].project == "codepilot-dev"
+    assert captured["context"].project_path == project_path.resolve()
 
 
 def test_mcp_serve_http_starts_server_on_requested_port(tmp_path, monkeypatch):
@@ -214,3 +246,18 @@ def test_mcp_server_run_applies_http_host_and_port_to_fastmcp(tmp_path):
     assert sdk_server.settings.host == "127.0.0.1"
     assert sdk_server.settings.port == 8765
     assert sdk_server.run_kwargs == {"transport": "streamable-http"}
+
+
+def test_mcp_server_run_reports_missing_sdk_with_install_hint(tmp_path):
+    from codepilot.mcp.server import MCPProjectContext, create_mcp_server
+
+    def missing_sdk_factory(name: str):
+        raise ModuleNotFoundError("No module named 'mcp'")
+
+    server = create_mcp_server(
+        MCPProjectContext(project_path=tmp_path, project="demo"),
+        fastmcp_factory=missing_sdk_factory,
+    )
+
+    with pytest.raises(RuntimeError, match="缺少 Python 包 `mcp`"):
+        server.run(transport="stdio")

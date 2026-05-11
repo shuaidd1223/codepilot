@@ -177,6 +177,13 @@ def preflight_agent_job_guards(
     state = _load_state(project_root)
     agent_state = state["agents"].get(agent_job_key(job))
     if isinstance(agent_state, dict) and agent_state.get("disabled"):
+        if (
+            str(agent_state.get("disabled_reason") or "") == "max_cost_per_day"
+            and str(agent_state.get("day") or "") != _day_key(current_time)
+        ):
+            state["agents"].pop(agent_job_key(job), None)
+            _save_state(project_root, state)
+            return GuardCheck(agent_chain=chain)
         reason = "disabled"
         return GuardCheck(
             status="skipped",

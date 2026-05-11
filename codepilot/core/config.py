@@ -208,6 +208,24 @@ def _parse_event_agents(raw: object) -> dict[str, "EventAgentConfig"]:
     return parsed
 
 
+def _parse_opencode_permission(raw_opencode: object) -> dict[str, Any]:
+    """Parse the project-level `[opencode.permission]` table.
+
+    Other `[opencode]` subtables are intentionally ignored here because
+    CodePilot owns the tool-level OpenCode profile, branding, agents and TUI.
+    """
+    if raw_opencode is None:
+        return {}
+    if not isinstance(raw_opencode, Mapping):
+        raise ConfigError("[opencode] 必须是 TOML table。")
+    raw_permission = raw_opencode.get("permission")
+    if raw_permission is None:
+        return {}
+    if not isinstance(raw_permission, Mapping):
+        raise ConfigError("[opencode.permission] 必须是 TOML table。")
+    return deepcopy(dict(raw_permission))
+
+
 def _normalize_optional_agent_name(value: object) -> Optional[str]:
     """Normalize an optional agent name from ``[agents]`` config values."""
     if value is None:
@@ -379,9 +397,10 @@ class AgentsConfig:
     inspect: InspectConfig = field(default_factory=InspectConfig)
     notifications: dict = field(default_factory=dict)
     feishu_bot: dict = field(default_factory=dict)
-
     # AI Providers 配置
     providers: dict[str, ProviderAPIConfig] = field(default_factory=dict)
+    # 项目级 OpenCode 权限策略；工具品牌/TUI 配置不从项目读取。
+    opencode_permission: dict[str, Any] = field(default_factory=dict)
 
     # 兼容旧格式的别名
     project_name: str = ""
@@ -421,10 +440,12 @@ class AgentsConfig:
         feishu_bot = data.get("feishu_bot", {})
         shell = data.get("shell", {})
         providers = data.get("providers", {})
+        opencode = data.get("opencode", {})
         commands_map = _parse_agent_commands(agents.get("commands"))
         fallback_cli_order = _parse_fallback_cli_order(automation.get("fallback_cli_order"))
         scheduled_agents = _parse_scheduled_agents(automation.get("scheduled_agents"))
         event_agents = _parse_event_agents(automation.get("event_agents"))
+        opencode_permission = _parse_opencode_permission(opencode)
 
         # 解析 providers
         providers_config = {}
@@ -506,6 +527,7 @@ class AgentsConfig:
             notifications=notifications,
             feishu_bot=feishu_bot,
             providers=providers_config,
+            opencode_permission=opencode_permission,
             # 兼容字段
             project_name=proj.get("name", ""),
             base_branch=proj.get("base_branch", "dev"),
@@ -548,6 +570,7 @@ class AgentsConfig:
 
         # 环境变量映射
         env_keys = {
+            "openai": "OPENAI_API_KEY",
             "openai-gpt4": "OPENAI_API_KEY",
             "openai-gpt4o": "OPENAI_API_KEY",
             "openai-gpt35": "OPENAI_API_KEY",
@@ -564,6 +587,54 @@ class AgentsConfig:
         if env_key:
             return os.environ.get(env_key)
         return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Provider 环境变量注入（用于 OpenCode 启动时自动注入 API key）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# (api_key_env_var, base_url_env_var_or_none)
+PROVIDER_ENV_VAR_MAP: dict[str, tuple[str, str | None]] = {
+    "openai": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    "openai-gpt4": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    "openai-gpt4o": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    "openai-gpt35": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    "claude-opus": ("ANTHROPIC_API_KEY", None),
+    "claude-sonnet": ("ANTHROPIC_API_KEY", None),
+    "claude-haiku": ("ANTHROPIC_API_KEY", None),
+    "hunyuan": ("HUNYUAN_API_KEY", None),
+    "zhipu-glm4": ("ZHIPU_API_KEY", None),
+    "wenxin": ("ERNIE_API_KEY", None),
+    "qwen": ("DASHSCOPE_API_KEY", None),
+    "deepseek": ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"),
+}
+
+
+def build_provider_env_vars(config: AgentsConfig) -> dict[str, str]:
+    """从已启用的 provider 配置构建环境变量，用于注入 OpenCode 启动环境。
+
+    遍历所有已启用且配置了 api_key 的 provider，映射为对应的环境变量
+    （如 OPENAI_API_KEY、ANTHROPIC_API_KEY 等），同时注入 base_url。
+    项目级配置优先级高于全局（load_project_config 中已合并）。
+    """
+    if config is None:
+        return {}
+    env_vars: dict[str, str] = {}
+    for provider_name, provider_cfg in config.providers.items():
+        if not provider_cfg.enabled:
+            continue
+        mapping = PROVIDER_ENV_VAR_MAP.get(provider_name)
+        if mapping is None:
+            continue
+        api_key_env, base_url_env = mapping
+        key_value = (provider_cfg.api_key or "").strip()
+        if key_value:
+            env_vars[api_key_env] = key_value
+        if base_url_env:
+            url_value = (provider_cfg.base_url or "").strip()
+            if url_value:
+                env_vars[base_url_env] = url_value
+    return env_vars
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1009,6 +1080,18 @@ reviewer = ""
 claude = "claude"
 codex = "codex"
 opencode = "opencode"
+
+[opencode.permission]
+# 项目级 OpenCode 权限策略：
+# ask = 默认逐项确认；full_access = 所有 OpenCode 工具/MCP 调用直接允许；custom = 使用下方规则
+mode = "ask"
+# 自定义示例：
+# mode = "custom"
+# "*" = "ask"
+# bash = "allow"
+# edit = "ask"
+# write = "deny"
+# webfetch = "allow"
 
 [dispatch]
 # task-dispatch 脚本路径（留空时先查 ~/.codepilot/data/<project>/scripts/，再查包内置脚本）

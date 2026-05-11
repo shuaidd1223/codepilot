@@ -114,13 +114,7 @@ Use $codepilot-workflow to submit and track this requirement.
 
 ### 4.4 交互渠道
 
-`chat`、Web UI 会话、飞书自由文本：
-
-- `? <问题>`：问答
-- `# <内容>`：创建需求
-- `! <内容>`：创建单步任务
-
-没有显式前缀的疑似需求/任务只会得到确认提示，不会直接执行。
+`chat`、Web UI 会话、飞书自由文本统一进入 OpenCode + CodePilot MCP。外部 Agent 可以直接表达问题、需求或操作意图；需要严格产出 artifact 时，再显式调用 `clarify` / `plan` / MCP 工具。
 
 ## 5. 跨 Agent 最小约束
 

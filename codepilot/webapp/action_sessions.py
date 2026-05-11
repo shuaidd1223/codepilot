@@ -658,7 +658,7 @@ def send_session_message_action(
     category: str = "auto",
     clarify_answers: Optional[list[dict]] = None,
 ) -> dict:
-    """Send a message in a session — validate payload then delegate by scenario."""
+    """Send a Web UI session message through OpenCode."""
     db.init_db()
     session = db.get_session(session_id)
     if not session:
@@ -668,42 +668,41 @@ def send_session_message_action(
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
     text = normalize_text(text)
-    clarify_answers = clarify_answers if isinstance(clarify_answers, list) else []
-    if not text and not clarify_answers:
+    if not text:
         raise RuntimeError("输入不能为空。")
-    normalized_category = _normalize_goal_category(category)
-    forced_intent, payload_text = parse_intent_prefix(text)
-    text = normalize_text(payload_text if forced_intent else text)
-
     existing_messages = db.list_session_messages(session_id)
-    pending_state = _reconstruct_clarification_state(existing_messages)
-    if not pending_state and _is_cancel_clarification(text):
-        db.create_session_message(session_id, "user", "取消本次需求规划")
-        reply = "当前没有正在等待澄清的需求规划。"
-        db.create_session_message(session_id, "assistant", reply, intent="info")
-        return _session_payload("info", reply)
-    if not pending_state and clarify_answers:
-        reply = "当前没有正在等待回答的澄清问题，请重新提交需求。"
-        return _session_payload("info", reply)
     if not existing_messages:
-        short_seed = text or build_clarification_input_summary(raw_answers=clarify_answers)
-        short_title = short_seed[:40] + ("…" if len(short_seed) > 40 else "")
+        short_title = text[:40] + ("…" if len(text) > 40 else "")
         db.update_session(session_id, title=short_title)
+    db.create_session_message(session_id, "user", text)
+    from codepilot.opencode.session import run_opencode_message
 
-    ctx = _SessionDispatchContext(
-        session_id=session_id,
-        project=project,
-        project_info=project_info,
-        planner=_effective_planner(project_info),
-        text=text,
-        session_context=_session_context_block(existing_messages),
-        session_history=_session_history_turns(existing_messages),
-        clarify_answers=clarify_answers,
-        category=normalized_category,
-        gateway_options=_actions().resolve_shared_gateway_options(project_info),
-        forced_intent=forced_intent,
+    result = run_opencode_message(
+        project,
+        text,
+        source="web",
+        external_session_id=str(session_id),
     )
-    return _actions()._dispatch_session_message(ctx, existing_messages)
+    intent = "opencode" if result.get("ok") else "error"
+    reply = str(result.get("message") or "")
+    db.create_session_message(
+        session_id,
+        "assistant",
+        reply,
+        intent=intent,
+        metadata={
+            "opencode_session_id": result.get("opencode_session_id") or "",
+            "tool_calls": result.get("tool_calls") or [],
+        },
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "intent": intent,
+        "message": reply,
+        "task_ids": [],
+        "opencode_session_id": result.get("opencode_session_id") or "",
+        "tool_calls": result.get("tool_calls") or [],
+    }
 
 
 def delete_session_action(session_id: int) -> dict:

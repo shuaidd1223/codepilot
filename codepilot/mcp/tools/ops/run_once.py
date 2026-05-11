@@ -13,7 +13,7 @@ from codepilot.mcp.tools.ops import (
 )
 
 
-@register_tool(description="Run one bounded CodePilot backlog drain for a registered project.")
+@register_tool(description="为已注册项目运行一次有边界的 CodePilot backlog 消费。")
 def run_once(
     project: str,
     limit: int = 1,

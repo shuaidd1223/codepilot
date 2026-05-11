@@ -7,7 +7,7 @@ from codepilot.mcp.tools.tasks import ensure_int, task_not_found, task_payload
 from codepilot.storage import database as db
 
 
-@register_tool(description="Show one CodePilot task and optional task logs.")
+@register_tool(description="查看一个 CodePilot 任务及可选任务日志。")
 def show_task(task_id: int, include_logs: bool = False) -> dict[str, Any]:
     tid = ensure_int(task_id, "task_id", minimum=1)
     if not isinstance(include_logs, bool):

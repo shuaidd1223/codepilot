@@ -14,6 +14,11 @@ from codepilot.mcp.audit import record_mcp_tool_call
 from codepilot.mcp.protocol import CodePilotToolError, normalize_progress_event
 from codepilot.mcp.tool_registry import ToolDefinition, ToolRegistry, register_tool
 
+# 同步工具函数如果在事件循环线程上执行会阻塞 FastMCP 的
+# 心跳 / ping 等协议消息处理，导致客户端超时断开。
+# 默认超时 600 秒，防止工具调用无限挂起。
+_TOOL_CALL_TIMEOUT: float = 600.0
+
 
 ProgressCallback = Callable[[dict[str, Any]], Any]
 
@@ -44,6 +49,8 @@ class CodePilotMCPServer:
         self.name = name
         self.sdk_server: Any | None = None
         self.sdk_error: Exception | None = None
+        # 全局 MCP 工具调用超时，防止同步工具阻塞事件循环
+        self._tool_timeout: float = _TOOL_CALL_TIMEOUT
 
         if bind_sdk:
             self._bind_sdk(fastmcp_factory)
@@ -75,7 +82,27 @@ class CodePilotMCPServer:
     ) -> Any:
         call_arguments = dict(arguments or {})
         try:
-            result = await self._invoke_tool(name, call_arguments, progress_callback)
+            result = await asyncio.wait_for(
+                self._invoke_tool(name, call_arguments, progress_callback),
+                timeout=self._tool_timeout,
+            )
+        except asyncio.TimeoutError:
+            exc = CodePilotToolError(
+                f"MCP tool call timed out after {self._tool_timeout}s: {name}",
+                code="tool_timeout",
+                details={"tool": name, "timeout": self._tool_timeout},
+            )
+            self._audit_tool_call(
+                name,
+                call_arguments,
+                status="error",
+                error={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            )
+            return exc.to_tool_response()
         except CodePilotToolError as exc:
             self._audit_tool_call(
                 name,
@@ -93,9 +120,7 @@ class CodePilotMCPServer:
 
     def run(self, *args: Any, **kwargs: Any) -> Any:
         if self.sdk_server is None:
-            raise RuntimeError("MCP SDK is not available; install the mcp package to run the server") from (
-                self.sdk_error
-            )
+            raise RuntimeError(_missing_mcp_sdk_message()) from self.sdk_error
         host = kwargs.pop("host", None)
         port = kwargs.pop("port", None)
         if host is not None or port is not None:
@@ -164,7 +189,13 @@ class CodePilotMCPServer:
                 details={"tool": name, "arguments": arguments},
             ) from exc
         bound.apply_defaults()
-        result = tool.func(*bound.args, **bound.kwargs)
+
+        func = tool.func
+        if asyncio.iscoroutinefunction(func):
+            result = await func(*bound.args, **bound.kwargs)
+        else:
+            # 在独立线程中运行同步工具函数，防止阻塞事件循环
+            result = await asyncio.to_thread(func, *bound.args, **bound.kwargs)
 
         if inspect.isawaitable(result):
             result = await result
@@ -260,7 +291,7 @@ def build_server_registry(
 def _register_health_tool(registry: ToolRegistry, context: MCPProjectContext) -> None:
     @register_tool(
         name="codepilot.health",
-        description="Return CodePilot MCP server health and version.",
+            description="返回 CodePilot MCP 服务健康状态和版本。",
         registry=registry,
     )
     def health() -> dict[str, Any]:
@@ -284,6 +315,14 @@ def _load_fastmcp(name: str) -> Any:
     from mcp.server.fastmcp import FastMCP
 
     return FastMCP(name)
+
+
+def _missing_mcp_sdk_message() -> str:
+    return (
+        "CodePilot MCP 运行依赖未安装：缺少 Python 包 `mcp`。"
+        "请在当前 Python 环境执行 `python -m pip install -e .`，"
+        "或执行 `python -m pip install \"mcp>=1.27.1\"` 后重试。"
+    )
 
 
 def _has_tool(registry: ToolRegistry, name: str) -> bool:

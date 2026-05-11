@@ -116,6 +116,31 @@ def test_max_cost_per_day_accumulates_disables_and_skips_later_runs(tmp_path: Pa
     assert [record["guard"]["status"] for record in records] == ["ok", "tripped", "skipped"]
 
 
+def test_daily_cost_disablement_resets_on_next_day(tmp_path: Path):
+    calls: list[list[str]] = []
+    job = _job(max_daily_cost_usd=0.1)
+
+    run_agent_job(
+        job,
+        project_root=tmp_path,
+        subprocess_run=_fake_run_factory(calls, total_tokens=8, cost=0.12),
+        commands={"codex": "codex-bin"},
+        now=datetime(2026, 5, 9, 23, 0, tzinfo=UTC),
+    )
+    next_day = run_agent_job(
+        job,
+        project_root=tmp_path,
+        subprocess_run=_fake_run_factory(calls, total_tokens=8, cost=0.01),
+        commands={"codex": "codex-bin"},
+        now=datetime(2026, 5, 10, 1, 0, tzinfo=UTC),
+    )
+
+    assert len(calls) == 2
+    assert next_day.guard_status == "ok"
+    state = json.loads((tmp_path / ".codepilot" / "scheduled" / "guards.json").read_text(encoding="utf-8"))
+    assert state["agents"].get("demo:hourly_health", {}).get("disabled") is not True
+
+
 def test_guarded_agent_under_limits_runs_without_notification(tmp_path: Path):
     calls: list[list[str]] = []
 

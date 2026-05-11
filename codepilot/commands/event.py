@@ -46,7 +46,7 @@ def list_cmd(ctx: click.Context, project: str | None, json_mode: bool) -> None:
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
         project_info = _resolve_project(project)
-        registry = event_plugins.ensure_event_registry(project_info["path"])["registry"]
+        registry = event_plugins.load_event_registry(project_info["path"])
     except (event_plugins.EventPluginError, click.ClickException) as exc:
         _emit_error(ctx, "event list", json_mode, exc)
         return

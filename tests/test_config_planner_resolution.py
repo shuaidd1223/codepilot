@@ -199,6 +199,34 @@ provider = "deepseek"
     assert parsed["providers"]["deepseek"]["complex_model"] == "deepseek-v4-pro"
 
 
+def test_config_sync_preserves_opencode_project_permission(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    project = tmp_path / "demo"
+    project.mkdir()
+    _write(
+        project / "AGENTS.toml",
+        """
+[opencode.permission]
+mode = "custom"
+"*" = "ask"
+bash = "allow"
+write = "deny"
+""".strip(),
+    )
+
+    result = CliRunner().invoke(main, ["config", "sync", str(project)])
+
+    assert result.exit_code == 0, result.output
+
+    import tomllib
+
+    parsed = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
+    assert parsed["opencode"]["permission"]["mode"] == "custom"
+    assert parsed["opencode"]["permission"]["*"] == "ask"
+    assert parsed["opencode"]["permission"]["bash"] == "allow"
+    assert parsed["opencode"]["permission"]["write"] == "deny"
+
+
 def test_config_sync_moves_inline_feishu_app_secret_to_sibling_secrets_file(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     project = tmp_path / "demo"
@@ -228,6 +256,7 @@ node_command = "node"
     assert "app_secret" not in agents_data["feishu_bot"]
     assert ".codepilot.secrets.toml" in (project / "AGENTS.toml").read_text(encoding="utf-8")
     assert secrets_data["feishu_bot"]["app_secret"] == "feishu-inline-secret"
+    assert SECRETS_FILENAME in (project / ".gitignore").read_text(encoding="utf-8").splitlines()
 
 
 def test_config_sync_keeps_existing_feishu_secret_file_value(tmp_path, monkeypatch):

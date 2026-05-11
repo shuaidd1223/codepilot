@@ -65,7 +65,7 @@ def test_event_agents_parse_trigger_agent_template_prompt_and_costs():
 [automation.event_agents.failed_task_triage]
 trigger = "task.failed"
 agent = "codex"
-prompt = "Task {{ task.id }} failed with {{ task.error }}. Propose a repair."
+prompt = "Task {{ task_id }} failed with {{ error_message }}. Propose a repair."
 max_cost_usd = 0.1
 max_daily_cost_usd = 0.5
 """.strip()
@@ -76,7 +76,7 @@ max_daily_cost_usd = 0.5
     assert event_agent.enabled is True
     assert event_agent.trigger == "task.failed"
     assert event_agent.agent == "codex"
-    assert "{{ task.error }}" in event_agent.prompt
+    assert "{{ error_message }}" in event_agent.prompt
     assert event_agent.max_cost_usd == 0.1
     assert event_agent.max_daily_cost_usd == 0.5
 

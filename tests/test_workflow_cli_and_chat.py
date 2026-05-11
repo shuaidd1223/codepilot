@@ -559,119 +559,58 @@ def test_add_command_rejects_ai_content_missing_template_sections(tmp_path, monk
     assert db.list_tasks(project="demo") == []
 
 
-def test_chat_command_accepts_plain_text_and_exit(tmp_path, monkeypatch):
+def test_chat_command_rejects_removed_no_ui_entry(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
     db.register_project("demo", str(project_path))
     monkeypatch.chdir(project_path)
 
-    captured = []
+    runner = CliRunner()
+    result = runner.invoke(main, ["chat", "--no-ui"])
 
-    def fake_run_requirement_workflow(**kwargs):
-        captured.append(kwargs["title"])
-        return {"ok": True}
+    assert result.exit_code != 0
+    assert "No such option: --no-ui" in result.output
 
-    # Pin intent to "task" so the CliRunner's stdin (which on Windows may
-    # transcode Chinese through cp1252) can't send us down a different branch.
-    monkeypatch.setattr(auto_cmd, "classify_intent", lambda text, **kw: {
-        "intent": "task", "source": "forced",
-    })
-    # Skip multi-turn clarification — this test exercises the straight-to-plan path.
-    monkeypatch.setattr(auto_cmd, "clarify_requirement", lambda title, **kw: {
-        "status": "ready", "refined_title": title, "qa_history": [],
-    })
-    monkeypatch.setattr(auto_cmd, "run_requirement_workflow", fake_run_requirement_workflow)
+
+def test_chat_no_ui_does_not_call_old_requirement_workflow(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    monkeypatch.chdir(project_path)
+
+    called = []
+    monkeypatch.setattr(auto_cmd, "run_requirement_workflow", lambda **kwargs: called.append(kwargs))
 
     runner = CliRunner()
     result = runner.invoke(main, ["chat", "--no-ui"], input="! 做一个自动重试机制\n/exit\n")
 
-    assert result.exit_code == 0
-    assert len(captured) == 1, f"expected one planner call, got {captured!r}"
-    # The encoded title may lose bytes through CliRunner on Windows, but the
-    # planner must at least have been invoked with a non-empty title.
-    assert captured[0].strip()
-    assert "CodePilot Chat" in result.output
+    assert result.exit_code != 0
+    assert called == []
 
 
-def test_chat_command_reports_natural_language_error(tmp_path, monkeypatch):
+def test_legacy_chat_help_no_longer_advertises_status_stats_commands():
+    help_text = auto_cmd._chat_help()
+    assert "/stats" not in help_text
+    assert "/status" not in help_text
+
+
+def test_removed_chat_repl_commands_do_not_run_from_main_chat(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
     db.register_project("demo", str(project_path))
     monkeypatch.chdir(project_path)
 
-    def fake_run_requirement_workflow(**kwargs):
-        raise RuntimeError("当前无法使用 Claude CLI，因为本机没有找到 claude 命令。")
-
-    monkeypatch.setattr(auto_cmd, "classify_intent", lambda text, **kw: {
-        "intent": "task", "source": "forced",
-    })
-    monkeypatch.setattr(auto_cmd, "clarify_requirement", lambda title, **kw: {
-        "status": "ready", "refined_title": title, "qa_history": [],
-    })
-    monkeypatch.setattr(auto_cmd, "run_requirement_workflow", fake_run_requirement_workflow)
+    called = []
+    monkeypatch.setattr(auto_cmd, "render_project_dashboard", lambda *args, **kwargs: called.append((args, kwargs)))
 
     runner = CliRunner()
-    result = runner.invoke(main, ["chat", "--no-ui"], input="! 做一个自动重试机制\n/exit\n")
+    result = runner.invoke(main, ["chat", "--no-ui"], input="/status\n/stats\n/exit\n")
 
-    assert result.exit_code == 0
-    assert "当前无法使用 Claude CLI" in result.output
-    assert "Traceback" not in result.output
-
-
-def test_chat_help_mentions_stats_command():
-    assert "/stats" in auto_cmd._chat_help()
-
-
-def test_chat_status_renders_dashboard(tmp_path, monkeypatch):
-    _init_test_db(tmp_path, monkeypatch)
-    project_path = tmp_path / "project"
-    project_path.mkdir()
-    db.register_project("demo", str(project_path))
-    monkeypatch.chdir(project_path)
-
-    called = {}
-
-    monkeypatch.setattr(auto_cmd, "render_project_dashboard", lambda *args, **kwargs: called.update({"args": args, "kwargs": kwargs}))
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["chat", "--no-ui"], input="/status\n/exit\n")
-
-    assert result.exit_code == 0
-    assert called["args"][0] == "demo"
-    assert "demo" in called["kwargs"]["title"]
-
-
-def test_chat_stats_outputs_status_summary(tmp_path, monkeypatch):
-    _init_test_db(tmp_path, monkeypatch)
-    project_path = tmp_path / "project"
-    project_path.mkdir()
-    db.register_project("demo", str(project_path))
-    monkeypatch.chdir(project_path)
-
-    db.create_task("demo", "task backlog")
-    running = db.create_task("demo", "task running")
-    done = db.create_task("demo", "task done")
-    failed = db.create_task("demo", "task failed")
-    cancelled = db.create_task("demo", "task cancelled")
-
-    db.update_task(running["id"], status="in_progress")
-    db.update_task(done["id"], status="done")
-    db.update_task(failed["id"], status="failed")
-    db.update_task(cancelled["id"], status="cancelled")
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["chat", "--no-ui"], input="/stats\n/exit\n")
-
-    assert result.exit_code == 0
-    assert "状态统计  demo" in result.output
-    assert "进行中:1" in result.output
-    assert "待办:1" in result.output
-    assert "失败:1" in result.output
-    assert "已取消:1" in result.output
-    assert "完成:1" in result.output
-    assert "总计:5" in result.output
+    assert result.exit_code != 0
+    assert called == []
 
 
 def test_go_command_wraps_runtime_error_as_click_exception(tmp_path, monkeypatch):

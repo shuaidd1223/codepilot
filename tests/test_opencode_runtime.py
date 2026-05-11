@@ -74,6 +74,25 @@ def test_openai_picked_when_no_other_providers():
     assert "OPENAI_BASE_URL" not in env
 
 
+def test_generic_openai_provider_is_accepted_for_opencode():
+    cfg = _cfg(
+        {
+            "openai": {
+                "api_key": "sk-oa-test",
+                "base_url": "https://api.openai.com/v1",
+            }
+        }
+    )
+
+    backend = select_opencode_backend(cfg)
+
+    assert backend.name == OpenCodeBackend.OPENAI.name
+    assert backend.source_provider == "openai"
+    env = build_opencode_env(cfg)
+    assert env["OPENAI_API_KEY"] == "sk-oa-test"
+    assert env["OPENAI_BASE_URL"] == "https://api.openai.com/v1"
+
+
 def test_anthropic_priority_chain_falls_through_to_first_keyed_claude_provider():
     cfg = _cfg(
         {

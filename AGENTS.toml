@@ -10,10 +10,30 @@ claude = "claude"
 codex = "codex"
 opencode = "opencode"
 
+[opencode.permission]
+# 当前项目信任 CodePilot 集成的 OpenCode，会话内不再逐项弹权限确认。
+mode = "full_access"
+
 # 当前项目任务直接在主工作目录执行，不为每个任务新建分支或 worktree。
+# 以下注释行是所有 [automation] 默认值，供参考；只有未注释的行是此项目的覆盖。
 [automation]
-task_workspace = "direct"
+planner = "codex"
+# default_agent = ""
+# task_agent = "dual"
+# executor = "builtin"
+# auto_execute = true
+# confirm_before_execute = false
+# auto_commit = true
+# max_tasks = 5
+# max_retries = 3
 per_task_branch = false
+task_workspace = "direct"
+# two_stage_planning = true
+# clarify_vague_requirements = true
+# clarify_max_turns = 3
+# max_review_rounds = 2
+# agent_silence_timeout_seconds = 0
+fallback_cli_order = ["codex", "opencode"]
 
 [automation.scheduled_agents.task_health]
 enabled = true
@@ -54,7 +74,7 @@ max_daily_cost_usd = 0.75
 enabled = false
 trigger = "task.failed"
 agent = "codex"
-prompt = "Task {{ task.id }} failed with {{ task.error }}. Suggest the smallest repair."
+prompt = "Task {{ task_id }} failed with {{ error_message }}. Suggest the smallest repair."
 max_cost_usd = 0.10
 max_daily_cost_usd = 0.50
 
@@ -64,8 +84,16 @@ signals = ["git_log", "failed_tasks", "todos", "deps", "ruff", "pytest", "code_m
 
 [providers]
 
+[providers.openai]
+enabled = true
+api_key = ""
+model = "gpt-5.4"
+base_url = "https://sub.hdd.sb/v1"
+max_tokens = 4096
+temperature = 0.7
+
 [providers.deepseek]
-enabled = false
+enabled = true
 api_key = ""
 model = ""
 base_url = "https://api.deepseek.com"

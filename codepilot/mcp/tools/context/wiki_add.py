@@ -7,7 +7,7 @@ from codepilot.mcp.tool_registry import register_tool
 from codepilot.mcp.tools.context import ensure_str, ensure_str_list, resolve_project
 
 
-@register_tool(description="Add a page to the registered project's local wiki memory.")
+@register_tool(description="向已注册项目的本地 Wiki 记忆添加页面。")
 def wiki_add(
     project: str,
     title: str,

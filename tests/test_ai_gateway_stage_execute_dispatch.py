@@ -378,15 +378,18 @@ def test_execute_text_cli_candidate_decodes_non_utf8_stderr(monkeypatch):
     ],
     ids=["api-success", "missing-key-cli-fallback", "api-error-cli-fallback"],
 )
-def test_call_structured_route_matrix(gateway_state, provider_key, provider_kwargs, request_kwargs, expected):
+def test_call_structured_route_matrix(tmp_path, monkeypatch, gateway_state, provider_key, provider_kwargs, request_kwargs, expected):
     provider = FakeAPIProvider(**provider_kwargs)
     gateway_state["registry"][provider_key] = provider
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global.toml"))
+    resolved_request_kwargs = dict(request_kwargs)
+    resolved_request_kwargs.setdefault("project_path", str(tmp_path))
 
     resp = ai_gateway.call_structured(
         GatewayRequest(
             prompt="hi",
             schema=STRUCTURED_SCHEMA,
-            **request_kwargs,
+            **resolved_request_kwargs,
         )
     )
 

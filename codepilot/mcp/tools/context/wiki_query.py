@@ -7,7 +7,7 @@ from codepilot.mcp.tool_registry import register_tool
 from codepilot.mcp.tools.context import ensure_int, ensure_str, resolve_project
 
 
-@register_tool(description="Query the registered project's local wiki memory.")
+@register_tool(description="查询已注册项目的本地 Wiki 记忆。")
 def wiki_query(project: str, query: str, limit: int = 5) -> dict[str, Any]:
     project_info = resolve_project(project)
     query_text = ensure_str(query, "query", required=True)

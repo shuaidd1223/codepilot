@@ -9,7 +9,7 @@ from codepilot.mcp.tools.tasks import ensure_int, ensure_str, task_not_found, ta
 from codepilot.storage import database as db
 
 
-@register_tool(description="Request stop for a running CodePilot task.")
+@register_tool(description="请求停止正在运行的 CodePilot 任务。")
 def stop_task(task_id: int, message: str = "") -> dict[str, Any]:
     tid = ensure_int(task_id, "task_id", minimum=1)
     reason = ensure_str(message, "message", required=False, allow_empty=True) or f"task #{tid} stopped via MCP"

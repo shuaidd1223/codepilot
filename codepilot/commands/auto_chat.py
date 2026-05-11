@@ -65,8 +65,6 @@ def _chat_help() -> str:
             "  /help               查看帮助",
             "  /version            查看当前版本",
             "  /exit               退出会话",
-            "  /status             查看任务看板（/status watch 实时刷新）",
-            "  /stats              查看状态统计",
             "  /history            查看对话记录",
             "  /clear              清空对话历史",
             "  /project <name>     切换项目",
@@ -298,35 +296,11 @@ def _handle_chat_project_runtime_command(cmd: str, parts: list[str], runtime: _C
     shell = runtime.shell
 
     if cmd == "/status":
-        if runtime.project_info.get("is_temporary"):
-            echo("[yellow]临时会话没有任务看板。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
-            return True
-        watch = len(parts) > 1 and parts[1].lower() in ("watch", "live", "-w")
-        if watch:
-            echo("[dim]实时刷新中，按 Ctrl+C 停止...[/dim]")
-        try:
-            while True:
-                if watch:
-                    click.clear()
-                shell.render_project_dashboard(
-                    runtime.project_info["name"],
-                    verbose=False,
-                    include_done=False,
-                    title=f"任务面板  {runtime.project_info['name']}",
-                )
-                if not watch:
-                    break
-                time.sleep(3)
-        except KeyboardInterrupt:
-            if watch:
-                echo("\n[dim]已停止刷新[/dim]")
+        echo("[yellow]/status 属于旧 chat REPL 命令。请使用 OpenCode 会话或 `codepilot status -p <项目名>`。[/yellow]")
         return True
 
     if cmd == "/stats":
-        if runtime.project_info.get("is_temporary"):
-            echo("[yellow]临时会话没有项目统计。请先 /project <已注册项目> 或在当前目录执行 codepilot init。[/yellow]")
-            return True
-        shell.render_project_stats(runtime.project_info["name"], title=f"状态统计  {runtime.project_info['name']}")
+        echo("[yellow]/stats 属于旧 chat REPL 命令。请使用 OpenCode 会话或 `codepilot status -p <项目名> --json`。[/yellow]")
         return True
 
     if cmd == "/project":

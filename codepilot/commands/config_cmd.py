@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 import click
 
 from codepilot.core import config as config_mod
+from codepilot.core.gitignore import ensure_gitignore_entry
+
+
+TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_key(value: Any) -> str:
+    key = str(value)
+    return key if TOML_BARE_KEY_RE.match(key) else _quote(key)
 
 
 def _quote(value: str) -> str:
@@ -86,6 +96,46 @@ def _fallback_cli_order(raw: Any) -> list[str]:
         cleaned = [str(item).strip() for item in raw if str(item or "").strip()]
         return cleaned or list(config_mod.DEFAULT_FALLBACK_CLI_ORDER)
     return list(config_mod.DEFAULT_FALLBACK_CLI_ORDER)
+
+
+def _opencode_permission(raw: Any) -> dict[str, Any]:
+    opencode = raw if isinstance(raw, dict) else {}
+    permission = opencode.get("permission") if isinstance(opencode.get("permission"), dict) else {}
+    mode = _choice(
+        permission.get("mode"),
+        {"ask", "manual", "manual_confirm", "confirm", "full", "full_access", "allow", "allow_all", "custom"},
+        "ask",
+    )
+    if mode in {"manual", "manual_confirm", "confirm"}:
+        mode = "ask"
+    if mode in {"full", "allow", "allow_all"}:
+        mode = "full_access"
+
+    canonical: dict[str, Any] = {"mode": mode}
+    for source in (permission, permission.get("rules") if isinstance(permission.get("rules"), dict) else {}):
+        for key, value in source.items():
+            key_text = str(key).strip()
+            if key_text in {"mode", "rules"} or not key_text:
+                continue
+            normalized = _opencode_permission_value(value)
+            if normalized is not None:
+                canonical[key_text] = normalized
+    return {"permission": canonical}
+
+
+def _opencode_permission_value(value: Any) -> str | dict[str, Any] | None:
+    if isinstance(value, dict):
+        nested: dict[str, Any] = {}
+        for nested_key, nested_value in value.items():
+            key_text = str(nested_key).strip()
+            if not key_text:
+                continue
+            normalized = _opencode_permission_value(nested_value)
+            if normalized is not None:
+                nested[key_text] = normalized
+        return nested or None
+    value_text = str(value).strip().lower()
+    return value_text if value_text in {"ask", "allow", "deny"} else None
 
 
 def _supported_provider(raw: Any) -> dict[str, Any] | None:
@@ -181,6 +231,7 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
     automation = data.get("automation") if isinstance(data.get("automation"), dict) else {}
     classifier = data.get("classifier") if isinstance(data.get("classifier"), dict) else {}
     inspect = data.get("inspect") if isinstance(data.get("inspect"), dict) else {}
+    opencode = data.get("opencode") if isinstance(data.get("opencode"), dict) else {}
     notifications = data.get("notifications") if isinstance(data.get("notifications"), dict) else {}
     feishu_bot = data.get("feishu_bot") if isinstance(data.get("feishu_bot"), dict) else {}
 
@@ -253,6 +304,7 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
             "priority": _choice(inspect.get("priority"), {"p0", "p1", "p2", "p3"}, "P3").upper(),
             "planner": _string(inspect.get("planner"), ""),
         },
+        "opencode": _opencode_permission(opencode),
         "providers": {},
         "notifications": {
             "webhook_url": _string(notifications.get("webhook_url"), ""),
@@ -297,6 +349,13 @@ SECTION_COMMENTS: dict[str, list[str]] = {
         "CLI family 命令映射。键为 family 名（claude/codex/opencode 等），值为命令或绝对路径。",
         "缺失项默认使用同名命令。",
     ],
+    "opencode": [
+        "项目级 OpenCode 配置。这里只保存项目权限策略；品牌、TUI、Agent 仍由 CodePilot 工具自身管理。",
+    ],
+    "opencode.permission": [
+        "OpenCode 权限策略。ask=逐项确认；full_access=无需确认；custom=按规则配置。",
+        "custom 可配置 `*`、bash、edit、write、webfetch 或 MCP 工具名，值为 ask / allow / deny。",
+    ],
     "dispatch": [
         "外部 dispatch 执行器配置。builtin 执行器也会读取 stale_minutes 等通用超时语义。",
     ],
@@ -334,6 +393,7 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("agents", "planner"): ["通用规划器；留空时使用场景默认值。"],
     ("agents", "builder"): ["dual 模式 builder；留空时默认 codex。"],
     ("agents", "reviewer"): ["dual 模式 reviewer；留空时默认 claude。"],
+    ("opencode.permission", "mode"): ["ask / full_access / custom。默认 ask。"],
     ("dispatch", "dispatch_path"): ["task-dispatch 脚本路径；留空时先查 ~/.codepilot/data/<project>/scripts/，再查包内置脚本。"],
     ("dispatch", "interval_seconds"): ["轮询间隔秒数。"],
     ("dispatch", "stale_minutes"): ["任务无心跳超过该分钟数后视为过期。"],
@@ -447,7 +507,7 @@ def _emit_section(lines: list[str], title: str, values: dict[str, Any]) -> None:
             nested.append((key, value))
             continue
         _append_comments(lines, KEY_COMMENTS.get((title, key), []))
-        lines.append(f"{key} = {_toml_value(value)}")
+        lines.append(f"{_toml_key(key)} = {_toml_value(value)}")
     lines.append("")
     for sub_key, sub_values in nested:
         _emit_subtable(lines, f"{title}.{sub_key}", sub_values)
@@ -457,10 +517,16 @@ def _emit_subtable(lines: list[str], title: str, values: dict[str, Any]) -> None
     """Emit a nested TOML sub-table, e.g. [agents.commands]."""
     _append_comments(lines, SECTION_COMMENTS.get(title, []))
     lines.append(f"[{title}]")
+    nested: list[tuple[str, dict[str, Any]]] = []
     for key, value in values.items():
+        if isinstance(value, dict):
+            nested.append((key, value))
+            continue
         _append_comments(lines, KEY_COMMENTS.get((title, key), []))
-        lines.append(f"{key} = {_toml_value(value)}")
+        lines.append(f"{_toml_key(key)} = {_toml_value(value)}")
     lines.append("")
+    for sub_key, sub_values in nested:
+        _emit_subtable(lines, f"{title}.{_toml_key(sub_key)}", sub_values)
 
 
 def _emit_provider_examples(lines: list[str], configured: set[str]) -> None:
@@ -508,7 +574,7 @@ def render_agents_toml(canonical: dict[str, Any]) -> str:
         "# 由 `codepilot config sync` 生成/同步。",
         "",
     ]
-    for section in ("project", "shell", "agents", "dispatch", "automation", "classifier", "inspect"):
+    for section in ("project", "shell", "agents", "opencode", "dispatch", "automation", "classifier", "inspect"):
         _emit_section(lines, section, canonical[section])
 
     _append_comments(lines, SECTION_COMMENTS["providers"])
@@ -621,6 +687,8 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
     if write_secrets and secrets_content:
         secrets_path = config_path.parent / config_mod.SECRETS_FILENAME
         secrets_path.write_text(secrets_content, encoding="utf-8")
+        if not global_mode:
+            ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME)
     click.echo(f"已同步配置: {config_path}")
     if write_secrets:
         click.echo(f"已迁移飞书 App Secret 到: {config_path.parent / config_mod.SECRETS_FILENAME}")

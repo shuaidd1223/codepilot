@@ -76,7 +76,7 @@ def test_self_update_providers_all_updates_vendors_and_claude(tmp_path, monkeypa
     assert payload["command"] == "self-update"
     assert [item["provider"] for item in results] == ["opencode", "codex", "claude"]
     assert all(item["status"] == "updated" for item in results)
-    assert vendor_calls == [(["opencode", "codex"], target_dir.resolve(), Path.cwd() / ".codepilot" / "vendor-cache")]
+    assert vendor_calls == [(["opencode", "codex"], target_dir.resolve(), tmp_path / "home" / ".codepilot" / "vendor-cache")]
     assert npm_calls == [[str(tmp_path / "bin" / "npm"), "install", "-g", "@anthropic-ai/claude-code"]]
     assert payload["data"]["manifest_path"].endswith("manifest.json")
 
@@ -91,7 +91,7 @@ def test_self_update_providers_single_codex_calls_vendor_fetcher(tmp_path, monke
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["data"]["results"][0]["provider"] == "codex"
-    assert vendor_calls == [(["codex"], target_dir.resolve(), Path.cwd() / ".codepilot" / "vendor-cache")]
+    assert vendor_calls == [(["codex"], target_dir.resolve(), tmp_path / "home" / ".codepilot" / "vendor-cache")]
 
 
 def test_update_installed_vendor_clis_writes_manifest_with_checksum(tmp_path, monkeypatch):

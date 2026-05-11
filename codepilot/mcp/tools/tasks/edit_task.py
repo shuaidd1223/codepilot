@@ -19,7 +19,7 @@ from codepilot.mcp.tools.tasks import (
 from codepilot.storage import database as db
 
 
-@register_tool(description="Edit selected CodePilot task fields.")
+@register_tool(description="编辑指定 CodePilot 任务字段。")
 def edit_task(
     task_id: int,
     title: str | None = None,

@@ -100,7 +100,7 @@ def ai_status_payload(project: str | None = None, *, refresh_balance: bool = Fal
         from codepilot.ai_support.providers import API_PROVIDERS, fetch_provider_balance, resolve_api_provider
 
         for key in sorted(API_PROVIDERS):
-            provider = resolve_api_provider(key, provider_ref)
+            provider = resolve_api_provider(key, provider_ref) if provider_ref else API_PROVIDERS[key]
             configured = bool(provider.resolve_api_key() or not provider.requires_api_key())
             providers[key] = {
                 "name": provider.name,

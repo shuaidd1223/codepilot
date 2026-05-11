@@ -38,7 +38,7 @@ def _exec_cli_args(project: str, command: str, args: list[str] | None) -> list[s
     return cli_args
 
 
-@register_tool(name="exec", description="Execute a whitelisted CodePilot CLI operation via the current click entrypoint.")
+@register_tool(name="exec", description="通过当前 click 入口执行白名单内的 CodePilot CLI 操作。")
 def exec_tool(project: str, command: str, args: list[str] | None = None) -> dict[str, Any]:
     project_info = resolve_project(project)
     command_key = ensure_str(command, "command", required=True) or ""

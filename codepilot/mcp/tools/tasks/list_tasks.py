@@ -8,7 +8,7 @@ from codepilot.storage import database as db
 from codepilot.webapp.display_sort import sort_tasks_for_display
 
 
-@register_tool(description="List CodePilot tasks with optional filters.")
+@register_tool(description="按可选筛选条件列出 CodePilot 任务。")
 def list_tasks(
     project: str | None = None,
     status: str | None = None,

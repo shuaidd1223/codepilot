@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -229,13 +230,24 @@ def register_project(
 
 
 def get_project(name: str) -> Optional[dict]:
-    """Fetch a project by name."""
-    cache_key = ("project_by_name", name)
+    """Fetch a project by registered name or a stable project alias.
+
+    The registered name remains the canonical key used by tasks and service
+    state. For user-facing lookup, also accept the registered directory name,
+    full project path, and the `[project].name` value from that project's
+    config file when they point to exactly one registered project.
+    """
+    ref = str(name or "").strip()
+    if not ref:
+        return None
+    cache_key = ("project_by_name", ref)
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
         return cached  # type: ignore[return-value]
     with get_read_conn() as conn:
-        result = _fetch_project_by_name(conn, name)
+        result = _fetch_project_by_name(conn, ref)
+    if result is None:
+        result = _find_project_by_alias(ref)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
 
 
@@ -271,6 +283,69 @@ def find_project_by_path(path: str | Path) -> Optional[dict]:
         return _cache_set(cache_key, None)  # type: ignore[return-value]
     matches.sort(key=lambda item: item[0], reverse=True)
     return _cache_set(cache_key, matches[0][1])  # type: ignore[return-value]
+
+
+def _find_project_by_alias(ref: str) -> Optional[dict]:
+    if _looks_like_path(ref):
+        by_path = find_project_by_path(Path(ref).expanduser())
+        if by_path:
+            return by_path
+
+    normalized = ref.casefold()
+    matches: list[dict] = []
+    for project in list_projects():
+        aliases = _project_aliases(project)
+        if normalized in aliases:
+            matches.append(project)
+
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _looks_like_path(ref: str) -> bool:
+    if not ref:
+        return False
+    if os.sep in ref or (os.altsep and os.altsep in ref):
+        return True
+    return bool(Path(ref).drive)
+
+
+def _project_aliases(project: dict) -> set[str]:
+    aliases: set[str] = set()
+    path_text = str(project.get("path") or "").strip()
+    if path_text:
+        path = Path(path_text)
+        aliases.add(path.name.casefold())
+        aliases.add(str(path.resolve()).casefold())
+
+    config_name = _read_project_config_name(project)
+    if config_name:
+        aliases.add(config_name.casefold())
+    return {alias for alias in aliases if alias}
+
+
+def _read_project_config_name(project: dict) -> str:
+    config_text = str(project.get("config_file") or "").strip()
+    if not config_text:
+        return ""
+    config_path = Path(config_text).expanduser()
+    if config_path.is_dir():
+        config_path = config_path / "AGENTS.toml"
+    if not config_path.is_file():
+        return ""
+    try:
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+            import tomli as tomllib  # type: ignore[no-redef]
+        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    project_data = data.get("project") if isinstance(data, dict) else None
+    if not isinstance(project_data, dict):
+        return ""
+    return str(project_data.get("name") or "").strip()
 
 
 def delete_project(name: str) -> bool:

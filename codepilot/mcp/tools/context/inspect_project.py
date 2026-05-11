@@ -20,7 +20,7 @@ def _requested_signal_keys(requested_signals: list[str], signal_specs: tuple[Any
     return enabled
 
 
-@register_tool(description="Collect inspect signal context for a registered project without creating tasks.")
+@register_tool(description="为已注册项目收集巡检信号上下文，不创建任务。")
 def inspect_project(project: str, signals: list[str] | None = None) -> dict[str, Any]:
     project_info = resolve_project(project)
     requested_signals = ensure_str_list(signals, "signals") or list(DEFAULT_SIGNALS)

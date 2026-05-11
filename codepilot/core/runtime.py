@@ -8,6 +8,7 @@ import signal
 import subprocess
 import time
 import json
+import ctypes
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -120,25 +121,31 @@ def is_process_alive(pid: Optional[int]) -> bool:
 
     system = platform.system().lower()
     if system == "windows":
-        try:
-            result = subprocess.run(
-                [
-                    "powershell.exe",
-                    "-Command",
-                    f"(Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue).Id",
-                ],
-                capture_output=True,
-                text=False,
-                timeout=5,
-            )
-            return bool(decode_subprocess_text(result.stdout).strip())
-        except Exception:
-            return False
+        return _windows_is_process_alive(int(pid))
 
     try:
         os.kill(int(pid), 0)
         return True
     except OSError:
+        return False
+
+
+def _windows_is_process_alive(pid: int) -> bool:
+    process_query_limited_information = 0x1000
+    still_active = 259
+    try:
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+        if not handle:
+            return False
+        exit_code = ctypes.c_ulong()
+        try:
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return int(exit_code.value) == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
         return False
 
 

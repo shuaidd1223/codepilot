@@ -20,18 +20,19 @@ def _init_project(tmp_path: Path, monkeypatch) -> Path:
     return project
 
 
-def test_setup_creates_default_skill_catalog(tmp_path, monkeypatch):
+def test_setup_does_not_materialize_default_skill_catalog(tmp_path, monkeypatch):
     project = _init_project(tmp_path, monkeypatch)
 
     catalog_path = project / ".codepilot" / "skills" / "catalog.json"
 
-    assert catalog_path.is_file()
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert catalog["schema_version"] == 1
-    names = {item["name"] for item in catalog["skills"]}
+    assert not catalog_path.exists()
+    listed = CliRunner().invoke(main, ["skill", "list", "-p", "project", "--json"])
+    assert listed.exit_code == 0, listed.output
+    skills = json.loads(listed.output)["data"]["skills"]
+    names = {item["name"] for item in skills}
     assert {"deep-interview", "ralplan", "ralph", "build-fix", "wiki"} <= names
     assert "team" not in names
-    build_fix = next(item for item in catalog["skills"] if item["name"] == "build-fix")
+    build_fix = next(item for item in skills if item["name"] == "build-fix")
     assert {"codex", "claude", "gemini", "custom"} <= set(build_fix["supported_providers"])
     assert build_fix["entrypoint_command"] == "build-fix"
     assert build_fix["requires_enabled"] is True

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from codepilot.core.config import AgentsConfig
 from codepilot.scheduled.runner import run_agent_job
 
 
@@ -107,6 +108,25 @@ def test_run_agent_job_injects_mcp_servers_via_environment(tmp_path: Path):
     assert '"server.js"' in env["CODEPILOT_MCP_SERVERS"]
 
 
+def test_run_agent_job_injects_family_runtime_env_from_config(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    calls: list[dict[str, Any]] = []
+    cfg = AgentsConfig.from_dict({"providers": {"openai-gpt4o": {"api_key": "sk-test"}}})
+
+    run_agent_job(
+        _job("codex"),
+        project_root=tmp_path,
+        dry_run=False,
+        subprocess_run=_fake_run_factory(calls),
+        commands={"codex": "codex-bin"},
+        config=cfg,
+    )
+
+    assert calls[0]["env"]["OPENAI_API_KEY"] == "sk-test"
+
+
 def test_run_agent_job_dry_run_returns_command_without_subprocess(tmp_path: Path):
     calls: list[dict[str, Any]] = []
 
@@ -148,3 +168,24 @@ def test_run_agent_job_audits_nonzero_exit_code(tmp_path: Path):
     assert record["exit_code"] == 2
     assert record["tools"] == [{"name": "Bash"}]
     assert record["cost"] == 0.02
+
+
+def test_run_agent_job_captures_bytes_and_decodes_with_fallback(tmp_path: Path):
+    def fake_run(args, **kwargs):  # noqa: ANN001
+        assert kwargs["text"] is False
+        return Completed(
+            args=list(args),
+            returncode=0,
+            stdout="中文输出".encode("gb18030"),
+            stderr=b"",
+        )
+
+    result = run_agent_job(
+        _job("codex"),
+        project_root=tmp_path,
+        dry_run=False,
+        subprocess_run=fake_run,
+        commands={"codex": "codex-bin"},
+    )
+
+    assert "中文输出" in result.stdout

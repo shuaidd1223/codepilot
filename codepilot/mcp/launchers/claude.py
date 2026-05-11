@@ -11,6 +11,7 @@ from codepilot.mcp.launchers import (
     json_config_text,
     normalize_mcp_servers,
 )
+from codepilot.mcp.launchers.language import with_chinese_interaction_instructions
 
 
 def build_launch_plan(
@@ -22,11 +23,12 @@ def build_launch_plan(
 ) -> LaunchPlan:
     config = {"mcpServers": _claude_servers(normalize_mcp_servers(mcp_servers))}
     config_args = ["--mcp-config", json_config_text(config), "--strict-mcp-config"]
+    prompt_text = with_chinese_interaction_instructions(prompt)
     command = [
         executable,
         *config_args,
         "-p",
-        prompt,
+        prompt_text,
         "--output-format",
         "text",
         "--dangerously-skip-permissions",

@@ -277,7 +277,6 @@ def test_form_components_use_scoped_action_pending_instead_of_global_sending():
     assert "goalPending()" in goal
     assert "composerPending()" in composer
     assert "chatPending()" in chat
-    assert "clarifyPending()" in chat
     assert "deletePending()" in chat
     assert "s.sending" not in goal
     assert "s.sending" not in composer
@@ -317,7 +316,7 @@ def test_web_ui_wires_structured_clarification_fields_and_cancel_actions():
     assert "CP.Components.ClarifyFields" in fields
     assert "<cp-clarify-fields" in goal
     assert "<cp-clarify-fields" in composer
-    assert "<cp-clarify-fields" in chat
+    assert "<cp-clarify-fields" not in chat
     assert "cancelGoalClarify" in clarify_boundary
     assert "cancelComposerClarify" in clarify_boundary
     assert "cancelSessionClarify" in session_boundary
@@ -342,7 +341,7 @@ def test_clarify_fields_scope_radio_groups_and_single_free_text_override():
     assert "updateFreeText(question, value)" in fields
     assert "@update:answers=\"updateClarifyAnswers\"" in goal
     assert "@update:answers=\"updateClarifyAnswers\"" in composer
-    assert "@update:answers=\"updateClarifyAnswers\"" in chat
+    assert "@update:answers=\"updateClarifyAnswers\"" not in chat
     assert "q.type === 'single' && q.allow_free_text && text" in utils
 
 

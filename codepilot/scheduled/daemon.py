@@ -169,6 +169,7 @@ def _run_jobs(
                 dry_run=dry_run,
                 subprocess_run=subprocess_run,
                 commands=config.commands,
+                config=config,
                 now=now,
             )
         )

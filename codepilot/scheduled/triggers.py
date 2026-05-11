@@ -138,7 +138,7 @@ def build_event_agent_jobs(
 
     event_type = _event_type(event)
     payload = _event_payload(event)
-    context = {"event": dict(event), "payload": payload, **payload}
+    context = {**payload, "event": dict(event), "payload": payload}
     jobs: list[dict[str, Any]] = []
     for name, config in event_agents.items():
         if not config.enabled or config.trigger != event_type:
@@ -185,6 +185,15 @@ def build_scheduled_agent_jobs(
                 "interval_seconds": config.interval_seconds,
             }
         elif config.schedule and cron_due(config.schedule, now):
+            last_run = last_runs.get(name)
+            if last_run is not None:
+                compare_last_run = last_run
+                if compare_last_run.tzinfo is None and now.tzinfo is not None:
+                    compare_last_run = compare_last_run.replace(tzinfo=now.tzinfo)
+                elif compare_last_run.tzinfo is not None and now.tzinfo is not None:
+                    compare_last_run = compare_last_run.astimezone(now.tzinfo)
+                if compare_last_run.replace(second=0, microsecond=0) == now.replace(second=0, microsecond=0):
+                    continue
             trigger = {"type": "schedule", "schedule": config.schedule}
         if trigger is None:
             continue

@@ -201,14 +201,26 @@ def test_build_batch_task_action_card_delete_omits_detail_commands_and_limits_ro
     assert "- `#8` 任务 #8 已删除。" in payload
     assert "- `#9` 任务 #9 已删除。" not in payload
 
-def test_feishu_natural_language_status_routes_to_project_overview(tmp_path, monkeypatch):
+def test_feishu_natural_language_status_uses_opencode(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        "codepilot.opencode.session.run_opencode_message",
+        lambda project, text, *, source, external_session_id: calls.append(
+            {"project": project, "text": text, "source": source, "external_session_id": external_session_id}
+        )
+        or {"ok": True, "message": "OpenCode 已查看 demo 项目的运行状态。", "opencode_session_id": "ses-status"},
+    )
 
     reply = handle_command_text("看看 demo 项目的运行状态")
     payload = json.dumps(reply["card"], ensure_ascii=False)
+    session_id = str(db.list_sessions(project="demo")[0]["id"])
 
     assert reply["type"] == "interactive"
-    assert "项目总览" in payload
+    assert calls == [
+        {"project": "demo", "text": "看看 demo 项目的运行状态", "source": "feishu", "external_session_id": session_id}
+    ]
+    assert "OpenCode 已查看 demo 项目的运行状态" in payload
     assert "demo" in payload
 
 def test_feishu_short_chinese_command_aliases_do_not_fall_back_to_help(tmp_path, monkeypatch):
@@ -309,9 +321,9 @@ def test_feishu_card_action_callback_runs_button_command(tmp_path, monkeypatch):
     assert "CodePilot 任务面板" in payload
     assert "按钮回调任务列表" in payload
 
-def test_feishu_natural_language_delete_uses_numbered_choice(tmp_path, monkeypatch):
+def test_feishu_natural_language_delete_uses_opencode(tmp_path, monkeypatch):
     project_path = _setup_project(tmp_path, monkeypatch)
-    first = db.create_task(
+    db.create_task(
         project="demo",
         title="自然语言删除任务 1",
         content="验证飞书候选选择",
@@ -329,24 +341,25 @@ def test_feishu_natural_language_delete_uses_numbered_choice(tmp_path, monkeypat
     )
 
     handle_command_text("use demo", chat_id="chat-nl-delete")
+    calls = []
+    monkeypatch.setattr(
+        "codepilot.opencode.session.run_opencode_message",
+        lambda project, text, *, source, external_session_id: calls.append(
+            {"project": project, "text": text, "source": source, "external_session_id": external_session_id}
+        )
+        or {"ok": True, "message": "OpenCode 已接管删除请求。", "opencode_session_id": "ses-delete"},
+    )
     first_reply = handle_command_text("删除任务", chat_id="chat-nl-delete")
-    second_reply = handle_command_text("1", chat_id="chat-nl-delete")
-    pending = db.get_service_state("feishu_confirm", "chat-nl-delete")
-    token = pending["meta"]["token"]
-    third_reply = handle_command_text(f"confirm {token}", chat_id="chat-nl-delete")
     first_payload = json.dumps(first_reply["card"], ensure_ascii=False)
-    second_payload = json.dumps(second_reply["card"], ensure_ascii=False)
-    third_payload = json.dumps(third_reply["card"], ensure_ascii=False)
+    session_id = str(db.list_sessions(project="demo")[0]["id"])
 
-    assert "请确认操作" in first_payload
-    assert "点击候选按钮继续" in first_payload
-    assert {"1", "2"}.issubset(set(_button_commands(first_reply["card"])))
-    assert "敏感操作待确认" in second_payload
-    assert "confirm" in second_payload
-    assert "任务已删除" in third_payload
-    assert db.get_task(first["id"]) is None
+    assert calls == [
+        {"project": "demo", "text": "删除任务", "source": "feishu", "external_session_id": session_id}
+    ]
+    assert "OpenCode 已接管删除请求" in first_payload
+    assert "请确认操作" not in first_payload
 
-def test_feishu_pending_choice_out_of_range_keeps_options(tmp_path, monkeypatch):
+def test_feishu_plain_delete_text_does_not_create_pending_choice(tmp_path, monkeypatch):
     project_path = _setup_project(tmp_path, monkeypatch)
     db.create_task(
         project="demo",
@@ -366,18 +379,24 @@ def test_feishu_pending_choice_out_of_range_keeps_options(tmp_path, monkeypatch)
     )
 
     handle_command_text("use demo", chat_id="chat-nl-out-of-range")
+    calls = []
+    monkeypatch.setattr(
+        "codepilot.opencode.session.run_opencode_message",
+        lambda project, text, *, source, external_session_id: calls.append(
+            {"project": project, "text": text, "source": source, "external_session_id": external_session_id}
+        )
+        or {"ok": True, "message": "OpenCode 已接收删除任务请求。", "opencode_session_id": "ses-delete-choice"},
+    )
     first_reply = handle_command_text("删除任务", chat_id="chat-nl-out-of-range")
-    invalid_reply = handle_command_text("9", chat_id="chat-nl-out-of-range")
-    valid_reply = handle_command_text("1", chat_id="chat-nl-out-of-range")
     first_payload = json.dumps(first_reply["card"], ensure_ascii=False)
-    invalid_payload = json.dumps(invalid_reply["card"], ensure_ascii=False)
-    valid_payload = json.dumps(valid_reply["card"], ensure_ascii=False)
+    session_id = str(db.list_sessions(project="demo")[0]["id"])
 
-    assert "请确认操作" in first_payload
-    assert "可选项超出范围" in invalid_payload
-    assert "点击候选按钮继续" in invalid_payload
-    assert "1" in _button_commands(invalid_reply["card"])
-    assert "敏感操作待确认" in valid_payload
+    assert calls == [
+        {"project": "demo", "text": "删除任务", "source": "feishu", "external_session_id": session_id}
+    ]
+    assert db.get_service_state("feishu_confirm", "chat-nl-out-of-range") is None
+    assert "OpenCode 已接收删除任务请求" in first_payload
+    assert "请确认操作" not in first_payload
 
 def test_feishu_cancel_confirm_token_keeps_task_unchanged(tmp_path, monkeypatch):
     project_path = _setup_project(tmp_path, monkeypatch)

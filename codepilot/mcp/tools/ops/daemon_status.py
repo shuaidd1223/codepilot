@@ -7,7 +7,7 @@ from codepilot.mcp.tool_registry import register_tool
 from codepilot.mcp.tools.ops import resolve_project
 
 
-@register_tool(description="Return CodePilot daemon service status for a registered project.")
+@register_tool(description="返回已注册项目的 CodePilot daemon 服务状态。")
 def daemon_status(project: str) -> dict[str, Any]:
     project_info = resolve_project(project)
     try:

@@ -44,6 +44,8 @@ def build_mcp_launch_plan(
     mcp_servers: Mapping[str, Any] | Iterable[MCPServerSpec] | None = None,
     env: Mapping[str, str] | None = None,
     config_path: str | Path | None = None,
+    opencode_config: Any | None = None,
+    opencode_session: str | None = None,
 ) -> LaunchPlan:
     """Build a dry launch plan for one supported chat agent family."""
     family = get_family(agent)
@@ -81,6 +83,8 @@ def build_mcp_launch_plan(
         mcp_servers=mcp_servers,
         env=env,
         config_path=config_path,
+        opencode_config=opencode_config,
+        session=opencode_session,
     )
 
 

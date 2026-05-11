@@ -85,3 +85,23 @@ def test_build_scheduled_agent_jobs_returns_due_agent_job_payloads_only():
     assert jobs[1]["trigger"]["type"] == "schedule"
     assert jobs[1]["trigger"]["schedule"] == "0 9 * * *"
     assert jobs[1]["max_cost_usd"] == 0.3
+
+
+def test_build_scheduled_agent_jobs_dedupes_cron_slot_with_last_run():
+    now = datetime(2026, 5, 9, 9, 0, tzinfo=UTC)
+    configs = {
+        "daily_backlog": ScheduledAgentConfig(
+            agent="claude",
+            schedule="0 9 * * *",
+            prompt="Review backlog.",
+        ),
+    }
+
+    jobs = build_scheduled_agent_jobs(
+        configs,
+        project="demo",
+        now=now,
+        last_run_at={"daily_backlog": datetime(2026, 5, 9, 9, 0, 30, tzinfo=UTC)},
+    )
+
+    assert jobs == []

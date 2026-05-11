@@ -7,7 +7,7 @@ from codepilot.mcp.tool_registry import register_tool
 from codepilot.mcp.tools.external import ensure_int, ensure_str, resolve_project
 
 
-@register_tool(description="Invoke the configured project webhook through CodePilot's existing webhook API.")
+@register_tool(description="通过 CodePilot 现有 Webhook API 调用已配置的项目 Webhook。")
 def webhook_invoke(
     project: str,
     task_id: int,

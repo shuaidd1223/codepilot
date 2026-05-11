@@ -53,6 +53,7 @@ def _isolate_chat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[
     monkeypatch.setattr(chat_cmd, "_project_record", lambda project: None)
     monkeypatch.setattr(chat_cmd, "load_project_config", lambda record_or_path: None)
     monkeypatch.setattr(chat_cmd, "_resolve_agent_executable", lambda agent, cfg: f"{agent}-bin")
+    monkeypatch.setattr(chat_cmd, "_ensure_mcp_sdk_available", lambda: None)
 
     def fake_write(config_files: dict[str, str], *, cwd: Path) -> None:
         writes.append({"cwd": cwd, "files": dict(config_files)})
@@ -66,23 +67,19 @@ def test_agent_slash_command_stops_current_agent_and_starts_target(
     monkeypatch: pytest.MonkeyPatch,
 ):
     _isolate_chat(monkeypatch, tmp_path)
-    mcp_processes: list[FakeProcess] = []
     agent_processes: list[FakeProcess] = []
     events: list[tuple[str, list[str]]] = []
+    resets: list[str] = []
 
     def fake_popen(command, **kwargs):
         command = list(command)
-        if command[1:4] == ["-m", "codepilot", "mcp"]:
-            process = FakeProcess(f"mcp-{len(mcp_processes)}")
-            mcp_processes.append(process)
-            events.append(("mcp", command))
-            return process
         process = FakeProcess(command[0])
         agent_processes.append(process)
         events.append(("agent", command))
         return process
 
     monkeypatch.setattr(chat_cmd.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(chat_cmd, "_reset_terminal_after_tui", lambda: resets.append("reset"))
 
     exit_code = chat_cmd._run_mcp_agent_chat_session(
         agent="opencode",
@@ -91,12 +88,12 @@ def test_agent_slash_command_stops_current_agent_and_starts_target(
     )
 
     assert exit_code == 0
-    assert [event[0] for event in events] == ["mcp", "agent", "mcp", "agent"]
-    assert events[1][1][0] == "opencode-bin"
-    assert events[3][1][0] == "claude-bin"
+    assert [event[0] for event in events] == ["agent", "agent"]
+    assert events[0][1][0] == "opencode-bin"
+    assert events[1][1][0] == "claude-bin"
     assert agent_processes[0].stdin.writes == ["hello\n"]
     assert agent_processes[0].terminate_calls == 1
-    assert mcp_processes[0].terminate_calls == 1
+    assert resets == ["reset", "reset"]
 
 
 def test_agent_slash_command_rejects_unknown_agent_without_restart(
@@ -109,8 +106,6 @@ def test_agent_slash_command_rejects_unknown_agent_without_restart(
 
     def fake_popen(command, **kwargs):
         command = list(command)
-        if command[1:4] == ["-m", "codepilot", "mcp"]:
-            return FakeProcess("mcp")
         process = FakeProcess(command[0])
         agent_processes.append(process)
         return process
@@ -138,8 +133,6 @@ def test_agent_switch_fresh_restart_reinjects_mcp_config(
 
     def fake_popen(command, **kwargs):
         command = list(command)
-        if command[1:4] == ["-m", "codepilot", "mcp"]:
-            return FakeProcess("mcp")
         agent_commands.append(command)
         return FakeProcess(command[0])
 
@@ -156,6 +149,9 @@ def test_agent_switch_fresh_restart_reinjects_mcp_config(
     claude_command = agent_commands[1]
     config_arg_index = claude_command.index("--mcp-config") + 1
     assert "codepilot" in claude_command[config_arg_index]
-    assert len(writes) == 2
-    assert list(writes[0]["files"]) == [str(Path(".codepilot") / "mcp" / "opencode.json")]
-    assert writes[1]["files"] == {}
+    assert len(writes) == 1
+    runtime_dir = Path.home() / ".codepilot" / "opencode" / tmp_path.name
+    assert str(runtime_dir / "opencode.json") in writes[0]["files"]
+    assert str(runtime_dir / "tui.json") in writes[0]["files"]
+    assert str(runtime_dir / "config" / "agents" / "codepilot.md") in writes[0]["files"]
+    assert not (tmp_path / ".codepilot" / "opencode").exists()

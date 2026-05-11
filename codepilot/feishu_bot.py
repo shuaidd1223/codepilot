@@ -61,11 +61,7 @@ from codepilot.feishu_interactions import (
     card_action_event as _card_action_event,
     inbound_dedupe_key as _inbound_dedupe_key,
 )
-from codepilot.nl_command_router import (
-    infer_goal_from_text,
-    pick_command_option,
-    resolve_natural_language_command,
-)
+from codepilot.nl_command_router import pick_command_option
 from codepilot.storage import database as db
 from codepilot.webapp.display_sort import sort_tasks_for_display
 from codepilot.webapp.action_task_ops import (
@@ -93,9 +89,9 @@ _CHAT_CONTEXT_SERVICE = "feishu_chat"
 _CHAT_CONTEXT_PREFIX = "chat:"
 _NOTIFY_DEDUPE_SERVICE = "feishu_notify"
 _INBOUND_DEDUPE_SERVICE = "feishu_inbound_msg"
-_PENDING_REQUIREMENT_KEY = "pending_requirement"
 _PENDING_ACTION_OPTIONS_KEY = "pending_action_options"
 _PENDING_GOAL_TEXT_KEY = "pending_goal_text"
+_ACTIVE_OPENCODE_SESSION_KEY = "active_opencode_session_id"
 _PENDING_CONFIRM_SERVICE = "feishu_confirm"
 _PENDING_CONFIRM_DIRECT_SCOPE = "__direct__"
 _PENDING_CONFIRM_TTL_SECONDS = 120
@@ -237,7 +233,7 @@ def _card_commands(kind: str, *, project: str = "", task_id: int | None = None) 
         target = project or "<project>"
         return [
             ("tasks", "任务列表"),
-            ("requirements", "需求会话"),
+            ("requirements", "会话记录"),
             ("services", "服务状态"),
             ("global", "全局状态"),
             (f"daemon start {target}", "启动轮询"),
@@ -265,8 +261,7 @@ def _card_commands(kind: str, *, project: str = "", task_id: int | None = None) 
         ]
     if kind == "sessions":
         return [
-            ("req new <text>", "新建需求会话"),
-            ("ask <text>", "新建会话"),
+            ("ask <text>", "发送到 OpenCode"),
             ("session <id>", "会话详情"),
             ("requirements", "刷新会话"),
             ("tasks", "任务列表"),
@@ -369,15 +364,15 @@ def _project_service_status(project_name: str, service: str) -> dict[str, Any]:
 def _load_chat_project(chat_id: str) -> str:
     _scope, meta = _chat_meta(chat_id)
     project = str(meta.get("project") or "").strip()
-    if project and db.get_project(project):
-        return project
+    found = db.get_project(project) if project else None
+    if found:
+        return str(found["name"])
     return ""
 
 
 def _save_chat_project(chat_id: str, project_name: str) -> None:
     _scope, meta = _chat_meta(chat_id)
     meta["project"] = project_name
-    meta.pop(_PENDING_REQUIREMENT_KEY, None)
     meta.pop(_PENDING_ACTION_OPTIONS_KEY, None)
     meta.pop(_PENDING_GOAL_TEXT_KEY, None)
     _write_chat_meta(chat_id, meta)
@@ -418,48 +413,14 @@ def _notification_chat_ids(project_name: str = "") -> list[str]:
 
 def _active_project(cfg: FeishuBotConfig, chat_id: str = "") -> str:
     selected = _load_chat_project(chat_id)
-    if selected and db.get_project(selected):
-        return selected
+    selected_project = db.get_project(selected) if selected else None
+    if selected_project:
+        return str(selected_project["name"])
     default_project = str(cfg.default_project or "").strip()
-    if default_project and db.get_project(default_project):
-        return default_project
+    default_project_info = db.get_project(default_project) if default_project else None
+    if default_project_info:
+        return str(default_project_info["name"])
     return ""
-
-
-def _load_pending_requirement(chat_id: str, project_name: str) -> dict[str, Any] | None:
-    _scope, meta = _chat_meta(chat_id)
-    pending = meta.get(_PENDING_REQUIREMENT_KEY)
-    if not isinstance(pending, dict):
-        return None
-    if str(pending.get("project") or "") != project_name:
-        return None
-    if not str(pending.get("original_title") or "").strip():
-        return None
-    return dict(pending)
-
-
-def _save_pending_requirement(chat_id: str, project_name: str, result: dict[str, Any]) -> None:
-    if not chat_id:
-        return
-    _scope, meta = _chat_meta(chat_id)
-    meta["project"] = project_name
-    meta[_PENDING_REQUIREMENT_KEY] = {
-        "project": project_name,
-        "original_title": str(result.get("original_title") or "").strip(),
-        "qa_history": result.get("qa_history") if isinstance(result.get("qa_history"), list) else [],
-        "questions": result.get("questions") if isinstance(result.get("questions"), list) else [],
-        "updated_at": _now_iso(),
-    }
-    _write_chat_meta(chat_id, meta)
-
-
-def _clear_pending_requirement(chat_id: str) -> None:
-    if not chat_id:
-        return
-    _scope, meta = _chat_meta(chat_id)
-    if _PENDING_REQUIREMENT_KEY in meta:
-        meta.pop(_PENDING_REQUIREMENT_KEY, None)
-        _write_chat_meta(chat_id, meta)
 
 
 def _load_pending_action_options(chat_id: str) -> list[dict[str, Any]]:
@@ -527,6 +488,70 @@ def _clear_pending_goal_text(chat_id: str) -> None:
     if _PENDING_GOAL_TEXT_KEY in meta:
         meta.pop(_PENDING_GOAL_TEXT_KEY, None)
         _write_chat_meta(chat_id, meta)
+
+
+def _load_active_opencode_session_id(chat_id: str, project_name: str) -> int | None:
+    if not chat_id:
+        return None
+    _scope, meta = _chat_meta(chat_id)
+    try:
+        session_id = int(meta.get(_ACTIVE_OPENCODE_SESSION_KEY) or 0)
+    except (TypeError, ValueError):
+        return None
+    if session_id <= 0:
+        return None
+    session = db.get_session(session_id)
+    if not session:
+        return None
+    session_project = str(session.get("project") or "").strip()
+    if session_project != project_name:
+        return None
+    return session_id
+
+
+def _save_active_opencode_session_id(chat_id: str, session_id: int) -> None:
+    if not chat_id or session_id <= 0:
+        return
+    _scope, meta = _chat_meta(chat_id)
+    meta[_ACTIVE_OPENCODE_SESSION_KEY] = int(session_id)
+    _write_chat_meta(chat_id, meta)
+
+
+def _feishu_session_title(text: str) -> str:
+    compact = " ".join(str(text or "").split())
+    return compact[:40] or "OpenCode 会话"
+
+
+def _resolve_opencode_db_session(
+    project_name: str,
+    user_text: str,
+    *,
+    chat_id: str,
+    session_id: int | None = None,
+) -> tuple[int, str]:
+    if session_id is not None:
+        session = db.get_session(int(session_id))
+        if not session:
+            raise RuntimeError(f"会话 #{session_id} 不存在。")
+        session_project = str(session.get("project") or "").strip()
+        project = db.get_project(session_project)
+        if not project:
+            raise RuntimeError(f"会话 #{session_id} 所属项目 '{session_project}' 未注册。")
+        canonical_project = str(project["name"])
+        _save_active_opencode_session_id(chat_id, int(session_id))
+        return int(session_id), canonical_project
+
+    project = db.get_project(project_name)
+    if not project:
+        raise RuntimeError(f"项目 '{project_name}' 未注册。")
+    canonical_project = str(project["name"])
+    active_id = _load_active_opencode_session_id(chat_id, canonical_project)
+    if active_id:
+        return active_id, canonical_project
+    session = db.create_session(canonical_project, _feishu_session_title(user_text))
+    resolved_id = int(session["id"])
+    _save_active_opencode_session_id(chat_id, resolved_id)
+    return resolved_id, canonical_project
 
 
 def _confirm_scope(chat_id: str) -> str:
@@ -871,46 +896,86 @@ def build_choice_card(message: str, options: list[dict[str, Any]], *, prefix: st
     return _card("CodePilot 操作候选", blocks, template="orange", subtitle="自然语言命中了多个可能操作。")
 
 
-def build_goal_answer_card(project_name: str, user_text: str, result: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
-    intent = str(result.get("intent") or "").strip().lower()
-    if intent == "clarify" or result.get("job"):
-        return build_requirement_result_card(project_name, user_text, result, prefix=prefix)
-    if intent == "command":
-        return build_help_card(prefix=prefix, error=str(result.get("message") or ""))
+def build_opencode_answer_card(project_name: str, user_text: str, result: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
+    ok = bool(result.get("ok"))
     blocks: list[str | dict[str, Any]] = [
-        _section("会话结果"),
+        _section("OpenCode 回复"),
         *_column_panels(
             [
                 f"**项目**\n`{project_name}`",
-                f"**类型**\n`{intent or 'question'}`",
+                f"**会话**\n`#{result.get('codepilot_session_id') or '-'}`",
+                f"**OpenCode**\n`{result.get('opencode_session_id') or '-'}`",
+                f"**状态**\n`{'完成' if ok else '失败'}`",
             ]
         ),
         _section("你的输入"),
-        _plain_block(user_text[:700]),
-        _section("系统回复"),
-        _plain_block(str(result.get("message") or "").strip()[:1200] or "未获得回复"),
+        _plain_block(str(user_text or "").strip()[:700]),
+        _section("回复内容"),
+        _plain_block(str(result.get("message") or "").strip()[:1600] or "OpenCode 没有返回可展示文本。"),
     ]
+    tool_calls = result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else []
+    if tool_calls:
+        names = [
+            str(item.get("name") or "").strip()
+            for item in tool_calls
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+        if names:
+            blocks.extend([_section("工具调用"), _plain_block("、".join(names[:8]))])
     blocks.extend(_command_panel(prefix, _card_commands("project", project=project_name)))
     return _card(
-        f"CodePilot 会话 · {project_name}",
+        f"OpenCode 会话 · {project_name}",
         blocks,
-        template="blue",
-        subtitle="自然语言已自动分发到问答或需求流。",
+        template="blue" if ok else "red",
+        subtitle="飞书消息已交给 OpenCode + CodePilot MCP 处理。",
     )
 
 
-def _submit_goal_from_feishu(project_name: str, user_text: str, *, chat_id: str = "", prefix: str = "") -> dict[str, Any]:
-    from codepilot.webapp import actions as web_actions
+def _submit_opencode_from_feishu(
+    project_name: str,
+    user_text: str,
+    *,
+    chat_id: str = "",
+    prefix: str = "",
+    session_id: int | None = None,
+) -> dict[str, Any]:
+    content = str(user_text or "").strip()
+    if not content:
+        raise RuntimeError("输入不能为空。")
+    resolved_session_id, canonical_project = _resolve_opencode_db_session(
+        project_name,
+        content,
+        chat_id=chat_id,
+        session_id=session_id,
+    )
+    if chat_id and canonical_project:
+        _save_chat_project(chat_id, canonical_project)
+        _save_active_opencode_session_id(chat_id, resolved_session_id)
+    db.create_session_message(resolved_session_id, "user", content)
 
-    if chat_id and project_name:
-        _save_chat_project(chat_id, project_name)
-    result = web_actions.submit_goal_action(project_name, str(user_text or "").strip())
-    if result.get("intent") == "clarify":
-        _save_pending_requirement(chat_id, project_name, result)
-    else:
-        _clear_pending_requirement(chat_id)
+    from codepilot.opencode.session import run_opencode_message
+
+    result = run_opencode_message(
+        canonical_project,
+        content,
+        source="feishu",
+        external_session_id=str(resolved_session_id),
+    )
+    result = dict(result or {})
+    result["codepilot_session_id"] = resolved_session_id
+    reply = str(result.get("message") or "").strip()
+    db.create_session_message(
+        resolved_session_id,
+        "assistant",
+        reply or "OpenCode 没有返回可展示文本。",
+        intent="opencode" if result.get("ok") else "error",
+        metadata={
+            "opencode_session_id": result.get("opencode_session_id") or "",
+            "tool_calls": result.get("tool_calls") or [],
+        },
+    )
     _clear_pending_goal_text(chat_id)
-    return _reply_card(build_goal_answer_card(project_name, user_text, result, prefix=prefix))
+    return _reply_card(build_opencode_answer_card(canonical_project, content, result, prefix=prefix))
 
 
 def _resolve_project(explicit: str, *, default_project: str = "") -> str:
@@ -919,12 +984,12 @@ def _resolve_project(explicit: str, *, default_project: str = "") -> str:
         project = db.get_project(name)
         if not project:
             raise RuntimeError(f"项目 '{name}' 未注册。")
-        return name
+        return str(project["name"])
     default_name = str(default_project or "").strip()
     if default_name:
         project = db.get_project(default_name)
         if project:
-            return default_name
+            return str(project["name"])
     projects = db.list_projects()
     if len(projects) == 1:
         return str(projects[0]["name"])
@@ -1226,18 +1291,18 @@ def build_sessions_card(project_name: str, *, prefix: str = "") -> dict[str, Any
     sessions = db.list_sessions(project=project_name)[:8]
     if not sessions:
         blocks: list[str | dict[str, Any]] = [
-            _section("需求会话"),
-            _plain_block("当前还没有需求会话。可先在 Web UI 或 CLI 中提交一条需求。"),
+            _section("会话记录"),
+            _plain_block("当前还没有会话记录。可先在 Web UI、CLI 或飞书中发送一条消息。"),
         ]
         blocks.extend(_command_panel(prefix, _card_commands("sessions")))
         return _card(
-            f"CodePilot 需求会话 · {project_name}",
+            f"CodePilot 会话记录 · {project_name}",
             blocks,
             template="orange",
-            subtitle="需求会话用于查看规划和澄清上下文。",
+            subtitle="会话记录用于查看 Web UI 和 OpenCode 上下文。",
         )
     blocks: list[str | dict[str, Any]] = [
-        *_section_note("需求会话", "最近会话按更新时间展示。"),
+        *_section_note("会话记录", "最近会话按更新时间展示。"),
         *_column_panels(
             [
                 f"**项目**\n`{project_name}`",
@@ -1264,10 +1329,10 @@ def build_sessions_card(project_name: str, *, prefix: str = "") -> dict[str, Any
         blocks.pop()
     blocks.extend(_command_panel(prefix, _card_commands("sessions")))
     return _card(
-        f"CodePilot 需求会话 · {project_name}",
+        f"CodePilot 会话记录 · {project_name}",
         blocks,
         template="carmine",
-        subtitle="查看需求规划、澄清和相关任务。",
+        subtitle="查看 Web UI 和 OpenCode 会话消息。",
     )
 
 
@@ -1313,7 +1378,6 @@ def _session_related_task_ids(messages: list[dict[str, Any]], *, limit: int = 4)
 
 def _session_followup_commands(session_id: int, *, related_task_ids: list[int] | None = None) -> list[tuple[str, str]]:
     commands: list[tuple[str, str]] = [
-        (f"session reply {session_id} <text>", "继续会话"),
         (f"session {session_id}", "刷新会话"),
     ]
     task_ids = related_task_ids or []
@@ -1335,85 +1399,12 @@ def _session_followup_commands(session_id: int, *, related_task_ids: list[int] |
     return commands
 
 
-def build_session_result_card(
-    session_id: int,
-    user_text: str,
-    result: dict[str, Any],
-    *,
-    prefix: str = "",
-) -> dict[str, Any]:
-    session = db.get_session(session_id)
-    if not session:
-        raise RuntimeError(f"会话 #{session_id} 不存在。")
-    messages = db.list_session_messages(session_id)
-    intent = str(result.get("intent") or "info").strip().lower() or "info"
-    task_ids = []
-    raw_task_ids = result.get("task_ids")
-    if isinstance(raw_task_ids, list):
-        for item in raw_task_ids:
-            try:
-                task_id = int(item)
-            except (TypeError, ValueError):
-                continue
-            if task_id > 0:
-                task_ids.append(task_id)
-    if not task_ids:
-        task_ids = _session_related_task_ids(messages)
-    state_label = {
-        "clarify": "等待你继续",
-        "requirement": "已进入规划",
-        "task": "已进入规划",
-        "question": "已回复",
-        "command": "命令提示",
-        "info": "会话提示",
-    }.get(intent, "会话已更新")
-    message = str(result.get("message") or "").strip() or "未获得回复"
-    blocks: list[str | dict[str, Any]] = [
-        _section("会话结果"),
-        *_column_panels(
-            [
-                f"**项目**\n`{session.get('project') or '-'}`",
-                f"**会话**\n`#{session_id}`",
-                f"**状态**\n`{state_label}`",
-                f"**消息数**\n`{len(messages)}`",
-            ]
-        ),
-        _section("你的输入"),
-        _plain_block(str(user_text or "").strip()[:700]),
-        _section("系统回复"),
-        _plain_block(message[:1200]),
-    ]
-    refined_title = str(result.get("refined_title") or "").strip()
-    if refined_title:
-        blocks.extend([_section("当前规划标题"), _plain_block(refined_title[:500])])
-    if intent == "clarify":
-        questions = result.get("questions") if isinstance(result.get("questions"), list) else []
-        if questions:
-            blocks.extend(_code_block(_question_lines(questions), title="请继续回复"))
-        blocks.append(_note(f"继续请发送：session reply {session_id} <你的补充信息>"))
-    if task_ids:
-        task_text = "、".join(f"#{task_id}" for task_id in task_ids)
-        blocks.extend([_section("相关任务"), _plain_block(task_text)])
-    blocks.extend(_command_panel(prefix, _session_followup_commands(session_id, related_task_ids=task_ids)))
-    title = {
-        "clarify": f"需求会话待继续 · #{session_id}",
-        "requirement": f"需求会话已提交 · #{session_id}",
-        "task": f"需求会话已提交 · #{session_id}",
-        "question": f"需求会话已回复 · #{session_id}",
-        "command": f"需求会话提示 · #{session_id}",
-        "info": f"需求会话提示 · #{session_id}",
-    }.get(intent, f"需求会话已更新 · #{session_id}")
-    template = "orange" if intent in {"clarify", "info"} else ("green" if intent in {"requirement", "task"} else "blue")
-    return _card(title, blocks, template=template, subtitle="需求会话的最新回复和最相关的继续命令。")
-
-
 def build_session_card(session_id: int, *, prefix: str = "") -> dict[str, Any]:
     session = db.get_session(session_id)
     if not session:
         raise RuntimeError(f"会话 #{session_id} 不存在。")
     messages = db.list_session_messages(session_id)
     related_task_ids = _session_related_task_ids(messages)
-    pending_reply = bool(messages and str(messages[-1].get("role") or "") == "assistant" and str(messages[-1].get("intent") or "") == "clarify")
     blocks: list[str | dict[str, Any]] = [
         *_section_note("会话状态", "最近消息在下方展示。"),
         *_column_panels(
@@ -1427,8 +1418,6 @@ def build_session_card(session_id: int, *, prefix: str = "") -> dict[str, Any]:
         _section("标题"),
         _plain_block(session.get("title") or "新会话"),
     ]
-    if pending_reply:
-        blocks.append(_note(f"当前会话正在等待补充信息。继续请发送：session reply {session_id} <你的补充信息>"))
     if messages:
         lines: list[str] = []
         for message in messages[-6:]:
@@ -1441,7 +1430,7 @@ def build_session_card(session_id: int, *, prefix: str = "") -> dict[str, Any]:
     if related_task_ids:
         blocks.extend([_section("相关任务"), _plain_block("、".join(f"#{task_id}" for task_id in related_task_ids))])
     blocks.extend(_command_panel(prefix, _session_followup_commands(session_id, related_task_ids=related_task_ids)))
-    return _card(f"需求会话详情 · #{session_id}", blocks, template="violet", subtitle="需求会话的状态和最近消息。")
+    return _card(f"OpenCode 会话详情 · #{session_id}", blocks, template="violet", subtitle="会话消息来自 OpenCode + CodePilot MCP。")
 
 
 def build_task_card(task_id: int, *, prefix: str = "", title_prefix: str = "任务详情") -> dict[str, Any]:
@@ -1562,412 +1551,6 @@ def build_services_card(project_name: str, *, prefix: str = "") -> dict[str, Any
         template="purple",
         subtitle="任务轮询和巡检服务的当前运行状态。",
     )
-
-
-def _question_lines(questions: list[dict[str, Any]]) -> str:
-    lines: list[str] = []
-    multi_question = len(questions or []) > 1
-    for idx, question in enumerate(questions or [], 1):
-        text = str(question.get("text") or question.get("question") or "").strip()
-        if not text:
-            continue
-        qtype = str(question.get("type") or "text").strip().lower()
-        options = question.get("options") if isinstance(question.get("options"), list) else []
-        if qtype == "single" and options:
-            format_hint = f"答 {idx}=1" if multi_question else "答 1"
-            lines.append(f"{idx}. [单选] {text}")
-            lines.append(f"   回复格式：{format_hint}")
-        elif qtype == "multi" and options:
-            format_hint = f"答 {idx}=1,2" if multi_question else "答 1,2"
-            lines.append(f"{idx}. [多选] {text}")
-            lines.append(f"   回复格式：{format_hint}")
-        else:
-            format_hint = f"答 {idx}=你的说明" if multi_question else "答 你的说明"
-            lines.append(f"{idx}. [文本] {text}")
-            lines.append(f"   回复格式：{format_hint}")
-        for option_idx, option in enumerate(options, 1):
-            label = str((option or {}).get("label") or (option or {}).get("text") or "").strip()
-            if label:
-                lines.append(f"   {option_idx}) {label}")
-        if question.get("allow_free_text"):
-            lines.append("   其他：可直接文字回答")
-    if multi_question:
-        lines.append("")
-        lines.append("多题一起回复示例：答 1=1,2; 2=补充说明")
-    return "\n".join(lines) or "请补充更多信息。"
-
-
-def _question_id(question: dict[str, Any], idx: int) -> str:
-    return str(question.get("id") or question.get("question_id") or f"q{idx + 1}").strip()
-
-
-def _option_id(option: dict[str, Any], idx: int) -> str:
-    return str(option.get("id") or option.get("value") or f"opt{idx + 1}").strip()
-
-
-def _choice_tokens(raw: str) -> list[str]:
-    return [item.strip() for item in re.split(r"[,，、\s]+", str(raw or "").strip()) if item.strip()]
-
-
-def _choice_answer_for_question(question: dict[str, Any], raw: str, *, q_index: int) -> dict[str, Any]:
-    qtype = str(question.get("type") or "text").strip().lower()
-    qid = _question_id(question, q_index)
-    if qtype not in {"single", "multi"}:
-        return {"question_id": qid, "selected_option_ids": [], "free_text": str(raw or "").strip()}
-
-    options = question.get("options") if isinstance(question.get("options"), list) else []
-    option_ids = [_option_id(option or {}, idx) for idx, option in enumerate(options)]
-    selected: list[str] = []
-    unmatched: list[str] = []
-    for token in _choice_tokens(raw):
-        matched = ""
-        if token.isdigit():
-            index = int(token) - 1
-            if 0 <= index < len(option_ids):
-                matched = option_ids[index]
-        if not matched:
-            for idx, option in enumerate(options):
-                label = str((option or {}).get("label") or (option or {}).get("text") or "").strip()
-                oid = option_ids[idx]
-                if token == oid or (label and token == label):
-                    matched = oid
-                    break
-        if matched and matched not in selected:
-            selected.append(matched)
-        elif token:
-            unmatched.append(token)
-
-    free_text = " ".join(unmatched).strip()
-    if qtype == "single" and len(selected) > 1:
-        raise RuntimeError(f"第 {q_index + 1} 题是单选，只能回复一个编号，例如 `答 1`。")
-    if not selected and free_text and not question.get("allow_free_text"):
-        raise RuntimeError(f"第 {q_index + 1} 题需要按选项编号回复，例如 `答 1` 或 `答 1,2`。")
-    if selected and free_text and not question.get("allow_free_text"):
-        raise RuntimeError(f"第 {q_index + 1} 题包含无法识别的选项：{free_text}")
-    return {"question_id": qid, "selected_option_ids": selected, "free_text": free_text}
-
-
-def _split_numbered_answers(raw: str) -> dict[int, str]:
-    text = str(raw or "").strip()
-    matches = list(re.finditer(r"(?:^|[;\n])\s*(\d+)\s*[:：=]\s*", text))
-    if not matches:
-        return {}
-    result: dict[int, str] = {}
-    for idx, match in enumerate(matches):
-        start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-        result[int(match.group(1)) - 1] = text[start:end].strip(" ;\n")
-    return result
-
-
-def _parse_feishu_clarify_answers(raw: str, questions: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    normalized_questions = [q for q in (questions or []) if isinstance(q, dict)]
-    content = str(raw or "").strip()
-    if not normalized_questions:
-        return content, []
-    if len(normalized_questions) == 1:
-        return "", [_choice_answer_for_question(normalized_questions[0], content, q_index=0)]
-
-    numbered = _split_numbered_answers(content)
-    if not numbered:
-        raise RuntimeError("多题澄清请按编号回复，例如 `答 1=1,2; 2=补充说明`。")
-    answers: list[dict[str, Any]] = []
-    for idx, question in enumerate(normalized_questions):
-        if idx not in numbered:
-            continue
-        answers.append(_choice_answer_for_question(question, numbered[idx], q_index=idx))
-    if not answers:
-        raise RuntimeError("没有解析到有效答案，请按示例回复：`答 1=1,2; 2=补充说明`。")
-    return "", answers
-
-
-def build_requirement_clarify_card(
-    project_name: str,
-    result: dict[str, Any],
-    *,
-    prefix: str = "",
-) -> dict[str, Any]:
-    seed = str(result.get("original_title") or result.get("seed_title") or "").strip()
-    questions = result.get("questions") if isinstance(result.get("questions"), list) else []
-    blocks: list[str | dict[str, Any]] = [
-        _section("需求需要补充信息"),
-        *_column_panels(
-            [
-                f"**项目**\n`{project_name}`",
-                f"**状态**\n`等待你回复`",
-                f"**问题数**\n`{len(questions)}`",
-            ]
-        ),
-    ]
-    if seed:
-        blocks.extend([_section("原始需求"), _plain_block(seed[:500])])
-    blocks.extend(_code_block(_question_lines(questions), title="请直接回复答案"))
-    blocks.append(_note("回复澄清请发送：答 <你的补充信息>。发送新的 需求 <内容> 会开始新需求。"))
-    blocks.extend(_command_panel(prefix, _card_commands("project", project=project_name)))
-    return _card(
-        f"需求澄清 · {project_name}",
-        blocks,
-        template="orange",
-        subtitle="AI 规划前需要补充关键信息。",
-    )
-
-
-def build_requirement_result_card(
-    project_name: str,
-    requirement_text: str,
-    result: dict[str, Any],
-    *,
-    prefix: str = "",
-) -> dict[str, Any]:
-    if result.get("intent") == "clarify":
-        return build_requirement_clarify_card(project_name, result, prefix=prefix)
-    job = result.get("job") if isinstance(result.get("job"), dict) else {}
-    task_ids = job.get("task_ids") if isinstance(job.get("task_ids"), list) else []
-    task_text = "、".join(f"#{int(task_id)}" for task_id in task_ids if str(task_id).isdigit()) or "规划中"
-    status = str(job.get("status") or result.get("status") or "queued")
-    phase = str(job.get("phase") or "queued")
-    blocks: list[str | dict[str, Any]] = [
-        _section("需求已进入规划"),
-        *_column_panels(
-            [
-                f"**项目**\n`{project_name}`",
-                f"**后台任务**\n`#{job.get('id') or '-'}`",
-                f"**状态**\n{_status_mark(status)}",
-                f"**阶段**\n`{_phase_label(phase)}`",
-                f"**关联任务**\n`{task_text}`",
-            ]
-        ),
-        _section("需求内容"),
-        _plain_block(str(requirement_text or "").strip()[:700]),
-    ]
-    message = str(result.get("message") or "").strip()
-    if message:
-        blocks.extend([_section("系统反馈"), _plain_block(message[:500])])
-    blocks.extend(
-        _command_panel(
-            prefix,
-            [
-                ("requirements", "查看需求进度"),
-                ("tasks", "查看任务面板"),
-                ("services", "服务状态"),
-                ("overview", "项目总览"),
-            ],
-        )
-    )
-    return _card(
-        f"需求已提交 · {project_name}",
-        blocks,
-        template="green",
-        subtitle="AI 已开始规划，稍后可在需求会话或任务面板查看进度。",
-    )
-
-
-def build_requirement_event_card(
-    project_name: str,
-    requirement_text: str,
-    *,
-    event: str,
-    phase: str = "",
-    level: str = "info",
-    message: str = "",
-    prefix: str = "",
-) -> dict[str, Any]:
-    title_map = {
-        "started": "需求规划开始",
-        "phase_start": f"{_phase_label(phase)} 开始",
-        "phase_end": f"{_phase_label(phase)} 完成",
-        "failed": "需求规划失败",
-        "done": "需求规划完成",
-    }
-    template = "red" if level == "error" or event == "failed" else ("green" if event in {"phase_end", "done"} else "blue")
-    blocks: list[str | dict[str, Any]] = [
-        _section("规划进度"),
-        *_column_panels(
-            [
-                f"**项目**\n`{project_name}`",
-                f"**事件**\n`{title_map.get(event, '需求状态更新')}`",
-                f"**阶段**\n`{_phase_label(phase or '-')}`",
-            ]
-        ),
-        _section("需求"),
-        _plain_block(str(requirement_text or "").strip()[:500]),
-    ]
-    if message:
-        blocks.extend([_section("当前反馈"), _plain_block(str(message or "").strip()[:700])])
-    blocks.extend(
-        _command_panel(
-            prefix,
-            [
-                ("requirements", "查看需求进度"),
-                ("tasks", "查看任务面板"),
-                ("overview", "项目总览"),
-            ],
-        )
-    )
-    return _card(
-        f"CodePilot · {title_map.get(event, '需求状态更新')}",
-        blocks,
-        template=template,
-        subtitle="需求规划和任务生成进度通知。",
-    )
-
-
-def _send_requirement_event_card(
-    project_name: str,
-    chat_id: str,
-    requirement_text: str,
-    *,
-    event: str,
-    phase: str = "",
-    level: str = "info",
-    message: str = "",
-    prefix: str = "",
-) -> bool:
-    if not chat_id:
-        return False
-    card = build_requirement_event_card(
-        project_name,
-        requirement_text,
-        event=event,
-        phase=phase,
-        level=level,
-        message=message,
-        prefix=prefix,
-    )
-    return _send_bot_card(card, project_name=project_name, chat_ids=[chat_id])
-
-
-def _submit_requirement_from_feishu(
-    project_name: str,
-    text: str,
-    *,
-    cfg: FeishuBotConfig,
-    chat_id: str = "",
-    continue_pending: bool = False,
-) -> dict[str, Any]:
-    content = str(text or "").strip()
-    if not content:
-        return _reply_card(build_help_card(prefix=cfg.command_prefix))
-    from codepilot.core import progress_bus
-    from codepilot.webapp import server as _web_server  # noqa: F401 - initializes Web UI action state module
-    from codepilot.webapp import actions as web_actions
-
-    pending = _load_pending_requirement(chat_id, project_name) if continue_pending else None
-
-    def _progress_listener(event: dict[str, Any]) -> None:
-        event_type = str(event.get("type") or "").strip()
-        if event_type not in {"phase_start", "phase_end", "error"}:
-            return
-        _send_requirement_event_card(
-            project_name,
-            chat_id,
-            content,
-            event=event_type,
-            phase=str(event.get("stage") or ""),
-            level=str(event.get("level") or "info"),
-            message=str(event.get("message") or ""),
-            prefix=cfg.command_prefix,
-        )
-
-    if pending:
-        answer_text, clarify_answers = _parse_feishu_clarify_answers(
-            content,
-            pending.get("questions") if isinstance(pending.get("questions"), list) else [],
-        )
-        with progress_bus.subscription(_progress_listener):
-            result = web_actions.submit_requirement_action(
-                project_name,
-                answer_text,
-                execute=True,
-                run_async=True,
-                task_source=f"feishu:{chat_id}" if chat_id else "feishu",
-                qa_history=pending.get("qa_history") if isinstance(pending.get("qa_history"), list) else [],
-                original_title=str(pending.get("original_title") or ""),
-                clarify_questions=pending.get("questions") if isinstance(pending.get("questions"), list) else [],
-                clarify_answers=clarify_answers,
-            )
-        if result.get("intent") == "clarify":
-            _save_pending_requirement(chat_id, project_name, result)
-        else:
-            _clear_pending_requirement(chat_id)
-        return _reply_card(build_requirement_result_card(project_name, content, result, prefix=cfg.command_prefix))
-
-    if not continue_pending:
-        _clear_pending_requirement(chat_id)
-    _send_requirement_event_card(
-        project_name,
-        chat_id,
-        content,
-        event="started",
-        phase="planning",
-        level="info",
-        message="已收到需求，开始澄清/规划。",
-        prefix=cfg.command_prefix,
-    )
-    with progress_bus.subscription(_progress_listener):
-        result = web_actions.submit_requirement_action(
-            project_name,
-            content,
-            execute=True,
-            run_async=True,
-            task_source=f"feishu:{chat_id}" if chat_id else "feishu",
-        )
-    if result.get("intent") == "clarify":
-        _save_pending_requirement(chat_id, project_name, result)
-    else:
-        _clear_pending_requirement(chat_id)
-    return _reply_card(build_requirement_result_card(project_name, content, result, prefix=cfg.command_prefix))
-
-
-def _start_session_from_feishu(
-    project_name: str,
-    user_text: str,
-    *,
-    category: str = "requirement",
-    chat_id: str = "",
-    prefix: str = "",
-) -> dict[str, Any]:
-    content = str(user_text or "").strip()
-    if not content:
-        raise RuntimeError("输入不能为空。")
-    from codepilot.webapp import server as _web_server  # noqa: F401 - initializes Web UI action state module
-    from codepilot.webapp import actions as web_actions
-
-    session_result = web_actions.create_session_action(project_name, title=content[:40] or "新会话")
-    session = session_result.get("session") if isinstance(session_result.get("session"), dict) else {}
-    session_id = int(session.get("id") or 0)
-    if session_id <= 0:
-        raise RuntimeError("创建需求会话失败。")
-    result = web_actions.send_session_message_action(session_id, content, category=category)
-    if chat_id and project_name:
-        _save_chat_project(chat_id, project_name)
-    _clear_pending_requirement(chat_id)
-    _clear_pending_goal_text(chat_id)
-    return _reply_card(build_session_result_card(session_id, content, result, prefix=prefix))
-
-
-def _continue_session_from_feishu(
-    session_id: int,
-    user_text: str,
-    *,
-    chat_id: str = "",
-    prefix: str = "",
-) -> dict[str, Any]:
-    content = str(user_text or "").strip()
-    if not content:
-        raise RuntimeError("输入不能为空。")
-    from codepilot.webapp import server as _web_server  # noqa: F401 - initializes Web UI action state module
-    from codepilot.webapp import actions as web_actions
-
-    session = db.get_session(session_id)
-    if not session:
-        raise RuntimeError(f"会话 #{session_id} 不存在。")
-    result = web_actions.send_session_message_action(session_id, content, category="auto")
-    if chat_id and str(session.get("project") or "").strip():
-        _save_chat_project(chat_id, str(session.get("project") or "").strip())
-    _clear_pending_requirement(chat_id)
-    _clear_pending_goal_text(chat_id)
-    return _reply_card(build_session_result_card(session_id, content, result, prefix=prefix))
 
 
 def _feishu_notify_script() -> Path:
@@ -2318,7 +1901,7 @@ def _handle_pending_command_choice(command_text: str, context: _CommandContext) 
         pending_goal_text = _load_pending_goal_text(chat_id)
         if pending_goal_text and selected_command.lower().startswith("use "):
             project_name = selected_command.split(None, 1)[1].strip()
-            return _submit_goal_from_feishu(
+            return _submit_opencode_from_feishu(
                 project_name,
                 pending_goal_text,
                 chat_id=chat_id,
@@ -2470,51 +2053,25 @@ def _handle_requirement_command(
         if not requirement_text:
             raise RuntimeError("请在命令后写需求内容，例如 `req new 优化飞书任务卡片`。")
         project_name = _resolve_project("", default_project=active_project)
-        return _start_session_from_feishu(
-            project_name,
-            requirement_text,
-            category="requirement",
-            chat_id=chat_id,
-            prefix=cfg.command_prefix,
-        )
+        return _submit_opencode_from_feishu(project_name, requirement_text, chat_id=chat_id, prefix=cfg.command_prefix)
     if verb == "ask":
         user_text = command_text[len(parts[0]):].strip()
         if not user_text:
             raise RuntimeError("请在命令后写内容，例如 `ask 帮我梳理一下最近需求`。")
         project_name = _resolve_project("", default_project=active_project)
-        return _start_session_from_feishu(
-            project_name,
-            user_text,
-            category="auto",
-            chat_id=chat_id,
-            prefix=cfg.command_prefix,
-        )
+        return _submit_opencode_from_feishu(project_name, user_text, chat_id=chat_id, prefix=cfg.command_prefix)
     if verb in {"需求", "requirement", "plan", "new", "goal"}:
         requirement_text = command_text[len(parts[0]):].strip()
         if not requirement_text:
             raise RuntimeError("请在命令后写需求内容，例如 `需求 优化任务面板状态展示`。")
         project_name = _resolve_project("", default_project=active_project)
-        return _submit_requirement_from_feishu(
-            project_name,
-            requirement_text,
-            cfg=cfg,
-            chat_id=chat_id,
-            continue_pending=False,
-        )
+        return _submit_opencode_from_feishu(project_name, requirement_text, chat_id=chat_id, prefix=cfg.command_prefix)
     if verb in {"答", "answer", "reply"}:
         answer_text = command_text[len(parts[0]):].strip()
         if not answer_text:
             raise RuntimeError("请在命令后写补充答案，例如 `答 先做飞书控制入口`。")
         project_name = _resolve_project("", default_project=active_project)
-        if not _load_pending_requirement(chat_id, project_name):
-            raise RuntimeError("当前没有等待补充的需求。请先发送 `需求 <内容>`。")
-        return _submit_requirement_from_feishu(
-            project_name,
-            answer_text,
-            cfg=cfg,
-            chat_id=chat_id,
-            continue_pending=True,
-        )
+        return _submit_opencode_from_feishu(project_name, answer_text, chat_id=chat_id, prefix=cfg.command_prefix)
     if verb not in {"session", "job"}:
         return None
     if verb == "session" and len(parts) > 1 and parts[1].lower() in {"reply", "continue"}:
@@ -2524,11 +2081,12 @@ def _handle_requirement_command(
         reply_text = command_text.split(None, 3)[3].strip() if len(parts) > 3 else ""
         if not reply_text:
             raise RuntimeError("请提供会话回复内容，例如 `session reply 12 先做飞书入口`。")
-        return _continue_session_from_feishu(
-            session_id,
+        return _submit_opencode_from_feishu(
+            "",
             reply_text,
             chat_id=chat_id,
             prefix=cfg.command_prefix,
+            session_id=session_id,
         )
     if len(parts) < 2:
         raise RuntimeError("请提供会话 ID，例如 `session 12`。")
@@ -2654,36 +2212,8 @@ def _handle_natural_language_command(
     cfg = context.cfg
     chat_id = context.chat_id
     active_project = _active_project(cfg, chat_id)
-    resolved = resolve_natural_language_command(command_text, active_project=active_project)
-    if resolved.get("status") == "options":
-        options = list(resolved.get("options") or [])
-        _save_pending_action_options(chat_id, options)
-        return _reply_card(build_choice_card(str(resolved.get("message") or "请确认操作"), options, prefix=cfg.command_prefix))
-    if resolved.get("status") == "match":
-        _clear_pending_action_options(chat_id)
-        command = str(resolved.get("command") or "")
-        return handle_command_text(
-            command,
-            config_path=context.config_path,
-            chat_id=chat_id,
-            _normalized_command_text=command,
-            _allow_nl=False,
-        )
-
-    goal = infer_goal_from_text(command_text, active_project=active_project)
-    if goal and goal.get("status") == "options":
-        options = list(goal.get("options") or [])
-        _save_pending_action_options(chat_id, options)
-        _save_pending_goal_text(chat_id, command_text)
-        return _reply_card(build_choice_card(str(goal.get("message") or "请确认项目"), options, prefix=cfg.command_prefix))
-    if goal and goal.get("project"):
-        return _submit_goal_from_feishu(
-            str(goal.get("project") or "").strip(),
-            str(goal.get("text") or "").strip(),
-            chat_id=chat_id,
-            prefix=cfg.command_prefix,
-        )
-
+    if active_project and not db.get_project(active_project):
+        active_project = ""
     fallback_project = active_project
     if not fallback_project:
         projects = db.list_projects()
@@ -2709,7 +2239,7 @@ def _handle_natural_language_command(
                     )
                 )
     if fallback_project:
-        return _submit_goal_from_feishu(
+        return _submit_opencode_from_feishu(
             fallback_project,
             command_text,
             chat_id=chat_id,

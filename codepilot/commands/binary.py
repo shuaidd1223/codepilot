@@ -22,6 +22,7 @@ from codepilot.binary_support.manager import (
     _merge_release_inputs,
 )
 from codepilot.core.output import echo
+from codepilot.core.paths import global_storage_root
 
 
 @click.group("binary")
@@ -57,7 +58,7 @@ def binary_build(
                 bundle_providers,
                 output_dir=result.dist_dir,
                 platform_tag=result.platform_tag,
-                cache_dir=project_root / ".codepilot" / "vendor-cache",
+                cache_dir=result.build_dir / "vendor-cache",
             )
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc

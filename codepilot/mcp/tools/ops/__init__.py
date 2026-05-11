@@ -130,10 +130,28 @@ def resolve_project(project: Any) -> dict[str, Any]:
     return dict(found)
 
 
-def invoke_cli_json(args: list[str]) -> dict[str, Any]:
+def invoke_cli_json(args: list[str], timeout: int | None = None) -> dict[str, Any]:
     from codepilot.cli import main
 
-    result = CliRunner().invoke(main, args)
+    def _run() -> Any:
+        return CliRunner().invoke(main, args)
+
+    if timeout is not None:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_run)
+            try:
+                result = future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                raise CodePilotToolError(
+                    "CLI command timed out",
+                    code="cli_timeout",
+                    details={"args": args, "timeout": timeout},
+                )
+    else:
+        result = _run()
+
     output = (result.output or "").strip()
     try:
         payload = json.loads(output) if output else {}

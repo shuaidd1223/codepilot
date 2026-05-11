@@ -7,7 +7,7 @@
     "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
     "需要结构化结果时，优先使用 `hud --json`、`status --json`、`task show --json`、`doctor --json`、`task find --json`、`ai manifest`。",
     "如果目标是提交一个自然语言需求，直接调用 `codepilot \"需求文本\"` 或 `codepilot go \"需求文本\"`。",
-    "在 chat、Web UI 会话和飞书自由文本里，疑似需求/任务不会自动执行；要创建工作请显式使用 `需求 <内容>` / `# <内容>` 或 `任务 <内容>` / `! <内容>`。",
+    "chat、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP；自由文本可以直接表达问题、需求或操作意图。",
     "如果用户是在询问项目、任务数量、完成度、失败任务、运行中任务或服务状态，优先按 `question` 处理，CodePilot 会读取本地项目与任务数据辅助回答。",
     "如果目标是发布产物，优先调用 `codepilot binary prepare --version <版本号>`。",
     "如果任务处于运行中，先用 `codepilot status -p <项目名> -v` 查看阶段，再决定是否 `task logs` 或 `task stop`。",
@@ -193,13 +193,13 @@
     },
     {
       "name": "chat",
-      "syntax": "codepilot chat [-p <项目名>] [--no-ui]",
-      "purpose": "启动持续自然语言会话，支持问答、命令和显式需求/任务提交。",
-      "when_to_use": "需要连续追问项目状态或处理澄清流程时。自由文本疑似需求会先要求确认；创建需求用 `需求 <内容>` 或 `# <内容>`，创建单步任务用 `任务 <内容>` 或 `! <内容>`。",
+      "syntax": "codepilot chat [-p <项目名>] [-a opencode]",
+      "purpose": "启动 OpenCode TUI，并注入 CodePilot MCP、agent、commands 和权限配置。",
+      "when_to_use": "需要持续会话、交互式查看任务状态、提交需求或执行项目工作流时。",
       "examples": [
-        "codepilot chat -p codepilot-dev",
-        "在 chat 中输入：需求 优化飞书任务面板",
-        "在 chat 中输入：? 当前有多少任务，完成了多少"
+        "codepilot chat -p codepilot-dev -a opencode",
+        "在 OpenCode 中输入：优化飞书任务面板",
+        "在 OpenCode 中输入：当前有多少任务，完成了多少"
       ]
     },
     {
@@ -520,12 +520,12 @@
       ]
     },
     {
-      "name": "在会话或飞书中安全区分问答与创建工作",
+      "name": "在会话或飞书中使用 OpenCode 工作流",
       "steps": [
-        "普通提问：直接输入 `当前有多少任务，完成了多少` 或使用 `? 当前项目状态怎么样`",
-        "创建需求：输入 `需求 <内容>` 或 `# <内容>`",
-        "创建单步任务：输入 `任务 <内容>` 或 `! <内容>`",
-        "疑似需求但缺少显式前缀时，CodePilot 只返回确认提示，不会直接执行。"
+        "普通提问：直接输入 `当前有多少任务，完成了多少`。",
+        "提交需求：直接输入自然语言需求，OpenCode 会通过 CodePilot MCP 调用任务和规划能力。",
+        "任务操作：可以输入 `retry 123`、`tasks failed` 等明确命令，也可以用自然语言说明操作意图。",
+        "没有当前项目的飞书自由文本会先返回项目选择卡片。"
       ]
     },
     {

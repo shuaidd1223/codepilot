@@ -13,7 +13,7 @@ from codepilot.mcp.tools.ops import (
 )
 
 
-@register_tool(description="Run the CodePilot build-fix loop for a failed task.")
+@register_tool(description="为失败任务运行 CodePilot build-fix 修复闭环。")
 def build_fix(
     project: str,
     task_id: int | None = None,

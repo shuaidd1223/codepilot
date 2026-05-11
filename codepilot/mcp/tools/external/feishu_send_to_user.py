@@ -24,7 +24,7 @@ def _message_card(title: str, message: str) -> dict[str, Any]:
     )
 
 
-@register_tool(description="Send one direct Feishu card message through the existing bot card API.")
+@register_tool(description="通过现有机器人卡片 API 发送一条飞书私聊卡片消息。")
 def feishu_send_to_user(
     user_id: str,
     message: str,

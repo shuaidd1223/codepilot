@@ -8,7 +8,7 @@ from codepilot.mcp.tools.tasks import ensure_int, task_not_found, task_payload
 from codepilot.storage import database as db
 
 
-@register_tool(description="Archive a completed CodePilot task.")
+@register_tool(description="归档已完成的 CodePilot 任务。")
 def archive_task(task_id: int) -> dict[str, Any]:
     tid = ensure_int(task_id, "task_id", minimum=1)
 

@@ -9,12 +9,10 @@ from typing import Any
 from codepilot.mcp.launchers import (
     LaunchPlan,
     MCPServerSpec,
-    json_config_text,
-    normalize_mcp_servers,
 )
-
-
-DEFAULT_OPENCODE_CONFIG_PATH = Path(".codepilot") / "mcp" / "opencode.json"
+from codepilot.opencode.config import OpenCodeConfig
+from codepilot.opencode.paths import opencode_runtime_config_path
+from codepilot.opencode.profile import build_opencode_profile
 
 
 def build_launch_plan(
@@ -24,44 +22,37 @@ def build_launch_plan(
     mcp_servers: Mapping[str, Any] | Iterable[MCPServerSpec] | None = None,
     env: Mapping[str, str] | None = None,
     config_path: str | Path | None = None,
+    opencode_config: OpenCodeConfig | None = None,
+    session: str | None = None,
 ) -> LaunchPlan:
-    target_path = str(config_path or DEFAULT_OPENCODE_CONFIG_PATH)
-    config = {
-        "$schema": "https://opencode.ai/config.json",
-        "mcp": _opencode_servers(normalize_mcp_servers(mcp_servers)),
-    }
+    target_path = Path(config_path or opencode_runtime_config_path())
+    profile = build_opencode_profile(
+        opencode_config,
+        mcp_servers=mcp_servers,
+        base_path=target_path.parent,
+        config_path=target_path,
+    )
     command = [executable]
+    default_agent = str(profile.config.get("default_agent") or "").strip()
+    session_id = str(session or "").strip()
     if prompt:
-        command.extend(["run", prompt])
+        command.append("run")
+        if default_agent:
+            command.extend(["--agent", default_agent])
+        if session_id:
+            command.extend(["--session", session_id])
+        command.append(prompt)
+    else:
+        if default_agent:
+            command.extend(["--agent", default_agent])
+        if session_id:
+            command.extend(["-s", session_id])
     merged_env = dict(env or {})
-    merged_env["OPENCODE_CONFIG"] = target_path
+    merged_env.update(profile.env)
     return LaunchPlan(
         agent="opencode",
         command=command,
         env=merged_env,
-        mcp_config=config,
-        config_files={target_path: json_config_text(config)},
+        mcp_config=profile.config,
+        config_files=profile.files,
     )
-
-
-def _opencode_servers(servers: list[MCPServerSpec]) -> dict[str, dict[str, Any]]:
-    result: dict[str, dict[str, Any]] = {}
-    for server in servers:
-        if server.url:
-            item: dict[str, Any] = {
-                "type": "remote",
-                "url": server.url,
-                "enabled": server.enabled,
-            }
-            if server.headers:
-                item["headers"] = dict(server.headers)
-        else:
-            item = {
-                "type": "local",
-                "command": [server.command, *server.args],
-                "enabled": server.enabled,
-            }
-            if server.env:
-                item["environment"] = dict(server.env)
-        result[server.name] = item
-    return result

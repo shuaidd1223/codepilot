@@ -8,28 +8,11 @@ CP.Components.ChatView = Vue.defineComponent({
     session() { return this.s.sessionDetail; },
     messages() { return this.s.sessionMessages; },
     chatPending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.SESSION_SEND); },
-    clarifyPending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.SESSION_CLARIFY_REPLY); },
-    clarifyCancelPending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.SESSION_CLARIFY_CANCEL); },
     deletePending() { return this.cp.isActionPending(this.cp.ACTION_KEYS.SESSION_DELETE); },
-    pendingClarify() {
-      if (!this.session) return null;
-      return this.s.clarifyDrafts[this.session.id] || null;
-    },
   },
   methods: {
     send() { this.cp.sendChat(); },
     del() { this.cp.deleteSession(); },
-    async sendClarify() {
-      if (!this.session) return;
-      await this.cp.submitClarifyAnswer(this.session.id);
-    },
-    updateClarifyAnswers(nextAnswers) {
-      if (this.pendingClarify) this.pendingClarify.answers = nextAnswers;
-    },
-    cancelClarify() {
-      if (!this.session) return;
-      this.cp.cancelSessionClarify(this.session.id);
-    },
   },
   mounted() { this.cp.registerChatScroll(this.$refs.scroll); },
   updated() { this.cp.registerChatScroll(this.$refs.scroll); },
@@ -71,7 +54,7 @@ CP.Components.ChatView = Vue.defineComponent({
           <div v-if="!messages.length" class="chat-empty">会话刚创建，发送第一条消息开始对话</div>
           <div v-for="m in messages" :key="m.id" class="chat-row" :class="m.role">
             <div class="bubble" :class="[m.role, m.intent === 'clarify' ? 'clarify' : '']">
-              <div v-if="m.intent === 'clarify'" class="clarify-head">🤔 需要澄清几个点</div>
+              <div v-if="m.intent === 'opencode'" class="clarify-head">OpenCode</div>
               <cp-markdown class="bubble-body" :text="m.content"></cp-markdown>
               <div class="bubble-meta">
                 <span>{{ $cp.fmtTime(m.created_at) }}</span>
@@ -81,40 +64,14 @@ CP.Components.ChatView = Vue.defineComponent({
             </div>
           </div>
         </div>
-        <!-- Quick-reply for outstanding clarification -->
-        <div v-if="pendingClarify" class="clarify-panel" style="border-top:1px solid var(--border);padding:12px;background:var(--bg-subtle, #fafafa)">
-          <div class="muted tiny" style="margin-bottom:8px">
-            当前会话正在等待你补充澄清信息。单选/多选题可直接选，也可以手动输入文本。
-          </div>
-          <cp-clarify-fields
-            :questions="pendingClarify.questions"
-            :answers="pendingClarify.answers"
-            @update:answers="updateClarifyAnswers"
-          ></cp-clarify-fields>
-          <div class="row gap-sm end" style="margin-top:12px">
-            <button class="btn btn-outline" @click="cancelClarify" :disabled="clarifyCancelPending">
-              取消本次规划
-            </button>
-            <button class="btn btn-primary" @click="sendClarify" :disabled="clarifyPending">
-              <span v-if="clarifyPending" class="spinner"></span>
-              回答
-            </button>
-          </div>
-        </div>
         <div class="chat-input-bar">
           <input
             v-model="s.chatText"
             @keydown.enter.exact.prevent="send"
             maxlength="4096"
-            :disabled="!!pendingClarify"
-            :placeholder="pendingClarify ? '当前会话正在等待澄清回答，可在上方填写或取消' : '在此会话中输入问题或需求…'"
+            placeholder="像使用 OpenCode 一样输入问题、需求或操作指令…"
           >
-          <select v-model="s.chatCategory" class="w-24">
-            <option value="auto">自动</option>
-            <option value="question">问题</option>
-            <option value="requirement">需求</option>
-          </select>
-          <button class="btn btn-primary" @click="send" :disabled="chatPending || !!pendingClarify || !s.chatText.trim()">
+          <button class="btn btn-primary" @click="send" :disabled="chatPending || !s.chatText.trim()">
             <span v-if="chatPending" class="spinner"></span>
             <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
             发送

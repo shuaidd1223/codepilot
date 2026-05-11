@@ -90,10 +90,11 @@ def _fake_all_present(monkeypatch):
     monkeypatch.setattr("codepilot.ai_support.providers.resolve_cli_provider", _fake)
 
 
-def test_default_fallback_order_includes_opencode_last(monkeypatch):
+def test_default_fallback_order_includes_opencode_last(tmp_path: Path, monkeypatch):
     _fake_all_present(monkeypatch)
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global.toml"))
 
-    candidates, _ = resolve_text_cli_candidates(GatewayRequest(prompt="hi"))
+    candidates, _ = resolve_text_cli_candidates(GatewayRequest(prompt="hi", project_path=str(tmp_path)))
 
     # Default order: claude, codex, opencode
     assert [c.cli_name for c in candidates] == ["claude", "codex", "opencode"]
@@ -101,6 +102,7 @@ def test_default_fallback_order_includes_opencode_last(monkeypatch):
 
 def test_custom_fallback_order_from_config_is_respected(tmp_path: Path, monkeypatch):
     _fake_all_present(monkeypatch)
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global.toml"))
     (tmp_path / "AGENTS.toml").write_text(
         '[automation]\nfallback_cli_order = ["opencode", "codex"]\n',
         encoding="utf-8",
@@ -113,10 +115,13 @@ def test_custom_fallback_order_from_config_is_respected(tmp_path: Path, monkeypa
     assert [c.cli_name for c in candidates] == ["opencode", "codex"]
 
 
-def test_text_cli_candidate_for_opencode_uses_run_subcommand(monkeypatch):
+def test_text_cli_candidate_for_opencode_uses_run_subcommand(tmp_path: Path, monkeypatch):
     _fake_all_present(monkeypatch)
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global.toml"))
 
-    candidates, _ = resolve_text_cli_candidates(GatewayRequest(prompt="hi", planner="opencode"))
+    candidates, _ = resolve_text_cli_candidates(
+        GatewayRequest(prompt="hi", planner="opencode", project_path=str(tmp_path))
+    )
 
     opencode_candidate = next(c for c in candidates if c.cli_name == "opencode")
     # `opencode run` is the headless invocation; the CLI itself accepts the
@@ -124,12 +129,13 @@ def test_text_cli_candidate_for_opencode_uses_run_subcommand(monkeypatch):
     assert opencode_candidate.cmd[1] == "run"
 
 
-def test_no_duplicate_claude_in_default_order(monkeypatch):
+def test_no_duplicate_claude_in_default_order(tmp_path: Path, monkeypatch):
     """Regression for the L142-143 dead code: claude must appear at most once."""
     _fake_all_present(monkeypatch)
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global.toml"))
 
     candidates, _ = resolve_text_cli_candidates(
-        GatewayRequest(prompt="hi", planner="claude")
+        GatewayRequest(prompt="hi", planner="claude", project_path=str(tmp_path))
     )
 
     cli_names = [c.cli_name for c in candidates]

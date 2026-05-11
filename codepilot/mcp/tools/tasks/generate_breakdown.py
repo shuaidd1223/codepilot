@@ -8,7 +8,7 @@ from codepilot.mcp.tools.tasks import VALID_PRIORITIES, ensure_choice, ensure_in
 from codepilot.storage import database as db
 
 
-@register_tool(description="Generate a structured task breakdown for a requirement.")
+@register_tool(description="为需求生成结构化任务拆分。")
 def generate_breakdown(
     project: str,
     requirement: str,

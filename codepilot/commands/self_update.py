@@ -12,6 +12,7 @@ from codepilot.binary_support import paths as binary_paths
 from codepilot.binary_support import vendor_fetcher
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.output import echo
+from codepilot.core.paths import global_storage_root
 from codepilot.storage import database as db
 
 
@@ -270,7 +271,7 @@ def run_self_update_providers(
 ) -> dict[str, Any]:
     requested = _provider_update_list(provider)
     install_dir = (target_dir or binary_paths.default_install_dir()).expanduser().resolve()
-    resolved_cache_dir = cache_dir or (Path.cwd() / ".codepilot" / "vendor-cache")
+    resolved_cache_dir = cache_dir or (global_storage_root() / "vendor-cache")
     vendor_providers = tuple(item for item in requested if item in VENDOR_UPDATE_PROVIDERS)
 
     results: list[dict[str, Any]] = []

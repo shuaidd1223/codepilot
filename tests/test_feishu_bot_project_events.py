@@ -118,20 +118,20 @@ def test_feishu_unknown_plain_text_defaults_to_chat_goal(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
     calls = []
     monkeypatch.setattr(
-        "codepilot.webapp.actions.submit_goal_action",
-        lambda project, text, **kwargs: calls.append({"project": project, "text": text, "kwargs": kwargs}) or {
-            "ok": True,
-            "intent": "question",
-            "message": "这里按 chat 问答处理。",
-        },
+        "codepilot.opencode.session.run_opencode_message",
+        lambda project, text, *, source, external_session_id: calls.append(
+            {"project": project, "text": text, "source": source, "external_session_id": external_session_id}
+        )
+        or {"ok": True, "message": "这里按 OpenCode 会话处理。", "opencode_session_id": "ses-feishu"},
     )
 
     reply = handle_command_text("wat")
     payload = json.dumps(reply["card"], ensure_ascii=False)
+    session_id = str(db.list_sessions(project="demo")[0]["id"])
 
     assert reply["type"] == "interactive"
-    assert calls == [{"project": "demo", "text": "wat", "kwargs": {}}]
-    assert "按 chat 问答处理" in payload
+    assert calls == [{"project": "demo", "text": "wat", "source": "feishu", "external_session_id": session_id}]
+    assert "按 OpenCode 会话处理" in payload
 
 def test_feishu_plain_text_without_active_project_prompts_project_choice(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)

@@ -7,7 +7,7 @@ from codepilot.mcp.tool_registry import register_tool
 from codepilot.mcp.tools.context import ensure_str, resolve_project
 
 
-@register_tool(description="Trigger one project-local hook test event through existing hook plumbing.")
+@register_tool(description="通过现有 Hook 链路触发一次项目本地 Hook 测试事件。")
 def hook_trigger(
     project: str,
     provider: str = "custom",

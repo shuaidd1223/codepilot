@@ -17,7 +17,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 2. 需要结构化结果时优先使用 `--json` 或 `{_cmd(command, "ai manifest")}`。
 3. 提交高层需求时直接调用 `{command} "需求文本"` 或 `{_cmd(command, 'go "需求文本"')}`。
 4. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态这类问题应作为问答处理。
-5. 在 `chat`、Web UI 会话和飞书自由文本中，创建工作必须显式输入 `# <需求>` / `需求 <内容>` 或 `! <任务>` / `任务 <内容>`。
+5. `chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP，可直接输入问题、需求或操作意图。
 6. 任务运维统一使用 `{_cmd(command, "task ...")}`。
 7. 发布统一使用 `{_cmd(command, "binary ...")}`。
 8. 外部 AI 直接投递任务前必须读取 `{_cmd(command, "ai template --format json")}`。
@@ -100,12 +100,13 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 {_cmd(command, "webhook --host 127.0.0.1 --port 8765")}
 ```
 
-飞书自由文本建议：
+飞书自由文本进入当前项目的 OpenCode 会话；没有当前项目时会先返回项目选择卡片。明确命令仍可直接使用：
 
 ```text
-? 当前项目状态怎么样
-# 优化飞书任务面板
-! 修复一个明确的小问题
+当前项目状态怎么样
+优化飞书任务面板
+tasks failed
+retry 123
 ```
 
 ### 8. 事件、Hook、Provider 与 Skill
@@ -180,7 +181,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 4. 看到任务处于 `in_progress` 时，先查 `status -v` 和 `task logs`，不要盲目重复触发 `run`。
 5. 任务失败后，如需修复闭环优先使用 `{_cmd(command, "build-fix -p <项目名> --task-id <task_id> --json")}`；只需人工重新排队时使用 `{_cmd(command, "task retry <task_id>")}`。
 6. 准备发布包时，优先使用 `{_cmd(command, "binary prepare --version <版本号>")}`。
-7. 在 `chat`、Web UI 会话和飞书自由文本中，疑似需求/任务不会直接执行；创建工作必须显式输入 `需求 <内容>` / `# <内容>` 或 `任务 <内容>` / `! <内容>`。
+7. `chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP，可直接输入问题、需求或操作意图。
 8. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态这类问题应作为问答处理；CodePilot 会优先读取本地运行数据。
 
 ## 推荐命令
@@ -388,17 +389,14 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 {_cmd(command, "ui")}
 ```
 
-### 11. 交互会话的显式前缀
+### 11. OpenCode 交互会话
 
-`chat`、Web UI 会话和飞书自由文本会优先保护执行边界：疑似需求/任务没有显式前缀时，只返回确认提示，不会创建任务。
+`chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP。可以像使用 OpenCode 一样直接输入自然语言，OpenCode 会在会话里调用 CodePilot 的任务、状态、巡检、修复等工具。
 
 ```text
-? 当前项目状态怎么样
-问题 当前有多少任务，完成了多少
-需求 优化飞书任务面板
-# 修复任务通知卡片样式
-任务 重跑失败任务 12
-! 修复一个明确的小问题
+当前项目状态怎么样
+优化飞书任务面板
+重跑失败任务 12，先确认风险
 ```
 
 ### 12. 飞书与 Webhook
@@ -462,8 +460,7 @@ def ai_prompt_text(*, command_name: str = "codepilot") -> str:
     return (
         "你正在调用 CodePilot 这个本地 CLI。优先使用非交互命令。"
         f"提交需求时直接用 `{command} \"需求文本\"`。"
-        "在 chat、Web UI 会话和飞书自由文本里，疑似需求/任务不会直接执行；"
-        "要创建需求用 `需求 <内容>` 或 `# <内容>`，要创建单步任务用 `任务 <内容>` 或 `! <内容>`；"
+        "chat、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP，可以直接表达问题、需求或操作意图；"
         "项目状态、任务数量、完成度、失败任务、运行中任务和服务状态问题应作为问答处理。"
         f"失败任务需要修复闭环时优先用 `{_cmd(command, 'build-fix -p <项目名> --task-id <task_id> --json')}`。"
         "如果你必须自己写任务（不走规划器），必须按 task-template 提供完整 content，"

@@ -74,6 +74,7 @@ def test_scheduled_list_show_and_run_once_dry_run(tmp_path: Path, monkeypatch):
     assert run["data"]["result"]["exit_code"] is None
     assert run["data"]["result"]["command"][0] == "codex-bin"
     assert run["data"]["job"]["trigger"]["type"] == "manual"
+    assert "Sensitive diagnostic prompt that should not be printed in full." not in json.dumps(run, ensure_ascii=False)
 
 
 def test_scheduled_disable_marks_agent_and_future_runs_skip(tmp_path: Path, monkeypatch):
@@ -92,3 +93,38 @@ def test_scheduled_disable_marks_agent_and_future_runs_skip(tmp_path: Path, monk
     run = _json(runner.invoke(main, ["scheduled", "run-once", "task_health", "-p", "demo", "--dry-run", "--json"]))
     assert run["data"]["result"]["guard_status"] == "skipped"
     assert run["data"]["result"]["guard_reason"] == "disabled"
+
+
+def test_scheduled_run_once_reports_failed_agent_run_as_cli_failure(tmp_path: Path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(main, ["scheduled", "run-once", "task_health", "-p", "demo", "--json"])
+    payload = json.loads(result.output)
+
+    assert result.exit_code != 0
+    assert payload["ok"] is False
+    assert payload["data"]["result"]["exit_code"] == 127
+
+
+def test_scheduled_list_wraps_invalid_config_as_json_error(tmp_path: Path, monkeypatch):
+    project = _setup_project(tmp_path, monkeypatch)
+    (project / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[automation.scheduled_agents.bad]
+agent = "codex"
+interval = "later"
+prompt = "Broken."
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(main, ["scheduled", "list", "-p", "demo", "--json"])
+    payload = json.loads(result.output)
+
+    assert result.exit_code != 0
+    assert payload["ok"] is False
+    assert "bad" in payload["error"]["message"]

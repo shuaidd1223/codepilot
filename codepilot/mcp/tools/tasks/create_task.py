@@ -15,7 +15,7 @@ from codepilot.mcp.tools.tasks import (
 from codepilot.storage import database as db
 
 
-@register_tool(description="Create a CodePilot task.")
+@register_tool(description="创建 CodePilot 任务。")
 def create_task(
     project: str,
     title: str,

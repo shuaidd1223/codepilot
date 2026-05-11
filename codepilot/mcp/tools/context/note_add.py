@@ -7,7 +7,7 @@ from codepilot.mcp.tool_registry import register_tool
 from codepilot.mcp.tools.context import ensure_str, resolve_project
 
 
-@register_tool(description="Append one entry to the registered project's persistent notepad.")
+@register_tool(description="向已注册项目的持久记事本追加一条记录。")
 def note_add(project: str, content: str, section: str = "working") -> dict[str, Any]:
     project_info = resolve_project(project)
     note_content = ensure_str(content, "content", required=True)

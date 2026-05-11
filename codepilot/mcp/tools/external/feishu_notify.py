@@ -16,7 +16,7 @@ from codepilot.mcp.tools.external import (
 FEISHU_NOTIFY_LIMITER = PerMinuteRateLimiter(limit_per_minute=20)
 
 
-@register_tool(description="Send a CodePilot task event notification through the existing Feishu bot API.")
+@register_tool(description="通过现有飞书机器人 API 发送 CodePilot 任务事件通知。")
 def feishu_notify(
     project: str,
     task_id: int,

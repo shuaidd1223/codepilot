@@ -11,20 +11,18 @@ from codepilot.storage import database as db
 from tests.feishu_bot_testkit import _setup_project
 
 
-def test_feishu_req_new_creates_requirement_session_with_context_commands(tmp_path, monkeypatch):
+def _stub_opencode(monkeypatch, calls: list[dict], *, message: str = "OpenCode 已处理。"):
+    def fake_run(project, text, *, source, external_session_id):
+        calls.append({"project": project, "text": text, "source": source, "external_session_id": external_session_id})
+        return {"ok": True, "message": message, "opencode_session_id": f"ses-{len(calls)}"}
+
+    monkeypatch.setattr("codepilot.opencode.session.run_opencode_message", fake_run)
+
+
+def test_feishu_req_new_enters_opencode_without_old_requirement_session(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
-    planned = []
-
-    monkeypatch.setattr(
-        "codepilot.webapp.actions.assess_requirement_for_planning",
-        lambda title, **kwargs: {"status": "ready", "refined_title": title},
-    )
-
-    def fake_submit(project, text, **kwargs):
-        planned.append({"project": project, "text": text, "kwargs": kwargs})
-        return {"ok": True, "message": "queued", "job": {"task_ids": [21]}}
-
-    monkeypatch.setattr("codepilot.webapp.actions.submit_requirement_action", fake_submit)
+    calls = []
+    _stub_opencode(monkeypatch, calls, message="OpenCode 已接管 req new。")
 
     reply = handle_command_text("req new 优化飞书任务卡片", chat_id="chat-session-new")
     payload = json.dumps(reply["card"], ensure_ascii=False)
@@ -32,71 +30,45 @@ def test_feishu_req_new_creates_requirement_session_with_context_commands(tmp_pa
 
     assert reply["type"] == "interactive"
     assert len(sessions) == 1
-    assert planned[0]["project"] == "demo"
-    assert planned[0]["text"] == "优化飞书任务卡片"
-    assert "session reply 1 <text>" in payload
-    assert "detail 21" in payload
-    assert "logs 21" in payload
-    assert "daemon start" not in payload
+    assert calls == [
+        {
+            "project": "demo",
+            "text": "优化飞书任务卡片",
+            "source": "feishu",
+            "external_session_id": str(sessions[0]["id"]),
+        }
+    ]
+    assert "OpenCode 已接管 req new" in payload
+    assert "session reply 1 <text>" not in payload
 
-def test_feishu_req_new_clarify_card_uses_session_reply_command(tmp_path, monkeypatch):
+def test_feishu_req_new_no_longer_returns_old_clarify_card(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "codepilot.webapp.actions.assess_requirement_for_planning",
-        lambda title, **kwargs: {
-            "status": "needs_clarification",
-            "questions": [{"id": "q1", "type": "text", "text": "先做哪个入口?", "options": []}],
-            "qa_history": [],
-        },
-    )
+    calls = []
+    _stub_opencode(monkeypatch, calls, message="OpenCode 会在会话里继续追问。")
 
     reply = handle_command_text("req new 优化控制入口", chat_id="chat-session-clarify")
     payload = json.dumps(reply["card"], ensure_ascii=False)
 
     assert reply["type"] == "interactive"
-    assert "需求会话待继续" in payload
-    assert "先做哪个入口" in payload
-    assert "session reply 1 <你的补充信息>" in payload
-    assert "答 <内容>" not in payload
+    assert calls[0]["text"] == "优化控制入口"
+    assert "OpenCode 会在会话里继续追问" in payload
+    assert "需求会话待继续" not in payload
+    assert "session reply 1 <你的补充信息>" not in payload
 
-def test_feishu_session_reply_continues_pending_session(tmp_path, monkeypatch):
+def test_feishu_session_reply_compatibility_routes_to_opencode(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "codepilot.webapp.actions.assess_requirement_for_planning",
-        lambda title, **kwargs: {
-            "status": "needs_clarification",
-            "questions": [{"id": "q1", "type": "text", "text": "先做哪个入口?", "options": []}],
-            "qa_history": [],
-        },
-    )
-    first = handle_command_text("req new 优化控制入口", chat_id="chat-session-reply")
-    assert first["type"] == "interactive"
+    session = db.create_session("demo", "飞书补充")
+    calls = []
+    _stub_opencode(monkeypatch, calls, message="OpenCode 收到补充信息。")
 
-    planned = []
-
-    monkeypatch.setattr(
-        "codepilot.webapp.actions.continue_pending_clarification",
-        lambda *args, **kwargs: {"status": "ready", "refined_title": "优化控制入口 / 先做飞书"},
-    )
-
-    def fake_submit(project, text, **kwargs):
-        planned.append({"project": project, "text": text, "kwargs": kwargs})
-        return {"ok": True, "message": "queued", "job": {"task_ids": [31]}}
-
-    monkeypatch.setattr("codepilot.webapp.actions.submit_requirement_action", fake_submit)
-
-    reply = handle_command_text("session reply 1 先做飞书", chat_id="chat-session-reply")
+    reply = handle_command_text(f"session reply {session['id']} 先做飞书", chat_id="chat-session-reply")
     payload = json.dumps(reply["card"], ensure_ascii=False)
-    messages = db.list_session_messages(1)
 
     assert reply["type"] == "interactive"
-    assert planned[0]["project"] == "demo"
-    assert planned[0]["text"] == "优化控制入口 / 先做飞书"
-    assert len(messages) == 4
-    assert "需求会话已提交" in payload
-    assert "优化控制入口 / 先做飞书" in payload
-    assert "detail 31" in payload
-    assert "logs 31" in payload
+    assert calls == [
+        {"project": "demo", "text": "先做飞书", "source": "feishu", "external_session_id": str(session["id"])}
+    ]
+    assert "OpenCode 收到补充信息" in payload
 
 def test_feishu_session_reply_validates_args_and_missing_session(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
@@ -104,8 +76,12 @@ def test_feishu_session_reply_validates_args_and_missing_session(tmp_path, monke
     with pytest.raises(RuntimeError, match="请提供会话 ID 和内容"):
         handle_command_text("session reply 12")
 
+    calls = []
+    _stub_opencode(monkeypatch, calls, message="OpenCode 收到补充信息。")
+
     with pytest.raises(RuntimeError, match="会话 #999 不存在"):
-        handle_command_text("session reply 999 先做飞书")
+        handle_command_text("session reply 999 先做飞书", chat_id="chat-missing-session")
+    assert calls == []
 
 def test_ensure_feishu_service_running_if_enabled_returns_disabled_when_config_off(monkeypatch):
     monkeypatch.setattr(

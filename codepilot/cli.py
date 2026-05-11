@@ -141,6 +141,7 @@ def _cn_help_option():
 @_cn_help_option()
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="以 JSON 格式输出（全局选项）")
 @click.option("--project", "direct_project", help="纯文本模式下使用的项目名，不指定则自动识别")
+@click.option("--session", "chat_session", help="无子命令启动 chat 时恢复 CodePilot 隔离 OpenCode 会话")
 @click.option("--planner", default=None, help="纯文本模式下的规划器，默认读取配置")
 @click.option("--agent", default=None, help="纯文本模式下创建任务时使用的智能体，如 codex / claude / dual")
 @click.option("--execute/--no-execute", default=None, help="纯文本模式下是否立即执行，默认读取配置")
@@ -159,6 +160,7 @@ def main(
     ctx: click.Context,
     json_mode: bool,
     direct_project: str | None,
+    chat_session: str | None,
     planner: str | None,
     agent: str | None,
     execute: bool | None,
@@ -172,6 +174,7 @@ def main(
     ctx.ensure_object(dict)
     ctx.obj["json_mode"] = json_mode
     ctx.obj["direct_project"] = direct_project
+    ctx.obj["chat_session"] = chat_session
     ctx.obj["planner"] = planner
     ctx.obj["agent"] = agent
     ctx.obj["execute"] = execute
@@ -185,7 +188,7 @@ def main(
         init_db()
 
     if ctx.invoked_subcommand is None and not ctx.args:
-        if click.get_text_stream("stdin").isatty():
+        if chat_session or click.get_text_stream("stdin").isatty():
             chat_cmd = ctx.command.get_command(ctx, "chat")
             if chat_cmd is None:
                 raise click.ClickException("未找到 chat 命令")

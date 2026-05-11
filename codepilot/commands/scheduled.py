@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +48,14 @@ def _load_agents_config(project_info: Mapping[str, Any]) -> AgentsConfig:
     if config is None:
         raise click.ClickException("未找到可用 AGENTS.toml 配置。")
     return config
+
+
+def _redact_prompt_from_result(result: Any, prompt: str) -> dict[str, Any]:
+    data = copy.deepcopy(result.to_dict())
+    command = data.get("command")
+    if isinstance(command, list):
+        data["command"] = ["[prompt]" if item == prompt else item for item in command]
+    return data
 
 
 def _guards_path(project_root: Path) -> Path:
@@ -160,7 +169,7 @@ def list_cmd(ctx: click.Context, project: str | None, json_mode: bool) -> None:
             _agent_summary(name, cfg, project_root=project_root, project_name=project_name)
             for name, cfg in sorted(config.automation.scheduled_agents.items())
         ]
-    except click.ClickException as exc:
+    except (ValueError, click.ClickException) as exc:
         _emit_error(ctx, "scheduled list", json_mode, exc)
         return
 
@@ -198,7 +207,7 @@ def show_cmd(ctx: click.Context, name: str, project: str | None, json_mode: bool
             project_name=project_name,
             include_prompt_preview=True,
         )
-    except click.ClickException as exc:
+    except (ValueError, click.ClickException) as exc:
         _emit_error(ctx, "scheduled show", json_mode, exc)
         return
 
@@ -244,13 +253,24 @@ def run_once_cmd(ctx: click.Context, name: str, project: str | None, dry_run: bo
             project_root=project_root,
             dry_run=dry_run,
             commands=config.commands,
+            config=config,
             now=now,
         )
     except (ValueError, click.ClickException) as exc:
         _emit_error(ctx, "scheduled run-once", json_mode, exc)
         return
 
-    data = {"project": project_name, "job": {key: value for key, value in job.items() if key != "prompt"}, "result": result.to_dict()}
+    data = {
+        "project": project_name,
+        "job": {key: value for key, value in job.items() if key != "prompt"},
+        "result": _redact_prompt_from_result(result, prompt),
+    }
+    if result.exit_code not in (None, 0):
+        error = f"scheduled agent exited with code {result.exit_code}"
+        if json_mode:
+            emit_json_payload("scheduled run-once", ok=False, data=data, error=error, error_code="scheduled_run_failed")
+            ctx.exit(int(result.exit_code))
+        raise click.ClickException(error)
     if json_mode:
         emit_json_payload("scheduled run-once", ok=True, data=data)
         return
@@ -292,7 +312,7 @@ def disable_cmd(ctx: click.Context, name: str, project: str | None, json_mode: b
             project_name=project_name,
             include_prompt_preview=True,
         )
-    except click.ClickException as exc:
+    except (ValueError, click.ClickException) as exc:
         _emit_error(ctx, "scheduled disable", json_mode, exc)
         return
 

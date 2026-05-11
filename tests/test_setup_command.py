@@ -70,6 +70,8 @@ def test_setup_creates_project_codepilot_layout_config_and_registration(tmp_path
         ".codepilot/events",
     ):
         assert (project / relative).is_dir()
+    assert not (project / ".codepilot" / "events" / "sinks.json").exists()
+    assert not (project / ".codepilot" / "skills" / "catalog.json").exists()
 
     config_text = (project / "AGENTS.toml").read_text(encoding="utf-8")
     assert 'name = "demo"' in config_text
@@ -168,3 +170,29 @@ planner = "claude"
     assert parsed["agents"]["commands"]["codex"] == "codex"
     assert parsed["automation"]["planner"] == "claude"
     assert "inspect" in parsed
+
+
+def test_setup_migrates_inline_secret_and_ignores_secrets_file(tmp_path, monkeypatch):
+    _init_test_env(tmp_path, monkeypatch)
+    project = tmp_path / "legacy-secret"
+    project.mkdir()
+    (project / "AGENTS.toml").write_text(
+        """
+[project]
+name = "legacy-secret"
+
+[feishu_bot]
+enabled = true
+app_id = "cli-demo"
+app_secret = "feishu-inline-secret"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(main, ["setup", str(project), "--json"])
+
+    assert result.exit_code == 0, result.output
+    secrets_path = project / ".codepilot.secrets.toml"
+    assert secrets_path.is_file()
+    assert "feishu-inline-secret" in secrets_path.read_text(encoding="utf-8")
+    assert ".codepilot.secrets.toml" in (project / ".gitignore").read_text(encoding="utf-8").splitlines()

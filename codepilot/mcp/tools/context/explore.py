@@ -6,7 +6,7 @@ from codepilot.mcp.tool_registry import register_tool
 from codepilot.mcp.tools.context import ensure_bool, ensure_str, resolve_project
 
 
-@register_tool(description="Collect bounded read-only evidence for a registered project query.")
+@register_tool(description="为已注册项目问题收集有限的只读证据。")
 def explore(project: str, query: str, use_wiki: bool = True) -> dict[str, Any]:
     project_info = resolve_project(project)
     query_text = ensure_str(query, "query", required=True)

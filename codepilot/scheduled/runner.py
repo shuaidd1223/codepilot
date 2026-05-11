@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from codepilot.ai_support.cli_families import get_family
+from codepilot.ai_support.family_runtime import FamilyRuntimeUnavailable, build_env_for_family
 from codepilot.ai_support.providers import CLI_PROVIDERS
+from codepilot.core.config import AgentsConfig
+from codepilot.core.text_decode import decode_subprocess_text
 from codepilot.scheduled.audit import append_agent_job_audit
 from codepilot.scheduled.guards import GuardCheck, finalize_agent_job_guards, preflight_agent_job_guards
 
@@ -66,8 +69,18 @@ def _json_default(value: Any) -> str:
     return str(value)
 
 
-def _build_env(mcp_servers: Any | None) -> dict[str, str]:
+def _build_env(
+    mcp_servers: Any | None,
+    *,
+    agent: str,
+    config: AgentsConfig | None = None,
+) -> dict[str, str]:
     env = os.environ.copy()
+    if config is not None:
+        try:
+            env.update(build_env_for_family(agent, config))
+        except FamilyRuntimeUnavailable:
+            pass
     if mcp_servers:
         # Integration point for the Phase 5 MCP launcher: it can hand this runner
         # already-resolved server descriptors without forcing scheduler code to know
@@ -82,11 +95,7 @@ def _build_env(mcp_servers: Any | None) -> dict[str, str]:
 
 
 def _text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return str(value)
+    return decode_subprocess_text(value)
 
 
 def _iter_json_objects(text: str) -> list[dict[str, Any]]:
@@ -152,6 +161,7 @@ def run_agent_job(
     dry_run: bool = False,
     subprocess_run: SubprocessRun = subprocess.run,
     commands: dict[str, str] | None = None,
+    config: AgentsConfig | None = None,
     mcp_servers: Any | None = None,
     timeout_seconds: int | None = None,
     now: datetime | None = None,
@@ -164,7 +174,7 @@ def run_agent_job(
     prompt = str(job.get("prompt") or "")
     agent, command, default_timeout = _build_command(str(job.get("agent") or ""), prompt, commands)
     timeout = int(timeout_seconds or default_timeout)
-    env = _build_env(mcp_servers)
+    env = _build_env(mcp_servers, agent=agent, config=config)
     preflight = preflight_agent_job_guards(project_root, job, now=now)
     if preflight.should_skip:
         result = AgentJobResult(
@@ -216,7 +226,7 @@ def run_agent_job(
             command,
             cwd=str(Path(project_root).resolve()),
             capture_output=True,
-            text=True,
+            text=False,
             timeout=timeout,
             env=env,
         )

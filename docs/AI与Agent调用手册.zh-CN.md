@@ -8,7 +8,7 @@
 2. 需要结构化结果时优先加 `--json`，或直接读取 `codepilot ai manifest`。
 3. 提交高层需求时优先使用 `codepilot "需求文本"` 或 `codepilot go "需求文本"`，不要先自行拆任务。
 4. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态等输入优先当问答处理。
-5. 在 `chat`、Web UI 会话和飞书自由文本中，创建工作必须显式使用 `# <需求>` / `需求 <内容>` 或 `! <任务>` / `任务 <内容>`。
+5. `chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP；自由文本可以直接表达问题、需求或操作意图。
 6. 任务运维统一使用 `codepilot task ...`。
 7. 发布统一使用 `codepilot binary ...`。
 8. 外部 AI 只有在明确要直接投递已规划任务时才用 `add`，并且必须满足 task-template content 约束。
@@ -91,12 +91,13 @@ codepilot feishu stop
 codepilot webhook --host 127.0.0.1 --port 8765
 ```
 
-飞书自由文本建议使用：
+飞书自由文本会进入当前项目的 OpenCode 会话。没有当前项目时，机器人会先返回项目选择卡片。明确任务、服务、项目命令仍可直接使用，例如：
 
 ```text
-? 当前项目状态怎么样
-# 优化飞书任务面板
-! 修复一个明确的小问题
+当前项目状态怎么样
+优化飞书任务面板
+tasks failed
+retry 123
 ```
 
 ### 2.7 事件、Hook、Provider 和 Skill

@@ -167,6 +167,41 @@ def test_stop_process_tree_windows_kills_descendants_even_if_root_is_gone(monkey
     assert any(cmd[:4] == ["taskkill", "/PID", "201", "/T"] for cmd in calls)
 
 
+def test_windows_is_process_alive_uses_kernel32_without_powershell(monkeypatch):
+    monkeypatch.setattr(runtime_mod.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        runtime_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("is_process_alive should not spawn powershell on Windows"),
+    )
+
+    handles: list[int] = []
+
+    class FakeKernel32:
+        def OpenProcess(self, access, inherit, pid):
+            assert pid == 1234
+            return 99
+
+        def GetExitCodeProcess(self, handle, code_ptr):
+            handles.append(handle)
+            code_ptr._obj.value = 259
+            return 1
+
+        def CloseHandle(self, handle):
+            handles.append(-handle)
+            return 1
+
+    monkeypatch.setattr(
+        runtime_mod.ctypes,
+        "windll",
+        types.SimpleNamespace(kernel32=FakeKernel32()),
+        raising=False,
+    )
+
+    assert runtime_mod.is_process_alive(1234) is True
+    assert handles == [99, -99]
+
+
 def test_stop_process_tree_windows_falls_back_to_stop_process_when_taskkill_denied(monkeypatch):
     import subprocess
 

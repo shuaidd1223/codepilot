@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import click
 from click.testing import CliRunner
 
 from codepilot.cli import main
@@ -24,11 +25,11 @@ def _capture_agent_launch(monkeypatch):
 
     calls: list[dict] = []
 
-    def fake_launch(*, agent, project=None, prompt=""):
+    def fake_launch(*, agent, project=None, prompt="", input_stream=None):
         calls.append({"agent": agent, "project": project, "prompt": prompt})
         return 0
 
-    monkeypatch.setattr(chat_cmd, "_launch_mcp_agent_chat", fake_launch)
+    monkeypatch.setattr(chat_cmd, "_run_mcp_agent_chat_session", fake_launch)
     return calls
 
 
@@ -76,6 +77,89 @@ def test_chat_defaults_to_opencode_without_config(tmp_path: Path, monkeypatch):
     assert calls == [{"agent": "opencode", "project": None, "prompt": ""}]
 
 
+def test_chat_session_option_restores_codepilot_opencode_session(tmp_path: Path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    from codepilot.commands import chat as chat_cmd
+
+    calls: list[dict] = []
+
+    def fake_launch(**kwargs):
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(chat_cmd, "_run_mcp_agent_chat_session", fake_launch)
+
+    result = CliRunner().invoke(main, ["chat", "--session", "ses_123"])
+
+    assert result.exit_code == 0
+    assert calls == [
+        {
+            "agent": "opencode",
+            "project": None,
+            "prompt": "",
+            "session": "ses_123",
+            "input_stream": None,
+        }
+    ]
+
+
+def test_root_session_option_restores_codepilot_opencode_session(tmp_path: Path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    from codepilot.commands import chat as chat_cmd
+
+    calls: list[dict] = []
+
+    def fake_launch(**kwargs):
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(chat_cmd, "_run_mcp_agent_chat_session", fake_launch)
+
+    result = CliRunner().invoke(main, ["--session", "ses_123"])
+
+    assert result.exit_code == 0
+    assert calls == [
+        {
+            "agent": "opencode",
+            "project": None,
+            "prompt": "",
+            "session": "ses_123",
+            "input_stream": None,
+        }
+    ]
+
+
+def test_chat_ignores_removed_mcp_environment_toggle(tmp_path: Path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_CHAT_MCP", "0")
+    calls = _capture_agent_launch(monkeypatch)
+
+    result = CliRunner().invoke(main, ["chat", "--agent", "opencode"])
+
+    assert result.exit_code == 0
+    assert calls == [{"agent": "opencode", "project": None, "prompt": ""}]
+
+
+def test_chat_reports_missing_mcp_sdk_before_starting_tui(tmp_path: Path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+
+    from codepilot.commands import chat as chat_cmd
+
+    def missing_sdk() -> None:
+        raise click.ClickException("CodePilot MCP 运行依赖未安装：缺少 Python 包 `mcp`。")
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("chat should fail before starting the TUI")
+
+    monkeypatch.setattr(chat_cmd, "_ensure_mcp_sdk_available", missing_sdk)
+    monkeypatch.setattr(chat_cmd.subprocess, "run", fail_run)
+
+    result = CliRunner().invoke(main, ["chat", "--agent", "opencode"])
+
+    assert result.exit_code != 0
+    assert "CodePilot MCP 运行依赖未安装" in result.output
+
+
 def test_chat_rejects_unknown_agent(tmp_path: Path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     calls = _capture_agent_launch(monkeypatch)
@@ -85,6 +169,17 @@ def test_chat_rejects_unknown_agent(tmp_path: Path, monkeypatch):
     assert result.exit_code != 0
     assert calls == []
     assert "Invalid value for '--agent'" in result.output
+
+
+def test_chat_rejects_removed_no_mcp_option(tmp_path: Path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    calls = _capture_agent_launch(monkeypatch)
+
+    result = CliRunner().invoke(main, ["chat", "--agent", "opencode", "--no-mcp"])
+
+    assert result.exit_code != 0
+    assert calls == []
+    assert "No such option: --no-mcp" in result.output
 
 
 def test_pytest_mcp_chat_glob_expands_phase5_verification_entrypoint():
@@ -97,3 +192,20 @@ def test_pytest_mcp_chat_glob_expands_phase5_verification_entrypoint():
         "tests/test_mcp_chat_lifecycle.py",
         "-q",
     ]
+
+
+def test_pytest_scheduled_glob_expands_documented_verification_entrypoint():
+    args = ["tests/test_scheduled_*", "-q"]
+    expanded = expand_mcp_chat_test_globs(args, root=Path.cwd())
+
+    assert "tests/test_scheduled_config.py" in expanded
+    assert "tests/test_scheduled_examples_e2e.py" in expanded
+    assert expanded[-1] == "-q"
+
+
+def test_pytest_opencode_glob_expands_documented_verification_entrypoint():
+    args = ["tests/test_opencode_*", "-q"]
+    expanded = expand_mcp_chat_test_globs(args, root=Path.cwd())
+
+    assert "tests/test_opencode_profile_config.py" in expanded
+    assert expanded[-1] == "-q"
