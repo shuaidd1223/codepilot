@@ -151,17 +151,21 @@ CP.createAppSessionBoundary = (options = {}) => {
 
   async function sendChat() {
     const text = state.chatText.trim();
-    if (!text) return;
+    const files = state._pendingFiles || [];
+    delete state._pendingFiles;
+    if (!text && !files.length) return;
     const sessionId = await ensureProjectSessionForSend();
     if (!sessionId) return;
     state.chatText = '';
     await runScopedAction(ACTION_KEYS.SESSION_SEND, async () => {
       try {
-        const out = await CP.api.post(`/api/sessions/${sessionId}/messages`, {
+        const body = {
           text,
           run_async: true,
           runtime: state.opencodeRuntime || {},
-        });
+        };
+        if (files.length) body.files = files;
+        const out = await CP.api.post(`/api/sessions/${sessionId}/messages`, body);
         if (out.user_message && out.assistant_message && isCurrentSession(sessionId)) {
           const existingIds = new Set((state.sessionMessages || []).map((msg) => Number(msg.id)));
           if (!existingIds.has(Number(out.user_message.id))) state.sessionMessages.push(out.user_message);

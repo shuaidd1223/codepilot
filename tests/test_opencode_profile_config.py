@@ -183,6 +183,7 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
         "keybinds": {
             "app_exit": "ctrl+d,<leader>q",
             "input_clear": "ctrl+u",
+            "input_paste": "ctrl+v,shift+insert",
         },
         "plugin": ["./config/tui-plugins/codepilot-brand.tsx"],
     }

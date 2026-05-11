@@ -68,6 +68,7 @@ def build_opencode_profile(
         "keybinds": {
             "app_exit": "ctrl+d,<leader>q",
             "input_clear": "ctrl+u",
+            "input_paste": "ctrl+v,shift+insert",
         },
         "plugin": ["./config/tui-plugins/codepilot-brand.tsx"],
     }
@@ -163,7 +164,14 @@ def _chinese_runtime_instructions(brand_name: str) -> str:
         "解释这些内容时使用中文。\n"
         "- 需要用户确认权限时，用中文说明准备执行什么、为什么需要执行、风险是什么；"
         "不要在权限说明里输出英文提示语。\n"
-        "- 如果引用英文资料或英文错误输出，优先用中文转述，只保留必要的原文片段。"
+        "- 如果引用英文资料或英文错误输出，优先用中文转述，只保留必要的原文片段。\n"
+        "\n"
+        "## 输入粘贴提示\n"
+        "如果用户询问如何在输入框中粘贴内容，告知以下方式：\n"
+        "- `Shift+Insert` — 最通用，任何终端都支持\n"
+        "- `Ctrl+Shift+V` — 大多数现代终端支持\n"
+        "- 右键点击 — 粘贴（Windows Terminal 默认支持）\n"
+        "- `Ctrl+V` 需要在 Windows Terminal 设置中释放此快捷键后才能透传到 OpenCode"
     )
 
 

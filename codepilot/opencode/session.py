@@ -35,6 +35,7 @@ def run_opencode_message(
     *,
     source: str,
     external_session_id: str,
+    agent: str | None = None,
     timeout_seconds: int | float | None = None,
 ) -> dict[str, Any]:
     """Send one message through OpenCode and persist the external session mapping."""
@@ -66,6 +67,7 @@ def run_opencode_message(
             project_path=cwd,
             message=message,
             previous_session_id=previous_session_id,
+            agent=agent,
         )
         completed = subprocess.run(
             launch["command"],
@@ -131,6 +133,7 @@ def run_opencode_message_stream(
     *,
     source: str,
     external_session_id: str,
+    agent: str | None = None,
     timeout_seconds: int | float | None = None,
     on_event: StreamCallback | None = None,
     stop_event: Any = None,
@@ -164,6 +167,7 @@ def run_opencode_message_stream(
             project_path=cwd,
             message=message,
             previous_session_id=previous_session_id,
+            agent=agent,
         )
         proc = subprocess.Popen(
             launch["command"],
@@ -366,6 +370,7 @@ def _prepare_headless_launch(
     project_path: Path,
     message: str,
     previous_session_id: str,
+    agent: str | None = None,
 ) -> dict[str, Any]:
     cfg = load_project_config(project_path)
     executable = _resolve_opencode_executable(cfg)
@@ -398,7 +403,8 @@ def _prepare_headless_launch(
     env.update(configured_keys)
     clean_agent_env(env, cfg)
     default_agent = str((plan.mcp_config or {}).get("default_agent") or DEFAULT_OPENCODE_AGENT).strip()
-    command = [executable, "run", "--agent", default_agent or DEFAULT_OPENCODE_AGENT, "--format", "json"]
+    chosen_agent = str(agent or "").strip() or default_agent or DEFAULT_OPENCODE_AGENT
+    command = [executable, "run", "--agent", chosen_agent, "--format", "json"]
     if previous_session_id:
         command.extend(["--session", previous_session_id])
     else:

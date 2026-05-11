@@ -303,9 +303,11 @@ def test_chat_view_wires_streaming_session_runs_and_stop_action():
     assert "runtime-control-bar" in chat
     assert "s.opencodeRuntime" in chat
     assert "终止会话" in chat
-    assert "工作类型" in chat
-    assert "需求规划" in chat
-    assert "完整任务" in chat
+    assert "Agent" in chat
+    assert "agentModeOptions" in chat
+    assert "agentMode" in chat
+    assert "setAgentMode" in chat
+    assert "CP.AGENT_MODE_OPTIONS" in Path("codepilot/web/utils.js").read_text(encoding="utf-8")
     assert "运行" not in chat
     assert "分支" not in chat
     assert "模型" not in chat

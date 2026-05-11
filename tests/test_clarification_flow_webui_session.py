@@ -12,7 +12,7 @@ def test_webui_session_message_uses_opencode_adapter(tmp_path, monkeypatch):
     session = webui_mod.create_session_action("demo", title="chat")
     calls: list[dict[str, str]] = []
 
-    def fake_run(project, text, *, source, external_session_id):
+    def fake_run(project, text, *, source, external_session_id, agent=None):
         calls.append(
             {
                 "project": project,
@@ -64,7 +64,7 @@ def test_webui_session_keeps_existing_legacy_clarify_message_as_history_only(tmp
     calls: list[str] = []
     monkeypatch.setattr(
         "codepilot.opencode.session.run_opencode_message",
-        lambda project, text, *, source, external_session_id: calls.append(text)
+        lambda project, text, *, source, external_session_id, agent=None: calls.append(text)
         or {"ok": True, "message": "已继续交给 OpenCode。", "opencode_session_id": "ses-legacy"},
     )
 

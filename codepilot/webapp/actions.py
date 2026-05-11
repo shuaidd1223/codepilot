@@ -69,6 +69,7 @@ from codepilot.webapp.action_sessions import (
     list_sessions_action,
     send_session_message_action,
     stop_session_run_action,
+    update_project_permission_action,
 )
 from codepilot.webapp.action_state import (
     _GOAL_MAX_BYTES,

@@ -53,7 +53,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       composerMode: 'question',
       composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
       opencodeRuntime: {
-        taskMode: 'chat',
+        agentMode: 'codepilot',
+        permissionMode: 'ask',
       },
       composerClarify: null,
       taskTemplateSchema: null,
@@ -176,7 +177,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         composerMode: 'question',
         activeProjectSessionId: null,
         opencodeRuntime: {
-          taskMode: 'chat',
+          agentMode: 'codepilot',
+          permissionMode: 'ask',
         },
         composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
         composerClarify: null,
@@ -203,7 +205,16 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
           ? activeProjectSessionId
           : fallback.activeProjectSessionId,
         opencodeRuntime: {
-          taskMode: typeof opencodeRuntime.taskMode === 'string' ? opencodeRuntime.taskMode : fallback.opencodeRuntime.taskMode,
+          agentMode: (() => {
+            const raw = typeof opencodeRuntime.agentMode === 'string' ? opencodeRuntime.agentMode : '';
+            const allowed = (window.CP && CP.AGENT_MODE_KEYS) || [];
+            return allowed.includes(raw) ? raw : fallback.opencodeRuntime.agentMode;
+          })(),
+          permissionMode: (() => {
+            const raw = typeof opencodeRuntime.permissionMode === 'string' ? opencodeRuntime.permissionMode : '';
+            const allowed = (window.CP && CP.PERMISSION_MODE_KEYS) || [];
+            return allowed.includes(raw) ? raw : fallback.opencodeRuntime.permissionMode;
+          })(),
         },
         composer: {
           title: typeof composer.title === 'string' ? composer.title : fallback.composer.title,

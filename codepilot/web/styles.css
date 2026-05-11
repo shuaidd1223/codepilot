@@ -3120,14 +3120,157 @@ input::placeholder, textarea::placeholder { color: hsl(var(--muted-foreground));
 .bubble.user .bubble-meta { color: hsl(var(--primary-foreground) / .75); }
 .bubble.assistant .bubble-meta { color: hsl(var(--muted-foreground)); }
 
-.chat-input-bar {
-  padding: 12px 24px;
+.chat-input-area {
   border-top: 1px solid hsl(var(--border));
   background: hsl(var(--card) / .6);
-  display: flex; gap: 8px; align-items: center;
   flex-shrink: 0;
+  position: relative;
 }
-.chat-input-bar input { flex: 1; }
+.chat-input-area.is-streaming {
+  border-top-color: hsl(var(--primary) / .35);
+  background: hsl(var(--surface-raised) / .94);
+}
+.chat-input-flex {
+  display: flex; gap: 6px; align-items: flex-end;
+  padding: 8px 12px;
+}
+.chat-textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.5;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  min-height: 36px;
+  max-height: 200px;
+  outline: none;
+  transition: border-color .15s;
+}
+.chat-textarea:focus {
+  border-color: hsl(var(--primary));
+}
+.chat-textarea::placeholder {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+.chat-input-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
+  padding-bottom: 2px;
+}
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px; height: 32px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition: all .15s;
+}
+.btn-icon:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.hidden-file-input { display: none; }
+
+/* ── 附件文件列表 ── */
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 12px 0;
+}
+.chat-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 4px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--surface-raised));
+  font-size: 11px;
+  max-width: 220px;
+}
+.chat-attach-chip svg { flex-shrink: 0; }
+.attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 30px;
+}
+.attach-size { color: hsl(var(--muted-foreground)); font-size: 10px; white-space: nowrap; }
+.attach-remove {
+  border: none;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.attach-remove:hover { color: hsl(var(--destructive)); }
+
+/* ── @ 文件引用下拉 ── */
+.chat-mention-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 12px;
+  right: 12px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  z-index: 100;
+}
+.chat-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background .1s;
+}
+.chat-mention-item:hover,
+.chat-mention-item.active {
+  background: hsl(var(--accent));
+}
+.mention-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 拖拽上传遮罩 ── */
+.chat-drag-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: hsl(var(--primary) / .08);
+  border: 2px dashed hsl(var(--primary));
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.chat-drag-hint {
+  text-align: center;
+  color: hsl(var(--primary));
+  font-size: 14px;
+  font-weight: 500;
+}
 
 /* Answer card */
 .answer-card {
@@ -3804,6 +3947,20 @@ textarea {
   background: hsl(var(--primary) / .12);
   box-shadow: 0 0 0 1px hsl(var(--primary) / .22);
 }
+.permission-select {
+  max-width: 200px;
+  height: 28px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 7px;
+  background: hsl(var(--surface));
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  padding: 0 24px 0 8px;
+  cursor: pointer;
+}
+.permission-select:hover {
+  border-color: hsl(var(--primary) / .4);
+}
 .session-live-status {
   display: flex;
   align-items: center;
@@ -3859,10 +4016,7 @@ textarea {
   margin: 0;
 }
 .session-process-raw .agent-log-body { max-height: 240px; }
-.chat-input-bar.is-streaming {
-  border-top-color: hsl(var(--primary) / .35);
-  background: hsl(var(--surface-raised) / .94);
-}
+/* moved to .chat-input-area.is-streaming */
 
 @media (max-width: 1280px) {
   .project-workbench-grid {
@@ -3917,8 +4071,7 @@ textarea {
     align-items: flex-start;
     flex-direction: column;
   }
-  .toolbar-actions,
-  .chat-input-bar.is-streaming {
+  .toolbar-actions {
     width: 100%;
   }
   .intake-segmented {

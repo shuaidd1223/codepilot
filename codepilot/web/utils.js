@@ -28,6 +28,35 @@ CP.TONE_MAP = {
   command: 'neutral',
 };
 
+CP.AGENT_MODE_OPTIONS = [
+  { key: 'codepilot', label: 'CodePilot', hint: '默认 agent，接入 CodePilot MCP，可读写代码、调度工作流。' },
+  { key: 'build', label: 'Build', hint: 'OpenCode 内置 build agent：默认写代码模式，能编辑/写文件、跑命令。' },
+  { key: 'plan', label: 'Plan', hint: 'OpenCode 内置 plan agent：只读 + 规划，不允许编辑、写入、执行命令。' },
+  { key: 'review', label: '审查', hint: 'CodePilot agent，按代码审查清单只读分析现有改动并给出结论。' },
+  { key: 'inspect', label: '巡检', hint: 'CodePilot agent，走只读项目巡检工作流并汇总风险。' },
+  { key: 'task', label: '创建任务', hint: 'CodePilot agent，通过 MCP 把需求拆为结构化任务并落库。' },
+];
+
+CP.AGENT_MODE_LABELS = CP.AGENT_MODE_OPTIONS.reduce((acc, opt) => {
+  acc[opt.key] = opt.label;
+  return acc;
+}, {});
+
+CP.AGENT_MODE_KEYS = CP.AGENT_MODE_OPTIONS.map((opt) => opt.key);
+
+CP.PERMISSION_MODE_OPTIONS = [
+  { key: 'ask', label: 'Ask（逐项确认）', hint: '最安全模式，每个操作前弹框确认，适合不熟悉的项目。' },
+  { key: 'full_access', label: 'Full Access（完全信任）', hint: '信任当前项目，会话内不再弹权限确认。' },
+  { key: 'custom', label: 'Custom（自定义规则）', hint: '按规则配置权限，需手动编辑 AGENTS.toml 定义详细规则。' },
+];
+
+CP.PERMISSION_MODE_LABELS = CP.PERMISSION_MODE_OPTIONS.reduce((acc, opt) => {
+  acc[opt.key] = opt.label;
+  return acc;
+}, {});
+
+CP.PERMISSION_MODE_KEYS = CP.PERMISSION_MODE_OPTIONS.map((opt) => opt.key);
+
 CP.TASK_PHASE_STEPS = [
   { key: 'pending', label: '准备' },
   { key: 'builder', label: 'Build' },

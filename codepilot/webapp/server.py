@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import ParseResult, parse_qs, unquote, urlparse
 
+import tomllib
+from codepilot.core.config import find_config, load_config
 from codepilot.storage import database as db
 # Re-exported so tests that monkeypatch ``webui_mod.run_requirement_workflow``
 # drive :func:`submit_requirement_action` end-to-end.
@@ -67,6 +69,7 @@ from codepilot.webapp.actions import (  # noqa: F401 (re-export)
     stop_task_action,
     submit_goal_action,
     submit_requirement_action,
+    update_project_permission_action,
 )
 from codepilot.webapp.payloads import (  # noqa: F401 (re-export)
     STATUS_ORDER,
@@ -125,6 +128,156 @@ _CONTENT_TYPES = {
     ".woff": "font/woff",
     ".woff2": "font/woff2",
 }
+
+
+# ── File upload / search helpers ──────────────────────────────────────────────
+
+_CODEPILOT_DATA = Path.home() / ".codepilot" / "data"
+
+
+def _append_file_refs_to_text(text: str, file_refs: list[dict]) -> str:
+    """将附件文件引用展开为内联内容追加到消息文本中。
+
+    支持两种模式：
+    - ``data`` 字段包含 base64 数据（前端直接上传）
+    - ``path`` 字段包含项目相对路径（@ 引用项目文件）
+    """
+    import base64
+
+    parts = [text]
+    for ref in file_refs:
+        name = str(ref.get("name") or "file")
+
+        # 模式 A：直接有 base64 data（前端上传）
+        data_b64 = ref.get("data")
+        if data_b64:
+            try:
+                raw = base64.b64decode(data_b64)
+                is_text = True
+                try:
+                    raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    is_text = False
+                if is_text:
+                    parts.append(f"\n\n--- 上传文件: {name} ---\n{raw.decode('utf-8')}\n--- 文件结束 ---")
+                else:
+                    parts.append(f"\n[已上传文件: {name} ({len(raw)} 字节)]")
+                continue
+            except Exception as exc:
+                parts.append(f"\n[上传文件解析失败: {name} - {exc}]")
+                continue
+
+        # 模式 B：通过文件路径引用（@ 引用项目文件）
+        path_str = str(ref.get("path") or ref.get("name") or "")
+        file_path = Path(path_str)
+        if not file_path.is_absolute():
+            project_name = ref.get("project") or ""
+            project = db.get_project(project_name) if project_name else None
+            if project:
+                file_path = Path(project["path"]).resolve() / path_str
+        try:
+            content = file_path.read_bytes()
+            is_text = True
+            try:
+                content.decode("utf-8")
+            except UnicodeDecodeError:
+                is_text = False
+            if is_text:
+                parts.append(f"\n\n--- 文件: {path_str} ---\n{content.decode('utf-8')}\n--- 文件结束 ---")
+            else:
+                parts.append(f"\n[文件引用: {path_str} ({len(content)} 字节，非文本)]")
+        except Exception as exc:
+            parts.append(f"\n[文件读取失败: {path_str} - {exc}]")
+    return "\n".join(parts)
+
+
+def _project_upload_dir(project_name: str) -> Path:
+    """返回项目上传目录，自动创建。"""
+    project = db.get_project(project_name)
+    root = Path(project["path"]).resolve() if project else _CODEPILOT_DATA / project_name
+    upload_dir = root / ".codepilot" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    return upload_dir
+
+
+def _search_project_files(project_name: str, query: str) -> dict:
+    """搜索项目下匹配的文件路径，用于 @ 文件引用。"""
+    project = db.get_project(project_name)
+    if not project:
+        return {"files": [], "error": f"项目 '{project_name}' 不存在"}
+    root = Path(project["path"]).resolve()
+
+    # 默认排除目录
+    ignore_dirs = {".git", "node_modules", ".next", ".codepilot", "__pycache__",
+                   ".venv", "venv", "env", "dist", "build", ".workbuddy",
+                   ".claude", "target", "bin", "obj", ".tox", ".ruff_cache",
+                   ".mypy_cache", ".pytest_cache", ".coverage", "htmlcov"}
+
+    results: list[dict] = []
+    if not query:
+        # 无搜索词时返回最近修改的前 30 个文件
+        for f in sorted(root.rglob("*"), key=lambda p: p.stat().st_mtime if p.is_file() else 0, reverse=True):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(root)
+            parts = rel.parts
+            if parts and parts[0] in ignore_dirs:
+                continue
+            if any(p.startswith(".") for p in parts[:-1]):
+                continue
+            results.append({
+                "path": str(rel.as_posix()),
+                "name": f.name,
+            })
+            if len(results) >= 30:
+                break
+        return {"files": results}
+
+    # 有搜索词时模糊匹配
+    q = query.lower()
+    for f in sorted(root.rglob("*"), key=lambda p: p.stat().st_mtime if p.is_file() else 0, reverse=True):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(root)
+        parts = rel.parts
+        if parts and parts[0] in ignore_dirs:
+            continue
+        if any(p.startswith(".") for p in parts[:-1]):
+            continue
+        rel_str = rel.as_posix().lower()
+        if q in rel_str or q in f.name.lower():
+            results.append({
+                "path": str(rel.as_posix()),
+                "name": f.name,
+            })
+            if len(results) >= 20:
+                break
+    return {"files": results}
+
+
+def _save_uploaded_file(project_name: str, filename: str, data: bytes) -> dict:
+    """保存上传文件到项目 uploads 目录，返回文件信息。"""
+    upload_dir = _project_upload_dir(project_name)
+    # 防止路径穿越
+    safe_name = Path(filename).name
+    if not safe_name:
+        safe_name = "unnamed"
+    dest = upload_dir / safe_name
+    # 同名文件加序号
+    counter = 1
+    while dest.exists():
+        stem = dest.stem
+        suffix = dest.suffix
+        dest = upload_dir / f"{stem}_{counter}{suffix}"
+        counter += 1
+    dest.write_bytes(data)
+    return {
+        "id": safe_name,
+        "name": safe_name,
+        "path": str(dest.relative_to(Path(project_name).parent) if dest.parent == upload_dir.parent else dest),
+        "size": len(data),
+        "url": f"/api/files/{project_name}/{dest.name}",
+    }
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -514,12 +667,48 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, status=404)
         return True
 
+    def _dispatch_get_file_search(self, path: str, parsed: ParseResult) -> bool:
+        """搜索项目文件（用于 @ 文件引用）。"""
+        match = re.fullmatch(r"/api/projects/([^/]+)/files/search", path)
+        if not match:
+            return False
+        project_name = unquote(match.group(1))
+        query = (parse_qs(parsed.query).get("q") or [""])[0].strip()
+        self._send_json(_search_project_files(project_name, query))
+        return True
+
+    def _dispatch_get_uploaded_file(self, path: str) -> bool:
+        """提供已上传文件的访问。"""
+        match = re.fullmatch(r"/api/files/([^/]+)/(.+)", path)
+        if not match:
+            return False
+        project_name = unquote(match.group(1))
+        filename = unquote(match.group(2))
+        upload_dir = _project_upload_dir(project_name)
+        file_path = (upload_dir / filename).resolve()
+        # 防止路径穿越
+        try:
+            file_path.relative_to(upload_dir.resolve())
+        except ValueError:
+            self._send_json({"error": "非法文件路径"}, status=400)
+            return True
+        if not file_path.is_file():
+            self._send_json({"error": "文件不存在"}, status=404)
+            return True
+        content_type = _CONTENT_TYPES.get(file_path.suffix.lower(), "application/octet-stream")
+        self._send_bytes(file_path.read_bytes(), content_type)
+        return True
+
     def _dispatch_get_pattern(self, path: str, parsed: ParseResult) -> bool:
         if self._dispatch_get_project_detail(path):
             return True
         if self._dispatch_get_task_detail(path):
             return True
         if self._dispatch_get_task_log(path, parsed):
+            return True
+        if self._dispatch_get_file_search(path, parsed):
+            return True
+        if self._dispatch_get_uploaded_file(path):
             return True
         return self._dispatch_get_session_detail(path)
 
@@ -603,6 +792,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             title=body.get("title") or "",
         )
 
+    def _handle_post_file_upload(self, body: dict) -> dict:
+        """处理文件上传（base64 编码）。"""
+        project = str(body.get("project") or "")
+        filename = str(body.get("name") or "unnamed")
+        data_b64 = str(body.get("data") or "")
+        if not project or not data_b64:
+            raise RuntimeError("缺少 project 或 data 参数。")
+        import base64
+        try:
+            data = base64.b64decode(data_b64)
+        except Exception as exc:
+            raise RuntimeError(f"base64 解码失败：{exc}") from exc
+        return _save_uploaded_file(project, filename, data)
+
     def _dispatch_post_exact(self, path: str, get_body: Callable[[], dict]) -> dict | None:
         """Handle POST endpoints with exact paths; return ``None`` if unmatched."""
         handlers: dict[str, Callable[[dict], dict]] = {
@@ -614,6 +817,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/tasks/import": self._handle_post_tasks_import,
             "/api/requirements": self._handle_post_requirements,
             "/api/sessions": self._handle_post_sessions,
+            "/api/files/upload": self._handle_post_file_upload,
         }
         handler = handlers.get(path)
         if not handler:
@@ -664,6 +868,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not match:
             return None
         body = get_body()
+        text = str(body.get("text") or "")
+
+        # 如果有附件文件引用，读取文件内容追加到消息文本中
+        file_refs = body.get("files")
+        if isinstance(file_refs, list) and file_refs:
+            text = _append_file_refs_to_text(text, file_refs)
+
         kwargs = {
             "category": body.get("category") or "auto",
             "clarify_answers": body.get("clarify_answers") if isinstance(body.get("clarify_answers"), list) else [],
@@ -671,13 +882,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }
         if isinstance(body.get("runtime"), dict):
             kwargs["runtime_config"] = body.get("runtime")
-        return send_session_message_action(int(match.group(1)), body.get("text") or "", **kwargs)
+        return send_session_message_action(int(match.group(1)), text, **kwargs)
 
     def _dispatch_post_session_run_stop(self, path: str) -> dict | None:
         match = re.fullmatch(r"/api/sessions/(\d+)/runs/(\d+)/stop", path)
         if not match:
             return None
         return stop_session_run_action(int(match.group(1)), int(match.group(2)))
+
+    def _dispatch_post_project_permission(self, path: str, get_body: Callable[[], dict]) -> dict | None:
+        match = re.fullmatch(r"/api/projects/([^/]+)/permission", path)
+        if not match:
+            return None
+        body = get_body()
+        return update_project_permission_action(
+            unquote(match.group(1)),
+            mode=str(body.get("mode") or "").strip(),
+        )
 
     def _dispatch_post_pattern(self, path: str, get_body: Callable[[], dict]) -> dict | None:
         """Handle regex POST routes; return ``None`` if unmatched."""
@@ -691,6 +912,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if payload is not None:
             return payload
         payload = self._dispatch_post_session_run_stop(path)
+        if payload is not None:
+            return payload
+        payload = self._dispatch_post_project_permission(path, get_body)
         if payload is not None:
             return payload
         return self._dispatch_post_session_message(path, get_body)

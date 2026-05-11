@@ -754,37 +754,72 @@ def _update_streaming_message(
     )
 
 
+_AGENT_MODE_TO_OPENCODE_AGENT = {
+    "codepilot": "codepilot",
+    "build": "build",
+    "plan": "plan",
+    "review": "codepilot",
+    "inspect": "codepilot",
+    "task": "codepilot",
+}
+
+_AGENT_MODE_LABELS = {
+    "codepilot": "CodePilot",
+    "build": "Build",
+    "plan": "Plan",
+    "review": "代码审查",
+    "inspect": "项目巡检",
+    "task": "创建任务",
+}
+
+_AGENT_MODE_PROMPT_PREFIX = {
+    "review": (
+        "工作类型：代码审查。\n"
+        "请只读地分析当前仓库的相关改动或被指定的代码片段；"
+        "按验收标准、潜在风险、可维护性、测试覆盖给出结构化审查意见，并标明阻塞项。"
+        "不要直接修改或写入文件。"
+    ),
+    "inspect": (
+        "工作类型：项目巡检。\n"
+        "请走 CodePilot 巡检工作流：使用只读 MCP 工具汇总当前任务/失败/风险/依赖等信号，"
+        "输出可执行的下一步建议，不要修改任何代码。"
+    ),
+    "task": (
+        "工作类型：创建任务。\n"
+        "请把用户需求拆为结构化 CodePilot 任务：先给出最小可执行的任务清单和验收点，"
+        "再通过 CodePilot MCP 把任务落库（包含标题、内容、优先级、agent）。"
+    ),
+}
+
+
 def _normalize_session_runtime_config(runtime_config: Optional[dict]) -> dict:
     runtime = runtime_config if isinstance(runtime_config, dict) else {}
-    allowed_task_modes = {"chat", "requirement", "task", "task_ai", "batch"}
-    task_mode = str(runtime.get("taskMode") or runtime.get("task_mode") or "chat").strip()
+    raw = (
+        runtime.get("agentMode")
+        or runtime.get("agent_mode")
+        or runtime.get("taskMode")
+        or runtime.get("task_mode")
+        or "codepilot"
+    )
+    agent_mode = str(raw).strip()
+    if agent_mode not in _AGENT_MODE_TO_OPENCODE_AGENT:
+        agent_mode = "codepilot"
     return {
-        "task_mode": task_mode if task_mode in allowed_task_modes else "chat",
+        "agent_mode": agent_mode,
+        "agent": _AGENT_MODE_TO_OPENCODE_AGENT[agent_mode],
     }
 
 
 def _session_runtime_prompt(text: str, runtime_config: Optional[dict]) -> str:
     runtime = _normalize_session_runtime_config(runtime_config)
-    mode_labels = {
-        "chat": "问答",
-        "requirement": "需求规划",
-        "task": "完整任务",
-        "task_ai": "AI 补全",
-        "batch": "批量导入",
-    }
-    if runtime["task_mode"] == "chat":
+    prefix = _AGENT_MODE_PROMPT_PREFIX.get(runtime["agent_mode"])
+    if not prefix:
         return text
-    header = "\n".join(
-        [
-            "CodePilot Web 会话运行配置：",
-            f"- 工作类型：{mode_labels.get(runtime['task_mode'], runtime['task_mode'])}",
-            "",
-            "请按上述工作类型处理下面的用户输入；如果需要创建结构化任务或需求，请先给出清晰计划和可执行步骤，再通过 CodePilot MCP 执行。",
-            "",
-            "用户输入：",
-        ]
-    )
-    return f"{header}{text}"
+    return f"{prefix}\n\n用户输入：\n{text}"
+
+
+def _session_runtime_agent(runtime_config: Optional[dict]) -> str:
+    return _normalize_session_runtime_config(runtime_config)["agent"]
 
 
 def _register_session_run(active: _ActiveSessionRun) -> None:
@@ -851,6 +886,7 @@ def _run_session_message_stream(
             _session_runtime_prompt(text, runtime_config),
             source="web",
             external_session_id=str(session_id),
+            agent=_session_runtime_agent(runtime_config),
             on_event=on_stream_event,
             stop_event=stop_event,
         )
@@ -1013,6 +1049,7 @@ def send_session_message_action(
         _session_runtime_prompt(text, runtime_config),
         source="web",
         external_session_id=str(session_id),
+        agent=_session_runtime_agent(runtime_config),
     )
     intent = "opencode" if result.get("ok") else "error"
     reply = str(result.get("message") or "")
@@ -1072,3 +1109,57 @@ def delete_session_action(session_id: int) -> dict:
     db.delete_session(session_id)
     _append_event(f"删除会话 #{session_id}", project=session["project"])
     return {"ok": True, "message": f"会话 #{session_id} 已删除。"}
+
+
+def update_project_permission_action(project: str, mode: str = "") -> dict:
+    """读取或更新项目的 AGENTS.toml [opencode.permission] mode。
+
+    * 若 ``mode`` 为空字符串，只读取当前值并返回。
+    * 若 ``mode`` 为 ``ask`` / ``full_access`` / ``custom``，更新配置并写回文件。
+
+    每次读写都会通过 ``_canonical_config`` + ``render_agents_toml`` 标准化整个
+    AGENTS.toml，保证格式一致性。
+    """
+    import tomllib
+
+    from codepilot.commands.config_cmd import _canonical_config, render_agents_toml
+    from codepilot.core.config import find_config
+
+    db.init_db()
+    project_info = db.get_project(project)
+    if not project_info:
+        raise RuntimeError(f"项目 '{project}' 不存在。")
+
+    project_path = Path(project_info["path"]).resolve()
+    config_path = find_config(project_path) or project_path / "AGENTS.toml"
+    if not config_path or not config_path.is_file():
+        raise RuntimeError(f"项目 '{project}' 没有 AGENTS.toml 配置文件。")
+
+    raw_data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(raw_data, dict):
+        raw_data = {}
+    opencode = raw_data.get("opencode") if isinstance(raw_data.get("opencode"), dict) else {}
+    permission = opencode.get("permission") if isinstance(opencode.get("permission"), dict) else {}
+    current_mode = str(permission.get("mode") or "ask").strip()
+
+    if mode:
+        normalized = mode.strip().lower().replace(" ", "_")
+        valid_modes = {"ask", "full_access", "custom"}
+        if normalized not in valid_modes:
+            raise RuntimeError(
+                f"无效的权限模式: '{mode}'。仅支持: ask, full_access, custom。"
+            )
+        if normalized != current_mode:
+            if "opencode" not in raw_data or not isinstance(raw_data["opencode"], dict):
+                raw_data["opencode"] = {}
+            if "permission" not in raw_data["opencode"] or not isinstance(
+                raw_data["opencode"]["permission"], dict
+            ):
+                raw_data["opencode"]["permission"] = {}
+            raw_data["opencode"]["permission"]["mode"] = normalized
+            canonical = _canonical_config(raw_data, project_name=project_path.name)
+            content = render_agents_toml(canonical)
+            config_path.write_text(content, encoding="utf-8")
+            current_mode = normalized
+
+    return {"ok": True, "mode": current_mode}

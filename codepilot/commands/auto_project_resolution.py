@@ -10,7 +10,7 @@ from typing import Optional
 import click
 
 from codepilot.storage import database as db
-from codepilot.core.config import find_config, load_config
+from codepilot.core.config import ConfigError, find_config, load_config
 
 TEMP_SESSION_NAME = "公共临时会话"
 
@@ -129,6 +129,65 @@ def _resolve_with_new_config_project(
     raise click.ClickException(_register_guidance(project_root))
 
 
+def _auto_fix_config_error(config_path: Path, error: ConfigError) -> bool:
+    """检测到 AGENTS.toml 配置错误时，提议自动修复。
+
+    提示用户执行 `config sync` 来修复（移除废弃字段、补充默认值）。
+    仅在交互式终端下询问，非交互环境直接返回 False。
+
+    Returns:
+        True 表示用户确认且修复成功；False 表示跳过或修复失败。
+    """
+    from codepilot.core.output import echo
+
+    echo()
+    echo(f"[red]配置错误:[/red] {error.args[0] if error.args else error}")
+    echo()
+
+    if not click.get_text_stream("stdin").isatty():
+        echo("[yellow]非交互环境，跳过自动修复。请手动执行:[/yellow]")
+        echo(f"  [bold]codepilot config sync {config_path.parent}[/bold]")
+        echo()
+        return False
+
+    confirmed = click.confirm(
+        "是否需要自动执行配置同步来修复此问题？（将移除废弃字段、补充默认配置项）",
+        default=True,
+    )
+    if not confirmed:
+        echo("[yellow]已取消自动修复，请手动执行:[/yellow]")
+        echo(f"  [bold]codepilot config sync {config_path.parent}[/bold]")
+        echo()
+        return False
+
+    return _apply_config_sync(config_path)
+
+
+def _apply_config_sync(config_path: Path) -> bool:
+    """执行 `codepilot config sync` 等效操作，修复指定 AGENTS.toml。"""
+    import tomllib
+
+    from codepilot.commands.config_cmd import _canonical_config, render_agents_toml
+    from codepilot.core.output import echo
+
+    echo("[cyan]正在修复配置...[/cyan]")
+    try:
+        project_root = config_path.parent
+        raw_data = {}
+        if config_path.exists():
+            with open(config_path, "rb") as handle:
+                raw_data = tomllib.load(handle)
+        canonical = _canonical_config(raw_data, project_name=project_root.name)
+        content = render_agents_toml(canonical)
+        config_path.write_text(content, encoding="utf-8")
+        echo(f"[green]已修复 {config_path}，继续执行...[/green]")
+        return True
+    except Exception as exc:
+        echo(f"[red]配置同步失败: {exc}[/red]")
+        echo("[yellow]请手动执行 codepilot config sync 后再重试。[/yellow]")
+        return False
+
+
 def _resolve_from_config_strategy(
     *,
     current_dir: Path,
@@ -138,7 +197,19 @@ def _resolve_from_config_strategy(
     if not config_path:
         return None
 
-    cfg = load_config(config_path)
+    try:
+        cfg = load_config(config_path)
+    except ConfigError as exc:
+        if _auto_fix_config_error(config_path, exc):
+            try:
+                cfg = load_config(config_path)
+            except ConfigError as retry_exc:
+                raise click.ClickException(
+                    "配置同步后仍存在错误: " + (retry_exc.args[0] if retry_exc.args else str(retry_exc))
+                ) from retry_exc
+        else:
+            raise click.ClickException(str(exc)) from exc
+
     project_root = config_path.parent.resolve()
     matched = db.find_project_by_path(project_root)
     if matched and Path(matched["path"]).resolve() == project_root:
