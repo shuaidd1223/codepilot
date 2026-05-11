@@ -93,6 +93,20 @@ def insert_session_message(
     return int(cur.lastrowid)
 
 
+def update_session_message_fields(
+    conn: sqlite3.Connection,
+    message_id: int,
+    updates: dict[str, object],
+) -> None:
+    allowed = {"content", "intent", "task_ids", "metadata"}
+    clean = {key: value for key, value in updates.items() if key in allowed}
+    if not clean:
+        return
+    set_clause = ", ".join(f"{col} = ?" for col in clean)
+    values = list(clean.values()) + [message_id]
+    conn.execute(f"UPDATE session_messages SET {set_clause} WHERE id = ?", values)
+
+
 def touch_session_updated_at(conn: sqlite3.Connection, session_id: int) -> None:
     conn.execute(
         "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -260,3 +261,119 @@ def test_run_opencode_message_reports_timeout_in_chinese(tmp_path: Path, monkeyp
     assert result["intent"] == "error"
     assert "OpenCode 执行超时" in result["message"]
     assert "1" in result["message"]
+
+
+def test_run_opencode_message_stream_emits_deltas_tools_and_final_result(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _isolate_opencode_runtime(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
+    events = []
+    popen_calls = []
+
+    class FakeStdout:
+        def __init__(self, lines):
+            self.lines = list(lines)
+
+        def readline(self):
+            if not self.lines:
+                return ""
+            return self.lines.pop(0)
+
+    class FakeProcess:
+        def __init__(self, command, **kwargs):
+            popen_calls.append({"command": command, **kwargs})
+            self.returncode = 0
+            self.stdout = FakeStdout(
+                [
+                    json.dumps({"type": "session.updated", "sessionID": "ses_stream"}) + "\n",
+                    json.dumps({"type": "message.part", "role": "assistant", "text": "第一段"}) + "\n",
+                    json.dumps({"type": "tool.call", "tool": "codepilot.status"}) + "\n",
+                    json.dumps({"type": "message.part", "role": "assistant", "text": "第二段"}) + "\n",
+                ]
+            )
+            self.stderr = SimpleNamespace(read=lambda: "")
+
+        def poll(self):
+            return 0 if not self.stdout.lines else None
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+    monkeypatch.setattr("codepilot.opencode.session.subprocess.Popen", FakeProcess)
+
+    from codepilot.opencode.session import run_opencode_message_stream
+
+    result = run_opencode_message_stream(
+        "demo",
+        "流式回复",
+        source="web",
+        external_session_id="1",
+        on_event=events.append,
+    )
+
+    assert result["ok"] is True
+    assert result["opencode_session_id"] == "ses_stream"
+    assert result["message"] == "第一段第二段"
+    assert result["tool_calls"] == [{"name": "codepilot.status"}]
+    assert [event["type"] for event in events] == ["started", "delta", "tool", "delta", "done"]
+    assert events[1]["content_delta"] == "第一段"
+    assert events[-1]["content_snapshot"] == "第一段第二段"
+    assert popen_calls[0]["command"][1:6] == ["run", "--agent", "codepilot", "--format", "json"]
+
+
+def test_run_opencode_message_stream_can_be_cancelled(tmp_path: Path, monkeypatch):
+    _isolate_opencode_runtime(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
+    stop_event = threading.Event()
+
+    class FakeStdout:
+        def __init__(self):
+            self.lines = [json.dumps({"type": "message.part", "role": "assistant", "text": "部分"}) + "\n"]
+
+        def readline(self):
+            if self.lines:
+                stop_event.set()
+                return self.lines.pop(0)
+            return ""
+
+    class FakeProcess:
+        terminated = False
+
+        def __init__(self, *_args, **_kwargs):
+            self.returncode = None
+            self.stdout = FakeStdout()
+            self.stderr = SimpleNamespace(read=lambda: "")
+
+        def poll(self):
+            return None if self.returncode is None else self.returncode
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                self.returncode = -15
+            return self.returncode
+
+        def terminate(self):
+            FakeProcess.terminated = True
+            self.returncode = -15
+
+    monkeypatch.setattr("codepilot.opencode.session.subprocess.Popen", FakeProcess)
+
+    from codepilot.opencode.session import run_opencode_message_stream
+
+    result = run_opencode_message_stream(
+        "demo",
+        "取消",
+        source="web",
+        external_session_id="1",
+        stop_event=stop_event,
+    )
+
+    assert result["ok"] is False
+    assert result["intent"] == "cancelled"
+    assert "已停止" in result["message"]
+    assert FakeProcess.terminated is True

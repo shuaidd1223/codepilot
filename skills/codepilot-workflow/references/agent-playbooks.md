@@ -29,11 +29,11 @@
 
 ## Playbook D: Work Safely In Chat, Web UI, Or Feishu
 
-1. Use plain text or `?` for questions.
-2. Use `# <content>` to create a requirement that may need planning.
-3. Use `! <content>` to create a small concrete task.
-4. If CodePilot returns a confirmation prompt, repeat the request with `#` or `!` only if the user clearly wants work to be created.
-5. For Feishu project context, use commands like `projects`, `use <project>`, `status <project>`, `tasks <project>`, `detail <id>`, `retry <id>`, and `stop <id>`.
+1. Treat these channels as OpenCode + CodePilot MCP conversations.
+2. Use plain natural language for questions, requirements, and operation requests.
+3. If a deterministic artifact is required, call `codepilot clarify`, `codepilot plan`, or the corresponding MCP tool explicitly.
+4. For Feishu project context and explicit actions, use commands like `projects`, `use <project>`, `status <project>`, `tasks <project>`, `detail <id>`, `retry <id>`, and `stop <id>`.
+5. Remember that CodePilot-launched OpenCode uses isolated runtime state under `~/.codepilot/opencode/<project-scope>/`.
 
 ## Playbook E: Recover A Failed Task
 

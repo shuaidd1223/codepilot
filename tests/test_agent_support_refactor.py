@@ -110,7 +110,7 @@ def test_inspect_json_suppresses_stream_chunks_and_remains_parseable(tmp_path, m
     assert payload["data"]["candidates_total"] == 0
 
 
-def test_inspect_legacy_classifier_keeps_streaming_cli_fallback(tmp_path, monkeypatch):
+def test_inspect_keeps_streaming_cli_fallback_without_legacy_classifier(tmp_path, monkeypatch):
     _register_demo_project(tmp_path, monkeypatch)
     cfg = SimpleNamespace(
         inspect=SimpleNamespace(
@@ -148,12 +148,24 @@ def test_inspect_legacy_classifier_keeps_streaming_cli_fallback(tmp_path, monkey
 
     result = CliRunner().invoke(
         inspect_cmd.inspect,
-        ["-p", "demo", "--once", "--dry-run", "--planner", "codex", "--legacy-classifier"],
+        ["-p", "demo", "--once", "--dry-run", "--planner", "codex"],
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["classifier_provider"] == "openai"
-    assert captured["classifier_model"] == "gpt-test"
+    assert captured["classifier_provider"] == ""
+    assert captured["classifier_model"] == ""
     assert "L" in result.output
     assert "候选总数" in result.output
     assert result.output.index("L") < result.output.index("候选总数")
+
+
+def test_inspect_rejects_removed_legacy_classifier_option(tmp_path, monkeypatch):
+    _register_demo_project(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(
+        inspect_cmd.inspect,
+        ["-p", "demo", "--once", "--dry-run", "--legacy-classifier"],
+    )
+
+    assert result.exit_code != 0
+    assert "No such option: --legacy-classifier" in result.output

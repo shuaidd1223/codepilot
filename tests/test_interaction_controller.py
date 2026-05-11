@@ -61,27 +61,6 @@ def test_classify_entry_intent_skips_classifier_by_default(monkeypatch):
     assert calls == []
 
 
-def test_classify_entry_intent_uses_classifier_when_legacy_enabled(monkeypatch):
-    from codepilot.commands import auto as auto_cmd
-
-    calls: list[str] = []
-
-    def _fake_classifier(text, **_kwargs):
-        calls.append(text)
-        return {"intent": "task", "source": "test"}
-
-    monkeypatch.setattr(auto_cmd, "classify_intent", _fake_classifier)
-
-    intent = auto_cmd.classify_entry_intent(
-        "legacy classifier input",
-        project_info={"name": "demo", "path": "D:/repo/demo"},
-        legacy_classifier=True,
-    )
-
-    assert intent == "task"
-    assert calls == ["legacy classifier input"]
-
-
 def test_should_continue_pending_clarification_only_for_auto_unforced_non_question_prefix():
     pending = {"original_title": "优化一下"}
     assert should_continue_pending_clarification(

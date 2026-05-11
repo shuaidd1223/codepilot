@@ -150,11 +150,18 @@ def test_metrics_panel_renders_deepseek_balance_and_token_usage():
     assert "aiStatus" in app_state
     assert "loadAIStatus" in app_state
     assert "/api/ai/status" in app_state
-    assert "DeepSeek API 余额" in metrics_panel
+    assert "project-status-card" in metrics_panel
+    assert "project-status-grid" in metrics_panel
+    assert "project-status-summary" in metrics_panel
+    assert "project-usage-panel" in metrics_panel
+    assert "project-usage-grid" in metrics_panel
+    assert "DeepSeek" in metrics_panel
     assert "总 tokens" in metrics_panel
     assert "思考" in metrics_panel
-    assert ".ai-meter" in styles
-    assert ".ai-usage-grid" in styles
+    assert ".project-status-grid" in styles
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in styles
+    assert ".project-usage-panel" in styles
+    assert ".project-usage-grid" in styles
 
 
 def test_app_state_rebinds_daemon_health_when_project_changes():
@@ -283,6 +290,115 @@ def test_form_components_use_scoped_action_pending_instead_of_global_sending():
     assert "s.sending" not in chat
 
 
+def test_chat_view_wires_streaming_session_runs_and_stop_action():
+    chat = Path("codepilot/web/components/ChatView.js").read_text(encoding="utf-8")
+    session_boundary = Path("codepilot/web/boundaries/AppSessionBoundary.js").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "sessionRunForMessage(m)" in chat
+    assert "session-process-panel" in chat
+    assert "<cp-agent-log" in chat
+    assert "stopSessionRun()" in chat
+    assert "runtime-control-bar" in chat
+    assert "s.opencodeRuntime" in chat
+    assert "终止会话" in chat
+    assert "工作类型" in chat
+    assert "需求规划" in chat
+    assert "完整任务" in chat
+    assert "运行" not in chat
+    assert "分支" not in chat
+    assert "模型" not in chat
+    assert "上下文" not in chat
+    assert "工具权限" not in chat
+    assert "run_async: true" in session_boundary
+    assert "async function stopSessionRun" in session_boundary
+    assert "handleSessionRunEvent(event)" in app_state
+    assert "event.stage === 'session-run'" in app_state
+    assert "sessionRuns: {}" in app_state
+    assert "opencodeRuntime" in app_state
+    assert ".session-process-panel" in styles
+    assert ".chat-input-bar.is-streaming" in styles
+    assert ".runtime-control-bar" in styles
+    assert ".embedded-messages" in styles
+    assert "overflow-y: auto" in styles
+
+
+def test_project_view_uses_unified_workbench_layout():
+    project_view = Path("codepilot/web/components/ProjectView.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "project-workbench-grid" in project_view
+    assert "project-session-list" in project_view
+    assert "cp.selectEmbeddedSession" in project_view
+    assert "project-service-panel" in project_view
+    assert "project-context-rail" in project_view
+    assert "project-metrics-panel" in project_view
+    assert "会话就是和 OpenCode 的交互" in project_view
+    assert "intake-segmented" not in project_view
+    assert "s.composerMode === 'batch'" not in project_view
+    assert "cp-composer" not in project_view
+    assert "cp-task-batch-import" not in project_view
+    assert ".project-workbench-grid" in styles
+    assert ".project-service-panel" in styles
+    assert ".opencode-session-card" in styles
+    assert "@media (max-width: 1280px)" in styles
+    assert "grid-template-columns: 220px minmax(420px, 1fr);" in styles
+    assert "grid-column: 1 / -1;" in styles
+    assert ".project-metrics-panel" in styles
+    assert "grid-column: span 2;" in styles
+    assert "max-height: 280px;\n    overflow-y: auto;" in styles
+
+
+def test_project_workbench_embeds_streaming_session_chat_instead_of_goal_form():
+    project_view = Path("codepilot/web/components/ProjectView.js").read_text(encoding="utf-8")
+    chat = Path("codepilot/web/components/ChatView.js").read_text(encoding="utf-8")
+    session_boundary = Path("codepilot/web/boundaries/AppSessionBoundary.js").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+
+    assert "cp-goal-input" not in project_view
+    assert "<cp-session-chat-panel" in project_view
+    assert "project-session-workbench" in project_view
+    assert "intake-segmented" not in project_view
+    assert "CP.Components.SessionChatPanel" in chat
+    assert "async function sendEmbeddedChat" in session_boundary
+    assert "ensureProjectSessionForSend" in session_boundary
+    assert "`/api/sessions/${sessionId}/messages`" in session_boundary
+    assert "run_async: true" in session_boundary
+    assert "activeProjectSessionId" in app_state
+    assert "selectEmbeddedSession" in app_state
+    assert "openSessionPage" in app_state
+
+
+def test_sidebar_removes_session_category_with_advanced_page_escape():
+    sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
+    project_view = Path("codepilot/web/components/ProjectView.js").read_text(encoding="utf-8")
+
+    assert "会话" not in sidebar
+    assert "selectEmbeddedSession" not in sidebar
+    assert "projectSessions(" not in sidebar
+    assert "sessionCount(" not in sidebar
+    assert "newSession(p.name)" not in sidebar
+    assert "cp.openSessionPage" in project_view
+    assert "会话详情" in project_view
+    assert "打开高级页" not in project_view
+
+
+def test_web_ui_views_share_console_toolbar_contract():
+    tasks_view = Path("codepilot/web/components/TasksView.js").read_text(encoding="utf-8")
+    sessions_view = Path("codepilot/web/components/SessionsView.js").read_text(encoding="utf-8")
+    jobs_view = Path("codepilot/web/components/JobsView.js").read_text(encoding="utf-8")
+    task_detail = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")
+    job_detail = Path("codepilot/web/components/JobDetail.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    for source in (tasks_view, sessions_view, jobs_view, task_detail, job_detail):
+        assert "view-toolbar" in source
+    assert ".view-toolbar" in styles
+    assert ".ops-panel" in styles
+    assert ".detail-grid" in styles
+
+
 def test_sessions_view_wires_history_search():
     sessions = Path("codepilot/web/components/SessionsView.js").read_text(encoding="utf-8")
     styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
@@ -345,14 +461,14 @@ def test_clarify_fields_scope_radio_groups_and_single_free_text_override():
     assert "q.type === 'single' && q.allow_free_text && text" in utils
 
 
-def test_project_view_wires_batch_task_import_panel():
+def test_batch_task_import_component_remains_registered_but_not_on_opencode_workspace():
     index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
     project_view = Path("codepilot/web/components/ProjectView.js").read_text(encoding="utf-8")
     batch_component = Path("codepilot/web/components/TaskBatchImport.js").read_text(encoding="utf-8")
     utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
 
     assert "<script src=\"/static/components/TaskBatchImport.js\"></script>" in index_html
-    assert "<cp-task-batch-import></cp-task-batch-import>" in project_view
+    assert "<cp-task-batch-import></cp-task-batch-import>" not in project_view
     assert "CP.Components.TaskBatchImport" in batch_component
     assert "loadTaskTemplateSchema();" in batch_component
     assert "submitTaskBatch(this.validation);" in batch_component

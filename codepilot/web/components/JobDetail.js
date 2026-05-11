@@ -38,7 +38,7 @@ CP.Components.JobDetail = Vue.defineComponent({
     <div class="view">
       <div v-if="!job" class="big-empty">需求不存在或已过期</div>
       <section v-else class="card">
-        <div class="card-head task-detail-head">
+        <div class="card-head task-detail-head view-toolbar">
           <h3 class="detail-title">
             <span v-if="$cp.isJobActive(job)" class="spinner" style="margin-right:6px"></span>
             #{{ job.id }} {{ job.title }}
@@ -60,7 +60,7 @@ CP.Components.JobDetail = Vue.defineComponent({
           </div>
         </div>
         <div class="card-body task-detail task-detail-body">
-          <div class="task-kv-grid job-kv-grid">
+          <div class="task-kv-grid job-kv-grid detail-grid">
             <div class="task-kv-item">
               <span class="task-kv-key">项目</span>
               <span class="task-kv-value">{{ job.project || s.nav.project || '-' }}</span>

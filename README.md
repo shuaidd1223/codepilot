@@ -26,7 +26,7 @@ codepilot status -p <项目名> -v
 codepilot hud -p <项目名> --preset full
 ```
 
-`chat`、Web UI 会话和飞书自由文本采用确认式执行语义。普通问题可以直接问，也可以用 `? <问题>`；创建需求必须用 `# <需求>` 或 `需求 <内容>`；创建单步任务必须用 `! <任务>` 或 `任务 <内容>`。
+`chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP。可以像使用 OpenCode 一样直接输入问题、需求或操作意图；需要严格产出规格或计划 artifact 时，再显式调用 `clarify` / `plan` / Web UI 面板入口。
 
 ## 常用命令
 
@@ -151,7 +151,7 @@ codepilot binary where
 
 CodePilot 把可调用的 CLI agent 抽成了 family 注册表，目前内置三家：`claude`、`codex`、`opencode`。
 当前面项缺失（未安装/未配置 key/超时）时，按 `[automation] fallback_cli_order` 顺序退到下一家，
-默认是 `["claude", "codex", "opencode"]`——OpenCode 作为最终兜底，靠**已配置的任一 LLM API key 即可工作**。
+默认是 `["claude", "codex", "opencode"]`。OpenCode 作为可更新交互内核，由 CodePilot 在启动时按项目配置注入 provider、模型、MCP 和权限。
 
 `AGENTS.toml` 中的相关字段：
 
@@ -172,12 +172,19 @@ opencode = "opencode"
 # 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个
 fallback_cli_order = ["claude", "codex", "opencode"]
 
-# OpenCode 是 provider-agnostic 的；启动时按以下顺序自动挑选可用 backend：
-#   1. anthropic（来自 claude-opus / claude-sonnet / claude-haiku 的 api_key）
-#   2. deepseek（OpenAI 兼容 + base_url）
-#   3. openai（openai-gpt4* 的 api_key）
-[providers.opencode]
+# OpenCode provider 由 [providers.<name>] 动态生成。
+# openai / deepseek / qwen / kimi / 其他 OpenAI 兼容服务都应各自配置独立 provider。
+[providers.deepseek]
 enabled = true
+api_key = ""
+base_url = "https://api.deepseek.com"
+complex_model = "deepseek-v4-pro"
+
+[providers.openai]
+enabled = true
+api_key = ""
+base_url = "https://api.openai.com/v1"
+model = "gpt-5.4"
 ```
 
 迁移提示：旧版 `[agents] codex_cmd / claude_cmd` 已删除，加载时会抛 `ConfigError` 并给出
@@ -189,11 +196,28 @@ enabled = true
 用户级运行时配置：`~/.codepilot/opencode/<项目标识>/opencode.json`、`tui.json` 和 `config/` 目录，并注入：
 
 - `OPENCODE_CONFIG`：包含 CodePilot MCP、默认 agent、commands、instructions、permission、tools。
-- `OPENCODE_TUI_CONFIG`：包含 TUI theme、滚动、diff、默认关闭 mouse reporting 和 CodePilot 品牌 TUI plugin。
+- `OPENCODE_TUI_CONFIG`：包含 TUI theme、滚动、diff、mouse 配置和 CodePilot 品牌 TUI plugin。
 - `OPENCODE_CONFIG_DIR`：包含 `agents/codepilot.md`、`commands/*.md`、`instructions/*.md`、`tui-plugins/codepilot-brand.tsx`，用于 OpenCode 原生 agent/command/plugin 发现。
 - `OPENCODE_DISABLE_TERMINAL_TITLE=1`：禁用 OpenCode 自己的终端标题更新，由 CodePilot 把终端窗口/标签标题设置为工具品牌。
 
-OpenCode 套壳品牌、TUI、中文交互规则、默认 agent 和内置 commands 都属于 CodePilot 工具级定制，随包代码发布，不需要业务项目在 `AGENTS.toml` 中配置 `[opencode.*]`。业务项目目录不会生成 `.codepilot/opencode/`；运行时文件只写入用户级 `~/.codepilot/opencode/<项目标识>/`，用来落地项目注册名和 MCP 启动命令。
+OpenCode 套壳品牌、TUI、中文交互规则、默认 agent 和内置 commands 都属于 CodePilot 工具级定制，随包代码发布，不需要业务项目在 `AGENTS.toml` 中配置 `[opencode.*]`。业务项目目录不会生成 `.codepilot/opencode/`；运行时文件只写入用户级 `~/.codepilot/opencode/<项目标识>/`，用来落地项目注册名、MCP 启动命令、隔离会话数据和项目级模型选择。
+
+业务项目只需要配置实际使用的模型供应商和权限策略。例如：
+
+```toml
+[opencode.permission]
+# 默认 ask；信任当前项目时可改为 full_access；需要细粒度规则时用 custom。
+mode = "ask"
+
+[providers.deepseek]
+enabled = true
+api_key = ""
+base_url = "https://api.deepseek.com"
+complex_model = "deepseek-v4-pro"
+simple_model = "deepseek-v4-flash"
+```
+
+用户在 OpenCode TUI 中切换过模型后，CodePilot 会把选择保存为该项目的默认模型。后续新建会话会优先使用项目级选择，不会被 OpenCode 内置免费默认模型覆盖。
 
 这条路径不修改 OpenCode 源码，升级 OpenCode 时继续使用官方 `opencode` 命令即可。当前项目不维护 OpenCode 源码 overlay 或自定义二进制；如果 OpenCode TUI 内部其他硬编码欢迎语、权限弹窗文案仍显示 OpenCode，先记录为官方二进制不可配置边界。
 

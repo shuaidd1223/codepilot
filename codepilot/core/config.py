@@ -1140,13 +1140,6 @@ agent_silence_timeout_seconds = 0
 # 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。
 fallback_cli_order = ["claude", "codex", "opencode"]
 
-[classifier]
-# 意图分类器配置；provider 留空则走本地 CLI 兜底
-provider = ""
-model = ""
-enabled = true
-timeout = 30
-
 [inspect]
 # 定时巡检配置
 enabled = false
@@ -1292,4 +1285,3 @@ node_command = "node"
 default_project = ""
 command_prefix = ""
 """
-

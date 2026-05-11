@@ -18,8 +18,8 @@ from tests.chat_flow_testkit import register_project
 
 
 # ─── chat-specific REPL tests removed: chat now launches MCP agents only ──────
-# The classify_intent + answer_question helpers below are still consumed by
-# `codepilot go --legacy-classifier`, so their unit tests live on.
+# The classify_intent + answer_question helpers below are still covered as
+# lower-level gateway and heuristic helpers.
 
 # ─── classify_intent fallback chain ──────────────────────────────────────────
 

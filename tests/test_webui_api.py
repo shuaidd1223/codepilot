@@ -375,6 +375,35 @@ def test_event_stream_replays_backlog_when_last_event_id_is_provided(ui_server):
     assert events[0]["task_id"] == 124
 
 
+def test_event_stream_replays_session_run_events_when_last_event_id_is_provided(ui_server):
+    progress_bus.clear_subscribers_for_tests()
+    progress_bus.emit(stage="planner", message="already seen")
+    first_event_id = progress_bus.events_since(0)[0]["id"]
+    progress_bus.emit(
+        stage="session-run",
+        event_type="delta",
+        message="会话输出更新",
+        extra={
+            "project": "demo",
+            "session_id": 7,
+            "assistant_message_id": 9,
+            "status": "running",
+            "content_delta": "增量",
+            "content_snapshot": "增量",
+            "tool_calls": [],
+            "opencode_session_id": "ses_1",
+        },
+    )
+
+    url = f"{ui_server}/api/events/stream?project=demo&last_event_id={first_event_id}"
+    with urllib.request.urlopen(url, timeout=5) as resp:
+        events = _read_sse_data(resp, limit=1)
+
+    assert len(events) == 1
+    assert events[0]["stage"] == "session-run"
+    assert events[0]["extra"]["content_delta"] == "增量"
+
+
 def test_ui_state_mutations_emit_refresh_events(ui_server):
     progress_bus.clear_subscribers_for_tests()
     events: list[dict] = []
@@ -622,18 +651,26 @@ def test_goal_endpoint_normalizes_non_list_qa_history(ui_server, monkeypatch):
     assert captured["clarify_questions"] == []
 
 
-def test_session_message_endpoint_routes_to_action(ui_server, monkeypatch):
+def test_session_message_endpoint_routes_to_action_with_async_default(ui_server, monkeypatch):
     session = db.create_session("demo", title="chat")
     captured = {}
 
-    def fake_send_session_message(session_id, text, *, category="auto", clarify_answers=None):
+    def fake_send_session_message(session_id, text, *, category="auto", clarify_answers=None, run_async=False):
         captured.update({
             "session_id": session_id,
             "text": text,
             "category": category,
             "clarify_answers": clarify_answers,
+            "run_async": run_async,
         })
-        return {"ok": True, "intent": "question", "message": "routed", "task_ids": []}
+        return {
+            "ok": True,
+            "intent": "opencode",
+            "message": "routed",
+            "task_ids": [],
+            "status": "running",
+            "assistant_message_id": 9,
+        }
 
     monkeypatch.setattr(webui_mod, "send_session_message_action", fake_send_session_message)
 
@@ -649,7 +686,45 @@ def test_session_message_endpoint_routes_to_action(ui_server, monkeypatch):
         "text": "hello session",
         "category": "question",
         "clarify_answers": [],
+        "run_async": True,
     }
+
+
+def test_session_message_endpoint_can_force_sync_mode(ui_server, monkeypatch):
+    session = db.create_session("demo", title="chat")
+    captured = {}
+
+    def fake_send_session_message(session_id, text, *, category="auto", clarify_answers=None, run_async=False):
+        captured["run_async"] = run_async
+        return {"ok": True, "intent": "opencode", "message": "sync", "task_ids": []}
+
+    monkeypatch.setattr(webui_mod, "send_session_message_action", fake_send_session_message)
+
+    status, body = _post(
+        f"{ui_server}/api/sessions/{session['id']}/messages",
+        {"text": "hello session", "run_async": False},
+    )
+
+    assert status == 200
+    assert body["message"] == "sync"
+    assert captured["run_async"] is False
+
+
+def test_session_run_stop_endpoint_routes_to_action(ui_server, monkeypatch):
+    session = db.create_session("demo", title="chat")
+    captured = {}
+
+    def fake_stop(session_id, message_id):
+        captured.update({"session_id": session_id, "message_id": message_id})
+        return {"ok": True, "message": "已停止", "assistant_message_id": message_id}
+
+    monkeypatch.setattr(webui_mod, "stop_session_run_action", fake_stop)
+
+    status, body = _post(f"{ui_server}/api/sessions/{session['id']}/runs/123/stop", {})
+
+    assert status == 200
+    assert body["message"] == "已停止"
+    assert captured == {"session_id": session["id"], "message_id": 123}
 
 
 def test_unknown_post_path_returns_404(ui_server):

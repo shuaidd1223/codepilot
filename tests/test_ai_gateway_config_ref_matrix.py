@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from click.testing import CliRunner
 
 from codepilot.storage import database as db
@@ -49,14 +48,14 @@ timeout = 17
 
 def _run_go_question(tmp_path, monkeypatch):
     project_path = register_project(tmp_path, monkeypatch)
-    captured, fake_classify, fake_answer = build_gateway_capture(answer_text="这是 go 的问答回复")
+    captured, _fake_classify, fake_answer = build_gateway_capture(answer_text="这是 go 的问答回复")
     ran: list[dict] = []
 
-    monkeypatch.setattr(auto_mod, "classify_intent", fake_classify)
+    monkeypatch.setattr(auto_mod, "classify_entry_intent", lambda text, **kw: "question")
     monkeypatch.setattr(auto_mod, "answer_question_via_api", fake_answer)
     monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw))
 
-    result = CliRunner().invoke(main, ["go", "--legacy-classifier", "这个工具怎么用"])
+    result = CliRunner().invoke(main, ["go", "这个工具怎么用"])
 
     assert result.exit_code == 0
     assert "这是 go 的问答回复" in result.output
@@ -64,17 +63,9 @@ def _run_go_question(tmp_path, monkeypatch):
     return captured, str(project_path)
 
 
-@pytest.mark.parametrize(
-    "scenario",
-    [_run_go_question],
-    ids=["go-question-legacy-classifier"],
-)
-def test_gateway_config_ref_is_shared_between_classifier_and_answer(tmp_path, monkeypatch, scenario):
-    captured, expected_config_ref = scenario(tmp_path, monkeypatch)
+def test_go_question_answer_uses_project_config_ref(tmp_path, monkeypatch):
+    captured, expected_config_ref = _run_go_question(tmp_path, monkeypatch)
 
-    classify_opts = captured["classify"]["gateway_options"]
     answer_opts = captured["answer"]["gateway_options"]
-    assert classify_opts.config_ref == expected_config_ref
     assert answer_opts.config_ref == expected_config_ref
-    assert classify_opts is answer_opts
 

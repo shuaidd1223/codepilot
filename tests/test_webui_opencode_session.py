@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 from codepilot.storage import database as db
 from tests.chat_flow_testkit import register_project
@@ -49,6 +50,42 @@ def test_webui_session_message_uses_opencode_adapter(tmp_path: Path, monkeypatch
     assert messages[1]["intent"] == "opencode"
 
 
+def test_webui_session_message_injects_runtime_config_without_rewriting_user_message(tmp_path: Path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+    session = db.create_session("demo", title="chat")
+    calls = []
+
+    def fake_run(project, text, *, source, external_session_id):
+        calls.append(text)
+        return {
+            "ok": True,
+            "intent": "opencode",
+            "message": "done",
+            "opencode_session_id": "ses_runtime",
+            "tool_calls": [],
+        }
+
+    monkeypatch.setattr("codepilot.opencode.session.run_opencode_message", fake_run)
+
+    from codepilot.webapp.action_sessions import send_session_message_action
+
+    send_session_message_action(
+        session["id"],
+        "把这个需求拆成任务",
+        runtime_config={
+            "taskMode": "requirement",
+        },
+    )
+
+    messages = db.list_session_messages(session["id"])
+    assert messages[0]["content"] == "把这个需求拆成任务"
+    assert "CodePilot Web 会话运行配置" in calls[0]
+    assert "工作类型：需求规划" in calls[0]
+    assert "运行位置" not in calls[0]
+    assert "目标分支" not in calls[0]
+    assert "模型偏好" not in calls[0]
+
+
 def test_webui_session_message_records_opencode_error(tmp_path: Path, monkeypatch):
     register_project(tmp_path, monkeypatch)
     session = db.create_session("demo", title="chat")
@@ -66,3 +103,82 @@ def test_webui_session_message_records_opencode_error(tmp_path: Path, monkeypatc
     assert result["intent"] == "error"
     assert "OpenCode 执行失败" in result["message"]
     assert db.list_session_messages(session["id"])[1]["intent"] == "error"
+
+
+def test_webui_session_message_async_returns_placeholder_and_finalizes(
+    tmp_path: Path,
+    monkeypatch,
+):
+    register_project(tmp_path, monkeypatch)
+    session = db.create_session("demo", title="chat")
+    stream_events = []
+
+    def fake_stream(project, text, *, source, external_session_id, on_event=None, stop_event=None):
+        if on_event:
+            on_event({"type": "delta", "content_delta": "处理中", "content_snapshot": "处理中"})
+            on_event({"type": "tool", "tool_calls": [{"name": "codepilot.status"}]})
+        stream_events.append(
+            {
+                "project": project,
+                "text": text,
+                "source": source,
+                "external_session_id": external_session_id,
+                "stop_event": stop_event,
+            }
+        )
+        return {
+            "ok": True,
+            "intent": "opencode",
+            "message": "最终回复",
+            "opencode_session_id": "ses_async",
+            "tool_calls": [{"name": "codepilot.status"}],
+        }
+
+    monkeypatch.setattr("codepilot.opencode.session.run_opencode_message_stream", fake_stream)
+
+    from codepilot.webapp.action_sessions import send_session_message_action
+
+    result = send_session_message_action(session["id"], "帮我看状态", run_async=True)
+
+    assert result["ok"] is True
+    assert result["status"] == "running"
+    assert result["assistant_message_id"]
+    assert result["user_message"]["content"] == "帮我看状态"
+    assert result["assistant_message"]["intent"] == "streaming"
+
+    messages = []
+    for _ in range(50):
+        messages = db.list_session_messages(session["id"])
+        if len(messages) == 2 and messages[1]["content"] == "最终回复":
+            break
+        time.sleep(0.02)
+
+    assert [item["role"] for item in messages] == ["user", "assistant"]
+    assert messages[1]["intent"] == "opencode"
+    assert "ses_async" in (messages[1]["metadata"] or "")
+    assert stream_events and stream_events[0]["external_session_id"] == str(session["id"])
+
+
+def test_webui_session_message_async_records_stream_error(tmp_path: Path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+    session = db.create_session("demo", title="chat")
+
+    def fake_stream(*_args, **_kwargs):
+        return {"ok": False, "intent": "error", "message": "OpenCode 执行失败：provider missing"}
+
+    monkeypatch.setattr("codepilot.opencode.session.run_opencode_message_stream", fake_stream)
+
+    from codepilot.webapp.action_sessions import send_session_message_action
+
+    result = send_session_message_action(session["id"], "你好", run_async=True)
+    assistant_id = result["assistant_message_id"]
+
+    updated = None
+    for _ in range(50):
+        updated = db.list_session_messages(session["id"])[1]
+        if updated["id"] == assistant_id and updated["intent"] == "error":
+            break
+        time.sleep(0.02)
+
+    assert updated["intent"] == "error"
+    assert "provider missing" in updated["content"]

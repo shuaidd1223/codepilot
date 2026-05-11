@@ -112,7 +112,7 @@ CP.Components.SessionsView = Vue.defineComponent({
   },
   template: `
     <div class="view">
-      <div class="row between end">
+      <div class="view-toolbar row between end">
         <div>
           <h2 class="view-title">会话</h2>
           <div class="muted tiny">

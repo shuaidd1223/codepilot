@@ -116,6 +116,8 @@ Use $codepilot-workflow to submit and track this requirement.
 
 `chat`、Web UI 会话、飞书自由文本统一进入 OpenCode + CodePilot MCP。外部 Agent 可以直接表达问题、需求或操作意图；需要严格产出 artifact 时，再显式调用 `clarify` / `plan` / MCP 工具。
 
+CodePilot 启动的 OpenCode 使用用户级隔离运行时 `~/.codepilot/opencode/<项目标识>/`，保存生成配置、TUI 插件、会话数据和项目级模型选择，不污染用户自己直接运行的 OpenCode。
+
 ## 5. 跨 Agent 最小约束
 
 - 禁止使用旧入口：`release`、顶层 `show/logs/stop/retry/find/...`、`webui`。
@@ -123,6 +125,7 @@ Use $codepilot-workflow to submit and track this requirement.
 - 机器可读调用优先加 `--json`。
 - 项目状态、任务统计、运行服务等问题优先当问答处理。
 - `explore`、`clarify`、`plan` 不应用作执行入口。
+- `chat` / Web UI / 飞书自由文本由 OpenCode 会话调用 CodePilot MCP；需要确定性输出时显式调用结构化 CLI/MCP 工具。
 - Skill 包内容保持英文，中文操作说明写在 `docs/`。
 - 直接投递任务前必须读取 `codepilot ai template --format json`。
 

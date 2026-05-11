@@ -220,7 +220,6 @@ class _ChatRuntime:
     auto_commit_opt: Optional[bool]
     max_tasks_opt: int
     max_retries_opt: int
-    legacy_classifier: bool = False
     use_async_requirements: bool = True
     chat_history: list[dict] = field(default_factory=list)
     pending_clarification: Optional[dict] = None
@@ -663,7 +662,6 @@ def _resolve_chat_turn_intent(ctx: _ChatMessageDispatchContext) -> str:
             "project_info": ctx.runtime.project_info,
             "category": "auto",
             "gateway_options": ctx.shared_gateway_options,
-            "legacy_classifier": ctx.runtime.legacy_classifier,
             "default_intent": "",
         },
         fallback_intent="question",
@@ -892,7 +890,6 @@ def run_chat_session(
     auto_commit: Optional[bool] = None,
     max_tasks: int = 0,
     max_retries: int = 0,
-    legacy_classifier: bool = False,
     enable_ui: bool = True,
     ui_port: int = 8766,
 ) -> None:
@@ -931,7 +928,6 @@ def run_chat_session(
         auto_commit_opt=auto_commit,
         max_tasks_opt=max_tasks,
         max_retries_opt=max_retries,
-        legacy_classifier=legacy_classifier,
         use_async_requirements=enable_ui,
     )
 
@@ -961,4 +957,3 @@ def run_chat_session(
     )
     while frame.state != _ChatLoopState.EXIT:
         _step_chat_loop(dispatch_ctx)
-

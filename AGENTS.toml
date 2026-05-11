@@ -12,6 +12,7 @@ opencode = "opencode"
 
 [opencode.permission]
 # 当前项目信任 CodePilot 集成的 OpenCode，会话内不再逐项弹权限确认。
+# 其他项目建议默认使用 ask；需要细粒度规则时改为 custom 并配置 [opencode.permission.rules]。
 mode = "full_access"
 
 # 当前项目任务直接在主工作目录执行，不为每个任务新建分支或 worktree。
@@ -87,6 +88,7 @@ signals = ["git_log", "failed_tasks", "todos", "deps", "ruff", "pytest", "code_m
 [providers.openai]
 enabled = true
 api_key = ""
+# OpenCode 启动时会把 openai 注入为独立 provider，不与 deepseek/qwen 等自定义 provider 混用。
 model = "gpt-5.4"
 base_url = "https://sub.hdd.sb/v1"
 max_tokens = 4096
@@ -100,6 +102,7 @@ base_url = "https://api.deepseek.com"
 max_tokens = 8192
 temperature = 0.7
 auto_model_selection = true
+# DeepSeek 作为独立 OpenAI-compatible provider 注入 OpenCode，不挂在 openai 分类下。
 simple_model = "deepseek-v4-flash"
 complex_model = "deepseek-v4-pro"
 thinking = "auto"

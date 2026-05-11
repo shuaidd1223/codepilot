@@ -18,18 +18,20 @@ Use `setup` for the current project-level `.codepilot` skeleton and registration
 ```bash
 codepilot "<requirement>"
 codepilot go "<requirement-or-question>" -p <project>
-codepilot chat -p <project>
+codepilot chat -p <project> -a opencode
 ```
 
 Use `codepilot "<requirement>"` or `codepilot go "<requirement>"` for one-shot requirement intake. `go` can also answer project and task status questions.
 
-In `chat`, Web UI sessions, and Feishu free text, CodePilot uses a conservative execution boundary. Ambiguous requirement-like text only returns a confirmation prompt and does not create work. Use explicit prefixes:
+In `chat`, Web UI sessions, and Feishu free text, CodePilot routes free text into OpenCode + CodePilot MCP. Use plain natural language, or explicitly call `clarify` / `plan` / MCP tools when a deterministic artifact is required:
 
 ```text
-? What is the current project status?
-# Improve the Feishu task panel
-! Retry failed task 12
+What is the current project status?
+Improve the Feishu task panel.
+Before retrying failed task 12, list the risk and ask for confirmation if needed.
 ```
+
+CodePilot-launched OpenCode is isolated from a user's native OpenCode install. Generated config, TUI plugin files, session data, and project model selection live under `~/.codepilot/opencode/<project-scope>/`.
 
 ## 3. Clarification, Planning, And Read-Only Evidence
 

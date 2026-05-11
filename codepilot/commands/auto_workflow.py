@@ -473,7 +473,6 @@ def classify_entry_intent(
     project_info: dict,
     category: str = "auto",
     gateway_options: Optional[GatewayCallOptions] = None,
-    legacy_classifier: bool = False,
     default_intent: str = "requirement",
 ) -> str:
     """Classify user input intent using the shared auto/chat/webui chain."""
@@ -482,27 +481,12 @@ def classify_entry_intent(
     if forced in valid:
         return forced
 
-    if not legacy_classifier:
-        try:
-            guess = _heuristic_intent(text)
-        except Exception:
-            guess = None
-        fallback = (default_intent or "").strip().lower()
-        return guess if guess in valid else (fallback if fallback in valid else "")
-
-    shared_options = gateway_options or resolve_shared_gateway_options(project_info)
-    shell = _shell()
     try:
-        result = shell.classify_intent(
-            text,
-            gateway_options=shared_options,
-        )
-        intent = (result.get("intent") or "").strip().lower()
-        if intent in valid:
-            return intent
+        guess = _heuristic_intent(text)
     except Exception:
-        pass
-    return "requirement"
+        guess = None
+    fallback = (default_intent or "").strip().lower()
+    return guess if guess in valid else (fallback if fallback in valid else "")
 
 
 def command_intent_guidance(*, include_release: bool = False) -> str:

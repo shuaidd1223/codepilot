@@ -9,6 +9,7 @@ from codepilot.storage import database as db
 from codepilot.cli import main
 from codepilot.commands import inspect as inspect_cmd
 from codepilot.core.config import (
+    DEFAULT_TEMPLATE,
     GLOBAL_CONFIG_PATH_ENV,
     SECRETS_FILENAME,
     AgentsConfig,
@@ -40,6 +41,7 @@ def _stub_inspection(monkeypatch, captured: dict) -> None:
 def test_config_empty_dict_uses_declared_defaults():
     cfg = AgentsConfig.from_dict({})
 
+    assert "[classifier]" not in DEFAULT_TEMPLATE
     assert cfg.project.name == ""
     assert cfg.project.base_branch == "dev"
     assert cfg.project.default_mode == "dual"
@@ -112,6 +114,10 @@ task_workspace = "bad-value"
 max_tasks = 4
 old_flag = true
 
+[classifier]
+provider = "deepseek"
+timeout = 10
+
 [providers.openai-gpt4o]
 enabled = true
 model = "gpt-4o"
@@ -161,7 +167,7 @@ extra = "drop"
     assert parsed["automation"]["two_stage_planning"] is True
     assert parsed["automation"]["max_review_rounds"] == 2
     assert parsed["automation"]["agent_silence_timeout_seconds"] == 0
-    assert parsed["classifier"]["timeout"] == 30
+    assert "classifier" not in parsed
     assert parsed["inspect"]["signals"] == ["git_log", "failed_tasks", "todos"]
     assert parsed["inspect"]["planner"] == ""
     assert parsed["providers"]["openai-gpt4o"]["model"] == "gpt-4o"
@@ -172,7 +178,7 @@ extra = "drop"
     assert parsed["notifications"]["webhook_secret"] == "sign-secret"
 
 
-def test_config_sync_adds_provider_section_for_classifier_provider(tmp_path, monkeypatch):
+def test_config_sync_removes_legacy_classifier_section_without_adding_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     project = tmp_path / "demo"
     project.mkdir()
@@ -191,12 +197,8 @@ provider = "deepseek"
     import tomllib
 
     parsed = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
-    assert parsed["classifier"]["provider"] == "deepseek"
-    assert parsed["providers"]["deepseek"]["api_key"] == ""
-    assert parsed["providers"]["deepseek"]["model"] == ""
-    assert parsed["providers"]["deepseek"]["base_url"] == "https://api.deepseek.com"
-    assert parsed["providers"]["deepseek"]["auto_model_selection"] is True
-    assert parsed["providers"]["deepseek"]["complex_model"] == "deepseek-v4-pro"
+    assert "classifier" not in parsed
+    assert "deepseek" not in parsed.get("providers", {})
 
 
 def test_config_sync_preserves_opencode_project_permission(tmp_path, monkeypatch):
@@ -401,4 +403,3 @@ max_new_tasks_per_round = 2
 def test_resolve_planner_for_inspect_scope(cfg_data, explicit, expected):
     cfg = AgentsConfig.from_dict(cfg_data or {}) if cfg_data is not None else None
     assert resolve_planner(cfg, "inspect", explicit=explicit) == expected
-

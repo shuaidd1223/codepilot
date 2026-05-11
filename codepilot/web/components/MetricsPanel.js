@@ -24,28 +24,34 @@ CP.Components.MetricsPanel = Vue.defineComponent({
     },
   },
   template: `
-    <section class="card">
-      <div class="card-head">
-        <h3>项目状态</h3>
-        <p class="muted">{{ currentProject ? ('活动摘要: ' + (currentProject.active_summary || '无')) : '-' }}</p>
-      </div>
-      <div class="metrics">
-        <div v-for="m in metrics" :key="m.label" class="metric" :class="m.tone">
-          <div class="metric-label">{{ m.label }}</div>
-          <div class="metric-value">{{ m.value }}</div>
-        </div>
-      </div>
-      <div class="ai-meter">
-        <div class="ai-meter-head">
-          <div>
-            <div class="metric-label">DeepSeek API 余额</div>
-            <div class="ai-meter-value">{{ deepseekBalance }}</div>
+    <section class="project-status-card card">
+      <div class="project-status-head">
+        <div>
+          <h3>项目状态</h3>
+          <div class="project-status-summary">
+            <span>活动摘要</span>
+            <strong>{{ currentProject ? (currentProject.active_summary || '无') : '-' }}</strong>
           </div>
-          <button class="icon-btn" title="刷新余额和用量" @click="cp.loadAIStatus({ refresh: true })">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
-          </button>
         </div>
-        <div class="ai-usage-grid">
+        <button class="icon-btn" title="刷新余额和用量" @click="cp.loadAIStatus({ refresh: true })">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        </button>
+      </div>
+      <div class="project-status-grid">
+        <div v-for="m in metrics" :key="m.label" class="project-status-tile" :class="m.tone">
+          <div class="project-status-label">{{ m.label }}</div>
+          <div class="project-status-value">{{ m.value }}</div>
+        </div>
+      </div>
+      <div class="project-usage-panel">
+        <div class="project-usage-head">
+          <div>
+            <div class="project-status-label">DeepSeek</div>
+            <div class="project-usage-balance">{{ deepseekBalance }}</div>
+          </div>
+          <span class="muted tiny">余额 / 用量</span>
+        </div>
+        <div class="project-usage-grid">
           <span>请求 {{ deepseekUsage.requests }}</span>
           <span>总 tokens {{ deepseekUsage.total }}</span>
           <span>输入 {{ deepseekUsage.prompt }}</span>

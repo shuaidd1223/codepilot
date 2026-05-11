@@ -20,6 +20,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       taskDetailError: '',
       sessionDetail: null,
       sessionMessages: [],
+      sessionRuns: {},
+      activeProjectSessionId: null,
 
       taskLog: { taskId: null, text: '', nextOffset: 0, size: 0, done: true, loading: false },
 
@@ -48,8 +50,11 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
       goalText: '', goalCategory: 'auto', goalClarify: null,
       projectForm: { open: false, path: '', name: '', noConfig: false },
-      composerMode: 'requirement',
+      composerMode: 'question',
       composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
+      opencodeRuntime: {
+        taskMode: 'chat',
+      },
       composerClarify: null,
       taskTemplateSchema: null,
       taskTemplateLoading: false,
@@ -168,7 +173,11 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         goalText: '',
         goalCategory: 'auto',
         goalClarify: null,
-        composerMode: 'requirement',
+        composerMode: 'question',
+        activeProjectSessionId: null,
+        opencodeRuntime: {
+          taskMode: 'chat',
+        },
         composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
         composerClarify: null,
         batchComposer: { raw: '' },
@@ -181,13 +190,21 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       const fallback = defaultProjectDraft();
       const source = (draft && typeof draft === 'object') ? draft : {};
       const composer = (source.composer && typeof source.composer === 'object') ? source.composer : {};
+      const opencodeRuntime = (source.opencodeRuntime && typeof source.opencodeRuntime === 'object') ? source.opencodeRuntime : {};
       const batchComposer = (source.batchComposer && typeof source.batchComposer === 'object') ? source.batchComposer : {};
+      const activeProjectSessionId = Number(source.activeProjectSessionId);
       return {
         answer: source.answer == null ? null : String(source.answer),
         goalText: typeof source.goalText === 'string' ? source.goalText : fallback.goalText,
         goalCategory: typeof source.goalCategory === 'string' ? source.goalCategory : fallback.goalCategory,
         goalClarify: cloneProjectDraftValue(source.goalClarify || null),
         composerMode: typeof source.composerMode === 'string' ? source.composerMode : fallback.composerMode,
+        activeProjectSessionId: Number.isFinite(activeProjectSessionId) && activeProjectSessionId > 0
+          ? activeProjectSessionId
+          : fallback.activeProjectSessionId,
+        opencodeRuntime: {
+          taskMode: typeof opencodeRuntime.taskMode === 'string' ? opencodeRuntime.taskMode : fallback.opencodeRuntime.taskMode,
+        },
         composer: {
           title: typeof composer.title === 'string' ? composer.title : fallback.composer.title,
           content: typeof composer.content === 'string' ? composer.content : fallback.composer.content,
@@ -212,6 +229,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         goalCategory: state.goalCategory,
         goalClarify: cloneProjectDraftValue(state.goalClarify),
         composerMode: state.composerMode,
+        activeProjectSessionId: state.activeProjectSessionId,
+        opencodeRuntime: cloneProjectDraftValue(state.opencodeRuntime),
         composer: cloneProjectDraftValue(state.composer),
         composerClarify: cloneProjectDraftValue(state.composerClarify),
         batchComposer: cloneProjectDraftValue(state.batchComposer),
@@ -248,6 +267,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       state.goalCategory = draft.goalCategory;
       state.goalClarify = draft.goalClarify;
       state.composerMode = draft.composerMode;
+      state.activeProjectSessionId = draft.activeProjectSessionId;
+      state.opencodeRuntime = draft.opencodeRuntime;
       state.composer = draft.composer;
       state.composerClarify = draft.composerClarify;
       state.batchComposer = draft.batchComposer;
@@ -346,6 +367,18 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
     }
 
     function selectSession(project, id) {
+      return selectEmbeddedSession(project, id);
+    }
+
+    function selectEmbeddedSession(project, id) {
+      return ensureSessionBoundary().selectEmbeddedSession(project, id);
+    }
+
+    function openSessionPage(project, id) {
+      return ensureSessionBoundary().openSessionPage(project, id);
+    }
+
+    function selectSessionPage(project, id) {
       state.expanded[project] = true;
       openProjectCategory(project, 'sessions');
       setNav({ project, view: 'session', id });
@@ -458,6 +491,9 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       try {
         const data = await CP.api.get('/api/sessions');
         state.sessions = data.sessions || [];
+        if (state.nav.project && state.nav.view === 'overview') {
+          ensureProjectSessionSelected(state.nav.project, { load: true });
+        }
       } catch (_e) { /* silent */ }
     }
 
@@ -472,24 +508,36 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         getChatScrollEl,
         loadSessions,
         confirmDialog,
-        selectSession,
         setNav,
+        openProjectCategory,
         buildClarifyStateFromPayload,
         syncSessionClarifyDraft,
       });
       return sessionBoundary;
     }
 
-    async function loadSessionChat() {
-      return ensureSessionBoundary().loadSessionChat();
+    async function loadSessionChat(sessionId = null) {
+      return ensureSessionBoundary().loadSessionChat(sessionId);
     }
 
-    async function newSession() {
-      return ensureSessionBoundary().newSession();
+    function ensureProjectSessionSelected(project = state.nav.project, options = {}) {
+      return ensureSessionBoundary().ensureProjectSessionSelected(project, options);
+    }
+
+    async function newSession(projectOrOptions = null, options = {}) {
+      return ensureSessionBoundary().newSession(projectOrOptions, options);
     }
 
     async function sendChat() {
       return ensureSessionBoundary().sendChat();
+    }
+
+    async function sendEmbeddedChat() {
+      return ensureSessionBoundary().sendEmbeddedChat();
+    }
+
+    async function stopSessionRun(messageId = null) {
+      return ensureSessionBoundary().stopSessionRun(messageId);
     }
 
     async function cancelSessionClarify(sessionId) {
@@ -622,10 +670,86 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       return false;
     }
 
+    function sessionRunEventLine(event, extra) {
+      const ts = (event && event.timestamp || '').slice(11, 19) || '--:--:--';
+      const type = String((event && event.type) || 'summary');
+      const msg = String((event && event.message) || '');
+      const delta = String((extra && extra.content_delta) || '');
+      const tools = Array.isArray(extra && extra.tool_calls) ? extra.tool_calls : [];
+      const latestTool = tools.length ? ` tools=${tools.map((tool) => tool.name || tool.tool || '-').join(',')}` : '';
+      const body = delta || msg || String((extra && extra.error) || '');
+      return `[${ts}] ${type}${latestTool}${body ? ` ${body}` : ''}`;
+    }
+
+    function handleSessionRunEvent(event) {
+      const extra = (event && event.extra) || {};
+      if (!projectMatchesCurrent(String(extra.project || ''))) return true;
+      const sessionId = Number(extra.session_id || 0);
+      const messageId = Number(extra.assistant_message_id || 0);
+      if (!sessionId || !messageId) return true;
+      const key = String(messageId);
+      const previous = state.sessionRuns[key] || {};
+      const events = Array.isArray(previous.events) ? previous.events.slice() : [];
+      events.push({
+        id: event && event.id,
+        timestamp: event && event.timestamp,
+        type: event && event.type,
+        message: event && event.message,
+        extra,
+      });
+      const status = String(extra.status || previous.status || 'running');
+      const nextRun = {
+        ...previous,
+        session_id: sessionId,
+        assistant_message_id: messageId,
+        status,
+        content_snapshot: String(extra.content_snapshot ?? previous.content_snapshot ?? ''),
+        tool_calls: Array.isArray(extra.tool_calls) ? extra.tool_calls : (previous.tool_calls || []),
+        opencode_session_id: String(extra.opencode_session_id || previous.opencode_session_id || ''),
+        error: String(extra.error || previous.error || ''),
+        events: events.slice(-200),
+        raw_log: [...(Array.isArray(previous.raw_log) ? previous.raw_log : []), sessionRunEventLine(event, extra)].slice(-300),
+      };
+      state.sessionRuns[key] = nextRun;
+      const isVisibleSession = (
+        (state.nav.view === 'session' && Number(state.nav.id) === sessionId)
+        || (state.nav.view === 'overview' && Number(state.activeProjectSessionId || 0) === sessionId)
+      );
+      if (isVisibleSession) {
+        const idx = state.sessionMessages.findIndex((msg) => Number(msg.id) === messageId);
+        if (idx >= 0) {
+          const current = state.sessionMessages[idx] || {};
+          const content = nextRun.content_snapshot || current.content || '';
+          const finalIntent = status === 'done'
+            ? 'opencode'
+            : (status === 'error' ? 'error' : (status === 'cancelled' ? 'cancelled' : 'streaming'));
+          state.sessionMessages[idx] = {
+            ...current,
+            content,
+            intent: finalIntent,
+            metadata: {
+              ...(current.metadata || {}),
+              status,
+              tool_calls: nextRun.tool_calls,
+              opencode_session_id: nextRun.opencode_session_id,
+              error: nextRun.error,
+            },
+          };
+        } else {
+          loadSessionChat(sessionId);
+        }
+      }
+      if (['done', 'error', 'cancelled'].includes(status)) {
+        loadSessions();
+      }
+      return true;
+    }
+
     function runRefresh() {
       if (isRefreshBlocked()) return;
       loadDashboard();
       if (state.nav.view === 'session' && state.nav.id) loadSessionChat();
+      else if (state.nav.view === 'overview' && state.activeProjectSessionId) loadSessionChat(state.activeProjectSessionId);
     }
 
     function scheduleRefresh({ immediate = false } = {}) {
@@ -657,6 +781,9 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         if (handleTaskLogStreamEvent(event)) return;
         if (event && event.stage === 'daemon-health' && event.extra) {
           state.daemonHealth = event.extra;
+          return;
+        }
+        if (event && event.stage === 'session-run' && handleSessionRunEvent(event)) {
           return;
         }
         if (event && (event.stage === 'ui-state' || event.stage === 'job-log') && handleUiStateEvent(event)) {
@@ -811,6 +938,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         state.goalCategory,
         state.goalClarify,
         state.composerMode,
+        state.activeProjectSessionId,
+        state.opencodeRuntime,
         state.composer,
         state.composerClarify,
         state.batchComposer,
@@ -868,6 +997,24 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       return state.liveEvents.filter((event) => event && (event.task_id === taskId || event.task_id == null));
     };
 
+    const sessionRunForMessage = (message) => {
+      const id = message && message.id;
+      if (!id) return null;
+      return state.sessionRuns[String(id)] || null;
+    };
+
+    const activeSessionRun = computed(() => {
+      const runs = Object.values(state.sessionRuns || {});
+      const sessionId = state.nav.view === 'session'
+        ? Number(state.nav.id || 0)
+        : Number(state.activeProjectSessionId || 0);
+      for (let i = runs.length - 1; i >= 0; i -= 1) {
+        const run = runs[i];
+        if (run && Number(run.session_id) === sessionId && run.status === 'running') return run;
+      }
+      return null;
+    });
+
     const cp = {
       state,
       get currentProject() { return currentProject.value; },
@@ -876,10 +1023,11 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       get projectTasks() { return projectTasks.value; },
       get projectSessions() { return projectSessions.value; },
       get projectJobs() { return projectJobs.value; },
+      get activeProjectSessionId() { return state.activeProjectSessionId; },
 
       setNav, toggleExpanded, isExpanded,
       selectProject, toggleProject, toggleCategory, selectCategory,
-      selectSession, selectTask, selectJob,
+      selectSession, selectEmbeddedSession, openSessionPage, selectTask, selectJob,
       toggleAuto, toggleDark,
 
       loadDashboard, loadTaskDetail, loadTaskLog, loadSessions, loadSessionChat, loadDaemonHealth, loadAIStatus,
@@ -889,7 +1037,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       taskBatchAction,
       toggleProjectForm, submitProject, deleteProject,
       projectService, jobAction,
-      newSession, sendChat, deleteSession,
+      newSession, sendChat, sendEmbeddedChat, stopSessionRun, deleteSession,
       submitClarifyAnswer,
       cancelGoalClarify, cancelComposerClarify, cancelSessionClarify,
 
@@ -902,6 +1050,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       resolveConfirm,
       registerChatScroll,
       liveEventsForJob, liveEventsForTask,
+      sessionRunForMessage,
+      get activeSessionRun() { return activeSessionRun.value; },
     };
 
     CP.app = cp;

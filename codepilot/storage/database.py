@@ -60,6 +60,7 @@ from codepilot.storage.session_store import (
     query_session_messages as _query_session_messages,
     query_sessions as _query_sessions,
     touch_session_updated_at as _touch_session_updated_at,
+    update_session_message_fields as _update_session_message_fields,
     update_session_fields as _update_session_fields,
 )
 from codepilot.storage.task_read_model import (
@@ -800,6 +801,38 @@ def create_session_message(
         msg_id = _insert_session_message(conn, session_id, role, content, intent, task_ids, metadata)
         _touch_session_updated_at(conn, session_id)
         result = _fetch_session_message_by_id(conn, msg_id)
+    _invalidate_session_caches()
+    return result  # type: ignore[return-value]
+
+
+def update_session_message(
+    message_id: int,
+    *,
+    content: Optional[str] = None,
+    intent: Optional[str] = None,
+    task_ids: Optional[list[int]] = None,
+    metadata: Optional[dict] = None,
+) -> Optional[dict]:
+    """Update one session message and invalidate session read caches."""
+    updates: dict[str, object] = {}
+    if content is not None:
+        updates["content"] = content
+    if intent is not None:
+        updates["intent"] = intent
+    if task_ids is not None:
+        updates["task_ids"] = json.dumps(task_ids) if task_ids else None
+    if metadata is not None:
+        updates["metadata"] = json.dumps(metadata, ensure_ascii=False) if metadata else None
+    if not updates:
+        return None
+
+    with get_write_conn() as conn:
+        row = _fetch_session_message_by_id(conn, message_id)
+        if not row:
+            return None
+        _update_session_message_fields(conn, message_id, updates)
+        _touch_session_updated_at(conn, int(row["session_id"]))
+        result = _fetch_session_message_by_id(conn, message_id)
     _invalidate_session_caches()
     return result  # type: ignore[return-value]
 

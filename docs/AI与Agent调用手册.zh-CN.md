@@ -12,6 +12,7 @@
 6. 任务运维统一使用 `codepilot task ...`。
 7. 发布统一使用 `codepilot binary ...`。
 8. 外部 AI 只有在明确要直接投递已规划任务时才用 `add`，并且必须满足 task-template content 约束。
+9. 需要确定性 artifact 时显式调用 `clarify` / `plan` / MCP 工具。
 
 ## 2. 最小命令集合
 
@@ -96,9 +97,12 @@ codepilot webhook --host 127.0.0.1 --port 8765
 ```text
 当前项目状态怎么样
 优化飞书任务面板
+修复失败任务前先列出候选和风险
 tasks failed
 retry 123
 ```
+
+`codepilot chat -a opencode` 启动 CodePilot 管理的 OpenCode TUI。运行时配置、会话数据库和项目级模型选择位于用户级 `~/.codepilot/opencode/<项目标识>/`，不读取或覆盖用户自己直接运行 OpenCode 的配置与会话。
 
 ### 2.7 事件、Hook、Provider 和 Skill
 
@@ -218,6 +222,7 @@ codepilot add -p <项目名> -f tasks.txt
 - `codepilot release ...`
 - 顶层 `codepilot show/logs/stop/retry/find/...`
 - `codepilot webui ...`
+- `codepilot chat --no-ui`
 - `--no-ai` / `--allow-empty`
 
 请统一改为：

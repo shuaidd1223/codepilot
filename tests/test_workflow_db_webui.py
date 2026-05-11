@@ -181,6 +181,37 @@ def test_insert_session_message_metadata_argument_is_optional(tmp_path, monkeypa
     assert row["metadata"] is None
 
 
+def test_update_session_message_updates_content_metadata_and_invalidates_cache(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    session = db.create_session("demo", title="chat")
+    message = db.create_session_message(
+        session["id"],
+        "assistant",
+        "占位中",
+        intent="streaming",
+        metadata={"status": "running"},
+    )
+
+    assert db.list_session_messages(session["id"])[0]["content"] == "占位中"
+
+    updated = db.update_session_message(
+        message["id"],
+        content="最终回复",
+        intent="opencode",
+        metadata={"status": "done", "opencode_session_id": "ses_done"},
+    )
+
+    assert updated is not None
+    assert updated["content"] == "最终回复"
+    assert updated["intent"] == "opencode"
+    refreshed = db.list_session_messages(session["id"])[0]
+    assert refreshed["content"] == "最终回复"
+    assert "ses_done" in (refreshed["metadata"] or "")
+
+
 def test_update_task_allows_core_fields(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

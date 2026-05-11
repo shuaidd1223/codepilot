@@ -12,6 +12,7 @@
 6. 任务运维统一使用 `codepilot task ...`。
 7. 发布统一使用 `codepilot binary ...`。
 8. 外部 AI 直接投递任务前必须读取 `codepilot ai template --format json`。
+9. 需要规格或计划 artifact 时显式调用 `clarify` / `plan`。
 
 ## 推荐命令
 
@@ -96,9 +97,12 @@ codepilot webhook --host 127.0.0.1 --port 8765
 ```text
 当前项目状态怎么样
 优化飞书任务面板
+修复失败任务前先列出候选和风险
 tasks failed
 retry 123
 ```
+
+`chat` 启动 CodePilot 管理的 OpenCode TUI。运行时配置、会话数据库和模型选择写入用户级 `~/.codepilot/opencode/<项目标识>/`，与用户自己直接运行的 OpenCode 隔离。
 
 ### 8. 事件、Hook、Provider 与 Skill
 
@@ -152,6 +156,7 @@ codepilot ai template --format guide
 - `codepilot release ...`
 - 顶层 `codepilot show/logs/stop/retry/find/...`
 - `codepilot webui ...`
+- `codepilot chat --no-ui`
 - `--no-ai` / `--allow-empty`
 
 统一改用：

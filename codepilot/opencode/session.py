@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from codepilot.ai_support.cli_families import env_var_for
 from codepilot.core.config import load_project_config
@@ -23,6 +26,7 @@ from codepilot.storage import database as db
 OPENCODE_CHAT_SERVICE = "opencode_chat"
 DEFAULT_OPENCODE_AGENT = "codepilot"
 DEFAULT_OPENCODE_MESSAGE_TIMEOUT_SECONDS = 300.0
+StreamCallback = Callable[[dict[str, Any]], None]
 
 
 def run_opencode_message(
@@ -119,6 +123,241 @@ def run_opencode_message(
         "message": reply,
         "tool_calls": parsed["tool_calls"],
     }
+
+
+def run_opencode_message_stream(
+    project: str,
+    text: str,
+    *,
+    source: str,
+    external_session_id: str,
+    timeout_seconds: int | float | None = None,
+    on_event: StreamCallback | None = None,
+    stop_event: Any = None,
+) -> dict[str, Any]:
+    """Send one OpenCode message and report JSON-line output incrementally."""
+    db.init_db()
+    project_name = str(project or "").strip()
+    message = str(text or "").strip()
+    source_name = str(source or "").strip() or "external"
+    external_id = str(external_session_id or "").strip() or "default"
+    if not project_name:
+        return _error("缺少项目名称，无法启动 OpenCode 会话。")
+    if not message:
+        return _error("输入不能为空。")
+
+    project_info = db.get_project(project_name)
+    if not project_info:
+        return _error(f"项目 '{project_name}' 未注册。")
+    project_name = str(project_info["name"])
+
+    cwd = Path(str(project_info["path"])).resolve()
+    scope = _scope(source_name, external_id, project_name)
+    previous = db.get_service_state(OPENCODE_CHAT_SERVICE, scope) or {}
+    previous_meta = previous.get("meta") if isinstance(previous.get("meta"), dict) else {}
+    previous_session_id = str(previous_meta.get("opencode_session_id") or "").strip()
+    timeout = _resolve_timeout_seconds(timeout_seconds)
+
+    try:
+        launch = _prepare_headless_launch(
+            project_name=project_name,
+            project_path=cwd,
+            message=message,
+            previous_session_id=previous_session_id,
+        )
+        proc = subprocess.Popen(
+            launch["command"],
+            cwd=str(cwd),
+            env=launch["env"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception as exc:
+        return _error(f"OpenCode 启动失败：{exc}")
+
+    session_id = previous_session_id
+    assistant_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    deadline = time.monotonic() + timeout
+    _emit_stream_event(
+        on_event,
+        "started",
+        project=project_name,
+        session_id=session_id,
+        content_snapshot="",
+        tool_calls=tool_calls,
+    )
+    line_queue: "queue.Queue[str | None]" = queue.Queue()
+
+    def _reader() -> None:
+        stdout = getattr(proc, "stdout", None)
+        try:
+            while stdout:
+                raw = stdout.readline()
+                if not raw:
+                    break
+                line_queue.put(raw)
+        finally:
+            line_queue.put(None)
+
+    reader = threading.Thread(target=_reader, daemon=True, name="codepilot-opencode-stream")
+    reader.start()
+
+    try:
+        while True:
+            if _stop_requested(stop_event):
+                _terminate_process(proc)
+                result = _cancelled("OpenCode 会话已停止。")
+                _emit_stream_event(
+                    on_event,
+                    "cancelled",
+                    project=project_name,
+                    session_id=session_id,
+                    content_snapshot="".join(assistant_parts),
+                    tool_calls=tool_calls,
+                )
+                return result
+            if time.monotonic() > deadline:
+                _terminate_process(proc)
+                detail = _trim_text(_read_stderr(proc), 800)
+                suffix = f"：{detail}" if detail else "。"
+                result = _error(f"OpenCode 执行超时（{_format_seconds(timeout)} 秒）{suffix}")
+                _emit_stream_event(
+                    on_event,
+                    "error",
+                    project=project_name,
+                    session_id=session_id,
+                    content_snapshot="".join(assistant_parts),
+                    tool_calls=tool_calls,
+                    error=result["message"],
+                )
+                return result
+
+            try:
+                raw_line = line_queue.get(timeout=0.05)
+            except queue.Empty:
+                if proc.poll() is not None:
+                    break
+                continue
+
+            if raw_line is None:
+                if proc.poll() is not None:
+                    break
+                continue
+            if raw_line:
+                parsed_event = _loads_json_line(raw_line)
+                if parsed_event is None:
+                    continue
+                next_session_id = _find_session_id(parsed_event)
+                if next_session_id:
+                    session_id = next_session_id
+                text_delta = _find_assistant_text(parsed_event)
+                if text_delta:
+                    assistant_parts.append(text_delta)
+                    _emit_stream_event(
+                        on_event,
+                        "delta",
+                        project=project_name,
+                        session_id=session_id,
+                        content_delta=text_delta,
+                        content_snapshot="".join(assistant_parts),
+                        tool_calls=tool_calls,
+                    )
+                tool_name = _find_tool_name(parsed_event)
+                if tool_name:
+                    tool_calls.append({"name": tool_name})
+                    _emit_stream_event(
+                        on_event,
+                        "tool",
+                        project=project_name,
+                        session_id=session_id,
+                        content_snapshot="".join(assistant_parts),
+                        tool_calls=tool_calls,
+                    )
+                continue
+
+        return_code = proc.wait(timeout=1)
+    except Exception as exc:
+        _terminate_process(proc)
+        result = _error(f"OpenCode 执行失败：{exc}")
+        _emit_stream_event(
+            on_event,
+            "error",
+            project=project_name,
+            session_id=session_id,
+            content_snapshot="".join(assistant_parts),
+            tool_calls=tool_calls,
+            error=result["message"],
+        )
+        return result
+
+    if return_code != 0:
+        detail = _trim_text(_read_stderr(proc), 800)
+        result = _error(f"OpenCode 执行失败（退出码 {return_code}）：{detail or '没有错误输出。'}")
+        _emit_stream_event(
+            on_event,
+            "error",
+            project=project_name,
+            session_id=session_id,
+            content_snapshot="".join(assistant_parts),
+            tool_calls=tool_calls,
+            error=result["message"],
+        )
+        return result
+
+    _sync_project_model_after_headless(project_name, cwd)
+    if session_id:
+        db.upsert_service_state(
+            OPENCODE_CHAT_SERVICE,
+            scope,
+            pid=0,
+            status="active",
+            log_path="",
+            meta={
+                "source": source_name,
+                "external_session_id": external_id,
+                "project": project_name,
+                "opencode_session_id": session_id,
+                "last_message_at": _now_iso(),
+            },
+        )
+
+    reply = _trim_text("".join(assistant_parts).strip(), 4000)
+    if not reply and not tool_calls:
+        result = _error("OpenCode 执行完成但未返回有效回复，可能输出格式异常。")
+        _emit_stream_event(
+            on_event,
+            "error",
+            project=project_name,
+            session_id=session_id,
+            content_snapshot=reply,
+            tool_calls=tool_calls,
+            error=result["message"],
+        )
+        return result
+
+    result = {
+        "ok": True,
+        "intent": "opencode",
+        "project": project_name,
+        "source": source_name,
+        "external_session_id": external_id,
+        "opencode_session_id": session_id,
+        "message": reply or "OpenCode 已完成处理，但没有返回可展示文本。",
+        "tool_calls": tool_calls,
+    }
+    _emit_stream_event(
+        on_event,
+        "done",
+        project=project_name,
+        session_id=session_id,
+        content_snapshot=result["message"],
+        tool_calls=tool_calls,
+    )
+    return result
 
 
 def _prepare_headless_launch(
@@ -234,6 +473,90 @@ def _parse_json_events(stdout: str) -> dict[str, Any]:
     }
 
 
+def _loads_json_line(raw_line: str) -> dict[str, Any] | None:
+    line = str(raw_line or "").strip()
+    if not line:
+        return None
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def _emit_stream_event(
+    callback: StreamCallback | None,
+    event_type: str,
+    *,
+    project: str,
+    session_id: str = "",
+    content_delta: str = "",
+    content_snapshot: str = "",
+    tool_calls: list[dict[str, Any]] | None = None,
+    error: str = "",
+) -> None:
+    if not callback:
+        return
+    payload = {
+        "type": event_type,
+        "project": project,
+        "opencode_session_id": session_id,
+        "status": _stream_status_for_type(event_type),
+        "content_delta": content_delta,
+        "content_snapshot": content_snapshot,
+        "tool_calls": list(tool_calls or []),
+    }
+    if error:
+        payload["error"] = error
+    try:
+        callback(payload)
+    except Exception:
+        return
+
+
+def _stream_status_for_type(event_type: str) -> str:
+    if event_type == "done":
+        return "done"
+    if event_type == "error":
+        return "error"
+    if event_type == "cancelled":
+        return "cancelled"
+    return "running"
+
+
+def _stop_requested(stop_event: Any) -> bool:
+    if not stop_event:
+        return False
+    try:
+        return bool(stop_event.is_set())
+    except Exception:
+        return False
+
+
+def _terminate_process(proc: Any) -> None:
+    try:
+        proc.terminate()
+    except Exception:
+        return
+    try:
+        proc.wait(timeout=2)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _read_stderr(proc: Any) -> str:
+    stderr = getattr(proc, "stderr", None)
+    if not stderr:
+        return ""
+    try:
+        return _subprocess_output_text(stderr.read())
+    except Exception:
+        return ""
+
+
 def _find_session_id(value: Any) -> str:
     if isinstance(value, dict):
         for key in ("sessionID", "sessionId", "session_id", "session"):
@@ -343,5 +666,14 @@ def _error(message: str) -> dict[str, Any]:
         "ok": False,
         "intent": "error",
         "message": str(message or "OpenCode 会话失败。").strip(),
+        "task_ids": [],
+    }
+
+
+def _cancelled(message: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "intent": "cancelled",
+        "message": str(message or "OpenCode 会话已停止。").strip(),
         "task_ids": [],
     }

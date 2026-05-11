@@ -1,4 +1,4 @@
-/* Project-first tree sidebar: projects → (sessions, tasks, jobs). */
+/* Project-first tree sidebar: projects → (tasks, jobs). */
 /* global Vue, CP */
 CP.Components.Sidebar = Vue.defineComponent({
   name: 'CpSidebar',
@@ -12,7 +12,6 @@ CP.Components.Sidebar = Vue.defineComponent({
   },
   computed: {
     s() { return this.cp.state; },
-    allSessions() { return this.s.sessions || []; },
   },
   methods: {
     isExpanded(key, def) { return this.cp.isExpanded(key, def); },
@@ -27,9 +26,6 @@ CP.Components.Sidebar = Vue.defineComponent({
     isActive(match) {
       const n = this.s.nav;
       return Object.keys(match).every(k => n[k] === match[k]);
-    },
-    projectSessions(projName) {
-      return this.allSessions.filter(se => se.project === projName);
     },
     projectTasks(projName) {
       /* Read from the per-project map so this project's tasks never show
@@ -53,10 +49,6 @@ CP.Components.Sidebar = Vue.defineComponent({
     taskCount(p) {
       if (p && p.stats && typeof p.stats.total === 'number') return p.stats.total;
       return this.projectTasks(p.name).length;
-    },
-    sessionCount(p) {
-      if (p && typeof p.session_count === 'number') return p.session_count;
-      return this.projectSessions(p.name).length;
     },
     jobCount(p) {
       if (p && typeof p.job_count === 'number') return p.job_count;
@@ -200,45 +192,6 @@ CP.Components.Sidebar = Vue.defineComponent({
 
             <!-- Children (only when expanded) -->
             <div v-show="isExpanded(p.name)" class="tree-children">
-              <!-- Sessions category -->
-              <div class="tree-row tree-category-row" :class="{active: isActive({project: p.name, view: 'sessions'})}" @click="cp.selectCategory(p.name, 'sessions')">
-                <button class="chevron" @click="toggleCategory(p.name, 'sessions', $event)">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
-                    :style="{transform: isExpanded(p.name + '/sessions') ? 'rotate(90deg)' : 'rotate(0deg)'}">
-                    <polyline points="9 18 15 12 9 6"/>
-                  </svg>
-                </button>
-                <svg class="tree-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                <span class="tree-label">会话</span>
-                <span class="muted tiny">{{ sessionCount(p) }}</span>
-              </div>
-              <div v-show="isExpanded(p.name + '/sessions')" class="tree-leaf-wrap">
-                <div v-if="!projectSessions(p.name).length" class="tree-empty">暂无会话</div>
-                <div v-for="se in visibleLeafItems(projectSessions(p.name), p.name, 'sessions')" :key="se.id"
-                     class="tree-row tree-leaf-row"
-                     :class="{active: isActive({view: 'session', id: se.id})}"
-                     @click="cp.selectSession(p.name, se.id)">
-                  <span class="tree-label">
-                    <span class="muted tiny">#{{ se.id }}</span> {{ se.title }}
-                  </span>
-                  <span class="muted tiny">{{ se.message_count || 0 }}</span>
-                </div>
-                <button v-if="leafHasMore(projectSessions(p.name), p.name, 'sessions')"
-                        class="tree-row tree-more"
-                        @click.stop="expandLeaf(p.name, 'sessions')">
-                  再展开 {{ leafNextChunk(projectSessions(p.name), p.name, 'sessions') }} 条（剩余 {{ leafRemaining(projectSessions(p.name), p.name, 'sessions') }}）
-                </button>
-                <button v-if="leafCanCollapse(projectSessions(p.name), p.name, 'sessions')"
-                        class="tree-row tree-more"
-                        @click.stop="collapseLeaf(p.name, 'sessions')">
-                  全部收起
-                </button>
-                <button class="tree-row tree-add" @click="cp.newSession()">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-                  新建会话
-                </button>
-              </div>
-
               <!-- Tasks category -->
               <div class="tree-row tree-category-row" :class="{active: isActive({project: p.name, view: 'tasks'})}" @click="cp.selectCategory(p.name, 'tasks')">
                 <button class="chevron" @click="toggleCategory(p.name, 'tasks', $event)">

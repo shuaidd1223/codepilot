@@ -229,7 +229,6 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
     agents = data.get("agents") if isinstance(data.get("agents"), dict) else {}
     dispatch = data.get("dispatch") if isinstance(data.get("dispatch"), dict) else {}
     automation = data.get("automation") if isinstance(data.get("automation"), dict) else {}
-    classifier = data.get("classifier") if isinstance(data.get("classifier"), dict) else {}
     inspect = data.get("inspect") if isinstance(data.get("inspect"), dict) else {}
     opencode = data.get("opencode") if isinstance(data.get("opencode"), dict) else {}
     notifications = data.get("notifications") if isinstance(data.get("notifications"), dict) else {}
@@ -289,12 +288,6 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
             ),
             "fallback_cli_order": _fallback_cli_order(automation.get("fallback_cli_order")),
         },
-        "classifier": {
-            "provider": _string(classifier.get("provider"), ""),
-            "model": _string(classifier.get("model"), ""),
-            "enabled": _bool(classifier.get("enabled"), True),
-            "timeout": _int(classifier.get("timeout"), 30, min_value=1),
-        },
         "inspect": {
             "enabled": _bool(inspect.get("enabled"), False),
             "interval_seconds": _int(inspect.get("interval_seconds"), 1800, min_value=1),
@@ -327,11 +320,6 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
         if provider_cfg is not None:
             canonical["providers"][str(name)] = provider_cfg
 
-    classifier_provider = _optional_string(classifier.get("provider"))
-    if classifier_provider and classifier_provider not in canonical["providers"]:
-        example = PROVIDER_EXAMPLES.get(classifier_provider, {})
-        canonical["providers"][classifier_provider] = _supported_provider(example) or _supported_provider({}) or {}
-
     return canonical
 
 
@@ -362,10 +350,6 @@ SECTION_COMMENTS: dict[str, list[str]] = {
     "automation": [
         "自动规划与执行配置。",
         "task_workspace: direct=主工作区直接改；branch=主工作区临时分支；worktree=独立临时 worktree。",
-    ],
-    "classifier": [
-        "意图分类/问答/澄清用的模型。provider 留空时走本地 CLI 兜底。",
-        "model 留空时使用 [providers.<provider>].model 或内置 provider 默认模型。",
     ],
     "inspect": [
         "定时/手动巡检配置。planner 留空时按 显式参数 > [agents].planner > codex 解析。",
@@ -414,10 +398,6 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("automation", "max_review_rounds"): ["Builder/Reviewer 闭环最大轮数；1 等于关闭闭环。"],
     ("automation", "agent_silence_timeout_seconds"): ["CLI 连续无输出多少秒后终止；0 表示关闭保护。"],
     ("automation", "fallback_cli_order"): ["文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。"],
-    ("classifier", "provider"): ["API provider key，例如 openai-gpt4o、claude-sonnet、deepseek；留空走本地 CLI。"],
-    ("classifier", "model"): ["覆盖分类/问答/澄清模型；留空使用 provider.model。"],
-    ("classifier", "enabled"): ["false 时跳过意图分类，输入默认当作需求处理。"],
-    ("classifier", "timeout"): ["分类/澄清 API 或 CLI 调用超时时间秒数。"],
     ("inspect", "enabled"): ["是否启用 daemon 定时巡检。"],
     ("inspect", "interval_seconds"): ["巡检间隔秒数。"],
     ("inspect", "max_new_tasks_per_round"): ["每轮巡检最多新增候选任务数。"],
@@ -574,7 +554,7 @@ def render_agents_toml(canonical: dict[str, Any]) -> str:
         "# 由 `codepilot config sync` 生成/同步。",
         "",
     ]
-    for section in ("project", "shell", "agents", "opencode", "dispatch", "automation", "classifier", "inspect"):
+    for section in ("project", "shell", "agents", "opencode", "dispatch", "automation", "inspect"):
         _emit_section(lines, section, canonical[section])
 
     _append_comments(lines, SECTION_COMMENTS["providers"])

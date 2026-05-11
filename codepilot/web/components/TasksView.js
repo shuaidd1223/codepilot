@@ -12,7 +12,7 @@ CP.Components.TasksView = Vue.defineComponent({
   },
   template: `
     <div class="view">
-      <div>
+      <div class="view-toolbar">
         <h2 class="view-title">任务</h2>
         <div class="muted tiny">共 {{ s.tasks.length }} 个</div>
       </div>

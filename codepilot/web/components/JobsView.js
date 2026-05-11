@@ -68,7 +68,7 @@ CP.Components.JobsView = Vue.defineComponent({
   },
   template: `
     <div class="view">
-      <div>
+      <div class="view-toolbar">
         <h2 class="view-title">需求</h2>
         <div class="muted tiny">由用户自然语言拆分成的需求（保留最近 200 条历史记录）</div>
       </div>

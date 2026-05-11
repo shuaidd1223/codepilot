@@ -154,8 +154,8 @@ def test_go_task_intent_forces_single_task_planning(tmp_path, monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(
         auto_mod,
-        "classify_intent",
-        lambda text, **kw: {"intent": "task", "source": "forced"},
+        "classify_entry_intent",
+        lambda text, **kw: "task",
     )
 
     def fake_run_requirement_workflow(**kwargs):
@@ -165,10 +165,26 @@ def test_go_task_intent_forces_single_task_planning(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_mod, "run_requirement_workflow", fake_run_requirement_workflow)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["go", "--legacy-classifier", "修复登录 bug", "--max-tasks", "9"])
+    result = runner.invoke(main, ["go", "修复登录 bug", "--max-tasks", "9"])
 
     assert result.exit_code == 0
     assert captured["max_tasks"] == 1
+
+
+def test_go_rejects_removed_legacy_classifier_option(tmp_path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(main, ["go", "--legacy-classifier", "修复登录 bug"])
+
+    assert result.exit_code != 0
+    assert "No such option: --legacy-classifier" in result.output
+
+
+def test_root_rejects_removed_legacy_classifier_option():
+    result = CliRunner().invoke(main, ["--legacy-classifier", "--help"])
+
+    assert result.exit_code != 0
+    assert "No such option: --legacy-classifier" in result.output
 
 
 def test_go_pending_clarification_error_does_not_fall_through_to_planning(tmp_path, monkeypatch):

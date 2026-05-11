@@ -65,15 +65,15 @@ codepilot "<requirement>"
 codepilot go "<requirement>" -p <project>
 ```
 
-In `chat`, Web UI sessions, and Feishu free text, do not rely on ambiguous text to create work. Use explicit prefixes:
+In `chat`, Web UI sessions, and Feishu free text, CodePilot routes free text into OpenCode + CodePilot MCP. Use plain natural language and let the OpenCode session call CodePilot tools, or call `clarify` / `plan` / structured MCP tools explicitly when an artifact is required.
 
 ```text
-? What is the current project status?
-# Fix the Feishu webhook card content
-! Fix one specific small issue
+What is the current project status?
+Improve the Feishu webhook card content.
+Before fixing failed task 12, list the candidates and risks.
 ```
 
-If free text looks like a requirement but lacks an explicit prefix, CodePilot returns a confirmation prompt and does not execute.
+Interactive OpenCode sessions are stateful and use CodePilot-managed isolated runtime files under `~/.codepilot/opencode/<project-scope>/`, including generated config, MCP wiring, session data, and project-level model selection.
 
 ### 5) Observe And Intervene
 
@@ -168,7 +168,7 @@ codepilot binary where
   - `codepilot ui <subcommand>`
 - Prefer `--json` outputs for machine-agent integration.
 - Treat project status, task totals, failed/running tasks, service status, and command usage questions as questions first.
-- In interactive channels, only create work when the user explicitly uses `#` for a requirement or `!` for a small task.
+- In interactive channels, use plain OpenCode conversation or explicit CLI/MCP calls.
 
 ## References
 

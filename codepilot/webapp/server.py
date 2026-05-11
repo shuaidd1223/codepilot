@@ -62,6 +62,7 @@ from codepilot.webapp.actions import (  # noqa: F401 (re-export)
     retry_task_action,
     retry_job_action,
     send_session_message_action,
+    stop_session_run_action,
     split_task_action,
     stop_task_action,
     submit_goal_action,
@@ -128,6 +129,12 @@ _CONTENT_TYPES = {
 
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "CodePilotUI/0.2"
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
+            return
 
     def _send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -657,12 +664,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not match:
             return None
         body = get_body()
-        return send_session_message_action(
-            int(match.group(1)),
-            body.get("text") or "",
-            category=body.get("category") or "auto",
-            clarify_answers=body.get("clarify_answers") if isinstance(body.get("clarify_answers"), list) else [],
-        )
+        kwargs = {
+            "category": body.get("category") or "auto",
+            "clarify_answers": body.get("clarify_answers") if isinstance(body.get("clarify_answers"), list) else [],
+            "run_async": bool(body.get("run_async", True)),
+        }
+        if isinstance(body.get("runtime"), dict):
+            kwargs["runtime_config"] = body.get("runtime")
+        return send_session_message_action(int(match.group(1)), body.get("text") or "", **kwargs)
+
+    def _dispatch_post_session_run_stop(self, path: str) -> dict | None:
+        match = re.fullmatch(r"/api/sessions/(\d+)/runs/(\d+)/stop", path)
+        if not match:
+            return None
+        return stop_session_run_action(int(match.group(1)), int(match.group(2)))
 
     def _dispatch_post_pattern(self, path: str, get_body: Callable[[], dict]) -> dict | None:
         """Handle regex POST routes; return ``None`` if unmatched."""
@@ -673,6 +688,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if payload is not None:
             return payload
         payload = self._dispatch_post_project_service(path)
+        if payload is not None:
+            return payload
+        payload = self._dispatch_post_session_run_stop(path)
         if payload is not None:
             return payload
         return self._dispatch_post_session_message(path, get_body)

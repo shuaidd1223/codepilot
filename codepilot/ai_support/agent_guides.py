@@ -21,6 +21,7 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 6. 任务运维统一使用 `{_cmd(command, "task ...")}`。
 7. 发布统一使用 `{_cmd(command, "binary ...")}`。
 8. 外部 AI 直接投递任务前必须读取 `{_cmd(command, "ai template --format json")}`。
+9. 需要规格或计划 artifact 时显式调用 `clarify` / `plan`。
 
 ## 推荐命令
 
@@ -105,9 +106,12 @@ def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
 ```text
 当前项目状态怎么样
 优化飞书任务面板
+修复失败任务前先列出候选和风险
 tasks failed
 retry 123
 ```
+
+`chat` 启动 CodePilot 管理的 OpenCode TUI。运行时配置、会话数据库和模型选择写入用户级 `~/.codepilot/opencode/<项目标识>/`，与用户自己直接运行的 OpenCode 隔离。
 
 ### 8. 事件、Hook、Provider 与 Skill
 
@@ -161,6 +165,7 @@ retry 123
 - `{_cmd(command, "release ...")}`
 - 顶层 `{_cmd(command, "show/logs/stop/retry/find/...")}`
 - `{_cmd(command, "webui ...")}`
+- `{_cmd(command, "chat --no-ui")}`
 - `--no-ai` / `--allow-empty`
 
 统一改用：

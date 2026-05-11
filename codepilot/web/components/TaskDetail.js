@@ -117,7 +117,7 @@ CP.Components.TaskDetail = Vue.defineComponent({
       <div v-if="s.taskDetailLoading && !task" class="big-empty">任务加载中…</div>
       <div v-else-if="!task" class="big-empty">{{ s.taskDetailError || '暂无任务详情' }}</div>
       <section v-else class="card">
-        <div class="card-head task-detail-head">
+        <div class="card-head task-detail-head view-toolbar">
           <div class="row between gap-sm">
             <div class="min-w grow">
               <h3 class="detail-title">#{{ task.id }} {{ task.title }}</h3>
@@ -172,7 +172,7 @@ CP.Components.TaskDetail = Vue.defineComponent({
               </span>
             </div>
           </div>
-          <div class="task-kv-grid">
+          <div class="task-kv-grid detail-grid">
             <div class="task-kv-item">
               <span class="task-kv-key">项目</span>
               <span class="task-kv-value">{{ task.project || '-' }}</span>
