@@ -45,7 +45,8 @@ def build_mcp_launch_plan(
     env: Mapping[str, str] | None = None,
     config_path: str | Path | None = None,
     opencode_config: Any | None = None,
-    opencode_session: str | None = None,
+    session: str | None = None,
+    opencode_session: str | None = None,  # deprecated alias
 ) -> LaunchPlan:
     """Build a dry launch plan for one supported chat agent family."""
     family = get_family(agent)
@@ -54,6 +55,8 @@ def build_mcp_launch_plan(
         raise UnsupportedAgentError(
             f"Unsupported MCP launcher agent: {agent!r}. Supported agents: {supported}."
         )
+
+    effective_session = session if session is not None else opencode_session
 
     command = executable or family.name
     if family.name == "claude":
@@ -64,6 +67,7 @@ def build_mcp_launch_plan(
             prompt=prompt,
             mcp_servers=mcp_servers,
             env=env,
+            session=effective_session,
         )
     if family.name == "codex":
         from codepilot.mcp.launchers.codex import build_launch_plan
@@ -73,6 +77,7 @@ def build_mcp_launch_plan(
             prompt=prompt,
             mcp_servers=mcp_servers,
             env=env,
+            session=effective_session,
         )
 
     from codepilot.mcp.launchers.opencode import build_launch_plan
@@ -84,7 +89,7 @@ def build_mcp_launch_plan(
         env=env,
         config_path=config_path,
         opencode_config=opencode_config,
-        session=opencode_session,
+        session=effective_session,
     )
 
 

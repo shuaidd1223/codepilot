@@ -11,7 +11,10 @@ from codepilot.mcp.launchers import (
     json_config_text,
     normalize_mcp_servers,
 )
-from codepilot.mcp.launchers.language import with_chinese_interaction_instructions
+from codepilot.mcp.launchers.language import (
+    CHINESE_INTERACTION_INSTRUCTIONS,
+    with_chinese_interaction_instructions,
+)
 
 
 def build_launch_plan(
@@ -20,19 +23,32 @@ def build_launch_plan(
     prompt: str = "",
     mcp_servers: Mapping[str, Any] | Iterable[MCPServerSpec] | None = None,
     env: Mapping[str, str] | None = None,
+    session: str | None = None,
 ) -> LaunchPlan:
     config = {"mcpServers": _claude_servers(normalize_mcp_servers(mcp_servers))}
     config_args = ["--mcp-config", json_config_text(config), "--strict-mcp-config"]
-    prompt_text = with_chinese_interaction_instructions(prompt)
-    command = [
-        executable,
-        *config_args,
-        "-p",
-        prompt_text,
-        "--output-format",
-        "text",
-        "--dangerously-skip-permissions",
-    ]
+    session_id = str(session or "").strip()
+    base = [executable, *config_args, "--dangerously-skip-permissions"]
+    if prompt:
+        # Headless one-shot via --print.
+        prompt_text = with_chinese_interaction_instructions(prompt)
+        command = [
+            *base,
+            "-p",
+            prompt_text,
+            "--output-format",
+            "text",
+        ]
+    else:
+        # Interactive TUI. --append-system-prompt silently extends the system prompt
+        # so Claude responds in Chinese without producing a visible turn on launch.
+        command = [
+            *base,
+            "--append-system-prompt",
+            CHINESE_INTERACTION_INSTRUCTIONS,
+        ]
+        if session_id:
+            command.extend(["--resume", session_id])
     return LaunchPlan(
         agent="claude",
         command=command,

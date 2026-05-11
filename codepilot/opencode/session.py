@@ -74,9 +74,6 @@ def run_opencode_message(
             cwd=str(cwd),
             env=launch["env"],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
@@ -86,9 +83,18 @@ def run_opencode_message(
     except Exception as exc:
         return _error(f"OpenCode 启动失败：{exc}")
 
-    parsed = _parse_json_events(completed.stdout or "")
+    stdout_text = _decode_subprocess_bytes(completed.stdout)
+    stderr_text = _decode_subprocess_bytes(completed.stderr)
+    parsed = _parse_json_events(stdout_text)
     if completed.returncode != 0:
-        detail = _trim_text(completed.stderr or completed.stdout or "没有错误输出。", 800)
+        detail = _trim_text(stderr_text or stdout_text or "没有错误输出。", 800)
+        cleanup_note = _clear_stale_session_state(
+            scope,
+            previous_session_id=previous_session_id,
+            extracted_session_id=str(parsed.get("session_id") or ""),
+        )
+        if cleanup_note:
+            detail = f"{detail}\n{cleanup_note}"
         return _error(f"OpenCode 执行失败（退出码 {completed.returncode}）：{detail}")
     _sync_project_model_after_headless(project_name, cwd)
 
@@ -114,7 +120,7 @@ def run_opencode_message(
     if not parsed["message"] and not parsed["tool_calls"]:
         return _error("OpenCode 执行完成但未返回有效回复，可能输出格式异常。")
 
-    reply = parsed["message"] or _trim_text(completed.stdout or "", 1200) or "OpenCode 已完成处理，但没有返回可展示文本。"
+    reply = parsed["message"] or _trim_text(stdout_text or "", 1200) or "OpenCode 已完成处理，但没有返回可展示文本。"
     return {
         "ok": True,
         "intent": "opencode",
@@ -175,9 +181,6 @@ def run_opencode_message_stream(
             env=launch["env"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
         )
     except Exception as exc:
         return _error(f"OpenCode 启动失败：{exc}")
@@ -203,7 +206,14 @@ def run_opencode_message_stream(
                 raw = stdout.readline()
                 if not raw:
                     break
-                line_queue.put(raw)
+                if isinstance(raw, bytes):
+                    try:
+                        decoded = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        decoded = raw.decode("utf-8", errors="replace")
+                else:
+                    decoded = raw
+                line_queue.put(decoded)
         finally:
             line_queue.put(None)
 
@@ -300,7 +310,15 @@ def run_opencode_message_stream(
 
     if return_code != 0:
         detail = _trim_text(_read_stderr(proc), 800)
-        result = _error(f"OpenCode 执行失败（退出码 {return_code}）：{detail or '没有错误输出。'}")
+        cleanup_note = _clear_stale_session_state(
+            scope,
+            previous_session_id=previous_session_id,
+            extracted_session_id=session_id if session_id != previous_session_id else "",
+        )
+        message_body = detail or "没有错误输出。"
+        if cleanup_note:
+            message_body = f"{message_body}\n{cleanup_note}"
+        result = _error(f"OpenCode 执行失败（退出码 {return_code}）：{message_body}")
         _emit_stream_event(
             on_event,
             "error",
@@ -655,12 +673,75 @@ def _format_seconds(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{value:.1f}".rstrip("0").rstrip(".")
 
 
-def _subprocess_output_text(value: Any) -> str:
+def _decode_subprocess_bytes(value: Any) -> str:
+    """Decode subprocess stdout/stderr bytes with Windows console-codepage fallback.
+
+    OpenCode (Node) writes JSON events to stdout as UTF-8, but on Windows the
+    npm/cmd shim and certain runtime errors emit messages in the console codepage
+    (cp936 on zh-CN). Strict UTF-8 decoding turns those into U+FFFD streams that
+    hide the real error. Try UTF-8 first; if it produces replacement chars on
+    Windows, fall back to cp936/gbk/mbcs.
+    """
     if value is None:
         return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return str(value)
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, (bytes, bytearray)):
+        return str(value)
+    raw = bytes(value)
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    if sys.platform == "win32":
+        for encoding in ("cp936", "gbk", "mbcs", "cp1252"):
+            try:
+                return raw.decode(encoding)
+            except (UnicodeDecodeError, LookupError):
+                continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _subprocess_output_text(value: Any) -> str:
+    return _decode_subprocess_bytes(value)
+
+
+def _clear_stale_session_state(
+    scope: str,
+    *,
+    previous_session_id: str,
+    extracted_session_id: str,
+) -> str:
+    """Drop a saved opencode_session_id when --session continuation fails to start.
+
+    Returns a short Chinese note that callers can append to the error message so
+    the user understands the next attempt will open a fresh OpenCode session.
+    """
+    if not previous_session_id:
+        return ""
+    if extracted_session_id and extracted_session_id != previous_session_id:
+        # OpenCode handed back a new session id mid-stream; the saved reference is fine.
+        return ""
+    try:
+        existing = db.get_service_state(OPENCODE_CHAT_SERVICE, scope) or {}
+        meta = existing.get("meta") if isinstance(existing.get("meta"), dict) else {}
+        if not meta or not meta.get("opencode_session_id"):
+            return ""
+        cleaned = {key: value for key, value in meta.items() if key != "opencode_session_id"}
+        cleaned["last_failure_at"] = _now_iso()
+        db.upsert_service_state(
+            OPENCODE_CHAT_SERVICE,
+            scope,
+            pid=0,
+            status="stale",
+            log_path="",
+            meta=cleaned,
+        )
+    except Exception:
+        return ""
+    return "（已自动清理失效的 OpenCode 会话引用，下一条消息将开新会话。）"
 
 
 def _now_iso() -> str:

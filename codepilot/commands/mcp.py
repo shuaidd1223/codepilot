@@ -57,7 +57,10 @@ def serve(transport: str, port: int, project: str | None, list_tools: bool) -> N
 
     try:
         if normalized_transport == "stdio":
-            server.run(transport="stdio")
+            from codepilot.mcp.stdio_guard import protect_stdio
+
+            with protect_stdio():
+                server.run(transport="stdio")
             return
 
         echo(

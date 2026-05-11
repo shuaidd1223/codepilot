@@ -59,11 +59,11 @@ stale_minutes = 30
 # task_workspace: direct=主工作区直接改；branch=主工作区临时分支；worktree=独立临时 worktree。
 [automation]
 # 自然语言需求默认规划智能体。
-planner = "codex"
+planner = "opencode"
 # chat 默认启动的 MCP agent；留空时使用 opencode。
 default_agent = ""
 # 规划出的任务默认执行智能体；显式 --agent / UI 选择会覆盖它。
-task_agent = "dual"
+task_agent = "opencode"
 # auto / dispatch / builtin。
 executor = "builtin"
 # 输入需求后是否自动开始执行。

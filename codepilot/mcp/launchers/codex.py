@@ -16,19 +16,31 @@ def build_launch_plan(
     prompt: str = "",
     mcp_servers: Mapping[str, Any] | Iterable[MCPServerSpec] | None = None,
     env: Mapping[str, str] | None = None,
+    session: str | None = None,
 ) -> LaunchPlan:
     servers = normalize_mcp_servers(mcp_servers)
     config = {"mcp_servers": _codex_servers(servers)}
     config_args = _config_args(servers)
-    command = [
-        executable,
-        *config_args,
-        "exec",
-        "--skip-git-repo-check",
-        "--ephemeral",
-        "--dangerously-bypass-approvals-and-sandbox",
-    ]
-    command.append(with_chinese_interaction_instructions(prompt))
+    session_id = str(session or "").strip()
+    if prompt:
+        # Headless one-shot via `codex exec`.
+        command = [
+            executable,
+            *config_args,
+            "exec",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--dangerously-bypass-approvals-and-sandbox",
+        ]
+        command.append(with_chinese_interaction_instructions(prompt))
+    else:
+        # Interactive TUI. Codex has no equivalent of Claude's --append-system-prompt,
+        # so Chinese interaction rules are not injected here; users can set their own
+        # preferences in ~/.codex/config.toml if needed.
+        if session_id:
+            command = [executable, *config_args, "resume", session_id]
+        else:
+            command = [executable, *config_args]
     return LaunchPlan(
         agent="codex",
         command=command,

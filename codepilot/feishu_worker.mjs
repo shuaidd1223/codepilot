@@ -99,16 +99,70 @@ function buildErrorCard(text) {
   };
 }
 
+function buildProcessingCard(text) {
+  const raw = String(text || '').trim();
+  const displayText = raw
+    ? `已收到您的消息「${raw.slice(0, 200)}」，正在处理中，请稍候...`
+    : '已收到您的消息，正在处理中，请稍候...';
+  return {
+    type: 'interactive',
+    card: {
+      config: { wide_screen_mode: true },
+      header: {
+        title: { tag: 'plain_text', content: 'CodePilot 处理中' },
+        template: 'blue',
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: { tag: 'lark_md', content: displayText },
+        },
+        {
+          tag: 'note',
+          elements: [
+            { tag: 'plain_text', content: '智能体正在处理中，处理完成后会自动更新此卡片。' },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 async function processIncomingMessage(payload) {
   const chatId = payload.chat_id;
+  let processingMsgId = null;
   try {
+    // 先发送处理中反馈，让用户立即感知消息已被接收，并记录卡片 message_id
+    processingMsgId = await sendReply(chatId, buildProcessingCard(payload.text));
     const reply = invokePython(payload);
-    await sendReply(chatId, reply);
+
+    // 处理完成后，优先更新已有的处理中卡片（一条消息从"处理中"变成最终结果）
+    if (reply && reply.type !== 'ignore') {
+      if (processingMsgId && reply.type === 'interactive' && reply.card) {
+        // 卡片回复 → 直接更新处理中卡片为最终结果
+        await updateReply(chatId, processingMsgId, reply.card);
+      } else if (processingMsgId) {
+        // 非卡片回复 → 更新处理中卡片标记完成，再发送实际结果
+        const doneCard = buildProcessingCard('处理完成，请查看下方回复。');
+        doneCard.card.header.template = 'green';
+        await updateReply(chatId, processingMsgId, doneCard.card);
+        await sendReply(chatId, reply);
+      } else {
+        // 没有处理中卡片 message_id（极少见），直接发送结果
+        await sendReply(chatId, reply);
+      }
+    }
+    // reply.type === 'ignore'：什么都不做，处理中卡片保留在聊天中
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     log('handler failed', { chatId, detail });
     try {
-      await sendReply(chatId, buildErrorCard(`CodePilot 飞书处理失败：${detail}`));
+      if (processingMsgId) {
+        // 更新处理中卡片为错误状态
+        await updateReply(chatId, processingMsgId, buildErrorCard(`CodePilot 飞书处理失败：${detail}`).card);
+      } else {
+        await sendReply(chatId, buildErrorCard(`CodePilot 飞书处理失败：${detail}`));
+      }
     } catch (replyError) {
       log('failed to send error reply', {
         chatId,
@@ -156,7 +210,9 @@ async function processCardAction(data) {
     log('ignore card action without command', { chatId, command });
     return { toast: { type: 'warning', content: '这个按钮没有可执行命令' } };
   }
+  let processingMsgId = null;
   try {
+    processingMsgId = await sendReply(chatId, buildProcessingCard(command));
     const reply = invokePython({
       event_type: 'card.action.trigger',
       text: command,
@@ -167,13 +223,28 @@ async function processCardAction(data) {
       context: event.context || {},
       operator: event.operator || {},
     });
-    await sendReply(chatId, reply);
+    if (reply && reply.type !== 'ignore') {
+      if (processingMsgId && reply.type === 'interactive' && reply.card) {
+        await updateReply(chatId, processingMsgId, reply.card);
+      } else if (processingMsgId) {
+        const doneCard = buildProcessingCard('操作已完成。');
+        doneCard.card.header.template = 'green';
+        await updateReply(chatId, processingMsgId, doneCard.card);
+        await sendReply(chatId, reply);
+      } else {
+        await sendReply(chatId, reply);
+      }
+    }
     return { toast: { type: 'success', content: '已执行' } };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     log('card action failed', { chatId, detail });
     try {
-      await sendReply(chatId, buildErrorCard(`CodePilot 飞书处理失败：${detail}`));
+      if (processingMsgId) {
+        await updateReply(chatId, processingMsgId, buildErrorCard(`CodePilot 飞书处理失败：${detail}`).card);
+      } else {
+        await sendReply(chatId, buildErrorCard(`CodePilot 飞书处理失败：${detail}`));
+      }
     } catch (replyError) {
       log('failed to send card action error reply', {
         chatId,
@@ -210,18 +281,20 @@ function buildPostContent(title, text, content = null) {
 async function sendReply(chatId, reply) {
   if (!reply || reply.type === 'ignore') {
     log('skip reply', { chatId, reason: 'ignore' });
-    return;
+    return null;
   }
   if (reply.type === 'multi' && Array.isArray(reply.messages)) {
     log('send multi reply', { chatId, count: reply.messages.length });
+    let lastMsgId = null;
     for (const message of reply.messages) {
-      await sendReply(chatId, message);
+      lastMsgId = await sendReply(chatId, message);
     }
-    return;
+    return lastMsgId;
   }
+  let res;
   if (reply.type === 'interactive' && reply.card) {
     log('send interactive reply', { chatId });
-    await client.im.message.create({
+    res = await client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
         receive_id: chatId,
@@ -229,12 +302,12 @@ async function sendReply(chatId, reply) {
         content: JSON.stringify(reply.card),
       },
     });
-    return;
+    return res?.data?.message_id || null;
   }
   if (reply.type === 'post') {
     const title = String(reply.title || 'CodePilot 详情');
     log('send post reply', { chatId, title: title.slice(0, 80) });
-    await client.im.message.create({
+    res = await client.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
         receive_id: chatId,
@@ -242,16 +315,32 @@ async function sendReply(chatId, reply) {
         content: JSON.stringify(buildPostContent(title, reply.text || '', reply.content || null)),
       },
     });
-    return;
+    return res?.data?.message_id || null;
   }
   const text = String(reply.text || 'CodePilot 已收到，但没有可发送的结果。');
   log('send rich text reply', { chatId, preview: text.slice(0, 80) });
-  await client.im.message.create({
+  res = await client.im.message.create({
     params: { receive_id_type: 'chat_id' },
     data: {
       receive_id: chatId,
       msg_type: 'post',
       content: JSON.stringify(buildPostContent('CodePilot 回复', text)),
+    },
+  });
+  return res?.data?.message_id || null;
+}
+
+async function updateReply(chatId, messageId, card) {
+  if (!messageId || !card) {
+    log('skip update reply', { chatId, reason: !messageId ? 'no message_id' : 'no card' });
+    return;
+  }
+  log('update interactive reply', { chatId, messageId });
+  await client.im.message.update({
+    params: { message_id: messageId },
+    data: {
+      msg_type: 'interactive',
+      content: JSON.stringify(card),
     },
   });
 }

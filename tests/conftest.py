@@ -185,6 +185,11 @@ def _write_fastmcp_stdio_shim(root: Path) -> None:
                     return decorator
 
                 def run(self, *args, **kwargs) -> None:
+                    # Match the real MCP SDK by writing protocol frames through
+                    # the binary buffer; the stdio protocol guard preserves
+                    # sys.stdout.buffer specifically so this path keeps working
+                    # even when sys.stdout.write() is redirected to stderr.
+                    stdout_buffer = sys.stdout.buffer
                     while True:
                         line = sys.stdin.readline()
                         if not line:
@@ -193,8 +198,9 @@ def _write_fastmcp_stdio_shim(root: Path) -> None:
                         if "id" not in message:
                             continue
                         response = self._handle_request(message)
-                        sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-                        sys.stdout.flush()
+                        payload = json.dumps(response, ensure_ascii=False) + "\n"
+                        stdout_buffer.write(payload.encode("utf-8"))
+                        stdout_buffer.flush()
 
                 def _handle_request(self, message):
                     method = message.get("method")

@@ -448,7 +448,7 @@ def _prepare_mcp_agent_chat(
         )
         if is_opencode
         else None,
-        opencode_session=session_id if is_opencode else None,
+        session=session_id or None,
     )
     if plan.config_files:
         _write_launch_config_files(plan.config_files, cwd=cwd)
@@ -600,7 +600,7 @@ def _run_mcp_agent_chat_session(
             agent=current_agent,
             project=project,
             prompt=current_prompt,
-            session=session if current_agent == "opencode" else None,
+            session=session,
         )
         next_agent: str | None = None
         try:

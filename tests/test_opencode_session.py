@@ -22,16 +22,13 @@ def test_run_opencode_message_starts_new_json_session(tmp_path: Path, monkeypatc
     project_path = register_project(tmp_path, monkeypatch)
     calls = []
 
-    def fake_run(command, *, cwd, env, capture_output, text, encoding, errors, timeout):
+    def fake_run(command, *, cwd, env, capture_output, timeout, **_kwargs):
         calls.append(
             {
                 "command": command,
                 "cwd": cwd,
                 "env": env,
                 "capture_output": capture_output,
-                "text": text,
-                "encoding": encoding,
-                "errors": errors,
                 "timeout": timeout,
             }
         )
@@ -87,7 +84,7 @@ def test_run_opencode_message_normalizes_project_alias_for_mcp_and_session_scope
     monkeypatch.chdir(project_path)
     calls = []
 
-    def fake_run(command, *, cwd, env, capture_output, text, encoding, errors, timeout):
+    def fake_run(command, *, cwd, env, capture_output, timeout, **_kwargs):
         calls.append({"command": command, "cwd": cwd, "env": env})
         stdout = "\n".join(
             [
@@ -136,7 +133,7 @@ def test_run_opencode_message_uses_tool_level_profile_not_project_opencode_confi
     monkeypatch.setattr("codepilot.opencode.session.load_project_config", lambda project_path: project_cfg)
     calls = []
 
-    def fake_run(command, *, cwd, env, capture_output, text, encoding, errors, timeout):
+    def fake_run(command, *, cwd, env, capture_output, timeout, **_kwargs):
         calls.append({"command": command, "cwd": cwd, "env": env})
         stdout = json.dumps({"type": "message.part", "role": "assistant", "text": "收到。"})
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
@@ -178,7 +175,7 @@ def test_run_opencode_message_maps_deepseek_to_custom_provider_env(
     monkeypatch.setattr("codepilot.opencode.session.load_project_config", lambda project_path: project_cfg)
     calls = []
 
-    def fake_run(command, *, cwd, env, capture_output, text, encoding, errors, timeout):
+    def fake_run(command, *, cwd, env, capture_output, timeout, **_kwargs):
         calls.append({"command": command, "cwd": cwd, "env": env})
         stdout = json.dumps({"type": "message.part", "role": "assistant", "text": "收到。"})
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
@@ -230,7 +227,7 @@ def test_run_opencode_message_reports_failure_in_chinese(tmp_path: Path, monkeyp
     register_project(tmp_path, monkeypatch)
 
     def fake_run(command, **_kwargs):
-        return SimpleNamespace(returncode=7, stdout="", stderr="provider missing")
+        return SimpleNamespace(returncode=7, stdout=b"", stderr=b"provider missing")
 
     monkeypatch.setattr("codepilot.opencode.session.subprocess.run", fake_run)
 
@@ -242,6 +239,60 @@ def test_run_opencode_message_reports_failure_in_chinese(tmp_path: Path, monkeyp
     assert result["intent"] == "error"
     assert "OpenCode 执行失败" in result["message"]
     assert "provider missing" in result["message"]
+
+
+def test_run_opencode_message_decodes_cp936_stderr_on_windows(tmp_path: Path, monkeypatch):
+    """Windows shim/cmd.exe errors are emitted in cp936 (GBK); we must surface them
+    as readable Chinese instead of U+FFFD streams."""
+    _isolate_opencode_runtime(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
+
+    monkeypatch.setattr("codepilot.opencode.session.sys.platform", "win32")
+    cn_error = "找不到指定的文件。".encode("cp936")
+
+    def fake_run(command, **_kwargs):
+        return SimpleNamespace(returncode=1, stdout=b"", stderr=cn_error)
+
+    monkeypatch.setattr("codepilot.opencode.session.subprocess.run", fake_run)
+
+    from codepilot.opencode.session import run_opencode_message
+
+    result = run_opencode_message("demo", "你好", source="feishu", external_session_id="chat-cp936")
+
+    assert result["ok"] is False
+    assert "找不到指定的文件" in result["message"]
+    assert "�" not in result["message"]
+
+
+def test_run_opencode_message_clears_stale_session_when_continuation_fails(tmp_path: Path, monkeypatch):
+    """If --session <id> fails and OpenCode never returns a new session id, the
+    saved opencode_session_id is treated as stale and cleared so the next call
+    starts fresh."""
+    _isolate_opencode_runtime(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
+    db.upsert_service_state(
+        "opencode_chat",
+        "web:99:demo",
+        status="active",
+        meta={"opencode_session_id": "ses_stale", "source": "web", "project": "demo"},
+    )
+
+    def fake_run(command, **_kwargs):
+        assert "--session" in command
+        return SimpleNamespace(returncode=1, stdout=b"", stderr=b"session not found")
+
+    monkeypatch.setattr("codepilot.opencode.session.subprocess.run", fake_run)
+
+    from codepilot.opencode.session import run_opencode_message
+
+    result = run_opencode_message("demo", "继续", source="web", external_session_id="99")
+
+    assert result["ok"] is False
+    assert "已自动清理失效的 OpenCode 会话引用" in result["message"]
+    state = db.get_service_state("opencode_chat", "web:99:demo") or {}
+    meta = state.get("meta") or {}
+    assert not meta.get("opencode_session_id")
+    assert state.get("status") == "stale"
 
 
 def test_run_opencode_message_reports_timeout_in_chinese(tmp_path: Path, monkeypatch):

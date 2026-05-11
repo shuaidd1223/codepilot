@@ -33,11 +33,11 @@ def test_claude_launcher_injects_mcp_config_with_cli_flag(tmp_path: Path):
         "--mcp-config",
         plan.config_args[1],
         "--strict-mcp-config",
+        "--dangerously-skip-permissions",
         "-p",
         f"{CHINESE_INTERACTION_INSTRUCTIONS}\n\n用户请求：\nCheck project health.",
         "--output-format",
         "text",
-        "--dangerously-skip-permissions",
     ]
     assert plan.env == {}
     payload = json.loads(plan.config_args[1])
@@ -50,6 +50,39 @@ def test_claude_launcher_injects_mcp_config_with_cli_flag(tmp_path: Path):
             }
         }
     }
+
+
+def test_claude_launcher_without_prompt_starts_interactive_tui(tmp_path: Path):
+    plan = build_mcp_launch_plan(
+        "claude",
+        executable="claude-bin",
+        mcp_servers=_server(tmp_path),
+    )
+
+    assert plan.agent == "claude"
+    assert plan.command == [
+        "claude-bin",
+        "--mcp-config",
+        plan.config_args[1],
+        "--strict-mcp-config",
+        "--dangerously-skip-permissions",
+        "--append-system-prompt",
+        CHINESE_INTERACTION_INSTRUCTIONS,
+    ]
+    assert "-p" not in plan.command
+
+
+def test_claude_launcher_with_session_resumes_interactive_tui(tmp_path: Path):
+    plan = build_mcp_launch_plan(
+        "claude",
+        executable="claude-bin",
+        mcp_servers=_server(tmp_path),
+        session="ses-abc",
+    )
+
+    assert plan.command[-2:] == ["--resume", "ses-abc"]
+    assert "--append-system-prompt" in plan.command
+    assert "-p" not in plan.command
 
 
 def test_codex_launcher_injects_mcp_servers_with_config_overrides(tmp_path: Path):
@@ -87,6 +120,40 @@ def test_codex_launcher_injects_mcp_servers_with_config_overrides(tmp_path: Path
             }
         }
     }
+
+
+def test_codex_launcher_without_prompt_starts_interactive_tui(tmp_path: Path):
+    plan = build_mcp_launch_plan(
+        "codex",
+        executable="codex-bin",
+        mcp_servers=_server(tmp_path),
+    )
+
+    assert plan.agent == "codex"
+    # Same -c overrides as headless mode...
+    assert plan.command[1:7] == [
+        "-c",
+        'mcp_servers.filesystem.command="node"',
+        "-c",
+        'mcp_servers.filesystem.args=["server.js"]',
+        "-c",
+        f'mcp_servers.filesystem.env={{ROOT={json.dumps(str(tmp_path))}}}',
+    ]
+    # ...but no `exec` subcommand and no positional prompt.
+    assert "exec" not in plan.command
+    assert plan.command[0] == "codex-bin"
+
+
+def test_codex_launcher_with_session_resumes_interactive_tui(tmp_path: Path):
+    plan = build_mcp_launch_plan(
+        "codex",
+        executable="codex-bin",
+        mcp_servers=_server(tmp_path),
+        session="ses-xyz",
+    )
+
+    assert plan.command[-2:] == ["resume", "ses-xyz"]
+    assert "exec" not in plan.command
 
 
 def test_opencode_launcher_uses_config_file_env_injection(tmp_path: Path):
