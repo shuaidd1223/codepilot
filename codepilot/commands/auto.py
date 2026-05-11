@@ -21,14 +21,7 @@ from typing import Optional
 import click
 
 from codepilot.storage import database as db
-from codepilot.ai_support.clarification_protocol import (
-    build_clarification_answer_summary,
-    normalize_clarification_answers,
-    normalize_clarification_questions,
-    render_clarification_questions,
-)
 from codepilot.ai_support.interaction_controller import (
-    interpret_clarification_outcome,
     resolve_turn_intent,
 )
 
@@ -111,6 +104,7 @@ from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
     append_clarification_answer_to_state,
     assess_requirement_for_planning,
     build_clarification_state,
+    clarify_requirement,
     classify_entry_intent,
     clarification_state_from_assessment,
     command_intent_guidance,
@@ -126,7 +120,6 @@ from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
     _resolve_task_agent,
     _should_execute,
     _should_fallback_codex_planning,
-    clarify_requirement,
     resolve_project_for_prompt,
     run_requirement_workflow,
 )
@@ -141,145 +134,6 @@ def _json_mode(ctx: click.Context, json_mode: bool) -> bool:
 def _root_options(ctx: click.Context) -> dict:
     root = ctx.find_root()
     return root.obj if root and root.obj else {}
-
-
-def _is_clarification_cancel(raw: str) -> bool:
-    return normalize_requirement_text(raw).lower() in {"/cancel", "/clear", "取消", "取消本次规划"}
-
-
-def _prompt_clarification_answers_for_cli(
-    questions,
-    *,
-    first_input: str = "",
-    allow_skip: bool = True,
-) -> tuple[str, list[dict], str]:
-    normalized_questions = normalize_clarification_questions(questions)
-    if not normalized_questions:
-        return "empty", [], ""
-
-    collected: list[dict] = []
-    seeded = normalize_requirement_text(first_input)
-    for idx, question in enumerate(normalized_questions, 1):
-        qtype = question.get("type") or "text"
-        prompt = "你的补充"
-        if qtype == "single":
-            prompt = "选择一项（编号 / 标签；或直接输入文本）"
-        elif qtype == "multi":
-            prompt = "选择多项（逗号分隔；或直接输入文本）"
-
-        raw = seeded if idx == 1 and seeded else click.prompt(prompt, default="", show_default=False).strip()
-        seeded = ""
-        if _is_clarification_cancel(raw):
-            return "cancel", [], ""
-        if not raw:
-            if allow_skip and not collected:
-                return "skip", [], ""
-            continue
-        answers = normalize_clarification_answers([question], answer_text=raw)
-        if not answers:
-            continue
-        entry = answers[0]
-        collected.append({
-            "question_id": entry.get("question_id"),
-            "selected_option_ids": entry.get("selected_option_ids") or [],
-            "free_text": entry.get("free_text") or "",
-        })
-    if not collected:
-        return ("skip" if allow_skip else "empty"), [], ""
-    summary = build_clarification_answer_summary(
-        normalize_clarification_answers(normalized_questions, raw_answers=collected)
-    )
-    if not summary:
-        return ("skip" if allow_skip else "empty"), [], ""
-    return "ok", collected, summary
-
-
-def _clarify_requirement_for_go(
-    text: str,
-    *,
-    project_info: dict,
-    planner: str,
-) -> str:
-    """Interactive clarification loop for `go` command before planning."""
-    from codepilot.core.output import echo
-
-    if not click.get_text_stream("stdin").isatty():
-        return text
-
-    cfg = _project_config(project_info)
-    max_turns = (
-        cfg.automation.clarify_max_turns
-        if cfg and getattr(cfg, "automation", None)
-        else 3
-    )
-    seed_title = normalize_requirement_text(text)
-    clarify_state = build_clarification_state(
-        original_title=seed_title,
-        qa_history=[],
-        intent="requirement",
-    )
-    try:
-        assessment = assess_requirement_for_planning(
-            clarify_state["original_title"],
-            project_info=project_info,
-            planner=planner,
-            qa_history=clarify_state["qa_history"],
-            max_turns=max_turns,
-        )
-    except KeyboardInterrupt as exc:
-        raise click.ClickException("澄清流程被中断，已取消本次需求。") from exc
-    except click.ClickException:
-        raise
-    except Exception as exc:
-        raise click.ClickException(f"澄清评估失败：{exc}") from exc
-
-    pending_state = clarification_state_from_assessment(
-        assessment=assessment,
-        seed_title=clarify_state["original_title"],
-        previous_state=clarify_state,
-        intent="requirement",
-    )
-    while pending_state:
-        questions = pending_state.get("last_questions") or []
-        if not questions:
-            break
-        echo("[cyan]先补充几个关键信息，再开始规划：[/cyan]")
-        click.echo(render_clarification_questions(questions))
-        click.echo("[dim]输入 /cancel 可取消当前这次需求规划。[/dim]")
-        status, clarify_answers, answer_summary = _prompt_clarification_answers_for_cli(questions)
-        if status == "cancel":
-            raise click.ClickException("已取消当前这次需求规划。")
-        if status == "skip":
-            echo("[yellow]未收到补充信息，将按当前内容继续规划。[/yellow]")
-            break
-
-        outcome = continue_pending_clarification(
-            pending_state,
-            answer=answer_summary,
-            clarify_answers=clarify_answers,
-            project_info=project_info,
-            planner=planner,
-            max_turns=max_turns,
-            intent="requirement",
-        )
-        transition = interpret_clarification_outcome(
-            outcome,
-            pending_state=pending_state,
-            fallback_title=seed_title,
-            normalize_text=normalize_requirement_text,
-        )
-        if transition.status == "needs_clarification":
-            pending_state = transition.pending_state or pending_state
-            continue
-        if transition.status == "ready":
-            refined = (transition.refined_title or "").strip()
-            return refined or pending_state.get("original_title") or seed_title
-        if transition.status == "interrupt":
-            raise click.ClickException("澄清流程被中断，已取消本次需求。")
-        raise click.ClickException(transition.message or "澄清评估失败。")
-
-    refined = (assessment.get("refined_title") or "").strip()
-    return refined or (pending_state or clarify_state).get("original_title") or seed_title
 
 
 def _augment_requirement_with_wiki_context(text: str, *, project_info: dict, use_wiki: bool) -> str:
@@ -343,11 +197,6 @@ def auto(
             project,
             auto_register=False,
             require_registered=True,
-        )
-        title = _clarify_requirement_for_go(
-            title,
-            project_info=project_info,
-            planner=planner,
         )
         try:
             run_requirement_workflow(
@@ -466,11 +315,6 @@ def go(
             click.echo(answer or "未获得回答")
             return
 
-        text = _clarify_requirement_for_go(
-            text,
-            project_info=project_info,
-            planner=effective["planner"],
-        )
         text = _augment_requirement_with_wiki_context(text, project_info=project_info, use_wiki=use_wiki)
         max_tasks_override = 1 if intent == "task" else effective["max_tasks"]
         try:

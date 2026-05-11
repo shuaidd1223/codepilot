@@ -166,7 +166,11 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
     opencode_json = json.loads(profile.files[profile.env["OPENCODE_CONFIG"]])
     assert opencode_json["default_agent"] == "codepilot"
     assert opencode_json["mcp"]["codepilot"]["command"] == ["python", "-m", "codepilot", "mcp", "serve"]
-    assert "./config/instructions/codepilot.zh-CN.md" in opencode_json["instructions"]
+    # instructions 使用绝对路径（OpenCode 源码解析：相对路径走 globUp 从 CWD 向上搜不到 config 目录的文件）
+    assert len(opencode_json["instructions"]) == 1
+    inst_path = opencode_json["instructions"][0]
+    assert inst_path.endswith("codepilot.zh-CN.md")
+    assert Path(inst_path).is_absolute()
     assert opencode_json["permission"]["bash"] == "ask"
     assert opencode_json["permission"]["edit"] == "ask"
     assert opencode_json["tools"]["bash"] is True
@@ -191,13 +195,19 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
     agent_doc = profile.files[str(tmp_path / "tool-runtime" / "opencode" / "config" / "agents" / "codepilot.md")]
     assert "CodePilot" in agent_doc
     assert "优先使用 CodePilot MCP 工具" in agent_doc
-    assert "所有面向用户的回答、状态说明、工具调用说明、错误解释" in agent_doc
-    assert "Thinking" in agent_doc
+    # agent prompt 不再嵌入语言指令（通过 instructions 配置文件维护）
+    assert "语言与展示规则" not in agent_doc
+    assert "简体中文" not in agent_doc
+
     instructions_doc = profile.files[
         str(tmp_path / "tool-runtime" / "opencode" / "config" / "instructions" / "codepilot.zh-CN.md")
     ]
     assert "中文交互规则" in instructions_doc
-    assert "权限申请理由" in instructions_doc
+    # 语言指令全部在 instructions 配置文件中，使用 Markdown 二级标题
+    assert "## 总则" in instructions_doc
+    assert "## 思考/推理过程" in instructions_doc
+    assert "## 绝对禁止" in instructions_doc
+    assert "所有交互输出必须使用简体中文" in instructions_doc
     command_doc = profile.files[str(tmp_path / "tool-runtime" / "opencode" / "config" / "commands" / "任务状态.md")]
     assert "列出当前 CodePilot 任务" in command_doc
     assert "简体中文" in command_doc
@@ -253,7 +263,8 @@ def test_opencode_launcher_injects_profile_paths_and_commands(tmp_path: Path):
     payload = json.loads(plan.config_files[str(tmp_path / "opencode.json")])
     assert payload["default_agent"] == "codepilot"
     assert "优先使用 CodePilot MCP 工具" in payload["agent"]["codepilot"]["prompt"]
-    assert "所有面向用户的回答" in payload["agent"]["codepilot"]["prompt"]
+    # agent prompt 不再嵌入语言指令，由 instructions 配置文件提供
+    assert "简体中文" not in payload["agent"]["codepilot"]["prompt"]
 
 
 def test_opencode_profile_uses_configured_openai_model_and_base_url(tmp_path: Path):

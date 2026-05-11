@@ -82,46 +82,17 @@ def clarify_requirement(
     max_turns: int = 3,
     stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
-    """Assess a requirement and ask for clarification if the intent is vague.
+    """直接返回 ready——由 AI 智能体接管需求澄清，跳过系统硬编码澄清层。
 
-    Returns:
-        ``{"status": "ready", "refined_title": str, "qa_history": [...]}`` when
-        the planner can proceed, or
-        ``{"status": "needs_clarification", "questions": [str, ...], "turn": int,
-        "qa_history": [...]}`` when the caller should collect another round.
-
-    The ``qa_history`` field is always returned so callers can persist it
-    between turns (e.g. chat REPL, Web UI session state).
+    旧的 clarify 模式（启发式 + AI 提示词 + 多轮交互）已被移除。
     """
-    from codepilot.ai_support.clarify import assess_requirement
-
     qa_history = normalize_clarification_history(qa_history)
-    runtime = _classifier_runtime(project_info)
-    cfg = runtime["config"]
-    if cfg and not getattr(cfg.automation, "clarify_vague_requirements", True):
-        return {
-            "status": "ready",
-            "refined_title": title.strip(),
-            "source": "disabled",
-            "qa_history": qa_history,
-        }
-
-    result = assess_requirement(
-        title,
-        project_path=runtime["project_path"],
-        config_ref=runtime["config_ref"],
-        qa_history=qa_history,
-        max_turns=max_turns,
-        classifier_provider=runtime["classifier_provider"],
-        classifier_model=runtime["classifier_model"],
-        api_key=runtime["api_key"],
-        base_url=runtime["base_url"],
-        planner=planner,
-        timeout=runtime["classifier_timeout"] or 30,
-        stream_callback=stream_callback,
-    )
-    result["qa_history"] = qa_history
-    return result
+    return {
+        "status": "ready",
+        "refined_title": title.strip(),
+        "source": "passthrough",
+        "qa_history": qa_history,
+    }
 
 
 def normalize_requirement_text(text: str) -> str:

@@ -44,7 +44,7 @@ def test_root_command_accepts_plain_text_requirement(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_cmd, "run_requirement_workflow", fake_run_requirement_workflow)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["--no-execute", "实现一个自动重试机制"])
+    result = runner.invoke(main, ["go", "--no-execute", "实现一个自动重试机制"])
 
     assert result.exit_code == 0
     assert captured["title"] == "实现一个自动重试机制"
@@ -71,7 +71,7 @@ def test_root_command_wraps_requirement_flow_in_cli_progress_renderer(tmp_path, 
     monkeypatch.setattr(auto_cmd, "resolve_turn_intent", lambda *args, **kwargs: "requirement")
     monkeypatch.setattr(auto_cmd, "run_requirement_workflow", lambda **kwargs: {"ok": True})
 
-    result = CliRunner().invoke(main, ["--no-execute", "实现一个自动重试机制"])
+    result = CliRunner().invoke(main, ["go", "--no-execute", "实现一个自动重试机制"])
 
     assert result.exit_code == 0, result.output
     assert entered == [("enter", True), ("exit", True)]
@@ -93,7 +93,7 @@ def test_root_command_passes_selected_task_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_cmd, "run_requirement_workflow", fake_run_requirement_workflow)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["--agent", "codex", "--no-execute", "实现一个自动重试机制"])
+    result = runner.invoke(main, ["go", "--agent", "codex", "--no-execute", "实现一个自动重试机制"])
 
     assert result.exit_code == 0
     assert captured["task_agent"] == "codex"
@@ -205,7 +205,7 @@ two_stage_planning = false
         lambda *args, **kwargs: pytest.fail("auto_execute=false should not run backlog"),
     )
 
-    result = CliRunner().invoke(main, ["--project", "demo", "config override regression"])
+    result = CliRunner().invoke(main, ["go", "--project", "demo", "config override regression"])
 
     assert result.exit_code == 0, result.output
     assert captured["planner_kwargs"]["planner"] == "claude"
@@ -626,7 +626,7 @@ def test_go_command_wraps_runtime_error_as_click_exception(tmp_path, monkeypatch
     monkeypatch.setattr(auto_cmd, "run_requirement_workflow", fake_run_requirement_workflow)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["让工具自己优化自己"])
+    result = runner.invoke(main, ["go", "让工具自己优化自己"])
 
     assert result.exit_code != 0
     assert "当前无法使用 Claude CLI" in result.output

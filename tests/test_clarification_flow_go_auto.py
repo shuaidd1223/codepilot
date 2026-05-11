@@ -19,33 +19,9 @@ def _q(text: str, *, qid: str = "q1", qtype: str = "text", options: list[tuple[s
     }
 
 
-def test_go_runs_interactive_clarification_before_planning(tmp_path, monkeypatch):
+def test_go_bypasses_clarification_and_plans_directly(tmp_path, monkeypatch):
+    """go 命令跳过旧的硬编码澄清，直接走规划（由 AI 智能体接管需求理解）。"""
     register_project(tmp_path, monkeypatch)
-
-    def fake_clarify(title, *, project_info, qa_history=None, planner="codex", **kw):
-        if qa_history:
-            answer = qa_history[-1].get("answer", "")
-            return {
-                "status": "ready",
-                "refined_title": f"{title} / 补充: {answer}",
-                "qa_history": qa_history,
-            }
-        return {
-            "status": "needs_clarification",
-            "questions": [
-                _q(
-                    "先优先做哪一块?",
-                    qid="scope",
-                    qtype="single",
-                    options=[("loop", "规划-执行闭环"), ("ui", "Web UI")],
-                    allow_free_text=True,
-                )
-            ],
-            "qa_history": [],
-            "turn": 1,
-        }
-
-    monkeypatch.setattr(auto_mod, "clarify_requirement", fake_clarify)
 
     captured = {}
 
@@ -54,48 +30,17 @@ def test_go_runs_interactive_clarification_before_planning(tmp_path, monkeypatch
         return {"ok": True, "tasks": []}
 
     monkeypatch.setattr(auto_mod, "run_requirement_workflow", fake_run_requirement_workflow)
-    original_get_stream = auto_mod.click.get_text_stream
-
-    class _TtyIn:
-        @staticmethod
-        def isatty():
-            return True
-
-    monkeypatch.setattr(
-        auto_mod.click,
-        "get_text_stream",
-        lambda name: _TtyIn() if name == "stdin" else original_get_stream(name),
-    )
 
     runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["go", "做一个全自动编程工作流智能体", "--execute"],
-        input="1\n",
-    )
+    result = runner.invoke(main, ["go", "做一个全自动编程工作流智能体"])
 
     assert result.exit_code == 0
-    assert "先补充几个关键信息" in result.output
-    assert "规划-执行闭环" in captured["title"]
+    assert captured["title"] == "做一个全自动编程工作流智能体"
 
 
-def test_auto_command_runs_interactive_clarification_before_planning(tmp_path, monkeypatch):
+def test_auto_command_bypasses_clarification_and_plans_directly(tmp_path, monkeypatch):
+    """auto 命令跳过旧的硬编码澄清，直接走规划。"""
     register_project(tmp_path, monkeypatch)
-
-    def fake_clarify(title, *, project_info, qa_history=None, planner="codex", **kw):
-        if qa_history:
-            return {
-                "status": "ready",
-                "refined_title": title + " / 补充: " + qa_history[-1]["answer"],
-                "qa_history": qa_history,
-            }
-        return {
-            "status": "needs_clarification",
-            "questions": [_q("先落哪个入口?")],
-            "qa_history": [],
-        }
-
-    monkeypatch.setattr(auto_mod, "clarify_requirement", fake_clarify)
 
     captured = {}
 
@@ -104,29 +49,15 @@ def test_auto_command_runs_interactive_clarification_before_planning(tmp_path, m
         return {"ok": True, "tasks": []}
 
     monkeypatch.setattr(auto_mod, "run_requirement_workflow", fake_run_requirement_workflow)
-    original_get_stream = auto_mod.click.get_text_stream
-
-    class _TtyIn:
-        @staticmethod
-        def isatty():
-            return True
-
-    monkeypatch.setattr(
-        auto_mod.click,
-        "get_text_stream",
-        lambda name: _TtyIn() if name == "stdin" else original_get_stream(name),
-    )
 
     runner = CliRunner()
     result = runner.invoke(
         main,
         ["auto", "-p", "demo", "-t", "做一个全自动编程工作流智能体", "--plan-only"],
-        input="先落 Web UI 需求入口\n",
     )
 
     assert result.exit_code == 0
-    assert "先补充几个关键信息" in result.output
-    assert "先落 Web UI 需求入口" in captured["title"]
+    assert captured["title"] == "做一个全自动编程工作流智能体"
 
 
 def test_go_routes_command_intent_to_guidance_without_planning(tmp_path, monkeypatch):
@@ -187,85 +118,19 @@ def test_root_rejects_removed_legacy_classifier_option():
     assert "No such option: --legacy-classifier" in result.output
 
 
-def test_go_pending_clarification_error_does_not_fall_through_to_planning(tmp_path, monkeypatch):
+def test_go_question_intent_answers_directly_without_planning(tmp_path, monkeypatch):
+    """go 命令识别到 question intent 时直接回答，不走规划。"""
     register_project(tmp_path, monkeypatch)
 
-    monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
-        "intent": "requirement", "source": "forced",
-    })
-    monkeypatch.setattr(auto_mod, "clarify_requirement", lambda *a, **kw: {
-        "status": "needs_clarification",
-        "questions": [_q("先聚焦哪块?")],
-        "qa_history": [],
-    })
-    monkeypatch.setattr(auto_mod, "continue_pending_clarification", lambda *a, **kw: {
-        "status": "error",
-        "error_kind": "runtime",
-        "message": "clarifier backend exploded",
-    })
+    monkeypatch.setattr(auto_mod, "classify_entry_intent", lambda text, **kw: "question")
+    monkeypatch.setattr(auto_mod, "answer_question_via_api", lambda **kw: "这是回答")
 
     ran = []
-    monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw["title"]))
-    original_get_stream = auto_mod.click.get_text_stream
-
-    class _TtyIn:
-        @staticmethod
-        def isatty():
-            return True
-
-    monkeypatch.setattr(
-        auto_mod.click,
-        "get_text_stream",
-        lambda name: _TtyIn() if name == "stdin" else original_get_stream(name),
-    )
+    monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw))
 
     runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["go", "优化一下"],
-        input="先做 Web UI\n",
-    )
+    result = runner.invoke(main, ["go", "当前项目进展如何"])
 
-    assert result.exit_code != 0
-    assert "clarifier backend exploded" in result.output
-    assert "Aborted!" not in result.output
-    assert not ran
-
-
-def test_go_can_cancel_pending_clarification(tmp_path, monkeypatch):
-    register_project(tmp_path, monkeypatch)
-
-    monkeypatch.setattr(auto_mod, "classify_intent", lambda text, **kw: {
-        "intent": "requirement", "source": "forced",
-    })
-    monkeypatch.setattr(auto_mod, "clarify_requirement", lambda *a, **kw: {
-        "status": "needs_clarification",
-        "questions": [_q("先做哪块?")],
-        "qa_history": [],
-    })
-
-    ran = []
-    monkeypatch.setattr(auto_mod, "run_requirement_workflow", lambda **kw: ran.append(kw["title"]))
-    original_get_stream = auto_mod.click.get_text_stream
-
-    class _TtyIn:
-        @staticmethod
-        def isatty():
-            return True
-
-    monkeypatch.setattr(
-        auto_mod.click,
-        "get_text_stream",
-        lambda name: _TtyIn() if name == "stdin" else original_get_stream(name),
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["go", "优化一下"],
-        input="/cancel\n",
-    )
-
-    assert result.exit_code != 0
-    assert "已取消当前这次需求规划" in result.output
+    assert result.exit_code == 0
+    assert "这是回答" in result.output
     assert not ran

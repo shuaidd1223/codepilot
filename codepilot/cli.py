@@ -114,9 +114,16 @@ class NaturalLanguageGroup(click.Group):
             if replacement:
                 raise click.UsageError(f"命令 `{first}` 已移除，请使用 `{replacement}`。")
 
-            go_cmd = self.get_command(ctx, "go")
-            if go_cmd is not None:
-                return "go", go_cmd, args
+            # NOTE: 旧版本会自动路由未知命令到 "go" 启动规划管线，
+            # 导致输错命令时（如 `codepilot docker`）触发完整的澄清→侦察→任务拆分流程。
+            # 现全面重构，不再默认直接走规划，用户应显式使用 `codepilot go "需求"`。
+            suggestions = [
+                f"使用 `codepilot go \"{first}\"` 提交自然语言需求",
+                "使用 `codepilot --help` 查看所有支持的命令",
+            ]
+            raise click.UsageError(
+                f"未知命令: '{first}'。\n" + "\n".join(f"  {s}" for s in suggestions)
+            )
 
         return super().resolve_command(ctx, args)
 

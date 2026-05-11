@@ -846,13 +846,26 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       }
     }
 
-    watch(() => state.nav.project, (nextProject, prevProject) => {
+    let _projectSwitchSeq = 0;
+    watch(() => state.nav.project, async (nextProject, prevProject) => {
       if (nextProject === prevProject) return;
+      const seq = ++_projectSwitchSeq;
       loadDaemonHealth();
       loadAIStatus({ refresh: true });
       if (!mounted) return;
       closeEventStream();
       openEventStream();
+      // 切换项目：清除旧会话数据，选中新项目的最新会话
+      state.activeProjectSessionId = null;
+      state.sessionDetail = null;
+      state.sessionMessages = [];
+      scheduleRefresh({ immediate: true });
+      await nextTick();
+      // 防止快速切换导致旧请求覆盖新数据
+      if (seq !== _projectSwitchSeq) return;
+      if (state.nav.view === 'overview') {
+        await ensureProjectSessionSelected(nextProject, { load: true });
+      }
     });
 
     function installKeyboardShortcuts() {

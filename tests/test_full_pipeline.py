@@ -77,7 +77,7 @@ def test_requirement_planning_creates_subtasks(tmp_path, monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(main, [
-        "--project", "demo", "--no-execute", "实现两个子功能",
+        "go", "--project", "demo", "--no-execute", "实现两个子功能",
     ])
 
     assert result.exit_code == 0
@@ -193,8 +193,8 @@ def test_duplicate_requirement_does_not_double_create(tmp_path, monkeypatch):
 
     runner = CliRunner()
     # Submit twice
-    runner.invoke(main, ["--project", "demo", "--no-execute", "唯一任务 X"])
-    runner.invoke(main, ["--project", "demo", "--no-execute", "唯一任务 X"])
+    runner.invoke(main, ["go", "--project", "demo", "--no-execute", "唯一任务 X"])
+    runner.invoke(main, ["go", "--project", "demo", "--no-execute", "唯一任务 X"])
 
     tasks = db.list_tasks(project="demo")
     titles = [t["title"] for t in tasks if t["title"] == "唯一任务 X"]
@@ -236,7 +236,7 @@ def test_cli_plain_text_plan_and_execute(tmp_path, monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(main, [
-        "--project", "demo", "--execute", "--executor", "builtin", "快速完成一件事",
+        "go", "--project", "demo", "--execute", "--executor", "builtin", "快速完成一件事",
     ])
 
     assert result.exit_code == 0

@@ -68,8 +68,14 @@ CP.Components.SessionChatPanel = Vue.defineComponent({
       this.attachedFiles = [];
       this.s.chatText = '';
     },
+    onKeydown(e) {
+      // 合并 Enter/mention 快捷键处理，避免重复 @keydown 属性
+      this.onMentionKeydown(e);
+      if (!e.defaultPrevented) this.sendOnEnter(e);
+    },
     sendOnEnter(e) {
       // Enter 发送，Shift+Enter 换行
+      if (e.key !== 'Enter') return; // 非 Enter 键不拦截，让正常输入/删除通过
       if (e.shiftKey) return; // 让 textarea 自然换行
       e.preventDefault();
       this.send();
@@ -319,7 +325,7 @@ CP.Components.SessionChatPanel = Vue.defineComponent({
         <select
           class="permission-select"
           :value="runtime.permissionMode || 'ask'"
-          :title="(permissionModeHints()[runtime.permissionMode || 'ask'] || 'OpenCode 权限策略') + '（即时生效，下条消息起效）'"
+          :title="(permissionModeHints[runtime.permissionMode || 'ask'] || 'OpenCode 权限策略') + '（即时生效，下条消息起效）'"
           @change="setPermissionMode($event.target.value)"
         >
           <option
@@ -443,8 +449,7 @@ CP.Components.SessionChatPanel = Vue.defineComponent({
               ref="chatTextarea"
               class="chat-textarea"
               v-model="s.chatText"
-              @keydown="sendOnEnter"
-              @keydown="onMentionKeydown"
+              @keydown="onKeydown"
               @input="onInput"
               @paste="onFilePaste"
               maxlength="4096"

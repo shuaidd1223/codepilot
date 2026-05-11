@@ -42,6 +42,12 @@ def build_opencode_profile(
 
     agent_name = _agent_name(config)
     commands = _commands(config, agent_name)
+    # instructions 文件路径解析（OpenCode 源码 packages/opencode/src/session/instruction.ts）：
+    # - 相对路径：通过 globUp() 从 CWD（项目根目录）向上搜索，不会到 config 目录下找
+    # - 绝对路径：glob(basename, {cwd: dirname}) 直接读取
+    # - `~/` 前缀：展开为 $HOME 后按绝对路径处理
+    # 所以必须用绝对路径，不能依赖相对 path。
+    instructions_path = str((config_dir / "instructions" / "codepilot.zh-CN.md").resolve())
     payload: dict[str, Any] = {
         "$schema": OPENCODE_CONFIG_SCHEMA,
         "mcp": _opencode_servers(normalize_mcp_servers(mcp_servers)),
@@ -50,7 +56,7 @@ def build_opencode_profile(
         "command": commands,
         "permission": _permission_payload(config),
         "tools": _default_tools(),
-        "instructions": ["AGENTS.md", "./config/instructions/codepilot.zh-CN.md"],
+        "instructions": [instructions_path],
         "share": "disabled",
     }
     if config.providers:
@@ -109,10 +115,9 @@ def _agent_name(config: OpenCodeConfig) -> str:
 
 
 def _agent_payload(config: OpenCodeConfig, agent_name: str) -> dict[str, Any]:
-    prompt = _with_chinese_runtime_instructions(
-        config.agent.prompt or _default_agent_prompt(config.profile.brand_name),
-        config.profile.brand_name,
-    )
+    # 语言与展示规则由 instructions 配置文件（codepilot.zh-CN.md）维护，
+    # agent prompt 只保留功能描述，不重复注入语言指令。
+    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name)
     payload: dict[str, Any] = {
         "description": config.agent.description or f"{config.profile.brand_name} 项目工作流智能体",
         "prompt": prompt,
@@ -123,10 +128,7 @@ def _agent_payload(config: OpenCodeConfig, agent_name: str) -> dict[str, Any]:
 
 
 def _agent_markdown(config: OpenCodeConfig, agent_name: str) -> str:
-    prompt = _with_chinese_runtime_instructions(
-        config.agent.prompt or _default_agent_prompt(config.profile.brand_name),
-        config.profile.brand_name,
-    )
+    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name)
     return (
         f"# {agent_name}\n\n"
         f"{config.agent.description or f'{config.profile.brand_name} 项目工作流智能体'}\n\n"
@@ -142,29 +144,37 @@ def _default_agent_prompt(brand_name: str) -> str:
     )
 
 
-def _with_chinese_runtime_instructions(prompt: str, brand_name: str) -> str:
-    body = str(prompt or "").strip()
-    instructions = _chinese_runtime_instructions(brand_name)
-    if instructions in body:
-        return body
-    if body:
-        return f"{body}\n\n{instructions}"
-    return instructions
+def _runtime_instructions_content(brand_name: str) -> str:
+    """生成 instructions 配置文件内容。
 
-
-def _chinese_runtime_instructions(brand_name: str) -> str:
+    语言与展示规则通过 OpenCode 配置文件的 ``instructions`` 字段加载，
+    不是注入到 agent prompt 中。这样 OpenCode 会将其作为系统级指令在
+    每次模型调用时发送，不受 agent prompt 工程方式的影响。
+    """
     brand = str(brand_name or "CodePilot").strip() or "CodePilot"
     return (
-        "## 语言与展示规则\n"
-        f"- 你对用户呈现的身份是 `{brand}`，所有面向用户的回答、状态说明、工具调用说明、错误解释、"
-        "权限申请理由和思考/推理摘要都必须使用简体中文。\n"
-        "- 如果 OpenCode 界面展示 thinking / reasoning / analysis 内容，只输出中文摘要；"
-        "不要使用 `Thinking`、`Reasoning`、`Analysis`、`I need to...` 这类英文标题或句式。\n"
-        "- 代码标识符、命令、文件路径、API 名称、MCP tool 名称和原始错误码可以保留英文；"
-        "解释这些内容时使用中文。\n"
+        "# 语言与展示规则\n"
+        "\n"
+        "## 总则\n"
+        f"你是 `{brand}`，所有交互输出必须使用简体中文。"
+        "无论你内部使用何种语言进行推理，最终呈现给用户的回答、状态说明、"
+        "工具调用说明、错误解释、权限申请理由和思考/推理摘要都必须输出简体中文。\n"
+        "\n"
+        "## 思考/推理过程\n"
+        "- 如果 OpenCode 界面展示 thinking / reasoning / analysis 内容，必须输出中文摘要，不要输出英文。\n"
+        "- 禁止使用 `Thinking`、`Reasoning`、`Analysis`、`I need to...` 等英文标题句式。\n"
+        "- 如果模型支持显式 reasoning/thinking 输出，内部推理语言必须使用中文。\n"
+        "\n"
+        "## 输出内容\n"
+        "- 代码标识符、命令、文件路径、API 名称、MCP tool 名称和原始错误码可保留原文，"
+        "但解释这些内容时必须使用中文。\n"
         "- 需要用户确认权限时，用中文说明准备执行什么、为什么需要执行、风险是什么；"
         "不要在权限说明里输出英文提示语。\n"
         "- 如果引用英文资料或英文错误输出，优先用中文转述，只保留必要的原文片段。\n"
+        "\n"
+        "## 绝对禁止\n"
+        "- 禁止输出英文标题（如 \"Analysis\"、\"Reasoning\"、\"Plan\"、\"Summary\"），必须使用中文对应标题。\n"
+        "- 禁止在工具调用描述、任务状态说明中使用英文。\n"
         "\n"
         "## 输入粘贴提示\n"
         "如果用户询问如何在输入框中粘贴内容，告知以下方式：\n"
@@ -176,7 +186,7 @@ def _chinese_runtime_instructions(brand_name: str) -> str:
 
 
 def _runtime_instructions_markdown(brand_name: str) -> str:
-    return f"# {brand_name or 'CodePilot'} 中文交互规则\n\n{_chinese_runtime_instructions(brand_name)}\n"
+    return f"# {brand_name or 'CodePilot'} 中文交互规则\n\n{_runtime_instructions_content(brand_name)}\n"
 
 
 def _commands(config: OpenCodeConfig, agent_name: str) -> dict[str, dict[str, str]]:

@@ -86,16 +86,6 @@ planner = "claude"
     )
 
     project_info = db.register_project("demo", str(project_path), config_file=str(config_file))
-    captured: dict[str, str] = {}
-
-    def _fake_assess(title, **kwargs):
-        captured["title"] = title
-        captured["project_path"] = kwargs.get("project_path") or ""
-        captured["config_ref"] = kwargs.get("config_ref") or ""
-        captured["planner"] = kwargs.get("planner") or ""
-        return {"status": "ready", "refined_title": title}
-
-    monkeypatch.setattr("codepilot.ai_support.clarify.assess_requirement", _fake_assess)
 
     result = auto_cmd.clarify_requirement(
         "优化一下",
@@ -103,11 +93,10 @@ planner = "claude"
         planner="claude",
     )
 
+    # 旧的 clarify 模式已移除，直接返回 ready
     assert result["status"] == "ready"
-    assert captured["title"] == "优化一下"
-    assert captured["project_path"] == str(project_path)
-    assert captured["config_ref"] == str(config_file)
-    assert captured["planner"] == "claude"
+    assert result["source"] == "passthrough"
+    assert result["refined_title"] == "优化一下"
 
 
 def test_assess_requirement_for_planning_uses_shared_input_builder(tmp_path, monkeypatch):
