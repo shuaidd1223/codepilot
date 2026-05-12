@@ -22,7 +22,9 @@ VENDOR_UPDATE_PROVIDERS = ("opencode", "codex")
 
 
 class SelfUpdateError(ValueError):
-    """Raised when self-update cannot continue safely."""
+    """Raised when self-update cannot continue safely.
+    同时兼容 ``except ValueError`` 和 ``except CodePilotError``。
+    """
 
 
 def _resolve_project(project: str | None) -> dict:

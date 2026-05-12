@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from codepilot.core.task_template import missing_task_template_sections
+from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
 from codepilot.mcp.tools.tasks import (
     VALID_AGENTS,
@@ -34,6 +36,16 @@ def create_task(
     task_depends_on = ensure_depends_on(depends_on)
     task_project_path = ensure_str(project_path, "project_path", required=False)
     task_max_retries = ensure_int(max_retries, "max_retries", minimum=0)
+
+    # 校验 task-template 必填章节
+    if task_content:
+        missing = missing_task_template_sections(task_content)
+        if missing:
+            raise CodePilotToolError(
+                f"缺少章节: {', '.join(missing)}",
+                code="missing_template_sections",
+                details={"missing": missing},
+            )
 
     db.init_db()
     task = db.create_task(

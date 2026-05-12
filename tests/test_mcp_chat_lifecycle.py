@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import click
+import click.testing
 import pytest
 
 from codepilot.commands import chat as chat_cmd
@@ -839,6 +840,134 @@ def test_chat_resume_hint_renders_codepilot_panel(capsys: pytest.CaptureFixture[
     assert "隔离配置" not in output
     assert "MCP" not in output
     assert "OpenCode 原生命令" not in output
+
+
+def test_chat_resume_hint_renders_codepilot_panel_for_claude(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    launch = chat_cmd._PreparedChatLaunch(
+        agent="claude",
+        command=["claude"],
+        cwd=tmp_path,
+        env={},
+        requested_session="ses_claude",
+    )
+
+    chat_cmd._print_codepilot_resume_hint(launch, project="demo")
+
+    output = capsys.readouterr().err
+    assert "CodePilot 会话已暂停" in output
+    assert "ses_claude" in output
+    assert "codepilot chat --project demo --session ses_claude" in output
+    assert "--agent" not in output
+
+
+def test_chat_resume_hint_for_claude_uses_latest_session_from_disk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    fake_lookup_calls: list[tuple[Path, Path]] = []
+
+    def fake_latest(project_path, *, projects_root=None):
+        fake_lookup_calls.append((Path(project_path), Path(projects_root) if projects_root else Path()))
+        return "ses_from_disk"
+
+    monkeypatch.setattr(chat_cmd, "latest_claude_session_id", fake_latest)
+
+    launch = chat_cmd._PreparedChatLaunch(
+        agent="claude",
+        command=["claude"],
+        cwd=tmp_path,
+        env={},
+    )
+
+    chat_cmd._print_codepilot_resume_hint(launch, project=None)
+
+    assert fake_lookup_calls and fake_lookup_calls[0][0] == tmp_path
+    output = capsys.readouterr().err
+    assert "ses_from_disk" in output
+    assert "codepilot chat --session ses_from_disk" in output
+    assert "--agent" not in output
+
+
+def test_detect_session_agent_returns_claude_when_jsonl_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(chat_cmd, "_project_record", lambda project: {"name": "demo", "path": str(tmp_path)})
+    monkeypatch.setattr(chat_cmd, "claude_session_exists", lambda cwd, sid: Path(cwd) == tmp_path and sid == "ses-x")
+    monkeypatch.setattr(chat_cmd, "_opencode_session_exists_for_scope", lambda scope, cwd, sid: False)
+
+    assert chat_cmd._detect_session_agent(session="ses-x", project=None) == "claude"
+
+
+def test_detect_session_agent_returns_opencode_when_db_has_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(chat_cmd, "_project_record", lambda project: {"name": "demo", "path": str(tmp_path)})
+    monkeypatch.setattr(chat_cmd, "claude_session_exists", lambda cwd, sid: False)
+    monkeypatch.setattr(
+        chat_cmd,
+        "_opencode_session_exists_for_scope",
+        lambda scope, cwd, sid: scope == "demo" and Path(cwd) == tmp_path and sid == "ses-y",
+    )
+
+    assert chat_cmd._detect_session_agent(session="ses-y", project=None) == "opencode"
+
+
+def test_detect_session_agent_returns_none_when_session_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(chat_cmd, "_project_record", lambda project: {"name": "demo", "path": str(tmp_path)})
+    monkeypatch.setattr(chat_cmd, "claude_session_exists", lambda cwd, sid: False)
+    monkeypatch.setattr(chat_cmd, "_opencode_session_exists_for_scope", lambda scope, cwd, sid: False)
+
+    assert chat_cmd._detect_session_agent(session="ses-missing", project=None) is None
+
+
+def test_chat_command_auto_detects_claude_from_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _isolate_chat(monkeypatch, tmp_path)
+    monkeypatch.setattr(chat_cmd, "_detect_session_agent", lambda *, session, project: "claude")
+    captured: dict[str, object] = {}
+
+    def fake_session_runner(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(chat_cmd, "_run_mcp_agent_chat_session", fake_session_runner)
+
+    runner = click.testing.CliRunner()
+    result = runner.invoke(chat_cmd.chat, ["--session", "ses-x"], obj={})
+
+    assert result.exit_code == 0, result.output
+    assert captured["agent"] == "claude"
+    assert captured["session"] == "ses-x"
+
+
+def test_chat_resume_hint_skips_when_claude_has_no_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    monkeypatch.setattr(chat_cmd, "latest_claude_session_id", lambda *args, **kwargs: "")
+
+    launch = chat_cmd._PreparedChatLaunch(
+        agent="claude",
+        command=["claude"],
+        cwd=tmp_path,
+        env={},
+    )
+
+    chat_cmd._print_codepilot_resume_hint(launch, project=None)
+
+    assert capsys.readouterr().err == ""
 
 
 def test_resolve_agent_executable_expands_path_command(monkeypatch: pytest.MonkeyPatch):

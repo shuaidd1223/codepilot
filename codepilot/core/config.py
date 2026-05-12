@@ -16,6 +16,8 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+from codepilot.errors import CodePilotError
+
 
 CONFIG_FILENAME = "AGENTS.toml"
 SECRETS_FILENAME = ".codepilot.secrets.toml"  # sibling file; never commit
@@ -27,14 +29,14 @@ SECRETS_PATH_ENV = "CODEPILOT_SECRETS_PATH"
 GLOBAL_CONFIG_PATH_ENV = "CODEPILOT_GLOBAL_CONFIG_PATH"
 
 
-class ConfigError(ValueError):
-    """Raised when AGENTS.toml uses an unsupported or invalid shape."""
+class ConfigError(CodePilotError, ValueError):
+    """AGENTS.toml 配置解析错误。同时兼容 ``except ValueError`` 和 ``except CodePilotError``。"""
 
 
 DEFAULT_AGENT_COMMANDS: dict[str, str] = {
     "claude": "claude",
     "codex": "codex",
-    "opencode": "opencode",
+    "opencode": "cp-opencode",
 }
 DEFAULT_FALLBACK_CLI_ORDER: list[str] = ["claude", "codex", "opencode"]
 LEGACY_AGENT_COMMAND_KEYS: tuple[str, ...] = ("codex_cmd", "claude_cmd")
@@ -1076,10 +1078,10 @@ builder = ""
 reviewer = ""
 
 [agents.commands]
-# CLI family -> 命令名/绝对路径。OpenCode 作为兜底，会按已配 provider key 自动选择 backend。
+# CLI family -> 命令名/绝对路径（cp-opencode 为项目自带的 OpenCode 包装器）。
 claude = "claude"
 codex = "codex"
-opencode = "opencode"
+opencode = "cp-opencode"
 
 [opencode.permission]
 # 项目级 OpenCode 权限策略：
@@ -1253,7 +1255,7 @@ worktree_base = ""
 [agents.commands]
 claude = "claude"
 codex = "codex"
-opencode = "opencode"
+opencode = "cp-opencode"
 
 [dispatch]
 dispatch_path = ""

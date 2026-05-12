@@ -49,7 +49,7 @@ def test_agents_commands_partial_override_keeps_defaults_for_others():
 
     assert cfg.commands["codex"] == "/usr/local/bin/codex"
     assert cfg.commands["claude"] == "claude"
-    assert cfg.commands["opencode"] == "opencode"
+    assert cfg.commands["opencode"] == "cp-opencode"
 
 
 def test_legacy_codex_cmd_raises_config_error_with_migration_example():

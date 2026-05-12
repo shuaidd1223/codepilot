@@ -9,6 +9,7 @@ PHASE_4A_TASK_TOOLS = {
     "stop_task",
     "archive_task",
     "generate_breakdown",
+    "validate_task_template",
 }
 
 PHASE_4A_CONTEXT_TOOLS = {
@@ -47,7 +48,7 @@ def test_mcp_stdio_smoke_covers_health_task_context_and_errors(mcp_stdio_smoke_s
             {
                 "project": "demo",
                 "title": "MCP stdio smoke task",
-                "content": "created through tools/call",
+                "content": "",
                 "priority": "P1",
             },
         )

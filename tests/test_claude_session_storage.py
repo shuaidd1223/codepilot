@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from codepilot.claude.session_storage import (
+    claude_session_exists,
     encode_claude_project_dir,
     latest_claude_session_id,
 )
@@ -57,6 +58,39 @@ def test_latest_claude_session_id_ignores_non_jsonl_files(tmp_path: Path):
     (target / "notes.txt").write_text("hello", encoding="utf-8")
     (target / "memory").mkdir()
     assert latest_claude_session_id(project, projects_root=root) == ""
+
+
+def test_claude_session_exists_returns_true_when_jsonl_present(tmp_path: Path):
+    root = tmp_path / "projects"
+    project = tmp_path / "myProject"
+    project.mkdir()
+    target = root / encode_claude_project_dir(project)
+    target.mkdir(parents=True)
+    (target / "ses-xyz.jsonl").write_text("{}\n", encoding="utf-8")
+    assert claude_session_exists(project, "ses-xyz", projects_root=root) is True
+
+
+def test_claude_session_exists_returns_false_when_jsonl_absent(tmp_path: Path):
+    root = tmp_path / "projects"
+    project = tmp_path / "myProject"
+    project.mkdir()
+    target = root / encode_claude_project_dir(project)
+    target.mkdir(parents=True)
+    assert claude_session_exists(project, "ses-xyz", projects_root=root) is False
+
+
+def test_claude_session_exists_returns_false_when_project_dir_missing(tmp_path: Path):
+    assert claude_session_exists(tmp_path / "missing", "ses", projects_root=tmp_path / "projects") is False
+
+
+def test_claude_session_exists_returns_false_for_empty_session_id(tmp_path: Path):
+    root = tmp_path / "projects"
+    project = tmp_path / "myProject"
+    project.mkdir()
+    target = root / encode_claude_project_dir(project)
+    target.mkdir(parents=True)
+    (target / ".jsonl").write_text("{}\n", encoding="utf-8")
+    assert claude_session_exists(project, "", projects_root=root) is False
 
 
 def test_latest_claude_session_id_skips_subdirectories(tmp_path: Path):

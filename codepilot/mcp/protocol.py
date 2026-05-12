@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from codepilot.errors import CodePilotError
 
-class CodePilotToolError(Exception):
+
+class CodePilotToolError(CodePilotError, Exception):
     """Exception type that can be rendered as an MCP tool error response."""
 
     def __init__(

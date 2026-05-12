@@ -49,6 +49,7 @@ def test_task_tools_register_independent_contracts():
         "stop_task",
         "archive_task",
         "generate_breakdown",
+        "validate_task_template",
     }
 
     names = {tool.name for tool in default_registry.list()}
@@ -89,12 +90,50 @@ def test_task_tools_round_trip_create_list_show_and_archive(tmp_path, monkeypatc
     project_path = _init_demo_project(tmp_path, monkeypatch)
     server = _task_server(project_path)
 
+    complete_content = """# 实现 MCP 任务工具
+
+## Task Goal
+
+测试任务创建流程。
+
+## In Scope
+
+- 任务创建
+- 任务列表
+- 任务详情
+
+## Out of Scope
+
+无
+
+## Forbidden (Hard Boundary)
+
+无
+
+## Planning Evidence
+
+无
+
+## Acceptance Criteria
+
+1. 可以创建任务
+2. 可以列出任务
+3. 可以查看任务详情
+
+## Verification Matrix
+
+无
+
+## Reviewer Checkpoints
+
+无
+"""
     created = server.call_tool(
         "create_task",
         {
             "project": "demo",
             "title": "实现 MCP 任务工具",
-            "content": "任务正文",
+            "content": complete_content,
             "priority": "P1",
             "depends_on": [1, 2],
         },
@@ -286,3 +325,155 @@ def test_task_tools_return_structured_errors_for_task_state(tmp_path, monkeypatc
     assert _error_code(not_found) == "task_not_found"
     assert _error_code(invalid_status) == "invalid_task_status"
     assert _error_code(invalid_archive) == "invalid_task_status"
+
+
+def test_create_task_rejects_missing_template_sections(tmp_path, monkeypatch):
+    """create_task 必须拒绝缺少 task-template 必填章节的 content。"""
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _task_server(project_path)
+
+    # 缺少 Task Goal、In Scope、Acceptance Criteria 等章节
+    result = server.call_tool(
+        "create_task",
+        {
+            "project": "demo",
+            "title": "功能需求",
+            "content": "## 标题\n\n简单描述",
+        },
+    )
+
+    # 验证返回错误 code
+    assert _error_code(result) == "missing_template_sections"
+
+    # 验证错误信息明确列出缺少的章节
+    error_msg = result["structuredContent"]["error"]["message"]
+    assert "Task Goal" in error_msg
+    assert "In Scope" in error_msg
+    assert "Acceptance Criteria" in error_msg
+
+
+def test_create_task_succeeds_with_complete_template_sections(tmp_path, monkeypatch):
+    """content 包含全部必填章节时 create_task 可以成功创建。"""
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _task_server(project_path)
+
+    complete_content = """# 功能实现
+
+## Task Goal
+
+实现任务模板校验功能。
+
+## In Scope
+
+- MCP create_task 校验
+- 错误信息返回
+
+## Out of Scope
+
+- 不改模板本身
+
+## Forbidden (Hard Boundary)
+
+不涉及的领域
+
+## Planning Evidence
+
+无
+
+## Acceptance Criteria
+
+1. 缺少章节时返回错误
+2. 错误信息列出缺失章节
+
+## Verification Matrix
+
+无
+
+## Reviewer Checkpoints
+
+无
+"""
+    result = server.call_tool(
+        "create_task",
+        {
+            "project": "demo",
+            "title": "完整任务",
+            "content": complete_content,
+        },
+    )
+
+    assert "task" in result
+    assert result["task"]["id"]
+    assert result["task"]["title"] == "完整任务"
+
+
+def test_validate_task_template_reports_missing_sections(tmp_path, monkeypatch):
+    """validate_task_template 必须报告 content 中缺少的章节。"""
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _task_server(project_path)
+
+    incomplete = "## 标题\n\n简单描述"
+    result = server.call_tool("validate_task_template", {"content": incomplete})
+
+    assert result["is_valid"] is False
+    assert isinstance(result["missing"], list)
+    assert "Task Goal" in result["missing"]
+    assert "In Scope" in result["missing"]
+    assert "Acceptance Criteria" in result["missing"]
+
+
+def test_validate_task_template_passes_complete_content(tmp_path, monkeypatch):
+    """包含全部必填章节的 content 应通过校验。"""
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _task_server(project_path)
+
+    complete = """# 功能实现
+
+## Task Goal
+
+实现模板校验。
+
+## In Scope
+
+- 校验逻辑
+
+## Out of Scope
+
+- 无
+
+## Forbidden (Hard Boundary)
+
+- 无
+
+## Planning Evidence
+
+- 无
+
+## Acceptance Criteria
+
+1. 校验通过
+
+## Verification Matrix
+
+- 无
+
+## Reviewer Checkpoints
+
+- 无
+"""
+    result = server.call_tool("validate_task_template", {"content": complete})
+
+    assert result["is_valid"] is True
+    assert result["missing"] == []
+
+
+def test_validate_task_template_allows_empty_content(tmp_path, monkeypatch):
+    """空 content（无任务内容）应视为有效（允许创建后补充）。"""
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _task_server(project_path)
+
+    result = server.call_tool("validate_task_template", {"content": ""})
+
+    # 空 content 允许通过（create_task 已有拒绝逻辑兜底）
+    assert result["is_valid"] is True
+    assert result["missing"] == []

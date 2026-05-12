@@ -19,7 +19,10 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+import sqlite3
+
 from codepilot.ai_support.cli_families import env_var_for, get_family
+from codepilot.claude.session_storage import claude_session_exists, latest_claude_session_id
 from codepilot.core.config import AgentsConfig, load_project_config
 from codepilot.mcp.launchers import build_mcp_launch_plan
 from codepilot.mcp.server import _missing_mcp_sdk_message
@@ -246,16 +249,69 @@ def _clear_terminal_screen_for_codepilot() -> None:
 
 
 def _print_codepilot_resume_hint(launch: _PreparedChatLaunch, *, project: str | None) -> None:
-    if launch.agent != "opencode" or launch.opencode_db_path is None:
-        return
-    session_id = launch.requested_session or load_latest_project_session_id(
-        launch.cwd,
-        db_path=launch.opencode_db_path,
-    )
+    session_id = _resolve_resume_session_id(launch)
     if not session_id:
         return
     command = _codepilot_resume_command(session_id, project=project)
     click.echo(_codepilot_resume_panel(command, session_id=session_id), err=True)
+
+
+def _detect_session_agent(*, session: str, project: str | None) -> str | None:
+    """Find which chat agent owns ``session`` by inspecting per-agent session stores."""
+    session_id = str(session or "").strip()
+    if not session_id:
+        return None
+    record = _project_record(project)
+    if record:
+        scope = str(record.get("name") or "").strip()
+        cwd = Path(record["path"]).resolve()
+    else:
+        scope = ""
+        cwd = Path.cwd().resolve()
+    if scope and _opencode_session_exists_for_scope(scope, cwd, session_id):
+        return "opencode"
+    if claude_session_exists(cwd, session_id):
+        return "claude"
+    return None
+
+
+def _opencode_session_exists_for_scope(scope: str, project_path: Path, session_id: str) -> bool:
+    if not scope or not session_id:
+        return False
+    db_path = opencode_runtime_db_path(scope)
+    if not db_path.is_file():
+        return False
+    directory = str(Path(project_path).resolve())
+    try:
+        con = sqlite3.connect(str(db_path))
+    except sqlite3.Error:
+        return False
+    try:
+        row = con.execute(
+            "select 1 from session where id = ? and directory = ? limit 1",
+            (session_id, directory),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+    return bool(row)
+
+
+def _resolve_resume_session_id(launch: _PreparedChatLaunch) -> str:
+    if launch.requested_session:
+        return launch.requested_session
+    if launch.agent == "opencode" and launch.opencode_db_path is not None:
+        return load_latest_project_session_id(
+            launch.cwd,
+            db_path=launch.opencode_db_path,
+        )
+    if launch.agent == "claude":
+        return latest_claude_session_id(launch.cwd)
+    return ""
 
 
 def _replace_opencode_exit_screen(launch: _PreparedChatLaunch) -> None:
@@ -667,6 +723,10 @@ def chat(
     agent = agent or root_obj.get("agent")
     session = session or root_obj.get("chat_session")
 
+    if session and not agent:
+        detected = _detect_session_agent(session=session, project=project)
+        if detected:
+            agent = detected
     resolved_agent = _resolve_chat_agent(agent, project)
     try:
         input_stream = None if session or getattr(sys.stdin, "isatty", lambda: False)() else sys.stdin

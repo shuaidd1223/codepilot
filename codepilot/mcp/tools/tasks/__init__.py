@@ -125,6 +125,7 @@ from codepilot.mcp.tools.tasks import generate_breakdown as generate_breakdown_m
 from codepilot.mcp.tools.tasks import list_tasks as list_tasks_module  # noqa: E402,F401
 from codepilot.mcp.tools.tasks import show_task as show_task_module  # noqa: E402,F401
 from codepilot.mcp.tools.tasks import stop_task as stop_task_module  # noqa: E402,F401
+from codepilot.mcp.tools.tasks import validate_task_template as validate_task_template_module  # noqa: E402,F401
 
 __all__ = [
     "archive_task_module",
@@ -134,4 +135,5 @@ __all__ = [
     "list_tasks_module",
     "show_task_module",
     "stop_task_module",
+    "validate_task_template_module",
 ]

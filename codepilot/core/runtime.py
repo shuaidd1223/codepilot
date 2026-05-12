@@ -149,40 +149,50 @@ def _windows_is_process_alive(pid: int) -> bool:
         return False
 
 
-def _windows_process_snapshot() -> dict[int, dict[str, str | int]]:
-    """Return a lightweight process table snapshot on Windows."""
+def _windows_query_processes(*properties: str, timeout: int = 15) -> list[dict[str, object]]:
+    """共享的 Windows 进程查询：运行 PowerShell Get-CimInstance 并返回行列表。
+
+    参数:
+        properties: 要选择的属性名（如 ``"ProcessId"``、``"Name"``）。
+        timeout:    PowerShell 超时秒数。
+
+    返回:
+        解析后的行 dict 列表；出错时返回空列表。
+    """
+    props = ",".join(properties) if properties else "*"
     script = (
         "$ErrorActionPreference='SilentlyContinue'; "
-        "Get-CimInstance Win32_Process | "
-        "Select-Object ProcessId,ParentProcessId,Name | "
-        "ConvertTo-Json -Compress"
+        f"Get-CimInstance Win32_Process | "
+        f"Select-Object {props} | "
+        f"ConvertTo-Json -Compress"
     )
     try:
         result = subprocess.run(
             ["powershell.exe", "-Command", script],
             capture_output=True,
             text=False,
-            timeout=15,
+            timeout=timeout,
         )
     except Exception:
-        return {}
-
+        return []
     raw = decode_subprocess_text(result.stdout).strip()
     if result.returncode != 0 or not raw:
-        return {}
-
+        return []
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
-        return {}
-
+        return []
     rows = payload if isinstance(payload, list) else [payload]
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _windows_process_snapshot() -> dict[int, dict[str, str | int]]:
+    """返回 Windows 进程表的精简快照。"""
+    rows = _windows_query_processes("ProcessId", "ParentProcessId", "Name")
     snapshot: dict[int, dict[str, str | int]] = {}
     for row in rows:
-        if not isinstance(row, dict):
-            continue
         try:
-            proc_id = int(row.get("ProcessId"))
+            proc_id = int(row.get("ProcessId") or 0)
             parent_id = int(row.get("ParentProcessId") or 0)
         except Exception:
             continue
@@ -283,39 +293,18 @@ def find_worktree_processes(worktree_path: str | Path) -> list[int]:
 
     system = platform.system().lower()
     if system == "windows":
-        script = (
-            "$ErrorActionPreference='SilentlyContinue'; "
-            "Get-CimInstance Win32_Process | "
-            "Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath | "
-            "ConvertTo-Json -Compress"
+        rows = _windows_query_processes(
+            "ProcessId", "ParentProcessId", "Name", "CommandLine", "ExecutablePath",
+            timeout=20,
         )
-        try:
-            result = subprocess.run(
-                ["powershell.exe", "-Command", script],
-                capture_output=True,
-                text=False,
-                timeout=20,
-            )
-        except Exception:
-            return []
-        raw = decode_subprocess_text(result.stdout).strip()
-        if result.returncode != 0 or not raw:
-            return []
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            return []
-        rows = payload if isinstance(payload, list) else [payload]
         hits: list[int] = []
         for row in rows:
-            if not isinstance(row, dict):
-                continue
             blob = " ".join(
                 str(row.get(k) or "") for k in ("CommandLine", "ExecutablePath")
             )
             if _path_contains(blob, needle):
                 try:
-                    hits.append(int(row.get("ProcessId")))
+                    hits.append(int(row.get("ProcessId") or 0))
                 except Exception:
                     continue
         return hits

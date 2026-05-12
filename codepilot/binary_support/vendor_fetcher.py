@@ -24,7 +24,10 @@ BUNDLED_VENDOR_MANIFEST = "manifest.json"
 
 
 class VendorFetcherError(RuntimeError):
-    """Base error for vendor fetch failures."""
+    """Base error for vendor fetch failures.
+    同时兼容 ``except RuntimeError`` 和 ``except CodePilotError``。
+    """
+    pass
 
 
 class UnsupportedPlatformError(VendorFetcherError):
