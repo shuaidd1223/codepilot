@@ -1,0 +1,8 @@
+{
+  "name": "codepilot-feishu-bot",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.62.0"
+  }
+}

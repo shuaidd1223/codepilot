@@ -1,0 +1,66 @@
+"""Feishu bot package — command routing, card building, and notification."""
+
+from __future__ import annotations
+
+from codepilot.feishu_bot.card_builders import (
+    build_batch_task_action_card,
+    build_choice_card,
+    build_confirm_cancelled_card,
+    build_confirm_invalid_card,
+    build_global_status_card,
+    build_help_card,
+    build_opencode_answer_card,
+    build_overview_card,
+    build_pending_confirm_card,
+    build_project_command_error_card,
+    build_project_deleted_card,
+    build_project_info_card,
+    build_project_registered_card,
+    build_projects_card,
+    build_service_card,
+    build_services_card,
+    build_session_card,
+    build_sessions_card,
+    build_task_card,
+    build_task_event_card,
+    build_task_log_card,
+    build_tasks_card,
+    notify_feishu_task_event,
+)
+from codepilot.feishu_bot.command_handlers import (
+    handle_card_action_payload,
+    handle_command_text,
+    handle_event_payload,
+)
+from codepilot.feishu_config import load_feishu_bot_config, validate_feishu_bot_config
+
+__all__ = [
+    "handle_command_text",
+    "handle_card_action_payload",
+    "handle_event_payload",
+    "notify_feishu_task_event",
+    "build_batch_task_action_card",
+    "build_choice_card",
+    "build_confirm_cancelled_card",
+    "build_confirm_invalid_card",
+    "build_global_status_card",
+    "build_help_card",
+    "build_opencode_answer_card",
+    "build_overview_card",
+    "build_pending_confirm_card",
+    "build_project_command_error_card",
+    "build_project_deleted_card",
+    "build_project_info_card",
+    "build_project_registered_card",
+    "build_projects_card",
+    "build_service_card",
+    "build_services_card",
+    "build_session_card",
+    "build_sessions_card",
+    "build_task_card",
+    "build_task_event_card",
+    "build_task_log_card",
+    "build_tasks_card",
+    "load_feishu_bot_config",
+    "validate_feishu_bot_config",
+]

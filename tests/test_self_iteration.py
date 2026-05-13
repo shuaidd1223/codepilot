@@ -12,9 +12,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from codepilot import ai as ai_mod
-from codepilot import db
-from codepilot import webui as webui_mod
+import pytest
+
+from codepilot.ai_support import service as ai_mod
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod
 from codepilot.commands import run as run_cmd
 
 
@@ -24,6 +26,7 @@ from codepilot.commands import run as run_cmd
 
 def _init_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
     db.init_db()
     webui_mod._UI_JOBS.clear()
     webui_mod._UI_EVENTS.clear()
@@ -100,10 +103,14 @@ def test_self_iteration_full_lifecycle(tmp_path, monkeypatch):
     assert updated["status"] == "done", f"expected done, got {updated['status']}"
 
     # 2. Feature branch was created (commit history should contain merge commit)
+    # NOTE: on Windows default subprocess encoding is GBK; commit messages from
+    # the builtin executor contain UTF-8 Chinese, so decoding fails silently
+    # and stdout ends up None. Pin encoding/errors explicitly.
     log_output = subprocess.run(
         ["git", "log", "--oneline", "--all", "--graph"],
         cwd=project_path, capture_output=True, text=True,
-    ).stdout
+        encoding="utf-8", errors="replace",
+    ).stdout or ""
     assert "task #" in log_output.lower() or "merge" in log_output.lower(), (
         f"Expected merge evidence in log:\n{log_output}"
     )
@@ -115,16 +122,18 @@ def test_self_iteration_full_lifecycle(tmp_path, monkeypatch):
     # 4. Task branch deleted after merge
     branches = subprocess.run(
         ["git", "branch"], cwd=project_path, capture_output=True, text=True,
-    ).stdout
+        encoding="utf-8", errors="replace",
+    ).stdout or ""
     assert f"feat/task-{task_id}" not in branches, (
         f"Task branch should have been deleted, but found:\n{branches}"
     )
 
     # 5. Currently back on the base branch
-    current = subprocess.run(
+    current = (subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         cwd=project_path, capture_output=True, text=True,
-    ).stdout.strip()
+        encoding="utf-8", errors="replace",
+    ).stdout or "").strip()
     assert current == "main", f"expected main, on {current}"
 
     # 6. Stats
@@ -132,6 +141,7 @@ def test_self_iteration_full_lifecycle(tmp_path, monkeypatch):
     assert stats["failed"] == 0
 
 
+@pytest.mark.slow
 def test_self_iteration_builder_failure_requeues(tmp_path, monkeypatch):
     """When the builder phase fails, the task should be requeued (not marked done)."""
     project_path = tmp_path / "repo"
@@ -169,6 +179,7 @@ def test_self_iteration_builder_failure_requeues(tmp_path, monkeypatch):
     assert stats["done"] == 0
 
 
+@pytest.mark.slow
 def test_self_iteration_review_fail_not_merged(tmp_path, monkeypatch):
     """When the reviewer returns VERDICT: FAIL, changes must NOT be merged."""
     project_path = tmp_path / "repo"
@@ -217,3 +228,4 @@ def test_self_iteration_review_fail_not_merged(tmp_path, monkeypatch):
     assert "bad change" not in readme
 
     assert stats["done"] == 0
+

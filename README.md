@@ -1,317 +1,281 @@
 # CodePilot
 
-CodePilot 是一个本地工程工作流 CLI，用来把自然语言需求转换成排队任务，并自动规划、执行、审查和交付。
-
-## 项目定位
-
-它主要解决三类问题：
-
-1. 把一句需求变成任务
-- 支持直接输入自然语言
-- 自动判断是简单任务还是复杂任务
-- 复杂任务会拆成线性子任务
-
-2. 把任务真正执行掉
-- 支持外部 `dispatch` 脚本
-- 也支持内置执行器，直接调用 `codex exec`
-- 每个任务执行后可以自动 review 和自动提交
-
-3. 把执行过程管起来
-- 任务状态写入 SQLite
-- 支持实时日志、运行阶段、心跳、停止任务
-- 卡住的任务可以自动回收，不会一直挂在 `in_progress`
-
-## 当前能力
-
-- 使用 `AGENTS.toml` 注册和管理项目
-- 用 SQLite 保存任务、日志和运行状态
-- 直接支持纯文本入口：`codepilot "你的需求"`
-- 支持在规划时指定任务智能体，例如 `--agent codex` 或 `--agent claude`
-- 支持会话模式：`codepilot chat` 或直接运行 `codepilot`
-- 自动判断需求复杂度，并决定是否拆分
-- 支持 `run / daemon` 执行 backlog
-- 支持查看实时日志、停止任务、手动重试指定任务、自动回收卡住任务
-- 支持打包成单文件二进制，并安装到系统命令路径
-- 支持把现有二进制整理成标准发布目录
-- 支持输出供其他 AI 直接调用的命令清单和使用手册
+CodePilot 是一个本地工程工作流 CLI，用来把自然语言需求转成可执行任务，并串起规划、执行、审查、巡检、服务运维和发布流程。
 
 ## 快速开始
 
-初始化当前项目：
+首次接入一个仓库：
 
 ```bash
-codepilot init .
+codepilot setup .
+codepilot doctor --project <项目名> --services
 ```
 
-直接输入一个需求：
+提交明确需求，让 CodePilot 判断是否拆分并按配置执行：
 
 ```bash
 codepilot "实现自动拆分和自动执行工作流"
+codepilot go "修复任务重试逻辑并补测试" -p <项目名>
 ```
 
-进入持续交互模式：
+询问项目状态、任务统计或服务状态：
 
 ```bash
-codepilot chat
-```
-
-查看项目状态：
-
-```bash
+codepilot go "当前项目有多少任务，完成了多少" -p <项目名>
 codepilot status -p <项目名> -v
+codepilot hud -p <项目名> --preset full
 ```
 
-查看任务日志：
+`chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP。可以像使用 OpenCode 一样直接输入问题、需求或操作意图；需要严格产出规格或计划 artifact 时，再显式调用 `clarify` / `plan` / Web UI 面板入口。
+
+## 常用命令
+
+### 项目与需求
 
 ```bash
-codepilot logs <task_id>
+codepilot init .
+codepilot setup . --dry-run --json
+codepilot clarify -p <项目名> "模糊需求" --json
+codepilot plan -p <项目名> "明确需求" --json
+codepilot auto -p <项目名> -t "高层目标" --plan-only
 ```
 
-停止一个运行中的任务：
+### 只读上下文与记忆
 
 ```bash
-codepilot stop <task_id>
+codepilot explore -p <项目名> --prompt "要查询的问题" --json
+codepilot wiki query -p <项目名> "构建" --json
+codepilot note add -p <项目名> "当前验证命令是 pytest tests"
+codepilot trace -p <项目名> --limit 30
 ```
 
-手动重试一个失败/取消的任务：
+### 任务运维
 
 ```bash
-codepilot retry <task_id>
+codepilot task show <task_id>
+codepilot task logs <task_id> --tail 80
+codepilot task find <关键词> -p <项目名>
+codepilot task stop <task_id>
+codepilot task retry <task_id>
+codepilot task resume <task_id>
+codepilot task cancel <task_id>
+codepilot task archive <task_id>
+codepilot task rm <task_id>
 ```
 
-启动本地 Web UI：
+### 队列、服务与排障
+
+```bash
+codepilot run -p <项目名> --once
+codepilot daemon -p <项目名>
+codepilot daemon -p <项目名> --status
+codepilot inspect -p <项目名> --once
+codepilot inspect -p <项目名> --status
+codepilot build-fix -p <项目名> --task-id <task_id> --json
+codepilot doctor --project <项目名> --services --json
+```
+
+### Scheduled / Event Agent
+
+`scheduled` 子命令用于查看、手动运行或禁用 `AGENTS.toml` 中声明的定时 agent。
+事件触发 agent 由事件流构造任务，不通过 `scheduled run-once` 直接触发。
+
+```bash
+codepilot scheduled list -p <项目名>
+codepilot scheduled show task_health -p <项目名> --json
+codepilot scheduled run-once task_health --dry-run
+codepilot scheduled run-once task_health -p <项目名> --dry-run
+codepilot scheduled disable task_health -p <项目名>
+```
+
+最小配置示例：
+
+```toml
+[automation.scheduled_agents.task_health]
+enabled = true
+agent = "codex"
+interval = "10m" # 也可使用 schedule = "0 9 * * *"
+prompt = "Review local CodePilot task status and summarize risks."
+max_cost_usd = 0.10
+max_daily_cost_usd = 0.50
+
+[automation.event_agents.failed_task_triage]
+enabled = false
+trigger = "task.failed"
+agent = "codex"
+prompt = "Task {{ task_id }} failed with {{ error_message }}. Suggest the smallest repair."
+max_cost_usd = 0.10
+max_daily_cost_usd = 0.50
+```
+
+本仓库默认提供三个 scheduled agent：`task_health` 检查任务健康，`daily_summary`
+准备日报摘要，`auto_inspect` 生成轻量巡检建议。运行记录写入
+`.codepilot/scheduled/audit.jsonl`，成本和循环护栏状态写入
+`.codepilot/scheduled/guards.json`。
+
+### Web UI、飞书、Webhook
 
 ```bash
 codepilot ui
+codepilot ui start
+codepilot ui logs --tail 100
+codepilot feishu start
+codepilot feishu status
+codepilot webhook --host 127.0.0.1 --port 8765
 ```
 
-## 给其他 AI 用
+### AI、事件、Hook、Provider 与 Skill
 
-如果你希望把 CodePilot 暴露给其他 AI、Agent 或自动化系统直接调用，当前已经内置了机器可读和 AI 友好的入口。
+```bash
+codepilot ai manifest
+codepilot ai guide
+codepilot ai template --format json
+codepilot event schema --json
+codepilot hook validate -p <项目名> --json
+codepilot exec -p <项目名> --provider codex --dry-run --json -- codex --version
+codepilot skill list -p <项目名> --json
+```
 
-输出机器可读的命令清单：
+### 二进制构建与发布
+
+```bash
+codepilot binary build
+codepilot binary install --binary <path-to-binary>
+codepilot binary prepare --version 0.1.1
+codepilot binary release --build-current
+codepilot binary verify
+codepilot binary where
+```
+
+## CLI Agent 家族与兜底链
+
+CodePilot 把可调用的 CLI agent 抽成了 family 注册表，目前内置三家：`claude`、`codex`、`opencode`。
+当前面项缺失（未安装/未配置 key/超时）时，按 `[automation] fallback_cli_order` 顺序退到下一家，
+默认是 `["claude", "codex", "opencode"]`。OpenCode 作为可更新交互内核，由 CodePilot 在启动时按项目配置注入 provider、模型、MCP 和权限。
+
+`AGENTS.toml` 中的相关字段：
+
+```toml
+[agents]
+# planner/builder/reviewer 留空时使用对应场景默认值
+planner = ""
+builder = ""
+reviewer = ""
+
+[agents.commands]
+# CLI family -> 命令名/绝对路径；缺失项默认使用同名命令
+claude = "claude"
+codex = "codex"
+opencode = "opencode"
+
+[automation]
+# 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个
+fallback_cli_order = ["claude", "codex", "opencode"]
+
+# OpenCode provider 由 [providers.<name>] 动态生成。
+# openai / deepseek / qwen / kimi / 其他 OpenAI 兼容服务都应各自配置独立 provider。
+[providers.deepseek]
+enabled = true
+api_key = ""
+base_url = "https://api.deepseek.com"
+complex_model = "deepseek-v4-pro"
+
+[providers.openai]
+enabled = true
+api_key = ""
+base_url = "https://api.openai.com/v1"
+model = "gpt-5.4"
+```
+
+迁移提示：旧版 `[agents] codex_cmd / claude_cmd` 已删除，加载时会抛 `ConfigError` 并给出
+迁移示例。运行 `codepilot config sync -p <项目名>` 可一键重写旧文件到新格式。
+
+### OpenCode 专用模式
+
+`codepilot chat -a opencode` 使用官方 OpenCode 二进制作为可更新内核，同时由 CodePilot 在启动前生成
+用户级运行时配置：`~/.codepilot/opencode/<项目标识>/opencode.json`、`tui.json` 和 `config/` 目录，并注入：
+
+- `OPENCODE_CONFIG`：包含 CodePilot MCP、默认 agent、commands、instructions、permission、tools。
+- `OPENCODE_TUI_CONFIG`：包含 TUI theme、滚动、diff、mouse 配置和 CodePilot 品牌 TUI plugin。
+- `OPENCODE_CONFIG_DIR`：包含 `agents/codepilot.md`、`commands/*.md`、`instructions/*.md`、`tui-plugins/codepilot-brand.tsx`，用于 OpenCode 原生 agent/command/plugin 发现。
+- `OPENCODE_DISABLE_TERMINAL_TITLE=1`：禁用 OpenCode 自己的终端标题更新，由 CodePilot 把终端窗口/标签标题设置为工具品牌。
+
+OpenCode 套壳品牌、TUI、中文交互规则、默认 agent 和内置 commands 都属于 CodePilot 工具级定制，随包代码发布，不需要业务项目在 `AGENTS.toml` 中配置 `[opencode.*]`。业务项目目录不会生成 `.codepilot/opencode/`；运行时文件只写入用户级 `~/.codepilot/opencode/<项目标识>/`，用来落地项目注册名、MCP 启动命令、隔离会话数据和项目级模型选择。
+
+业务项目只需要配置实际使用的模型供应商和权限策略。例如：
+
+```toml
+[opencode.permission]
+# 默认 ask；信任当前项目时可改为 full_access；需要细粒度规则时用 custom。
+mode = "ask"
+
+[providers.deepseek]
+enabled = true
+api_key = ""
+base_url = "https://api.deepseek.com"
+complex_model = "deepseek-v4-pro"
+simple_model = "deepseek-v4-flash"
+```
+
+用户在 OpenCode TUI 中切换过模型后，CodePilot 会把选择保存为该项目的默认模型。后续新建会话会优先使用项目级选择，不会被 OpenCode 内置免费默认模型覆盖。
+
+这条路径不修改 OpenCode 源码，升级 OpenCode 时继续使用官方 `opencode` 命令即可。当前项目不维护 OpenCode 源码 overlay 或自定义二进制；如果 OpenCode TUI 内部其他硬编码欢迎语、权限弹窗文案仍显示 OpenCode，先记录为官方二进制不可配置边界。
+
+## 已统一的新入口
+
+这些旧入口不要再使用：
+
+- `codepilot release ...`
+- 顶层 `codepilot show/logs/stop/retry/find/...`
+- `codepilot webui ...`
+- `codepilot chat --no-ui` 旧 REPL
+- `add --no-ai` / `add --allow-empty`
+
+统一改为：
+
+- 发布：`codepilot binary ...`
+- 任务：`codepilot task ...`
+- Web UI：`codepilot ui <start|status|logs|stop|restart>`
+- Chat：`codepilot chat -a opencode`
+- 外部任务投递：先读 `codepilot ai template --format json`，再用模板合规内容调用 `codepilot add ...`
+
+## 文档导航
+
+- 说明文档：[docs/说明文档.zh-CN.md](docs/说明文档.zh-CN.md)
+- 操作文档：[docs/操作文档.zh-CN.md](docs/操作文档.zh-CN.md)
+- AI / Agent 调用手册：[docs/AI与Agent调用手册.zh-CN.md](docs/AI与Agent调用手册.zh-CN.md)
+- Skill 化集成指南：[docs/Skill化集成指南.zh-CN.md](docs/Skill化集成指南.zh-CN.md)
+- 项目服务说明：[docs/project-services.md](docs/project-services.md)
+
+## 给其他 AI / Agent 的标准入口
+
+机器可读命令清单：
 
 ```bash
 codepilot ai manifest
 ```
 
-输出 Markdown 调用手册：
+AI 调用手册：
 
 ```bash
 codepilot ai guide
 ```
 
-输出短提示词：
+短提示词：
 
 ```bash
 codepilot ai prompt
 ```
 
-仓库根目录还提供了一份静态手册：
+仓库根目录还保留静态产物：
 
 - `AI_MANIFEST.json`
 - `AI_USAGE.zh-CN.md`
 
-推荐做法：
+## Skill 包
 
-1. 用 `codepilot ai manifest` 获取命令和工作流清单
-2. 用 `codepilot status -p <项目名> --json` 拉结构化状态
-3. 用 `codepilot "需求文本"` 直接把高层需求交给 CodePilot
-4. 用 `codepilot logs <task_id>`、`codepilot stop <task_id>` 和 `codepilot retry <task_id>` 做运行期排障
+仓库提供可复用 Skill：
 
-## Web UI
+- `skills/codepilot-workflow/SKILL.md`
 
-如果你觉得终端命令太重，可以直接起本地控制台：
-
-```bash
-codepilot ui
-```
-
-默认会打开：
-
-```text
-http://127.0.0.1:8766/
-```
-
-当前 Web UI 支持：
-
-- 查看所有项目及其任务统计
-- 查看单个项目的任务列表和当前运行状态
-- 对任务执行 `重试 / 停止 / 插队`
-- 自动刷新，方便盯运行中的任务
-
-如果你不想自动打开浏览器：
-
-```bash
-codepilot ui --no-open
-```
-
-## 二进制打包
-
-先安装构建依赖：
-
-```bash
-pip install .[build]
-```
-
-为当前系统构建单文件二进制：
-
-```bash
-codepilot binary build
-```
-
-构建完成后直接安装到用户命令目录：
-
-```bash
-codepilot binary build --install
-```
-
-安装已有二进制到系统命令路径：
-
-```bash
-codepilot binary install --binary ./dist/binary/linux-x86_64/codepilot
-codepilot binary install --binary .\\dist\\binary\\windows-x86_64\\codepilot.exe
-```
-
-查看默认安装目录：
-
-```bash
-codepilot binary where
-```
-
-默认安装路径：
-
-- Windows：`%LOCALAPPDATA%\\Programs\\CodePilot\\bin`
-- Linux：`~/.local/bin`
-
-说明：
-
-- Windows 和 Linux 需要分别在各自系统上原生构建，不支持直接交叉打包
-- `binary install` 会安装到用户目录，并在需要时自动写入用户 PATH
-
-## 发布产物
-
-把已经构建好的二进制整理成标准发布目录：
-
-```bash
-codepilot binary release
-```
-
-手动指定某个平台的二进制：
-
-```bash
-codepilot binary release --artifact windows-x86_64=dist/binary/windows-x86_64/codepilot.exe
-codepilot binary release --artifact linux-x86_64=dist/binary/linux-x86_64/codepilot
-```
-
-发布前先自动构建当前平台：
-
-```bash
-codepilot binary release --build-current
-```
-
-校验最新一次发布目录：
-
-```bash
-codepilot binary verify
-```
-
-如果你想把“改版本号 + 构建当前平台 + 生成发布目录 + 校验”收成一个命令：
-
-```bash
-codepilot binary prepare --version 0.1.1
-```
-
-同样也可以直接使用顶层发布入口：
-
-```bash
-codepilot release prepare --version 0.1.1
-codepilot release verify
-codepilot release bundle --build-current
-```
-
-发布目录默认会生成到：
-
-```text
-dist/release/codepilot-<version>
-```
-
-其中包含：
-
-- `release.json`：发布元数据
-- `SHA256SUMS.txt`：二进制和压缩包校验值
-- `<platform>/`：平台对应原始二进制和安装脚本
-- `README.zh-CN.md`：中文安装说明
-- `AI_USAGE.zh-CN.md`：给其他 AI 的调用手册
-- `AI_MANIFEST.json`：机器可读的命令清单
-- `SUMMARY.zh-CN.md`：发布摘要和交付建议
-- Windows: `codepilot-<version>-<platform>.zip`
-- Linux: `codepilot-<version>-<platform>.tar.gz`
-
-`binary verify` 会检查：
-
-- `release.json` 是否可解析
-- `SHA256SUMS.txt` 是否存在且格式正确
-- 发布目录中的二进制、压缩包、安装脚本是否齐全
-- `README.zh-CN.md`、`AI_USAGE.zh-CN.md`、`AI_MANIFEST.json` 和 `SUMMARY.zh-CN.md` 是否存在
-- 校验值是否和清单一致
-
-`binary prepare` 会执行：
-
-1. 同步更新 `pyproject.toml` 和 `codepilot/__init__.py` 的版本号
-2. 构建当前平台二进制
-3. 生成发布目录
-4. 自动执行发布目录校验
-
-## 配置说明
-
-`AGENTS.toml` 当前重点使用这些配置：
-
-```toml
-[project]
-name = "demo"
-default_mode = "codex"
-
-[automation]
-planner = "codex"
-executor = "builtin"
-auto_execute = true
-auto_commit = true
-
-[agents]
-codex_cmd = "codex"
-claude_cmd = "claude"
-```
-
-关键点：
-
-- `default_mode = "codex"` 表示默认任务智能体
-- `planner = "codex"` 表示默认规划器
-- `[agents]` 中的 `codex_cmd / claude_cmd` 会真正覆盖运行时 CLI 路径
-
-## 当前默认行为
-
-- 默认项目模式是 `codex`
-- 默认规划器是 `codex`
-- Codex 规划超时时，会自动降级成单任务继续执行
-- 内置执行器会在执行前检查 Git 状态
-- 如果工作区已脏、还没初始化 Git，或者 reviewer 无法正常运行，会提前给出自然语言提示
-
-## 运行时控制
-
-为了避免“任务看起来没反应，其实后台还在跑”的问题，现在运行态会额外保存：
-
-- 当前阶段：`pending / builder / reviewer / dispatch`
-- 最近一次心跳时间
-- 活跃进程 PID
-- 当前日志文件路径
-- 最近一段输出
-- 是否已收到停止请求
-
-这意味着你现在可以：
-
-- 用 `status -v` 看任务是否还活着
-- 用 `logs` 看实时输出
-- 用 `stop` 停掉当前任务
-- 用 `retry` 把失败或取消的指定任务重新放回 backlog
-- 让系统自动把失联且无进程的任务标记为 `failed`
+该 Skill 用英文编写，供其他 Codex / Agent 固化 CodePilot 的调用策略、命令顺序和排障流程。安装和维护方式见：[docs/Skill化集成指南.zh-CN.md](docs/Skill化集成指南.zh-CN.md)

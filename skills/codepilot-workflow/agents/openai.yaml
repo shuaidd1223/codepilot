@@ -1,0 +1,7 @@
+interface:
+  display_name: "CodePilot Workflow"
+  short_description: "Operate CodePilot requirements, plans, tasks, services, integrations, and releases."
+  default_prompt: "Use $codepilot-workflow for CodePilot status, planning, task operations, services, and releases."
+
+policy:
+  allow_implicit_invocation: true

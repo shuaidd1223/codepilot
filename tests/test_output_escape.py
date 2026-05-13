@@ -10,7 +10,7 @@ from rich.markup import MarkupError
 from rich.table import Table
 
 from codepilot.commands.status import _short_text
-from codepilot.output import safe
+from codepilot.core.output import safe
 
 
 def _render(markup_text: str, *, markup: bool = True) -> str:
@@ -46,3 +46,4 @@ def test_well_formed_markup_still_renders():
     out = _render("[green]ok[/green]")
     # rich strips tags when rendering to plain string but content survives
     assert "ok" in out
+

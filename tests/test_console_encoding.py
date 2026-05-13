@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from codepilot import console_encoding as encoding_mod
+from codepilot.core import console_encoding as encoding_mod
 
 
 class _DummyStream:
@@ -65,3 +65,4 @@ def test_configure_console_encoding_is_noop_on_non_windows(monkeypatch):
     assert stderr.calls == []
     assert "PYTHONIOENCODING" not in encoding_mod.os.environ
     assert "PYTHONUTF8" not in encoding_mod.os.environ
+

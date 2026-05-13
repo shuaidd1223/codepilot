@@ -15,5 +15,18 @@ dist/
 *.egg-info/
 
 .workbuddy/
+AGENTS.toml
+.codepilot/*
+!.codepilot/notepad.md
+!.codepilot/wiki/
+!.codepilot/wiki/**
+.codepilot.secrets.toml
 tasks.db
 .claude/
+node_modules/
+package-lock.json
+
+# coverage.py 运行产物
+.coverage
+.coverage.*
+htmlcov/

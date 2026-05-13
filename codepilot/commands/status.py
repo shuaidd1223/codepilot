@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import click
 from rich import box
 from rich.columns import Columns
@@ -14,9 +12,11 @@ from rich.markup import escape as _markup_escape
 from rich.text import Text
 from rich.console import Group
 
-from codepilot import db
-from codepilot.output import echo
-from codepilot.runtime import runtime_summary
+from codepilot.storage import database as db
+from codepilot.webapp.display_sort import sort_tasks_for_display
+from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
+from codepilot.core.output import echo, terminal_console
+from codepilot.core.runtime import runtime_summary
 
 STATUS_META = {
     "backlog": ("待办", "yellow"),
@@ -41,6 +41,29 @@ def _status_badge(status: str) -> str:
     return f"[bold {color}]{label}[/{color}]"
 
 
+def _status_stats_line(stats: dict, *, include_cancelled: bool = False) -> str:
+    parts = [
+        f"[blue]进行中:{stats['in_progress']}[/blue]",
+        f"[yellow]待办:{stats['backlog']}[/yellow]",
+        f"[red]失败:{stats['failed']}[/red]",
+    ]
+    if include_cancelled:
+        parts.append(f"[magenta]已取消:{stats['cancelled']}[/magenta]")
+    parts.extend(
+        [
+            f"[green]完成:{stats['done']}[/green]",
+            f"[cyan]总计:{stats['total']}[/cyan]",
+        ]
+    )
+    return "  ".join(parts)
+
+
+def _build_console(console: Console | None = None) -> Console:
+    if console is not None:
+        return console
+    return terminal_console()
+
+
 def _metric_panel(label: str, value: int, color: str) -> Panel:
     body = Text()
     body.append(f"{value}\n", style=f"bold {color}")
@@ -59,15 +82,15 @@ def _task_recent(task: dict, *, verbose: bool = False) -> str:
 
 def _task_table(tasks: list[dict], *, verbose: bool = False) -> Table:
     table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
-    table.add_column("ID", style="dim", width=4, justify="right")
-    table.add_column("P", width=3, justify="center")
-    table.add_column("Agent", width=8)
-    table.add_column("标题", min_width=24, ratio=3)
-    table.add_column("阶段", width=10)
-    table.add_column("最近信息", min_width=30, ratio=4)
+    table.add_column("ID", style="dim", width=4, justify="right", no_wrap=True)
+    table.add_column("P", width=3, justify="center", no_wrap=True)
+    table.add_column("Agent", width=8, no_wrap=True, overflow="ellipsis")
+    table.add_column("标题", ratio=3, no_wrap=True, overflow="ellipsis")
+    table.add_column("阶段", width=10, no_wrap=True, overflow="ellipsis")
+    table.add_column("最近信息", ratio=4, no_wrap=True, overflow="ellipsis")
     if verbose:
-        table.add_column("创建时间", style="dim", width=19)
-        table.add_column("最后输出", style="dim", min_width=24, ratio=3)
+        table.add_column("创建时间", style="dim", width=19, no_wrap=True)
+        table.add_column("最后输出", style="dim", ratio=3, no_wrap=True, overflow="ellipsis")
 
     for task in tasks:
         row = [
@@ -105,20 +128,12 @@ def render_project_dashboard(
         echo(f"[red]错误：项目 '{project}' 未注册[/red]")
         return
 
-    import shutil
-    term_width = shutil.get_terminal_size((120, 24)).columns
-    console = console or Console(width=min(term_width, 140))
+    console = _build_console(console)
     stats = db.get_task_stats(project)
     header = title or f"CodePilot  {project}"
 
     # 紧凑统计行（替代 6 个 Panel 方块）
-    stat_line = (
-        f"[blue]进行中:{stats['in_progress']}[/blue]  "
-        f"[yellow]待办:{stats['backlog']}[/yellow]  "
-        f"[red]失败:{stats['failed']}[/red]  "
-        f"[green]完成:{stats['done']}[/green]  "
-        f"[cyan]总计:{stats['total']}[/cyan]"
-    )
+    stat_line = _status_stats_line(stats)
     console.print()
     console.print(f"[bold cyan]{header}[/bold cyan]  {stat_line}")
     console.print(f"[dim]{proj['path']}[/dim]")
@@ -131,8 +146,7 @@ def render_project_dashboard(
         console.print("[dim]当前没有可显示的任务[/dim]\n")
         return
 
-    status_order = {"in_progress": 0, "backlog": 1, "failed": 2, "cancelled": 3, "done": 4}
-    tasks = sorted(tasks, key=lambda item: (status_order.get(item["status"], 9), item["priority"], item["id"]))
+    tasks = sort_tasks_for_display(tasks)
     sections = [
         ("进行中", "blue", [task for task in tasks if task["status"] == "in_progress"][: max(1, max_rows // 2)]),
         ("待办", "yellow", [task for task in tasks if task["status"] == "backlog"][: max_rows]),
@@ -147,6 +161,28 @@ def render_project_dashboard(
             console.print()
 
 
+def render_project_stats(
+    project: str,
+    *,
+    title: str | None = None,
+    console: Console | None = None,
+) -> None:
+    """Render one project's aggregate task stats without the dashboard detail."""
+    proj = db.get_project(project)
+    if not proj:
+        echo(f"[red]错误：项目 '{project}' 未注册[/red]")
+        return
+
+    stats = db.get_task_stats(project)
+    console = _build_console(console)
+    header = title or f"状态统计  {project}"
+
+    console.print()
+    console.print(f"[bold cyan]{header}[/bold cyan]  {_status_stats_line(stats, include_cancelled=True)}")
+    console.print(f"[dim]{proj['path']}[/dim]")
+    console.print()
+
+
 def _resolve_project(ctx: click.Context, param: str, value: str | None) -> str | None:
     """解析项目名：支持空值（查看全部）。"""
     if not value:
@@ -156,7 +192,7 @@ def _resolve_project(ctx: click.Context, param: str, value: str | None) -> str |
     if not proj:
         echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
         raise click.Abort()
-    return value
+    return str(proj["name"])
 
 
 @click.command(context_settings={"allow_interspersed_args": False})
@@ -173,9 +209,7 @@ def status(ctx: click.Context, project: str | None, verbose: bool, json_mode: bo
     查看任务看板：backlog / in-progress / done / failed 四列状态.
     """
     db.init_db()
-    # 优先用本地 --json，否则用全局
-    if not json_mode and ctx.parent:
-        json_mode = ctx.parent.obj.get("json_mode", False)
+    json_mode = resolve_json_mode(ctx, json_mode)
 
     if project:
         return _show_project_status(project, verbose, json_mode)
@@ -187,18 +221,31 @@ def _show_project_status(project: str, verbose: bool, json_mode: bool):
     """显示单个项目的看板。"""
     proj = db.get_project(project)
     if not proj:
-        echo(f"[red]错误：项目 '{project}' 未注册[/red]")
-        click.echo("  运行 codepilot init 先注册项目")
+        if json_mode:
+            emit_json_payload(
+                "status",
+                ok=False,
+                data={"project": project, "stats": {}, "tasks": []},
+                error=f"项目 '{project}' 未注册",
+                error_code="project_not_registered",
+            )
+        else:
+            echo(f"[red]错误：项目 '{project}' 未注册[/red]")
+            click.echo("  运行 codepilot init 先注册项目")
         return
 
     if json_mode:
-        tasks = db.list_tasks(project=project)
+        tasks = sort_tasks_for_display(db.list_tasks(project=project))
         stats = db.get_task_stats(project)
-        click.echo(json.dumps({
-            "project": project,
-            "stats": stats,
-            "tasks": tasks,
-        }, ensure_ascii=False, indent=2))
+        emit_json_payload(
+            "status",
+            ok=True,
+            data={
+                "project": project,
+                "stats": stats,
+                "tasks": tasks,
+            },
+        )
         return
 
     render_project_dashboard(project, verbose=verbose, include_done=True, title=f"CodePilot  {project}")
@@ -208,24 +255,27 @@ def _show_all_projects_status(verbose: bool, json_mode: bool):
     """显示所有项目的汇总看板。"""
     projects = db.list_projects()
     if not projects:
-        echo("[yellow]没有已注册的项目[/yellow]")
+        if json_mode:
+            emit_json_payload("status", ok=True, data={"projects": [], "count": 0})
+        else:
+            echo("[yellow]没有已注册的项目[/yellow]")
         return
 
     if json_mode:
         all_data = []
         for proj in projects:
             stats = db.get_task_stats(proj["name"])
-            tasks = db.list_tasks(project=proj["name"])
+            tasks = sort_tasks_for_display(db.list_tasks(project=proj["name"]))
             all_data.append({
                 "project": proj["name"],
                 "path": proj["path"],
                 "stats": stats,
                 "tasks": tasks,
             })
-        click.echo(json.dumps(all_data, ensure_ascii=False, indent=2))
+        emit_json_payload("status", ok=True, data={"projects": all_data, "count": len(all_data)})
         return
 
-    console = Console(width=160)
+    console = _build_console()
     console.print()
     console.print(Panel(Text("CodePilot 所有项目", style="bold cyan"), border_style="cyan", padding=(0, 1)))
 
@@ -256,3 +306,4 @@ def _show_all_projects_status(verbose: bool, json_mode: bool):
 
     console.print(table)
     console.print()
+

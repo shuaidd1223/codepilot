@@ -1,0 +1,197 @@
+"""Prompt construction helpers for the built-in executor."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from codepilot.prompts import load_prompt as _load_prompt
+from codepilot.commands.reviewer_output import ReviewerVerdict, parse_reviewer_output
+from codepilot.commands.run_builtin_core import (
+    _bullet_lines,
+    _collect_project_conventions_snippet,
+    _extract_task_sections,
+)
+
+
+def _build_builtin_prompt(
+    task: dict,
+    task_file: Path,
+    *,
+    project_path: Path | None = None,
+    review_round: int = 1,
+    previous_review_feedback: str = "",
+) -> str:
+    """Compose the Builder prompt."""
+    sections = _extract_task_sections(task.get("content") or "")
+    goal = (sections.get("任务目标") or "").strip()
+    acceptance = _bullet_lines(sections.get("验收标准") or "")
+    builder_notes = _bullet_lines(sections.get("Builder 职责") or "")
+    files = _bullet_lines(sections.get("涉及文件") or "")
+    forbidden = (sections.get("禁区") or "").strip()
+    dependencies = (sections.get("依赖") or "").strip()
+    not_in_scope = (sections.get("不涉及") or "").strip()
+
+    lines: list[str] = []
+    if review_round <= 1:
+        lines.append(f"你正在执行排队任务 #{task['id']}：{task['title']}")
+    else:
+        lines.append(
+            f"这是任务 #{task['id']} 「{task['title']}」的第 {review_round} 轮重做。"
+            " 上一轮 reviewer 发现了阻塞问题，请针对性修复。"
+        )
+    lines.append("")
+
+    lines.append("【严格模式（必须遵守）】")
+    lines.append("1. 只修改任务正文中明确列出的新建/追加/修改文件，不碰其它文件。")
+    lines.append("2. 任务正文提供了代码骨架时，按骨架落地；不要新增字段/列/函数/导入/依赖。")
+    lines.append("3. 不要做 reviewer 没要求的 '工程最佳实践' 扩展（如复合外键、跨币种、多账户审计等）。")
+    lines.append("4. 任务没有要求跑迁移 / 拉依赖 / 启服务时，不要执行。")
+    lines.append("5. 最小 diff：删代码仅限任务明确声明；保留现有 import、格式、缩进。")
+    lines.append("")
+
+    if goal:
+        lines.append("【任务目标】")
+        lines.append(goal)
+        lines.append("")
+
+    if acceptance:
+        lines.append("【验收标准（必须全部达成，reviewer 会逐条核对）】")
+        for idx, item in enumerate(acceptance, 1):
+            lines.append(f"  {idx}. {item}")
+        lines.append("")
+
+    if forbidden:
+        lines.append("【禁区（绝对不要碰的文件/模块）】")
+        lines.append(forbidden)
+        lines.append("")
+
+    if dependencies:
+        lines.append("【前置任务（已完成，直接使用其产出，不要重复实现）】")
+        lines.append(dependencies)
+        lines.append("")
+
+    if not_in_scope:
+        lines.append("【本任务不涉及（留给其它任务，不要提前做）】")
+        lines.append(not_in_scope)
+        lines.append("")
+
+    if builder_notes:
+        lines.append("【实施提示（来自规划器）】")
+        for item in builder_notes:
+            lines.append(f"  - {item}")
+        lines.append("")
+
+    if files:
+        lines.append("【预计要动的文件（非强制，偏离请在 Summary 说明）】")
+        for item in files:
+            lines.append(f"  - {item}")
+        lines.append("")
+
+    conventions = ""
+    if project_path is not None:
+        conventions = _collect_project_conventions_snippet(project_path)
+    if conventions:
+        lines.append("【项目约定（来自 AGENTS.md / CLAUDE.md / CONTRIBUTING.md 等，必须遵守）】")
+        lines.append(conventions)
+        lines.append("")
+
+    if review_round > 1 and previous_review_feedback:
+        lines.append("【上一轮 reviewer 的阻塞意见（必须处理）】")
+        lines.append(previous_review_feedback.strip())
+        lines.append("")
+
+    lines.append(_load_prompt("builder_rules", task_file=str(task_file)).rstrip())
+    return "\n".join(lines)
+
+
+def _build_review_prompt(
+    task: dict,
+    *,
+    review_round: int = 1,
+    previous_findings: str = "",
+    changed_files: list[str] | None = None,
+) -> str:
+    """Compose the Reviewer prompt with acceptance-criteria-driven checklist."""
+    sections = _extract_task_sections(task.get("content") or "")
+    acceptance = _bullet_lines(sections.get("验收标准") or "")
+    reviewer_notes = _bullet_lines(sections.get("Reviewer 职责") or "")
+    goal = (sections.get("任务目标") or "").strip()
+    forbidden = (sections.get("禁区") or "").strip()
+    not_in_scope = (sections.get("不涉及") or "").strip()
+
+    lines = [f"请审查当前仓库中为任务 #{task['id']} `{task['title']}` 产生的未提交改动。"]
+
+    if changed_files:
+        lines.append("")
+        lines.append("【本次 builder 实际改动的文件】")
+        for path in changed_files[:40]:
+            lines.append(f"  - {path}")
+        if len(changed_files) > 40:
+            lines.append(f"  - ... 共 {len(changed_files)} 个文件（截断显示前 40）")
+        lines.append(
+            "判定守则：如果任何一个文件不在任务【唯一目标】/【新建文件】/【追加内容】"
+            "声明的路径里，即视为**越界修改**，必须判 FAIL 并在 '需要修复的点' "
+            "里要求 builder 回滚那些越界改动。"
+        )
+    if review_round > 1:
+        lines.append(
+            f"（这是第 {review_round} 轮审查。根据 reviewer_rules 的硬约束，"
+            "本轮你只能复核上一轮已经提出过的阻塞点是否修复；"
+            "任何新发现的问题都放到「非阻塞观察」里，不计入 FAIL 理由。）"
+        )
+
+    if goal:
+        lines.append("")
+        lines.append("【任务目标（审查对齐这一点，不要扩展范围）】")
+        lines.append(goal)
+
+    if forbidden:
+        lines.append("")
+        lines.append("【任务声明的禁区（若 builder 触碰则记为 FAIL）】")
+        lines.append(forbidden)
+
+    if acceptance:
+        lines.append("")
+        lines.append("【必须逐条核对的验收标准】")
+        for idx, item in enumerate(acceptance, 1):
+            lines.append(f"  {idx}. {item}")
+        lines.append("对每一条，明确指出: 通过 / 未通过 / 无法判断，并说明理由（看了哪些文件或命令输出）。")
+    else:
+        lines.append("")
+        lines.append(
+            "【没有显式验收标准】请仅按【任务目标】判断 builder 交付是否完成；"
+            "不要补 reviewer 自己的额外要求、架构完整性、测试覆盖率等；"
+            "任务文本之外的任何顾虑一律进「非阻塞观察」。"
+        )
+
+    if reviewer_notes:
+        lines.append("")
+        lines.append("【补充检查项（来自规划器的 reviewer 提示）】")
+        for item in reviewer_notes:
+            lines.append(f"  - {item}")
+
+    if review_round > 1 and previous_findings.strip():
+        lines.append("")
+        lines.append("【上一轮给 builder 的阻塞意见（本轮只复核这些是否已修复）】")
+        lines.append(previous_findings.strip())
+
+    lines.append("")
+    lines.append(_load_prompt("reviewer_rules").rstrip())
+    lines.append("")
+    lines.append("【输出硬性要求】")
+    lines.append(
+        "1. 保留 `VERDICT: PASS` 或 `VERDICT: FAIL` 单独一行，供兼容回退。\n"
+        "2. 在 VERDICT 行之后追加一个 ```json 围栏块，字段包括 verdict / ac_checks / blockers / advisory，"
+        "   blockers 只在 verdict=fail 时填写可直接交给 builder 的动作。"
+    )
+    return "\n".join(lines)
+
+
+def parse_review_output(review_output: str) -> ReviewerVerdict:
+    """Expose the shared parser as a thin module-level symbol for consumers."""
+    return parse_reviewer_output(review_output)
+
+
+def _extract_review_verdict(review_output: str, reviewer_agent: str = "") -> str:
+    """Legacy string-return wrapper kept for existing callers and tests."""
+    return parse_reviewer_output(review_output).verdict

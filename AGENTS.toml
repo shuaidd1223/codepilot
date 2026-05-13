@@ -1,45 +1,248 @@
 # CodePilot 项目配置文件
-# 此文件可选；工具也可通过数据库管理项目
+# 由 `codepilot config sync` 生成/同步。
 
+# 项目配置。name 用于 `codepilot -p/--project`；base_branch 是任务分支合并回去的主分支。
 [project]
-# 项目标识名（用于 codepilot 命令 --project 参数）
+# 项目名称，默认取 AGENTS.toml 所在目录名。
 name = "codepilot-dev"
-# Git 主分支
+# Git 主分支/基准分支。
 base_branch = "dev"
-# 默认任务智能体
-default_mode = "claude"
-# Worktree 隔离目录，空值则自动推导到 ~/.codepilot/worktrees/<project>/
+# 兼容字段：默认任务智能体；自动规划执行优先使用 [automation].task_agent。
+default_mode = "dual"
+# worktree 隔离目录；留空时自动推导到 ~/.codepilot/data/<project>/worktrees/。
 worktree_base = ""
 
-[agents]
-# AI Agent 命令
-codex_cmd = "codex"
-claude_cmd = "claude"
+# Shell 配置。preferred 留 auto 时自动检测；路径留空表示使用 PATH 中的命令。
+[shell]
+# auto / powershell / pwsh / powershell7 / bash / zsh / sh。
+preferred = "auto"
+# 自定义 PowerShell 可执行文件路径；留空表示自动查找。
+powershell_path = ""
+# 自定义 Bash 可执行文件路径；留空表示自动查找。
+bash_path = ""
 
+# 本地 CLI Agent 配置。planner/builder/reviewer 留空时使用对应场景默认值。
+[agents]
+# 通用规划器；留空时使用场景默认值。
+planner = ""
+# dual 模式 builder；留空时默认 codex。
+builder = ""
+# dual 模式 reviewer；留空时默认 claude。
+reviewer = ""
+
+# CLI family 命令映射。键为 family 名（claude/codex/opencode 等），值为命令或绝对路径。
+# 缺失项默认使用同名命令。
+[agents.commands]
+claude = "claude"
+codex = "codex"
+opencode = "opencode"
+
+# 项目级 OpenCode 配置。这里只保存项目权限策略；品牌、TUI、Agent 仍由 CodePilot 工具自身管理。
+[opencode]
+
+# OpenCode 权限策略。ask=逐项确认；full_access=无需确认；custom=按规则配置。
+# custom 可配置 `*`、bash、edit、write、webfetch 或 MCP 工具名，值为 ask / allow / deny。
+[opencode.permission]
+# ask / full_access / custom。默认 ask。
+mode = "full_access"
+
+# 外部 dispatch 执行器配置。builtin 执行器也会读取 stale_minutes 等通用超时语义。
 [dispatch]
-# 调度间隔（秒）
+# task-dispatch 脚本路径；留空时先查 ~/.codepilot/data/<project>/scripts/，再查包内置脚本。
+dispatch_path = ""
+# 轮询间隔秒数。
 interval_seconds = 600
-# 任务过期时间（分钟），超时未完成自动重置
+# 任务无心跳超过该分钟数后视为过期。
 stale_minutes = 30
 
+# 自动规划与执行配置。
+# task_workspace: direct=主工作区直接改；branch=主工作区临时分支；worktree=独立临时 worktree。
 [automation]
-# 纯文本需求默认使用 Codex 规划和执行
-planner = "claude"
+# 自然语言需求默认规划智能体。
+planner = "opencode"
+# chat 默认启动的 MCP agent；留空时使用 opencode。
+default_agent = ""
+# 规划出的任务默认执行智能体；显式 --agent / UI 选择会覆盖它。
+task_agent = "opencode"
+# auto / dispatch / builtin。
 executor = "builtin"
-# 输入需求后默认直接执行；如果只想先规划，可命令行加 --no-execute
+# 输入需求后是否自动开始执行。
 auto_execute = true
-# 若为 true，则每次规划后先询问是否执行
+# 交互终端下规划完成后是否先确认。
 confirm_before_execute = false
-# 内置执行器成功后自动提交当前任务
+# 内置执行器成功后是否自动提交。
 auto_commit = true
-# 复杂需求最多拆成多少个子任务
+# 复杂需求最多拆分出的子任务数。
 max_tasks = 5
-# 每个子任务最多重试次数
+# 单个子任务失败后的最大重试次数。
 max_retries = 3
-# 为每个任务自动创建 feat/task-<id>-<slug> 分支，成功后合并回 base_branch
-per_task_branch = true
+# 是否为任务创建独立执行分支；false 时按当前工作区执行。
+per_task_branch = false
+# direct / branch / worktree；缺失或非法值默认 branch。
+task_workspace = "direct"
+# 规划前先侦察代码，再拆任务。
+two_stage_planning = true
+# 需求模糊时先反问澄清。
+clarify_vague_requirements = true
+# 最多澄清轮数，达到后按当前信息规划。
+clarify_max_turns = 3
+# Builder/Reviewer 闭环最大轮数；1 等于关闭闭环。
+max_review_rounds = 2
+# CLI 连续无输出多少秒后终止；0 表示关闭保护。
+agent_silence_timeout_seconds = 0
+# 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。
+fallback_cli_order = ["codex", "opencode"]
 
-[notifications]
-# 飞书/企微 Webhook URL
-webhook_url = ""
+# 定时/手动巡检配置。planner 留空时按 显式参数 > [agents].planner > codex 解析。
+[inspect]
+# 是否启用 daemon 定时巡检。
 enabled = false
+# 巡检间隔秒数。
+interval_seconds = 1800
+# 每轮巡检最多新增候选任务数。
+max_new_tasks_per_round = 3
+# 巡检输入信号，可包含 git_log、failed_tasks、todos、deps、ruff、pytest、code_metrics。
+signals = ["git_log", "failed_tasks", "todos", "deps", "ruff", "pytest", "code_metrics"]
+# 巡检新增任务后是否自动执行。
+auto_execute = false
+# 巡检新增任务默认优先级。
+priority = "P3"
+# 巡检专用 planner；留空时回退到 [agents].planner / codex。
+planner = ""
+
+# AI Provider API 配置。api_key 可留空改用环境变量；base_url/model 可接自定义兼容接口。
+[providers]
+
+# 常用 provider 示例。需要启用时取消对应小节注释；已配置的小节会在下方以实际值输出。
+
+# openai-gpt4o (示例)
+# [providers.openai-gpt4o]
+# enabled = true
+# model = "gpt-4o"
+# base_url = ""
+# api_key = ""
+# max_tokens = 4096
+# temperature = 0.7
+
+# claude-sonnet (示例)
+# [providers.claude-sonnet]
+# enabled = true
+# model = "claude-sonnet-4-20250514"
+# base_url = ""
+# api_key = ""
+# max_tokens = 4096
+# temperature = 0.7
+
+# hunyuan (示例)
+# [providers.hunyuan]
+# enabled = false
+# model = "hunyuan"
+# base_url = "https://hunyuan.cloud.tencent.com"
+# api_key = ""
+# max_tokens = 4096
+# temperature = 0.7
+
+# qwen (示例)
+# [providers.qwen]
+# enabled = false
+# model = "qwen-plus"
+# base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# api_key = ""
+# max_tokens = 4096
+# temperature = 0.7
+
+# deepseek (已在下方配置)
+# [providers.deepseek]
+# enabled = false
+# model = ""
+# base_url = "https://api.deepseek.com"
+# api_key = ""
+# max_tokens = 8192
+# temperature = 0.7
+# auto_model_selection = true
+# simple_model = "deepseek-v4-flash"
+# complex_model = "deepseek-v4-pro"
+# thinking = "auto"
+# reasoning_effort = "auto"
+
+# ollama (示例)
+# [providers.ollama]
+# enabled = false
+# model = "llama3"
+# base_url = "http://localhost:11434/v1"
+# api_key = ""
+# max_tokens = 4096
+# temperature = 0.7
+
+[providers.deepseek]
+# 是否启用该 provider 配置。
+enabled = true
+# API Key；留空时读取 provider 对应环境变量。
+api_key = ""
+# 模型名；用于自定义模型或兼容接口。
+model = ""
+# 自定义接口地址；留空时使用 SDK/provider 默认地址。
+base_url = "https://api.deepseek.com"
+# 单次响应最大 token 数。
+max_tokens = 8192
+# 采样温度。
+temperature = 0.7
+# 是否按任务难度自动切换模型。
+auto_model_selection = true
+# 简单任务使用的模型；留空则使用 provider 默认模型。
+simple_model = "deepseek-v4-flash"
+# 复杂任务使用的模型；DeepSeek 推荐 deepseek-v4-pro。
+complex_model = "deepseek-v4-pro"
+# 思考模式：auto / enabled / disabled；非 DeepSeek provider 可留空。
+thinking = "auto"
+# 思考强度：auto / high / max；thinking=enabled 时生效。
+reasoning_effort = "auto"
+
+[providers.openai]
+# 是否启用该 provider 配置。
+enabled = true
+# API Key；留空时读取 provider 对应环境变量。
+api_key = ""
+# 模型名；用于自定义模型或兼容接口。
+model = "gpt-5.4"
+# 自定义接口地址；留空时使用 SDK/provider 默认地址。
+base_url = "https://sub.hdd.sb/v1"
+# 单次响应最大 token 数。
+max_tokens = 4096
+# 采样温度。
+temperature = 0.7
+# 是否按任务难度自动切换模型。
+auto_model_selection = false
+# 简单任务使用的模型；留空则使用 provider 默认模型。
+simple_model = "gpt-5.4"
+# 复杂任务使用的模型；DeepSeek 推荐 deepseek-v4-pro。
+complex_model = "gpt-5.4"
+# 思考模式：auto / enabled / disabled；非 DeepSeek provider 可留空。
+thinking = ""
+# 思考强度：auto / high / max；thinking=enabled 时生效。
+reasoning_effort = "high"
+
+# 通知配置。enabled=false 时 webhook_url 会被保留但不会发送。
+[notifications]
+# 任务状态通知 Webhook URL。
+webhook_url = ""
+# auto / feishu / wecom / generic。建议飞书显式写 feishu。
+provider = "auto"
+# 飞书机器人签名密钥；未开启签名校验时留空。
+webhook_secret = ""
+# 是否发送通知。
+enabled = false
+
+# 飞书企业应用长连接机器人配置。运行时使用官方 Node SDK，不依赖 lark-cli。
+# App Secret 只写到同目录 .codepilot.secrets.toml，不要放在 AGENTS.toml。
+[feishu_bot]
+# 是否启用飞书企业应用长连接机器人。
+enabled = true
+# 飞书企业应用 App ID。
+app_id = "cli_a9653cd84db9dcc4"
+# Node.js 命令名或完整路径；默认 node。
+node_command = "node"
+# 未显式指定项目时默认操作的项目名。
+default_project = "codepilot-dev"
+# 可选命令前缀，例如 cp；留空则直接识别 help/tasks/stop 等命令。
+command_prefix = ""
