@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from codepilot.mcp.tool_registry import register_tool
+from codepilot.mcp.tools._helpers import ensure_str
 from codepilot.mcp.tools.external import (
     PerMinuteRateLimiter,
-    ensure_str,
     feishu_rate_limit_error_response,
 )
 
@@ -40,9 +40,9 @@ def feishu_send_to_user(
     if not decision.allowed:
         return feishu_rate_limit_error_response(decision)
 
-    from codepilot import feishu_bot
+    from codepilot.feishu_bot.card_builders import _send_bot_card
 
-    sent = feishu_bot._send_bot_card(
+    sent = _send_bot_card(
         _message_card(card_title, body),
         project_name=project_name,
         chat_ids=[target],

@@ -17,6 +17,8 @@ class TestFileSearchCache:
     @pytest.fixture(autouse=True)
     def setup(self, tmp_path, monkeypatch):
         """Set up test project."""
+        monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+
         # Use unique project name to avoid conflicts
         self.project_name = f"test_project_{uuid.uuid4().hex[:8]}"
         self.project_path = tmp_path / "test_project"

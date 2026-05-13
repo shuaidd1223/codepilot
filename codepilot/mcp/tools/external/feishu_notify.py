@@ -3,13 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from codepilot.mcp.tool_registry import register_tool
+from codepilot.mcp.tools._helpers import ensure_int, ensure_str, ensure_str_list, resolve_project
 from codepilot.mcp.tools.external import (
     PerMinuteRateLimiter,
-    ensure_int,
-    ensure_str,
-    ensure_str_list,
     feishu_rate_limit_error_response,
-    resolve_project,
 )
 
 

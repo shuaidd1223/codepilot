@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import subprocess
+import sys
+import types
 from pathlib import Path
 
 import click
@@ -69,6 +71,67 @@ def test_chat_launches_agent_without_unattached_mcp_process(
 
     assert exit_code == 0
     assert [event[0] for event in events] == ["opencode-bin"]
+
+
+def test_windows_codex_interactive_launch_uses_argument_vector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _isolate_chat(monkeypatch, tmp_path)
+    events: list[dict[str, object]] = []
+
+    monkeypatch.setattr(chat_cmd.os, "name", "nt")
+
+    def fake_run(command, **kwargs):
+        events.append({"command": command, "kwargs": kwargs})
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(chat_cmd.subprocess, "run", fake_run)
+
+    assert chat_cmd._launch_mcp_agent_chat(agent="codex") == 0
+
+    assert len(events) == 1
+    assert str(events[0]["command"][0]).lower().endswith(("codex-bin", "codex.exe"))
+    assert "-c" in events[0]["command"]
+    assert "shell" not in events[0]["kwargs"]
+
+
+def test_windows_codex_launch_temporarily_disables_vt_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _isolate_chat(monkeypatch, tmp_path)
+    mode_writes: list[int] = []
+
+    class FakeKernel32:
+        def GetStdHandle(self, value):
+            return 123
+
+        def GetConsoleMode(self, handle, mode_ptr):
+            mode_ptr._obj.value = 0x0200 | 0x0004
+            return 1
+
+        def SetConsoleMode(self, handle, mode):
+            mode_writes.append(int(mode))
+            return 1
+
+    fake_ctypes = types.SimpleNamespace(
+        windll=types.SimpleNamespace(kernel32=FakeKernel32()),
+        c_uint32=lambda: types.SimpleNamespace(value=0),
+        byref=lambda value: types.SimpleNamespace(_obj=value),
+    )
+
+    monkeypatch.setattr(chat_cmd.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+    monkeypatch.setattr(
+        chat_cmd.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0),
+    )
+
+    assert chat_cmd._launch_mcp_agent_chat(agent="codex") == 0
+
+    assert mode_writes == [0x0004, 0x0204]
 
 
 def test_chat_uses_detected_current_project_for_mcp_server(
@@ -672,6 +735,59 @@ def test_chat_command_preserves_tty_for_default_interactive_launch(
     assert captured["input_stream"] is None
 
 
+def test_chat_command_preserves_interactive_launch_when_stdin_is_not_tty_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _isolate_chat(monkeypatch, tmp_path)
+    captured: dict[str, object] = {}
+
+    class NonTtyStdin:
+        def isatty(self) -> bool:
+            return False
+
+    monkeypatch.setattr(chat_cmd.sys, "stdin", NonTtyStdin())
+
+    def fake_run_session(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(chat_cmd, "_run_mcp_agent_chat_session", fake_run_session)
+
+    with click.Context(chat_cmd.chat):
+        chat_cmd.chat.callback(project=None, agent="codex")
+
+    assert captured["agent"] == "codex"
+    assert captured["input_stream"] is None
+
+
+def test_chat_command_allows_opt_in_stdin_forwarding_for_scripted_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _isolate_chat(monkeypatch, tmp_path)
+    captured: dict[str, object] = {}
+
+    class NonTtyStdin:
+        def isatty(self) -> bool:
+            return False
+
+    stdin = NonTtyStdin()
+    monkeypatch.setenv("CODEPILOT_CHAT_STDIN_FORWARDING", "1")
+    monkeypatch.setattr(chat_cmd.sys, "stdin", stdin)
+
+    def fake_run_session(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(chat_cmd, "_run_mcp_agent_chat_session", fake_run_session)
+
+    with click.Context(chat_cmd.chat):
+        chat_cmd.chat.callback(project=None, agent="opencode")
+
+    assert captured["input_stream"] is stdin
+
+
 def test_chat_launch_feedback_stops_before_agent_takes_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -899,6 +1015,7 @@ def test_detect_session_agent_returns_claude_when_jsonl_exists(
     monkeypatch.setattr(chat_cmd, "_project_record", lambda project: {"name": "demo", "path": str(tmp_path)})
     monkeypatch.setattr(chat_cmd, "claude_session_exists", lambda cwd, sid: Path(cwd) == tmp_path and sid == "ses-x")
     monkeypatch.setattr(chat_cmd, "_opencode_session_exists_for_scope", lambda scope, cwd, sid: False)
+    monkeypatch.setattr(chat_cmd, "codex_session_exists", lambda cwd, sid: False)
 
     assert chat_cmd._detect_session_agent(session="ses-x", project=None) == "claude"
 
@@ -909,6 +1026,7 @@ def test_detect_session_agent_returns_opencode_when_db_has_session(
 ):
     monkeypatch.setattr(chat_cmd, "_project_record", lambda project: {"name": "demo", "path": str(tmp_path)})
     monkeypatch.setattr(chat_cmd, "claude_session_exists", lambda cwd, sid: False)
+    monkeypatch.setattr(chat_cmd, "codex_session_exists", lambda cwd, sid: False)
     monkeypatch.setattr(
         chat_cmd,
         "_opencode_session_exists_for_scope",
@@ -918,12 +1036,29 @@ def test_detect_session_agent_returns_opencode_when_db_has_session(
     assert chat_cmd._detect_session_agent(session="ses-y", project=None) == "opencode"
 
 
+def test_detect_session_agent_returns_codex_when_rollout_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(chat_cmd, "_project_record", lambda project: {"name": "demo", "path": str(tmp_path)})
+    monkeypatch.setattr(chat_cmd, "claude_session_exists", lambda cwd, sid: False)
+    monkeypatch.setattr(chat_cmd, "_opencode_session_exists_for_scope", lambda scope, cwd, sid: False)
+    monkeypatch.setattr(
+        chat_cmd,
+        "codex_session_exists",
+        lambda cwd, sid: Path(cwd) == tmp_path and sid == "ses-z",
+    )
+
+    assert chat_cmd._detect_session_agent(session="ses-z", project=None) == "codex"
+
+
 def test_detect_session_agent_returns_none_when_session_unknown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(chat_cmd, "_project_record", lambda project: {"name": "demo", "path": str(tmp_path)})
     monkeypatch.setattr(chat_cmd, "claude_session_exists", lambda cwd, sid: False)
+    monkeypatch.setattr(chat_cmd, "codex_session_exists", lambda cwd, sid: False)
     monkeypatch.setattr(chat_cmd, "_opencode_session_exists_for_scope", lambda scope, cwd, sid: False)
 
     assert chat_cmd._detect_session_agent(session="ses-missing", project=None) is None
@@ -949,6 +1084,73 @@ def test_chat_command_auto_detects_claude_from_session(
     assert result.exit_code == 0, result.output
     assert captured["agent"] == "claude"
     assert captured["session"] == "ses-x"
+
+
+def test_chat_resume_hint_for_codex_uses_latest_session_from_disk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    fake_calls: list[Path] = []
+
+    def fake_latest(project_path, *, sessions_root=None):
+        fake_calls.append(Path(project_path))
+        return "ses_codex"
+
+    monkeypatch.setattr(chat_cmd, "latest_codex_session_id", fake_latest)
+
+    launch = chat_cmd._PreparedChatLaunch(
+        agent="codex",
+        command=["codex"],
+        cwd=tmp_path,
+        env={},
+    )
+
+    chat_cmd._print_codepilot_resume_hint(launch, project=None)
+
+    assert fake_calls and fake_calls[0] == tmp_path
+    output = capsys.readouterr().err
+    assert "ses_codex" in output
+    assert "codepilot chat --session ses_codex" in output
+    assert "--agent" not in output
+
+
+def test_chat_resume_hint_renders_panel_for_codex_with_requested_session(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    launch = chat_cmd._PreparedChatLaunch(
+        agent="codex",
+        command=["codex"],
+        cwd=tmp_path,
+        env={},
+        requested_session="ses_explicit",
+    )
+
+    chat_cmd._print_codepilot_resume_hint(launch, project="demo")
+
+    output = capsys.readouterr().err
+    assert "ses_explicit" in output
+    assert "codepilot chat --project demo --session ses_explicit" in output
+
+
+def test_chat_resume_hint_skips_when_codex_has_no_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    monkeypatch.setattr(chat_cmd, "latest_codex_session_id", lambda *args, **kwargs: "")
+
+    launch = chat_cmd._PreparedChatLaunch(
+        agent="codex",
+        command=["codex"],
+        cwd=tmp_path,
+        env={},
+    )
+
+    chat_cmd._print_codepilot_resume_hint(launch, project=None)
+
+    assert capsys.readouterr().err == ""
 
 
 def test_chat_resume_hint_skips_when_claude_has_no_session(

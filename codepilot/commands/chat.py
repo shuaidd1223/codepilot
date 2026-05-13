@@ -23,6 +23,7 @@ import sqlite3
 
 from codepilot.ai_support.cli_families import env_var_for, get_family
 from codepilot.claude.session_storage import claude_session_exists, latest_claude_session_id
+from codepilot.codex.session_storage import codex_session_exists, latest_codex_session_id
 from codepilot.core.config import AgentsConfig, load_project_config
 from codepilot.mcp.launchers import build_mcp_launch_plan
 from codepilot.mcp.server import _missing_mcp_sdk_message
@@ -272,6 +273,8 @@ def _detect_session_agent(*, session: str, project: str | None) -> str | None:
         return "opencode"
     if claude_session_exists(cwd, session_id):
         return "claude"
+    if codex_session_exists(cwd, session_id):
+        return "codex"
     return None
 
 
@@ -311,6 +314,8 @@ def _resolve_resume_session_id(launch: _PreparedChatLaunch) -> str:
         )
     if launch.agent == "claude":
         return latest_claude_session_id(launch.cwd)
+    if launch.agent == "codex":
+        return latest_codex_session_id(launch.cwd)
     return ""
 
 
@@ -364,6 +369,42 @@ def _codepilot_resume_panel(command: str, *, session_id: str = "") -> str:
 
 def _stderr_is_tty() -> bool:
     return bool(getattr(sys.stderr, "isatty", lambda: False)())
+
+
+def _should_block_windows_codex_chat(agent: str) -> bool:
+    if os.name != "nt" or agent != "codex":
+        return False
+    if _env_flag_enabled("CODEPILOT_ALLOW_WINDOWS_CODEX_TUI"):
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    return True
+
+
+def _windows_codex_chat_block_message() -> str:
+    return "\n".join(
+        [
+            "Windows 下 Codex CLI 交互 TUI 当前不稳定，已阻止启动。",
+            "已知上游问题：方向键会显示为 [A/[B/[D，Enter、Backspace、Ctrl+C 可能失效。",
+            "建议改用：codepilot chat -a opencode",
+            "如需强行尝试：$env:CODEPILOT_ALLOW_WINDOWS_CODEX_TUI='1'; codepilot chat -a codex",
+        ]
+    )
+
+
+def _env_flag_enabled(name: str) -> bool:
+    value = str(os.environ.get(name, "") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _chat_scripted_input_stream(session: str | None) -> Iterable[str] | TextIO | None:
+    if session:
+        return None
+    if not _env_flag_enabled("CODEPILOT_CHAT_STDIN_FORWARDING"):
+        return None
+    if bool(getattr(sys.stdin, "isatty", lambda: False)()):
+        return None
+    return sys.stdin
 
 
 @contextmanager
@@ -552,12 +593,47 @@ def _launch_mcp_agent_chat(
     _chat_startup_notice(f"正在启动 {label} TUI，初始化 MCP 可能需要几秒...")
     _clear_chat_startup_notice()
     try:
-        completed = subprocess.run(launch.command, cwd=str(launch.cwd), env=launch.env)
+        completed = _run_interactive_tui_process(launch)
         return int(completed.returncode)
     finally:
         _sync_opencode_model_selection(launch)
         _reset_terminal_after_tui()
         _print_codepilot_resume_hint(launch, project=project)
+
+
+def _run_interactive_tui_process(launch: _PreparedChatLaunch) -> subprocess.CompletedProcess:
+    with _windows_codex_console_input_mode(launch):
+        return subprocess.run(launch.command, cwd=str(launch.cwd), env=launch.env)
+
+
+@contextmanager
+def _windows_codex_console_input_mode(launch: _PreparedChatLaunch):
+    if os.name != "nt" or launch.agent != "codex":
+        yield
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if handle in (0, -1) or not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            yield
+            return
+        original = int(mode.value)
+        adjusted = original & ~0x0200  # ENABLE_VIRTUAL_TERMINAL_INPUT
+        if adjusted != original:
+            kernel32.SetConsoleMode(handle, adjusted)
+        try:
+            yield
+        finally:
+            if adjusted != original:
+                try:
+                    kernel32.SetConsoleMode(handle, original)
+                except Exception:
+                    pass
+    except Exception:
+        yield
 
 
 def _start_mcp_agent_chat_process(
@@ -728,8 +804,10 @@ def chat(
         if detected:
             agent = detected
     resolved_agent = _resolve_chat_agent(agent, project)
+    if _should_block_windows_codex_chat(resolved_agent):
+        raise click.ClickException(_windows_codex_chat_block_message())
     try:
-        input_stream = None if session or getattr(sys.stdin, "isatty", lambda: False)() else sys.stdin
+        input_stream = _chat_scripted_input_stream(session)
         launch_kwargs = {
             "agent": resolved_agent,
             "project": project,

@@ -4,10 +4,7 @@ from typing import Any
 
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.tasks import (
-    VALID_AGENTS,
-    VALID_PRIORITIES,
-    VALID_STATUSES,
+from codepilot.mcp.tools._helpers import (
     ensure_choice,
     ensure_depends_on,
     ensure_int,
@@ -16,6 +13,7 @@ from codepilot.mcp.tools.tasks import (
     task_not_found,
     task_payload,
 )
+from codepilot.mcp.tools.tasks import VALID_AGENTS, VALID_PRIORITIES, VALID_STATUSES
 from codepilot.storage import database as db
 
 

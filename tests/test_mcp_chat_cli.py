@@ -53,6 +53,34 @@ def test_chat_agent_short_option_selects_agent(tmp_path: Path, monkeypatch):
     assert calls == [{"agent": "codex", "project": None, "prompt": ""}]
 
 
+def test_chat_blocks_windows_codex_interactive_tui_by_default(tmp_path: Path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    calls = _capture_agent_launch(monkeypatch)
+    monkeypatch.setattr("codepilot.commands.chat.os.name", "nt")
+    monkeypatch.delenv("CODEPILOT_ALLOW_WINDOWS_CODEX_TUI", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    result = CliRunner().invoke(main, ["chat", "-a", "codex"])
+
+    assert result.exit_code != 0
+    assert calls == []
+    assert "Windows 下 Codex CLI 交互 TUI 当前不稳定" in result.output
+    assert "codepilot chat -a opencode" in result.output
+
+
+def test_chat_allows_windows_codex_interactive_tui_when_explicitly_requested(tmp_path: Path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    calls = _capture_agent_launch(monkeypatch)
+    monkeypatch.setattr("codepilot.commands.chat.os.name", "nt")
+    monkeypatch.setenv("CODEPILOT_ALLOW_WINDOWS_CODEX_TUI", "1")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    result = CliRunner().invoke(main, ["chat", "-a", "codex"])
+
+    assert result.exit_code == 0
+    assert calls == [{"agent": "codex", "project": None, "prompt": ""}]
+
+
 def test_chat_uses_automation_default_agent_from_config(tmp_path: Path, monkeypatch):
     project_path = _isolate(tmp_path, monkeypatch)
     (project_path / "AGENTS.toml").write_text(

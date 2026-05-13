@@ -4,7 +4,7 @@ from typing import Any
 
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.ops import resolve_project
+from codepilot.mcp.tools._helpers import resolve_project
 
 
 @register_tool(description="返回已注册项目的 CodePilot daemon 服务状态。")

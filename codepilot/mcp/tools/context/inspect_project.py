@@ -5,7 +5,7 @@ from typing import Any
 
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.context import ensure_str_list, resolve_project
+from codepilot.mcp.tools._helpers import ensure_str_list, resolve_project
 
 
 DEFAULT_SIGNALS = ["git_log", "failed_tasks", "todos"]

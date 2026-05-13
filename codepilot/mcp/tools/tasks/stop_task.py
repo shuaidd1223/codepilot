@@ -5,7 +5,8 @@ from typing import Any
 
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.tasks import ensure_int, ensure_str, task_not_found, task_payload
+from codepilot.mcp.tools._helpers import ensure_int, ensure_str, task_not_found
+from codepilot.mcp.tools.tasks import task_payload
 from codepilot.storage import database as db
 
 

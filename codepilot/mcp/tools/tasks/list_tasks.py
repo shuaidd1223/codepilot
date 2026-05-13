@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.tasks import VALID_STATUSES, ensure_choice, ensure_limit, ensure_str, task_payload
+from codepilot.mcp.tools._helpers import ensure_choice, ensure_limit, ensure_str, task_payload
+from codepilot.mcp.tools.tasks import VALID_STATUSES
 from codepilot.storage import database as db
 from codepilot.webapp.display_sort import sort_tasks_for_display
 

@@ -7,6 +7,16 @@ from codepilot.storage import database as db
 from tests.chat_flow_testkit import register_project
 
 
+def _poll_until(condition, *, timeout: float = 2.0, interval: float = 0.02) -> None:
+    """Poll *condition* every *interval* seconds until it returns a truthy value or *timeout* expires."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = condition()
+        if result:
+            return
+        time.sleep(interval)
+
+
 def test_webui_session_message_uses_opencode_adapter(tmp_path: Path, monkeypatch):
     register_project(tmp_path, monkeypatch)
     session = db.create_session("demo", title="chat")
@@ -178,12 +188,8 @@ def test_webui_session_message_async_returns_placeholder_and_finalizes(
     assert result["user_message"]["content"] == "帮我看状态"
     assert result["assistant_message"]["intent"] == "streaming"
 
-    messages = []
-    for _ in range(50):
-        messages = db.list_session_messages(session["id"])
-        if len(messages) == 2 and messages[1]["content"] == "最终回复":
-            break
-        time.sleep(0.02)
+    _poll_until(lambda: len(db.list_session_messages(session["id"])) > 1 and db.list_session_messages(session["id"])[1].get("content") == "最终回复")
+    messages = db.list_session_messages(session["id"])
 
     assert [item["role"] for item in messages] == ["user", "assistant"]
     assert messages[1]["intent"] == "opencode"
@@ -205,12 +211,10 @@ def test_webui_session_message_async_records_stream_error(tmp_path: Path, monkey
     result = send_session_message_action(session["id"], "你好", run_async=True)
     assistant_id = result["assistant_message_id"]
 
-    updated = None
-    for _ in range(50):
-        updated = db.list_session_messages(session["id"])[1]
-        if updated["id"] == assistant_id and updated["intent"] == "error":
-            break
-        time.sleep(0.02)
+    def _check_error_poll():
+        msgs = db.list_session_messages(session["id"])
+        return len(msgs) > 1 and msgs[1].get("intent") == "error" and msgs[1].get("id") == assistant_id
 
-    assert updated["intent"] == "error"
+    _poll_until(_check_error_poll)
+    updated = db.list_session_messages(session["id"])[1]
     assert "provider missing" in updated["content"]

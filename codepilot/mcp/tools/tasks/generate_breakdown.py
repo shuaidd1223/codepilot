@@ -4,7 +4,8 @@ from typing import Any
 
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.tasks import VALID_PRIORITIES, ensure_choice, ensure_int, ensure_str
+from codepilot.mcp.tools._helpers import ensure_choice, ensure_int, ensure_str
+from codepilot.mcp.tools.tasks import VALID_PRIORITIES
 from codepilot.storage import database as db
 
 

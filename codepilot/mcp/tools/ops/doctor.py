@@ -8,7 +8,7 @@ import click
 from codepilot.commands import doctor as doctor_cmd
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.ops import ensure_bool, ensure_int
+from codepilot.mcp.tools._helpers import ensure_bool, ensure_int
 
 
 @register_tool(description="为已注册项目运行 CodePilot doctor 检查。")

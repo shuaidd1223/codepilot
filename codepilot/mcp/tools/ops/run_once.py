@@ -4,13 +4,8 @@ from typing import Any
 
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.ops import (
-    ensure_bool,
-    ensure_executor,
-    ensure_int,
-    ensure_shell,
-    resolve_project,
-)
+from codepilot.mcp.tools._helpers import ensure_bool, ensure_int, resolve_project
+from codepilot.mcp.tools.ops import ensure_executor, ensure_shell
 
 
 @register_tool(description="为已注册项目运行一次有边界的 CodePilot backlog 消费。")

@@ -191,7 +191,7 @@ def test_feishu_service_commands_dispatch_by_service_type(tmp_path, monkeypatch)
         calls.append({"project": project, "service": service, "action": action})
         return {"status": {"running": action == "start", "pid": 123, "started_at": "", "log": ""}, "message": "ok"}
 
-    monkeypatch.setattr("codepilot.feishu_bot.project_service_action", fake_project_service_action)
+    monkeypatch.setattr("codepilot.feishu_bot.command_handlers.project_service_action", fake_project_service_action)
 
     daemon_reply = handle_command_text("daemon stop demo")
     inspect_reply = handle_command_text("inspect start demo")
@@ -329,7 +329,7 @@ def test_feishu_task_notifications_dedupe_same_event(tmp_path, monkeypatch):
         calls.append((card, project_name, chat_ids))
         return True
 
-    monkeypatch.setattr("codepilot.feishu_bot._send_bot_card", fake_send)
+    monkeypatch.setattr("codepilot.feishu_bot.card_builders._send_bot_card", fake_send)
 
     kwargs = {
         "project_name": "demo",

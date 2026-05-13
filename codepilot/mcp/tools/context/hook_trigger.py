@@ -4,7 +4,7 @@ from typing import Any
 
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.context import ensure_str, resolve_project
+from codepilot.mcp.tools._helpers import ensure_str, resolve_project
 
 
 @register_tool(description="通过现有 Hook 链路触发一次项目本地 Hook 测试事件。")

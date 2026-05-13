@@ -5,15 +5,14 @@ from typing import Any
 from codepilot.core.task_template import missing_task_template_sections
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.tasks import (
-    VALID_AGENTS,
-    VALID_PRIORITIES,
+from codepilot.mcp.tools._helpers import (
     ensure_choice,
     ensure_depends_on,
     ensure_int,
     ensure_str,
     task_payload,
 )
+from codepilot.mcp.tools.tasks import VALID_AGENTS, VALID_PRIORITIES
 from codepilot.storage import database as db
 
 

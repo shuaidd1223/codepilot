@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.tasks import ensure_int, task_not_found, task_payload
+from codepilot.mcp.tools._helpers import ensure_int, task_not_found
+from codepilot.mcp.tools.tasks import task_payload
 from codepilot.storage import database as db
 
 
@@ -11,7 +12,7 @@ from codepilot.storage import database as db
 def show_task(task_id: int, include_logs: bool = False) -> dict[str, Any]:
     tid = ensure_int(task_id, "task_id", minimum=1)
     if not isinstance(include_logs, bool):
-        from codepilot.mcp.tools.tasks import invalid_arguments
+        from codepilot.mcp.tools._helpers import invalid_arguments
 
         raise invalid_arguments("include_logs must be a boolean", field="include_logs")
 

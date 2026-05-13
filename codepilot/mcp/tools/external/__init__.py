@@ -8,8 +8,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from codepilot.mcp.protocol import CodePilotToolError
-from codepilot.storage import database as db
+from codepilot.mcp.tools._helpers import (  # noqa: F401
+    ensure_int,
+    ensure_str,
+    ensure_str_list,
+    invalid_arguments,
+    resolve_project,
+)
+
+
+# ── Rate limiter (unique to external tools) ──────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -69,79 +77,6 @@ def feishu_rate_limit_error_response(decision: RateLimitDecision) -> dict[str, A
         "content": [{"type": "text", "text": str(error["message"])}],
         "structuredContent": {"error": error},
     }
-
-
-def invalid_arguments(message: str, **details: Any) -> CodePilotToolError:
-    return CodePilotToolError(message, code="invalid_arguments", details=details)
-
-
-def ensure_str(
-    value: Any,
-    field: str,
-    *,
-    required: bool = True,
-    allow_empty: bool = False,
-) -> str | None:
-    if value is None:
-        if required:
-            raise invalid_arguments(f"{field} is required", field=field)
-        return None
-    if not isinstance(value, str):
-        raise invalid_arguments(f"{field} must be a string", field=field)
-    text = value.strip()
-    if required and not text:
-        raise invalid_arguments(f"{field} cannot be empty", field=field)
-    if not allow_empty and value != "" and not text:
-        raise invalid_arguments(f"{field} cannot be blank", field=field)
-    return text if not allow_empty else value
-
-
-def ensure_int(value: Any, field: str, *, minimum: int | None = None) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise invalid_arguments(f"{field} must be an integer", field=field)
-    if minimum is not None and value < minimum:
-        raise invalid_arguments(
-            f"{field} must be greater than or equal to {minimum}",
-            field=field,
-            minimum=minimum,
-        )
-    return value
-
-
-def ensure_str_list(
-    value: Any,
-    field: str,
-    *,
-    required: bool = False,
-    allow_empty: bool = True,
-) -> list[str] | None:
-    if value is None:
-        if required:
-            raise invalid_arguments(f"{field} is required", field=field)
-        return None
-    if not isinstance(value, list):
-        raise invalid_arguments(f"{field} must be a list of strings", field=field)
-    result: list[str] = []
-    for item in value:
-        text = ensure_str(item, field, required=True)
-        if text is not None:
-            result.append(text)
-    if not result and not allow_empty:
-        raise invalid_arguments(f"{field} cannot be empty", field=field)
-    return result
-
-
-def resolve_project(project: Any) -> dict[str, Any]:
-    project_name = ensure_str(project, "project", required=True)
-    db.init_db()
-    found = db.get_project(project_name or "")
-    if not found:
-        raise CodePilotToolError(
-            f"project not found: {project_name}",
-            code="project_not_found",
-            details={"project": project_name},
-        )
-    return dict(found)
 
 
 from codepilot.mcp.tools.external import feishu_notify as feishu_notify_module  # noqa: E402,F401

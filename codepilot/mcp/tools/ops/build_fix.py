@@ -4,13 +4,8 @@ from typing import Any
 
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.ops import (
-    ensure_bool,
-    ensure_executor,
-    ensure_int,
-    ensure_str_list,
-    resolve_project,
-)
+from codepilot.mcp.tools._helpers import ensure_bool, ensure_int, ensure_str_list, resolve_project
+from codepilot.mcp.tools.ops import ensure_executor
 
 
 @register_tool(description="为失败任务运行 CodePilot build-fix 修复闭环。")

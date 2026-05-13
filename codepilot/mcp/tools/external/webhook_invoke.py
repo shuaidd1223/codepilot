@@ -4,7 +4,7 @@ from typing import Any
 
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.external import ensure_int, ensure_str, resolve_project
+from codepilot.mcp.tools._helpers import ensure_int, ensure_str, resolve_project
 
 
 @register_tool(description="通过 CodePilot 现有 Webhook API 调用已配置的项目 Webhook。")

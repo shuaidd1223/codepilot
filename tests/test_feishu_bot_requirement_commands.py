@@ -158,7 +158,7 @@ def test_feishu_requirement_command_does_not_emit_old_planning_progress_cards(tm
         sent_cards.append({"card": card, "project_name": project_name, "chat_ids": chat_ids})
         return True
 
-    monkeypatch.setattr("codepilot.feishu_bot._send_bot_card", fake_send)
+    monkeypatch.setattr("codepilot.feishu_bot.card_builders._send_bot_card", fake_send)
     calls = []
     _stub_opencode(monkeypatch, calls, message="OpenCode 会话已启动。")
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -97,11 +98,11 @@ def test_codex_launcher_injects_mcp_servers_with_config_overrides(tmp_path: Path
     assert plan.command[:7] == [
         "codex-bin",
         "-c",
-        'mcp_servers.filesystem.command="node"',
+        "mcp_servers.filesystem.command='node'",
         "-c",
-        'mcp_servers.filesystem.args=["server.js"]',
+        "mcp_servers.filesystem.args=['server.js']",
         "-c",
-        f'mcp_servers.filesystem.env={{ROOT={json.dumps(str(tmp_path))}}}',
+        f"mcp_servers.filesystem.env={{ROOT='{str(tmp_path)}'}}",
     ]
     assert plan.command[-5:-1] == [
         "exec",
@@ -122,7 +123,9 @@ def test_codex_launcher_injects_mcp_servers_with_config_overrides(tmp_path: Path
     }
 
 
-def test_codex_launcher_without_prompt_starts_interactive_tui(tmp_path: Path):
+def test_codex_launcher_without_prompt_starts_interactive_tui(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(shutil, "which", lambda value: None)
+
     plan = build_mcp_launch_plan(
         "codex",
         executable="codex-bin",
@@ -133,15 +136,66 @@ def test_codex_launcher_without_prompt_starts_interactive_tui(tmp_path: Path):
     # Same -c overrides as headless mode...
     assert plan.command[1:7] == [
         "-c",
-        'mcp_servers.filesystem.command="node"',
+        "mcp_servers.filesystem.command='node'",
         "-c",
-        'mcp_servers.filesystem.args=["server.js"]',
+        "mcp_servers.filesystem.args=['server.js']",
         "-c",
-        f'mcp_servers.filesystem.env={{ROOT={json.dumps(str(tmp_path))}}}',
+        f"mcp_servers.filesystem.env={{ROOT='{str(tmp_path)}'}}",
     ]
     # ...but no `exec` subcommand and no positional prompt.
     assert "exec" not in plan.command
     assert plan.command[0] == "codex-bin"
+
+
+def test_codex_launcher_bypasses_npm_cmd_wrapper_for_interactive_tui(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(shutil, "which", lambda value: None)
+
+    codex_cmd = tmp_path / "codex.cmd"
+    codex_js = tmp_path / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    node_exe = tmp_path / "node.exe"
+    codex_cmd.write_text("@echo off\n", encoding="utf-8")
+    codex_js.parent.mkdir(parents=True)
+    codex_js.write_text("", encoding="utf-8")
+    node_exe.write_text("", encoding="utf-8")
+
+    plan = build_mcp_launch_plan(
+        "codex",
+        executable=str(codex_cmd),
+        mcp_servers=_server(tmp_path),
+    )
+
+    assert plan.command[:2] == [str(node_exe), str(codex_js)]
+    assert "-c" in plan.command
+    assert "exec" not in plan.command
+
+
+def test_codex_launcher_prefers_native_windows_exe_for_interactive_tui(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    codex_cmd = tmp_path / "codex.cmd"
+    codex_js = tmp_path / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    native_exe = tmp_path / "native" / "codex.exe"
+    codex_cmd.write_text("@echo off\n", encoding="utf-8")
+    codex_js.parent.mkdir(parents=True)
+    codex_js.write_text("", encoding="utf-8")
+    native_exe.parent.mkdir()
+    native_exe.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(shutil, "which", lambda value: str(native_exe) if value == "codex.exe" else None)
+
+    plan = build_mcp_launch_plan(
+        "codex",
+        executable=str(codex_cmd),
+        mcp_servers=_server(tmp_path),
+    )
+
+    assert plan.command[0] == str(native_exe)
+    assert "codex.js" not in plan.command
+    assert "exec" not in plan.command
 
 
 def test_codex_launcher_with_session_resumes_interactive_tui(tmp_path: Path):

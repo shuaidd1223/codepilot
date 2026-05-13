@@ -4,14 +4,8 @@ from typing import Any
 
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
-from codepilot.mcp.tools.ops import (
-    ALLOWED_EXEC_COMMANDS,
-    ensure_str,
-    ensure_str_list,
-    invoke_cli_json,
-    project_cli_args,
-    resolve_project,
-)
+from codepilot.mcp.tools._helpers import ensure_str, ensure_str_list, resolve_project
+from codepilot.mcp.tools.ops import ALLOWED_EXEC_COMMANDS, invoke_cli_json, project_cli_args
 
 
 def _exec_cli_args(project: str, command: str, args: list[str] | None) -> list[str]:

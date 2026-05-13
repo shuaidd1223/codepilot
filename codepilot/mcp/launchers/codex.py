@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 from codepilot.mcp.launchers import LaunchPlan, MCPServerSpec, normalize_mcp_servers
@@ -25,7 +28,7 @@ def build_launch_plan(
     if prompt:
         # Headless one-shot via `codex exec`.
         command = [
-            executable,
+            *_codex_executable_command(executable, interactive=False),
             *config_args,
             "exec",
             "--skip-git-repo-check",
@@ -38,9 +41,9 @@ def build_launch_plan(
         # so Chinese interaction rules are not injected here; users can set their own
         # preferences in ~/.codex/config.toml if needed.
         if session_id:
-            command = [executable, *config_args, "resume", session_id]
+            command = [*_codex_executable_command(executable, interactive=True), *config_args, "resume", session_id]
         else:
-            command = [executable, *config_args]
+            command = [*_codex_executable_command(executable, interactive=True), *config_args]
     return LaunchPlan(
         agent="codex",
         command=command,
@@ -48,6 +51,39 @@ def build_launch_plan(
         mcp_config=config,
         config_args=config_args,
     )
+
+
+def _codex_executable_command(executable: str, *, interactive: bool) -> list[str]:
+    native = _native_windows_codex_exe(executable) if interactive else ""
+    if native:
+        return [native]
+    path = Path(str(executable))
+    if path.suffix.lower() not in {".cmd", ".bat"}:
+        return [executable]
+    codex_js = path.parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    if not codex_js.is_file():
+        return [executable]
+    node = path.parent / "node.exe"
+    return [str(node if node.is_file() else "node"), str(codex_js)]
+
+
+def _native_windows_codex_exe(executable: str) -> str:
+    if os.name != "nt":
+        return ""
+    path = Path(str(executable))
+    if path.suffix.lower() == ".exe":
+        return ""
+    native = shutil.which("codex.exe")
+    if not native:
+        return ""
+    try:
+        native_path = Path(native).resolve()
+        original = path.resolve()
+        if native_path == original:
+            return ""
+    except Exception:
+        pass
+    return native
 
 
 def _codex_servers(servers: list[MCPServerSpec]) -> dict[str, dict[str, Any]]:
@@ -92,6 +128,8 @@ def _toml_literal(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
+        if "'" not in value and "\n" not in value and "\r" not in value:
+            return f"'{value}'"
         return json.dumps(value, ensure_ascii=False)
     if isinstance(value, (list, tuple)):
         return "[" + ",".join(_toml_literal(item) for item in value) + "]"

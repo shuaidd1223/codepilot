@@ -168,7 +168,7 @@ def test_feishu_send_to_user_uses_existing_bot_card_api(monkeypatch):
 
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "codepilot.feishu_bot._send_bot_card",
+        "codepilot.feishu_bot.card_builders._send_bot_card",
         lambda card, *, project_name="", chat_ids=None: calls.append(
             {"card": card, "project_name": project_name, "chat_ids": chat_ids}
         )
@@ -270,7 +270,7 @@ def test_feishu_tools_return_rate_limit_errors_without_calling_external_api(tmp_
         lambda **kwargs: calls.append("notify") or True,
     )
     monkeypatch.setattr(
-        "codepilot.feishu_bot._send_bot_card",
+        "codepilot.feishu_bot.card_builders._send_bot_card",
         lambda *args, **kwargs: calls.append("send") or True,
     )
 

@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypeVar, cast
 
 from codepilot.storage.config import (
     default_db_path as _cfg_default_db_path,
@@ -109,7 +109,10 @@ def _cache_get(key: tuple) -> object:
         return copy.deepcopy(value)
 
 
-def _cache_set(key: tuple, value: object) -> object:
+_V = TypeVar("_V")
+
+
+def _cache_set(key: tuple, value: _V) -> _V:
     if _CACHE_TTL_SECONDS <= 0:
         return value
     with _CACHE_LOCK:
