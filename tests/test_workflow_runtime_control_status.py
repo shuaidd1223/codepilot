@@ -301,6 +301,41 @@ def test_run_command_live_emits_task_log_stream_with_offsets(tmp_path, monkeypat
     assert "abcdefghi" in combined
 
 
+def test_run_command_live_writes_idle_heartbeat_when_subprocess_is_silent(tmp_path, monkeypatch):
+    log_path = tmp_path / "silent.log"
+    runtime_updates: list[dict] = []
+    monkeypatch.setattr(run_cmd, "update_task_runtime", lambda *args, **kwargs: runtime_updates.append(kwargs))
+    monkeypatch.setattr(run_cmd, "get_stop_request", lambda task_id: (False, ""))
+    monkeypatch.setattr("codepilot.commands.run_live_runner.HEARTBEAT_INTERVAL_SECONDS", 0.1)
+
+    progress_bus.clear_subscribers_for_tests()
+    events: list[dict] = []
+    with progress_bus.subscription(events.append):
+        exit_code, output = run_cmd._run_command_live(
+            [sys.executable, "-c", "import time; time.sleep(0.5)"],
+            task_id=17,
+            phase="builder",
+            log_path=log_path,
+            timeout=10,
+        )
+
+    assert exit_code == 0
+    assert "子进程仍在运行" in output
+
+    body = log_path.read_text(encoding="utf-8", errors="replace")
+    assert "子进程仍在运行" in body
+    assert "暂无新的标准输出" in body
+    assert "## Result" in body
+
+    stream_chunks = [
+        (event.get("extra") or {}).get("task_log_chunk") or ""
+        for event in events
+        if (event.get("extra") or {}).get("task_log_stream")
+    ]
+    assert any("子进程仍在运行" in chunk for chunk in stream_chunks)
+    assert any("子进程仍在运行" in (update.get("last_output") or "") for update in runtime_updates)
+
+
 def test_run_command_live_writes_timeout_status_to_log(tmp_path, monkeypatch):
     log_path = tmp_path / "timeout.log"
     monkeypatch.setattr(run_cmd, "update_task_runtime", lambda *args, **kwargs: None)
@@ -743,4 +778,3 @@ def test_extract_error_hint_humanizes_json_payload():
     assert "当前账号额度已用完" in hint
     assert "重置时间 Apr 14, 1pm" in hint
     assert "{" not in hint
-

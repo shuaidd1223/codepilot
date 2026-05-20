@@ -485,6 +485,47 @@ class _LiveOutputProcessor:
             if len(self.recent_lines) > 200:
                 del self.recent_lines[:-200]
 
+    def emit_idle_heartbeat(self, *, elapsed_seconds: int, silent_seconds: int) -> str:
+        """Append a lightweight log line while the child is alive but quiet."""
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        raw = (
+            f"[{timestamp}] 子进程仍在运行，已运行 {max(0, int(elapsed_seconds))}s，"
+            f"暂无新的标准输出（静默 {max(0, int(silent_seconds))}s）。\n"
+        )
+        markdown_chunk = self.md_live_writer.feed(raw)
+        if not markdown_chunk:
+            return ""
+        stream_start = self.emitted_log_bytes
+        self.emitted_log_bytes = stream_start + len(markdown_chunk.encode("utf-8", errors="replace"))
+        try:
+            self.handle.write(markdown_chunk)
+            self.handle.flush()
+        except Exception:
+            pass
+        self._emit_log_stream(markdown_chunk, stream_start)
+        try:
+            from codepilot.core import progress_bus
+
+            progress_bus.emit(
+                task_id=self.task_id,
+                stage=self.phase,
+                level="heartbeat",
+                message=raw.strip()[:200],
+                extra={
+                    "source": "subprocess",
+                    "subprocess_idle_heartbeat": True,
+                    "elapsed_seconds": int(elapsed_seconds),
+                    "silent_seconds": int(silent_seconds),
+                },
+            )
+        except Exception:
+            pass
+        with self.recent_lock:
+            self.recent_lines.append(raw)
+            if len(self.recent_lines) > 200:
+                del self.recent_lines[:-200]
+        return raw
+
     def seconds_since_last_output(self) -> float:
         return time.monotonic() - self.last_output_monotonic
 
@@ -578,6 +619,7 @@ def _poll_live_process(
 ) -> _LiveRunStatus:
     started = time.monotonic()
     last_heartbeat = 0.0
+    last_idle_log_heartbeat = started
 
     while True:
         requested, reason = deps.get_stop_request(task_id)
@@ -620,6 +662,18 @@ def _poll_live_process(
 
         exit_code = process.poll()
         now = time.monotonic()
+        if exit_code is None:
+            silent_for = output.seconds_since_last_output()
+            if (
+                now - last_idle_log_heartbeat >= HEARTBEAT_INTERVAL_SECONDS
+                and silent_for >= HEARTBEAT_INTERVAL_SECONDS
+            ):
+                output.emit_idle_heartbeat(
+                    elapsed_seconds=int(now - started),
+                    silent_seconds=int(silent_for),
+                )
+                last_idle_log_heartbeat = now
+
         if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
             deps.update_task_runtime(
                 task_id,
@@ -752,4 +806,3 @@ def _run_command_live(
             if process.poll() is None:
                 deps.stop_process_tree(process.pid)
             reader.join(timeout=2)
-
