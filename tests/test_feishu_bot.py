@@ -119,6 +119,17 @@ def test_feishu_worker_sends_processing_feedback_before_python():
     assert "updateReply" in card_body, "processCardAction 应使用 updateReply 更新处理中卡片"
 
 
+def test_feishu_worker_switches_python_args_for_frozen_binary():
+    """冻结二进制运行时不能继续向 codepilot.exe 传入 python -m 参数。"""
+    worker_path = Path(__file__).resolve().parents[1] / "codepilot" / "feishu_worker.mjs"
+    content = worker_path.read_text(encoding="utf-8")
+
+    assert "CODEPILOT_FEISHU_PYTHON_MODE" in content
+    assert "pythonMode === 'binary'" in content
+    assert "['feishu', 'handle-event']" in content
+    assert "['-m', 'codepilot', 'feishu', 'handle-event']" in content
+
+
 def test_feishu_worker_processing_card_shows_user_text():
     """验证 buildProcessingCard 在传入用户原文时，卡片中会回显原文。"""
     worker_path = Path(__file__).resolve().parents[1] / "codepilot" / "feishu_worker.mjs"

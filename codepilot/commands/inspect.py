@@ -28,7 +28,7 @@ from codepilot.commands.json_contract import emit_json_payload, resolve_json_mod
 from codepilot.core.config import load_project_config, resolve_planner
 from codepilot.core.output import echo
 from codepilot.core.paths import global_storage_root
-from codepilot.core.runtime import is_process_alive, stop_process_tree
+from codepilot.core.runtime import codepilot_command, is_process_alive, stop_process_tree
 from codepilot.core.service_launcher import append_log_header, spawn_detached_command_via_launcher as _spawn_detached_command_via_launcher
 from codepilot.core.task_template import missing_task_template_sections
 
@@ -151,7 +151,7 @@ def request_inspect_service_start(
 
     log_file = _service_log_path(project)
     append_log_header(log_file, f"\n--- request-start {_now_iso()} project={project} via cli ---\n")
-    cmd = [sys.executable, "-m", "codepilot", "inspect", "--project", project]
+    cmd = codepilot_command("inspect", "--project", project)
     launcher_pid = _spawn_detached_command_via_launcher(cmd, log_file=log_file)
 
     deadline = time.monotonic() + max(float(wait_seconds), 0.0)

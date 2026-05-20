@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from codepilot.ai_support.cli_families import env_var_for
 from codepilot.core.config import load_project_config
+from codepilot.core.runtime import codepilot_command
 from codepilot.mcp.launchers import build_mcp_launch_plan
 from codepilot.opencode.env import build_agent_launch_env, build_opencode_config_from_agents_config, clean_agent_env
 from codepilot.opencode.model_state import resolve_project_model_selection, sync_latest_project_model_selection
@@ -393,14 +394,15 @@ def _prepare_headless_launch(
     cfg = load_project_config(project_path)
     executable = _resolve_opencode_executable(cfg)
     source_root = Path(__file__).resolve().parents[2]
+    mcp_command = codepilot_command("mcp", "serve", "--transport", "stdio", "--project", project_name)
     plan = build_mcp_launch_plan(
         "opencode",
         executable=executable,
         prompt="",
         mcp_servers={
             "codepilot": {
-                "command": sys.executable,
-                "args": ["-m", "codepilot", "mcp", "serve", "--transport", "stdio", "--project", project_name],
+                "command": mcp_command[0],
+                "args": mcp_command[1:],
                 "env": {"PYTHONPATH": _pythonpath_with_source_root(source_root)},
             }
         },

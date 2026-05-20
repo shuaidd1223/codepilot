@@ -146,12 +146,9 @@ def build_binary(
     if not binary_path.exists():
         raise RuntimeError(f"构建命令已完成，但没有找到产物文件：{binary_path}")
 
-    source_web_dir = root / "codepilot" / "web"
-    if source_web_dir.exists():
-        target_web_dir = dist_dir / "web"
-        if target_web_dir.exists():
-            shutil.rmtree(target_web_dir)
-        shutil.copytree(source_web_dir, target_web_dir)
+    _copy_web_assets(root, dist_dir)
+
+    _copy_feishu_runtime(root, dist_dir)
 
     return BuildResult(
         binary_path=binary_path.resolve(),
@@ -189,6 +186,13 @@ def install_binary(
             shutil.rmtree(target_web_dir)
         shutil.copytree(source_web_dir, target_web_dir)
 
+    source_feishu_dir = source.parent / "feishu"
+    if source_feishu_dir.exists():
+        target_feishu_dir = destination_dir / "feishu"
+        if target_feishu_dir.exists():
+            shutil.rmtree(target_feishu_dir)
+        shutil.copytree(source_feishu_dir, target_feishu_dir)
+
     path_registered = False
     registration_message = ""
     if register_path:
@@ -203,6 +207,59 @@ def install_binary(
         path_registered=path_registered,
         registration_message=registration_message,
     )
+
+
+def _copy_web_assets(project_root: Path, dist_dir: Path) -> None:
+    source = project_root / "codepilot" / "web"
+    required = [
+        source / "index.html",
+        source / "app.js",
+        source / "boundaries" / "AppStateBoundary.js",
+    ]
+    missing = [str(path.relative_to(project_root)) for path in required if not path.exists()]
+    if missing:
+        raise RuntimeError("Web UI 静态资源缺失，不能生成不完整二进制包：\n- " + "\n- ".join(missing))
+
+    target = dist_dir / "web"
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target)
+
+
+def _copy_feishu_runtime(project_root: Path, dist_dir: Path) -> None:
+    missing = _missing_feishu_runtime_sources(project_root)
+    if missing:
+        raise RuntimeError(
+            "飞书运行时依赖缺失，不能生成不完整二进制包；请先执行 npm install：\n- "
+            + "\n- ".join(missing)
+        )
+
+    target = dist_dir / "feishu"
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+
+    for name in ("package.json", "package-lock.json"):
+        source = project_root / name
+        shutil.copy2(source, target / name)
+
+    source_node_modules = project_root / "node_modules"
+    shutil.copytree(source_node_modules, target / "node_modules")
+
+    for name in ("feishu_worker.mjs", "feishu_notify.mjs"):
+        source = project_root / "codepilot" / name
+        shutil.copy2(source, target / name)
+
+
+def _missing_feishu_runtime_sources(project_root: Path) -> list[str]:
+    required = [
+        project_root / "package.json",
+        project_root / "package-lock.json",
+        project_root / "node_modules" / "@larksuiteoapi" / "node-sdk",
+        project_root / "codepilot" / "feishu_worker.mjs",
+        project_root / "codepilot" / "feishu_notify.mjs",
+    ]
+    return [str(path.relative_to(project_root)) for path in required if not path.exists()]
 
 
 __all__ = [

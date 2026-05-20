@@ -32,13 +32,17 @@ from codepilot.feishu_bot.command_handlers import (
     handle_command_text,
     handle_event_payload,
 )
-from codepilot.feishu_config import load_feishu_bot_config, validate_feishu_bot_config
+from codepilot.feishu_cards import card as _card
+from codepilot.feishu_commands import _normalize_command_text
+from codepilot.feishu_config import FeishuBotConfig, load_feishu_bot_config, validate_feishu_bot_config
 
 __all__ = [
     "handle_command_text",
     "handle_card_action_payload",
     "handle_event_payload",
     "notify_feishu_task_event",
+    "_card",
+    "_normalize_command_text",
     "build_batch_task_action_card",
     "build_choice_card",
     "build_confirm_cancelled_card",
@@ -61,6 +65,7 @@ __all__ = [
     "build_task_event_card",
     "build_task_log_card",
     "build_tasks_card",
+    "FeishuBotConfig",
     "load_feishu_bot_config",
     "validate_feishu_bot_config",
 ]

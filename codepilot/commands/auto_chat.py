@@ -50,7 +50,7 @@ from codepilot.commands.auto_chat_commands import (
     _run_task_proxy_chat_command,
     _switch_chat_project,
 )
-from codepilot.core.runtime import no_window_kwargs
+from codepilot.core.runtime import codepilot_command, no_window_kwargs
 
 
 def _shell():
@@ -137,17 +137,14 @@ def _start_chat_ui(port: int = 8766):
         echo(f"[dim]Web UI 已在运行: http://127.0.0.1:{port}/[/dim]")
         return {"managed": False, "port": int(port)}
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "codepilot",
+    cmd = codepilot_command(
         "ui",
         "start",
         "--no-open",
         "--no-daemon",
         "--port",
         str(int(port)),
-    ]
+    )
     try:
         popen_kwargs = {
             "stdin": subprocess.DEVNULL,

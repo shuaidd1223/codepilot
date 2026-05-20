@@ -408,6 +408,26 @@ def test_chat_ui_starts_via_detached_webui_service(monkeypatch):
     assert seen["new_process_group"] is True
 
 
+def test_chat_ui_start_uses_binary_command_when_frozen(monkeypatch):
+    from codepilot.commands import auto_chat as auto_chat_mod
+
+    monkeypatch.setattr(auto_chat_mod.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(auto_chat_mod.sys, "executable", r"C:\Tools\CodePilot\codepilot.exe")
+    monkeypatch.setattr(auto_chat_mod, "_is_chat_ui_healthy", lambda port: False)
+    monkeypatch.setattr(auto_chat_mod, "no_window_kwargs", lambda *, new_process_group=False: {})
+    calls = []
+
+    class _Proc:
+        pid = 4242
+
+    monkeypatch.setattr(auto_chat_mod.subprocess, "Popen", lambda cmd, **kwargs: calls.append((cmd, kwargs)) or _Proc())
+
+    handle = auto_chat_mod._start_chat_ui(9912)
+
+    assert handle and handle["managed"] is True
+    assert calls[0][0][:3] == [r"C:\Tools\CodePilot\codepilot.exe", "ui", "start"]
+    assert "-m" not in calls[0][0]
+
 
 
 

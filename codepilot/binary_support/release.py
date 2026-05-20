@@ -217,6 +217,7 @@ def _write_release_archive(
     ai_manifest_path: Path,
     vendor_dir: Path | None = None,
     web_dir: Path | None = None,
+    feishu_dir: Path | None = None,
 ) -> None:
     """Create the platform archive with binary, installer, and Chinese guide."""
     if archive_format == "zip":
@@ -232,6 +233,9 @@ def _write_release_archive(
             for web_file in _iter_tree_files(web_dir):
                 relative = str(web_file.relative_to(web_dir)).replace("\\", "/")
                 bundle.write(web_file, arcname=f"{folder_name}/web/{relative}")
+            for feishu_file in _iter_tree_files(feishu_dir):
+                relative = str(feishu_file.relative_to(feishu_dir)).replace("\\", "/")
+                bundle.write(feishu_file, arcname=f"{folder_name}/feishu/{relative}")
         return
 
     if archive_format == "tar.gz":
@@ -247,6 +251,9 @@ def _write_release_archive(
             for web_file in _iter_tree_files(web_dir):
                 relative = str(web_file.relative_to(web_dir)).replace("\\", "/")
                 bundle.add(web_file, arcname=f"{folder_name}/web/{relative}")
+            for feishu_file in _iter_tree_files(feishu_dir):
+                relative = str(feishu_file.relative_to(feishu_dir)).replace("\\", "/")
+                bundle.add(feishu_file, arcname=f"{folder_name}/feishu/{relative}")
         return
 
     raise RuntimeError(f"不支持的压缩格式：{archive_format}")
@@ -284,6 +291,50 @@ def _stage_web_assets(source_path: Path, artifact_dir: Path) -> Path | None:
         shutil.rmtree(staged_web_dir)
     shutil.copytree(source_web_dir, staged_web_dir)
     return staged_web_dir
+
+
+def _project_requires_web_assets(project_root: Path) -> bool:
+    return (project_root / "codepilot" / "web" / "index.html").exists()
+
+
+def _missing_web_assets(web_dir: Path) -> list[str]:
+    required = [
+        web_dir / "index.html",
+        web_dir / "app.js",
+        web_dir / "boundaries" / "AppStateBoundary.js",
+    ]
+    return [str(path.relative_to(web_dir)) for path in required if not path.exists()]
+
+
+def _stage_feishu_runtime(source_path: Path, artifact_dir: Path) -> Path | None:
+    source_feishu_dir = source_path.parent / "feishu"
+    if not source_feishu_dir.exists():
+        return None
+
+    missing = _missing_feishu_runtime(source_feishu_dir)
+    if missing:
+        raise RuntimeError("飞书运行时目录不完整，不能生成不完整发布包：\n- " + "\n- ".join(missing))
+
+    staged_feishu_dir = artifact_dir / "feishu"
+    if staged_feishu_dir.exists():
+        shutil.rmtree(staged_feishu_dir)
+    shutil.copytree(source_feishu_dir, staged_feishu_dir)
+    return staged_feishu_dir
+
+
+def _project_requires_feishu_runtime(project_root: Path) -> bool:
+    return (project_root / "codepilot" / "feishu_worker.mjs").exists()
+
+
+def _missing_feishu_runtime(feishu_dir: Path) -> list[str]:
+    required = [
+        feishu_dir / "package.json",
+        feishu_dir / "package-lock.json",
+        feishu_dir / "node_modules" / "@larksuiteoapi" / "node-sdk",
+        feishu_dir / "feishu_worker.mjs",
+        feishu_dir / "feishu_notify.mjs",
+    ]
+    return [str(path.relative_to(feishu_dir)) for path in required if not path.exists()]
 
 
 def _read_archive_members(archive_path: Path, archive_format: str) -> set[str]:
@@ -390,6 +441,15 @@ def create_release_bundle(
         shutil.copy2(source_path, staged_path)
         vendor_dir = _stage_vendor_bundle(source_path, artifact_dir)
         web_dir = _stage_web_assets(source_path, artifact_dir)
+        if web_dir is None and _project_requires_web_assets(project_root):
+            raise RuntimeError("二进制产物缺少 Web UI 静态资源目录，不能生成不完整发布包。")
+        if web_dir is not None:
+            missing_web = _missing_web_assets(web_dir)
+            if missing_web:
+                raise RuntimeError("Web UI 静态资源目录不完整，不能生成不完整发布包：\n- " + "\n- ".join(missing_web))
+        feishu_dir = _stage_feishu_runtime(source_path, artifact_dir)
+        if feishu_dir is None and _project_requires_feishu_runtime(project_root):
+            raise RuntimeError("二进制产物缺少飞书运行时目录，不能生成不完整发布包。")
         script_name = _release_script_name(platform_tag)
         script_path = artifact_dir / script_name
         script_path.write_text(_release_script_text(platform_tag, staged_name), encoding="utf-8", newline="\n")
@@ -410,6 +470,7 @@ def create_release_bundle(
             ai_manifest_path=ai_manifest_path,
             vendor_dir=vendor_dir,
             web_dir=web_dir,
+            feishu_dir=feishu_dir,
         )
 
         binary_sha = _sha256_file(staged_path)
@@ -434,6 +495,7 @@ def create_release_bundle(
                 "archive_format": archive_format,
                 "install_script": str(script_path),
                 "web_assets": str(web_dir) if web_dir else "",
+                "feishu_runtime": str(feishu_dir) if feishu_dir else "",
                 "binary_sha256": binary_sha,
                 "archive_sha256": archive_sha,
             }
@@ -551,6 +613,7 @@ def _verify_archive_members(
     staged: Path,
     install_script: Path,
     web_dir: Path | None = None,
+    feishu_dir: Path | None = None,
     issues: list[str],
 ) -> None:
     if archive_format == "zip" and archive.suffix.lower() != ".zip":
@@ -575,6 +638,9 @@ def _verify_archive_members(
     for web_file in _iter_tree_files(web_dir):
         relative = str(web_file.relative_to(web_dir)).replace("\\", "/")
         expected_members.add(f"{folder_name}/web/{relative}")
+    for feishu_file in _iter_tree_files(feishu_dir):
+        relative = str(feishu_file.relative_to(feishu_dir)).replace("\\", "/")
+        expected_members.add(f"{folder_name}/feishu/{relative}")
     missing = sorted(member for member in expected_members if member not in members)
     if missing:
         issues.append(f"压缩包缺少预期文件: {archive.name} -> {', '.join(missing)}")
@@ -590,6 +656,7 @@ def _verify_archive_file(
     staged: Path,
     install_script: Path,
     web_dir: Path | None,
+    feishu_dir: Path | None,
     issues: list[str],
 ) -> int:
     if not archive.exists():
@@ -608,6 +675,7 @@ def _verify_archive_file(
         staged=staged,
         install_script=install_script,
         web_dir=web_dir,
+        feishu_dir=feishu_dir,
         issues=issues,
     )
     return 1
@@ -624,11 +692,14 @@ def _verify_manifest_artifact(
     archive = Path(artifact.get("archive_path", ""))
     install_script = Path(artifact.get("install_script", ""))
     web_dir = Path(artifact.get("web_assets", "")) if artifact.get("web_assets") else None
+    feishu_dir = Path(artifact.get("feishu_runtime", "")) if artifact.get("feishu_runtime") else None
     for label, path in (("二进制", staged), ("压缩包", archive), ("安装脚本", install_script)):
         if not path.exists():
             issues.append(f"{label}不存在: {path}")
     if web_dir is not None and not web_dir.exists():
         issues.append(f"Web 静态资源目录不存在: {web_dir}")
+    if feishu_dir is not None and not feishu_dir.exists():
+        issues.append(f"飞书运行时目录不存在: {feishu_dir}")
 
     checked_files = 0
     checked_files += _verify_staged_file(
@@ -647,6 +718,7 @@ def _verify_manifest_artifact(
         staged=staged,
         install_script=install_script,
         web_dir=web_dir,
+        feishu_dir=feishu_dir,
         issues=issues,
     )
     return checked_files

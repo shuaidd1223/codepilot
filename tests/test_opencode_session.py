@@ -116,6 +116,40 @@ def test_run_opencode_message_normalizes_project_alias_for_mcp_and_session_scope
     assert db.get_service_state("opencode_chat", "feishu:chat-a:codepilot-dev")
 
 
+def test_run_opencode_message_uses_binary_mcp_command_when_frozen(tmp_path: Path, monkeypatch):
+    runtime_root = _isolate_opencode_runtime(tmp_path, monkeypatch)
+    project_path = register_project(tmp_path, monkeypatch)
+    monkeypatch.setattr("codepilot.opencode.session.sys.frozen", True, raising=False)
+    monkeypatch.setattr("codepilot.opencode.session.sys.executable", r"C:\Tools\CodePilot\codepilot.exe")
+    calls = []
+
+    def fake_run(command, *, cwd, env, capture_output, timeout, **_kwargs):
+        calls.append({"command": command, "cwd": cwd, "env": env})
+        stdout = "\n".join(
+            [
+                json.dumps({"type": "session.updated", "sessionID": "ses_binary"}),
+                json.dumps({"type": "message.part", "role": "assistant", "text": "收到。"}),
+            ]
+        )
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("codepilot.opencode.session.subprocess.run", fake_run)
+
+    from codepilot.opencode.session import run_opencode_message
+
+    result = run_opencode_message("demo", "看一下当前状态", source="web", external_session_id="chat-binary")
+
+    assert result["ok"] is True
+    assert calls
+    config_path = Path(calls[0]["env"]["OPENCODE_CONFIG"])
+    assert config_path.is_relative_to(runtime_root)
+    opencode_config = json.loads(config_path.read_text(encoding="utf-8"))
+    mcp_command = opencode_config["mcp"]["codepilot"]["command"]
+    assert mcp_command[:3] == [r"C:\Tools\CodePilot\codepilot.exe", "mcp", "serve"]
+    assert "-m" not in mcp_command
+    assert mcp_command[mcp_command.index("--project") + 1] == "demo"
+
+
 def test_run_opencode_message_uses_tool_level_profile_not_project_opencode_config(
     tmp_path: Path,
     monkeypatch,

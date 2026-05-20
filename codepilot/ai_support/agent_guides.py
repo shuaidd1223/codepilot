@@ -189,7 +189,7 @@ retry 123
 ### 9. 发布
 
 ```bash
-{_cmd(command, "binary prepare --version 0.7.3")}
+{_cmd(command, "binary prepare --version 0.7.4")}
 {_cmd(command, "binary release --build-current")}
 {_cmd(command, "binary verify")}
 ```
@@ -435,7 +435,7 @@ retry 123
 最推荐：
 
 ```bash
-{_cmd(command, "binary prepare --version 0.7.3")}
+{_cmd(command, "binary prepare --version 0.7.4")}
 ```
 
 只打包：

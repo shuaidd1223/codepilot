@@ -25,6 +25,7 @@ from codepilot.ai_support.cli_families import env_var_for, get_family
 from codepilot.claude.session_storage import claude_session_exists, latest_claude_session_id
 from codepilot.codex.session_storage import codex_session_exists, latest_codex_session_id
 from codepilot.core.config import AgentsConfig, load_project_config
+from codepilot.core.runtime import codepilot_command
 from codepilot.mcp.launchers import build_mcp_launch_plan
 from codepilot.mcp.server import _missing_mcp_sdk_message
 from codepilot.opencode.env import build_agent_launch_env, build_opencode_config_from_agents_config, clean_agent_env
@@ -116,15 +117,12 @@ def _resolve_executable_path(value: str) -> str:
 
 
 def _codepilot_mcp_command(project: str | None) -> list[str]:
-    command: list[str] = [
-        sys.executable,
-        "-m",
-        "codepilot",
+    command = codepilot_command(
         "mcp",
         "serve",
         "--transport",
         "stdio",
-    ]
+    )
     if project:
         command.extend(["--project", project])
     return command

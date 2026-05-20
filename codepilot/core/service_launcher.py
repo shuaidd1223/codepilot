@@ -56,6 +56,12 @@ def spawn_detached_command_via_launcher(
 
     if os.name != "nt":
         log_fp = open(log_file, "ab")
+        popen_env = env_payload
+        if getattr(sys, "frozen", False):
+            popen_env = os.environ.copy()
+            if env_payload:
+                popen_env.update(env_payload)
+            popen_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -63,8 +69,26 @@ def spawn_detached_command_via_launcher(
             stderr=log_fp,
             close_fds=True,
             cwd=cwd_text,
-            env=env_payload,
+            env=popen_env,
             start_new_session=True,
+        )
+        return int(proc.pid)
+
+    if getattr(sys, "frozen", False):
+        log_fp = open(log_file, "ab")
+        popen_env = os.environ.copy()
+        if env_payload:
+            popen_env.update(env_payload)
+        popen_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_fp,
+            stderr=log_fp,
+            close_fds=True,
+            cwd=cwd_text,
+            env=popen_env,
+            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
         )
         return int(proc.pid)
 

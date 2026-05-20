@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Callable
 
+from codepilot.core.runtime import codepilot_command
 from codepilot.core.service_launcher import DetachedProcessHandle, append_log_header, spawn_detached_command_via_launcher
 from codepilot.core.paths import _slugify_project_name, global_storage_root
 
@@ -92,17 +92,14 @@ def spawn_detached_inspect(
     log_file = service_log_path(project, state_dir=state_dir)
     append_log_header(log_file, f"\n--- start {now_iso_fn()} project={project} ---\n")
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "codepilot",
+    cmd = codepilot_command(
         "inspect",
         "--project",
         project,
         "--foreground",
         "--agent",
         agent,
-    ]
+    )
     if max_new is not None:
         cmd.extend(["--max", str(max_new)])
     if dry_run:
@@ -114,4 +111,3 @@ def spawn_detached_inspect(
 
     pid = spawn_detached_command_via_launcher(cmd, log_file=log_file)
     return DetachedProcessHandle(pid)
-

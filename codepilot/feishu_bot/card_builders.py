@@ -985,7 +985,9 @@ def build_services_card(project_name: str, *, prefix: str = "") -> dict[str, Any
 
 
 def _feishu_notify_script() -> Path:
-    return Path(__file__).resolve().parent.parent / "feishu_notify.mjs"
+    from codepilot.feishu_runtime import notify_script
+
+    return notify_script()
 
 
 def _truthy_env(name: str) -> bool:

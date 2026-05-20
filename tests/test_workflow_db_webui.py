@@ -30,6 +30,27 @@ from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
 
 
+def test_requirement_worker_process_uses_binary_command_when_frozen(tmp_path, monkeypatch):
+    monkeypatch.setattr(requirement_actions.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(requirement_actions.sys, "executable", r"C:\Tools\CodePilot\codepilot.exe")
+    calls = []
+
+    class _Proc:
+        pid = 4321
+
+    monkeypatch.setattr(
+        requirement_actions.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: calls.append((cmd, kwargs)) or _Proc(),
+    )
+
+    proc = requirement_actions._start_requirement_job_process(12, {"path": str(tmp_path)})
+
+    assert proc.pid == 4321
+    assert calls[0][0] == [r"C:\Tools\CodePilot\codepilot.exe", "requirement-worker", "12"]
+    assert calls[0][1]["cwd"] == str(tmp_path)
+
+
 def _valid_import_task_content(title: str) -> str:
     return f"""# {title}
 
@@ -1053,4 +1074,3 @@ def test_webui_session_list_searches_titles_messages_and_task_ids(tmp_path, monk
     assert "任务列表" in title_payload["sessions"][0]["snippet"]
     assert [item["id"] for item in task_payload["sessions"]] == [second["id"]]
     assert task_payload["sessions"][0]["matched_message_count"] == 1
-

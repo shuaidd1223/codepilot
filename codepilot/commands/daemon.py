@@ -18,7 +18,7 @@ from codepilot.commands.feishu import ensure_service_running_if_enabled
 from codepilot.commands.run import run_backlog
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import _slugify_project_name, global_storage_root
-from codepilot.core.runtime import is_process_alive, reap_stalled_tasks
+from codepilot.core.runtime import codepilot_command, is_process_alive, reap_stalled_tasks
 from codepilot.core.service_launcher import (
     CREATE_NEW_PROCESS_GROUP,
     DETACHED_PROCESS,
@@ -137,10 +137,7 @@ def _spawn_detached_daemon(
     except Exception:
         pass
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "codepilot",
+    cmd = codepilot_command(
         "daemon",
         "--foreground",
         "--no-ui",
@@ -152,7 +149,7 @@ def _spawn_detached_daemon(
         shell,
         "--executor",
         executor,
-    ]
+    )
     if project:
         cmd.extend(["--project", project])
     if not auto_commit:
@@ -164,6 +161,10 @@ def _spawn_detached_daemon(
         "stderr": log_fp,
         "close_fds": True,
     }
+    if getattr(sys, "frozen", False):
+        child_env = os.environ.copy()
+        child_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        popen_kwargs["env"] = child_env
     if os.name == "nt":
         popen_kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     else:
@@ -236,7 +237,7 @@ def request_daemon_service_start(
 
     log_file = _service_log_path(project)
     append_log_header(log_file, f"\n--- request-start {_now_iso()} project={project} via cli ---\n")
-    cmd = [sys.executable, "-m", "codepilot", "daemon", "--project", project]
+    cmd = codepilot_command("daemon", "--project", project)
     launcher_pid = _spawn_detached_command_via_launcher(cmd, log_file=log_file)
 
     deadline = time.monotonic() + max(float(wait_seconds), 0.0)
@@ -340,17 +341,14 @@ def _ensure_ui_service_process(port: int = 8766) -> bool:
     That coupled lifecycles and made isolation harder. We now shell out to
     `codepilot ui start --no-daemon` so UI and workflow stay decoupled.
     """
-    cmd = [
-        sys.executable,
-        "-m",
-        "codepilot",
+    cmd = codepilot_command(
         "ui",
         "start",
         "--no-open",
         "--no-daemon",
         "--port",
         str(int(port)),
-    ]
+    )
     try:
         result = subprocess.run(
             cmd,
@@ -637,4 +635,3 @@ def _get_combined_stats(project: str | None) -> dict:
         for key in combined:
             combined[key] += stats.get(key, 0)
     return combined
-

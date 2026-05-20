@@ -132,11 +132,11 @@ def _append_requirement_job_log(job_id: int, line: str, *, project: str | None =
 
 
 def _start_requirement_job_process(job_id: int, project_info: dict) -> subprocess.Popen:
-    from codepilot.core.runtime import no_window_kwargs
+    from codepilot.core.runtime import codepilot_command, no_window_kwargs
 
     project_path = str(project_info.get("path") or "").strip()
     cwd = project_path if project_path and Path(project_path).exists() else None
-    cmd = [sys.executable, "-m", "codepilot.cli", "requirement-worker", str(int(job_id))]
+    cmd = codepilot_command("requirement-worker", str(int(job_id)), module="codepilot.cli")
     return subprocess.Popen(
         cmd,
         cwd=cwd,

@@ -177,6 +177,38 @@ def test_request_daemon_service_start_uses_external_launcher(tmp_path, monkeypat
     assert cmd[-2:] == ["--project", "demo"]
 
 
+def test_request_daemon_service_start_uses_binary_command_when_frozen(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    db.register_project("demo", str(tmp_path))
+    monkeypatch.setattr(daemon_cmd.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(daemon_cmd.sys, "executable", r"C:\Tools\CodePilot\codepilot.exe")
+
+    calls = []
+
+    def fake_spawn(cmd, *, log_file):
+        calls.append((cmd, log_file))
+        db.upsert_service_state(
+            "daemon",
+            "demo",
+            pid=7654,
+            status="running",
+            log_path=str(log_file),
+            meta={"project": "demo", "started_at": "2026-01-01T00:00:00"},
+        )
+        return 2468
+
+    monkeypatch.setattr(daemon_cmd, "_spawn_detached_command_via_launcher", fake_spawn)
+    monkeypatch.setattr(daemon_cmd, "is_process_alive", lambda pid: int(pid) == 7654)
+    monkeypatch.setattr(daemon_cmd.time, "sleep", lambda _: None)
+
+    result = daemon_cmd.request_daemon_service_start("demo", wait_seconds=1)
+
+    assert result["running"] is True
+    assert calls[0][0] == [r"C:\Tools\CodePilot\codepilot.exe", "daemon", "--project", "demo"]
+
+
 def test_daemon_start_requires_project(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
@@ -218,6 +250,24 @@ def test_daemon_foreground_ui_starts_detached_webui_process(tmp_path, monkeypatc
     assert calls, "expected daemon foreground mode to invoke webui service"
     cmd = calls[0][0]
     assert cmd[:5] == [daemon_cmd.sys.executable, "-m", "codepilot", "ui", "start"]
+
+
+def test_daemon_foreground_ui_uses_binary_command_when_frozen(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(daemon_cmd.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(daemon_cmd.sys, "executable", r"C:\Tools\CodePilot\codepilot.exe")
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    monkeypatch.setattr(daemon_cmd.subprocess, "run", lambda cmd, **kwargs: calls.append((cmd, kwargs)) or _Result())
+
+    assert daemon_cmd._ensure_ui_service_process(9911) is True
+    cmd = calls[0][0]
+    assert cmd[:3] == [r"C:\Tools\CodePilot\codepilot.exe", "ui", "start"]
     assert "--no-daemon" in cmd
     assert "--no-open" in cmd
     assert cmd[-2:] == ["--port", "9911"]
@@ -257,4 +307,3 @@ def test_run_loop_wraps_foreground_backlog_drain_in_cli_progress_renderer(tmp_pa
 
     assert drained
     assert entered == [("enter", True), ("exit", True)]
-

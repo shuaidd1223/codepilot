@@ -6,6 +6,7 @@ import os
 import platform
 import signal
 import subprocess
+import sys
 import time
 import json
 import ctypes
@@ -22,6 +23,15 @@ STALE_AFTER_SECONDS = 600
 # Windows creation flags
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000
+
+
+def codepilot_command(*args: str, module: str = "codepilot") -> list[str]:
+    """Build a command that re-enters CodePilot in source or frozen mode."""
+    command = [sys.executable]
+    if not getattr(sys, "frozen", False):
+        command.extend(["-m", module])
+    command.extend(str(arg) for arg in args)
+    return command
 
 
 def no_window_kwargs(*, new_process_group: bool = False) -> dict:
@@ -592,4 +602,3 @@ def reap_stalled_tasks(project: Optional[str] = None, *, stale_after_seconds: in
         if updated:
             reaped.append(updated)
     return [task for task in reaped if task]
-

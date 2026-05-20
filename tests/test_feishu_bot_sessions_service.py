@@ -6,6 +6,7 @@ import pytest
 from click.testing import CliRunner
 
 from codepilot.commands import feishu as feishu_cmd
+from codepilot.feishu_bot import card_builders
 from codepilot.feishu_bot import handle_command_text
 from codepilot.storage import database as db
 from tests.feishu_bot_testkit import _setup_project
@@ -188,3 +189,39 @@ def test_feishu_spawn_detached_uses_external_launcher(monkeypatch, tmp_path):
     assert cmd == [feishu_cmd.sys.executable, "-m", "codepilot", "feishu", "run"]
     assert log_file == tmp_path / "feishu.log"
     assert cwd == tmp_path
+
+def test_feishu_spawn_detached_uses_binary_command_when_frozen(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(feishu_cmd.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(feishu_cmd.sys, "executable", r"C:\Tools\CodePilot\codepilot.exe")
+    monkeypatch.setattr(feishu_cmd, "STATE_DIR", tmp_path / "feishu")
+    monkeypatch.setattr(feishu_cmd, "LOG_FILE", tmp_path / "feishu.log")
+    monkeypatch.setattr(feishu_cmd, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        feishu_cmd,
+        "spawn_detached_command_via_launcher",
+        lambda cmd, *, log_file, cwd=None: calls.append((cmd, log_file, cwd)) or 4321,
+    )
+
+    proc = feishu_cmd._spawn_detached()
+
+    assert proc.pid == 4321
+    assert calls[0][0] == [r"C:\Tools\CodePilot\codepilot.exe", "feishu", "run"]
+
+def test_feishu_runtime_uses_installed_sidecar_when_frozen(monkeypatch, tmp_path):
+    install_dir = tmp_path / "bin"
+    runtime_dir = install_dir / "feishu"
+    runtime_dir.mkdir(parents=True)
+    worker = runtime_dir / "feishu_worker.mjs"
+    worker.write_text("import 'x';\n", encoding="utf-8")
+    notify = runtime_dir / "feishu_notify.mjs"
+    notify.write_text("import 'x';\n", encoding="utf-8")
+    package_json = runtime_dir / "package.json"
+    package_json.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(feishu_cmd.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(feishu_cmd.sys, "executable", str(install_dir / "codepilot.exe"))
+
+    assert feishu_cmd._repo_root() == runtime_dir
+    assert feishu_cmd._worker_script() == worker
+    assert card_builders._feishu_notify_script() == notify

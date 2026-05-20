@@ -1,6 +1,6 @@
 {
   "name": "CodePilot",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "command_name": "codepilot",
   "language": "en",
   "description": "Local engineering workflow CLI that turns natural-language requirements into tasks and coordinates planning, execution, review, operations, and release.",
@@ -403,7 +403,7 @@
       "purpose": "Update version, build the current platform, generate a release directory, and verify it.",
       "when_to_use": "Use to prepare a local release package.",
       "examples": [
-        "codepilot binary prepare --version 0.7.3"
+        "codepilot binary prepare --version 0.7.4"
       ]
     },
     {

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 const appId = process.env.CODEPILOT_FEISHU_APP_ID || '';
 const appSecret = process.env.CODEPILOT_FEISHU_APP_SECRET || '';
 const pythonCmd = process.env.CODEPILOT_FEISHU_PYTHON || 'python';
+const pythonMode = process.env.CODEPILOT_FEISHU_PYTHON_MODE || 'module';
 
 if (!appId || !appSecret) {
   console.error('Missing CODEPILOT_FEISHU_APP_ID or CODEPILOT_FEISHU_APP_SECRET');
@@ -38,9 +39,12 @@ function extractText(rawContent) {
 
 function invokePython(payload) {
   log('dispatch python handler', { chat_id: payload.chat_id, text: payload.text });
+  const pythonArgs = pythonMode === 'binary'
+    ? ['feishu', 'handle-event']
+    : ['-m', 'codepilot', 'feishu', 'handle-event'];
   const result = spawnSync(
     pythonCmd,
-    ['-m', 'codepilot', 'feishu', 'handle-event'],
+    pythonArgs,
     {
       input: JSON.stringify(payload),
       encoding: 'utf8',

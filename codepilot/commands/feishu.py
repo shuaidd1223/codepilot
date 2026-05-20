@@ -18,9 +18,10 @@ import click
 
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import global_storage_root
-from codepilot.core.runtime import is_process_alive, stop_process_tree
+from codepilot.core.runtime import codepilot_command, is_process_alive, stop_process_tree
 from codepilot.core.service_launcher import DetachedProcessHandle, append_log_header, spawn_detached_command_via_launcher
 from codepilot.core.text_decode import decode_subprocess_text
+from codepilot.feishu_runtime import runtime_root, worker_script
 from codepilot.feishu_bot import handle_event_payload, load_feishu_bot_config, validate_feishu_bot_config
 from codepilot.storage import database as db
 
@@ -62,11 +63,11 @@ def _now_iso() -> str:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return runtime_root()
 
 
 def _worker_script() -> Path:
-    return Path(__file__).resolve().parents[1] / "feishu_worker.mjs"
+    return worker_script()
 
 
 def _is_feishu_process_command(command_line: str) -> bool:
@@ -253,6 +254,7 @@ def _build_worker_env() -> dict[str, str]:
             "CODEPILOT_FEISHU_APP_ID": cfg.app_id,
             "CODEPILOT_FEISHU_APP_SECRET": cfg.app_secret,
             "CODEPILOT_FEISHU_PYTHON": sys.executable,
+            "CODEPILOT_FEISHU_PYTHON_MODE": "binary" if getattr(sys, "frozen", False) else "module",
         }
     )
     return env
@@ -292,7 +294,7 @@ def _check_runtime_ready() -> None:
 def _spawn_detached() -> DetachedProcessHandle:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     append_log_header(LOG_FILE, f"\n--- start {_now_iso()} ---\n")
-    cmd = [sys.executable, "-m", "codepilot", "feishu", "run"]
+    cmd = codepilot_command("feishu", "run")
     pid = spawn_detached_command_via_launcher(cmd, log_file=LOG_FILE, cwd=_repo_root())
     return DetachedProcessHandle(pid)
 
