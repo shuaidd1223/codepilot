@@ -34,6 +34,13 @@ def test_default_db_path_lives_at_codepilot_root(monkeypatch, tmp_path):
     assert db._get_db_path() == tmp_path / "home" / ".codepilot" / "tasks.db"
 
 
+def test_default_db_path_respects_codepilot_home(monkeypatch, tmp_path):
+    monkeypatch.delenv("CODEPILOT_DB_PATH", raising=False)
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / "codepilot-dev-home"))
+
+    assert db._get_db_path() == tmp_path / "codepilot-dev-home" / "tasks.db"
+
+
 def test_init_db_is_idempotent(fresh_db):
     db.init_db()
     first = db.schema_status()
@@ -171,4 +178,3 @@ def test_read_conn_does_not_implicitly_commit_writes(fresh_db):
 def test_service_state_readers_are_safe_before_init_db(fresh_db):
     assert db.get_service_state("daemon", "demo") is None
     assert db.list_service_states("daemon") == []
-

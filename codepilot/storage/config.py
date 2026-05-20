@@ -6,10 +6,12 @@ import os
 import sqlite3
 from pathlib import Path
 
+from codepilot.core.paths import global_storage_root
+
 
 def default_db_path() -> Path:
     """Return the default task DB location under the user's home directory."""
-    return Path.home() / ".codepilot" / "tasks.db"
+    return global_storage_root() / "tasks.db"
 
 
 def get_db_path() -> Path:

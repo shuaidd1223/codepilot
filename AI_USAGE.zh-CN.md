@@ -118,7 +118,7 @@ codepilot skill run ralplan -p <项目名> --provider codex --input "新增 wiki
 ### 9. 发布
 
 ```bash
-codepilot binary prepare --version 0.7.1
+codepilot binary prepare --version 0.7.2
 codepilot binary release --build-current
 codepilot binary verify
 ```

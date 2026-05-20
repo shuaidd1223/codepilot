@@ -2,7 +2,7 @@
 
 CodePilot 是一个本地工程工作流 CLI，用来把自然语言需求转成可执行任务，并串起规划、执行、审查、巡检、服务运维和发布流程。
 
-当前版本：`0.7.0`
+当前版本：`0.7.1`
 
 ## 快速开始
 
@@ -296,6 +296,13 @@ codepilot ai prompt
 ## 版本更新日志
 
 版本划分依据来自 Git 历史中的连续大功能批次；当前仓库没有历史 tag，因此以下记录把已合入提交按能力边界回填为语义化版本。`0.x` 阶段允许在 minor 版本中包含入口调整和配置迁移。
+
+### 0.7.1 - 2026-05-20
+
+- 修复打包后二进制后台启动 Web UI 时误用 `-m codepilot` 导致 `No such option: -m` 的问题。
+- 新增 `CODEPILOT_WEBUI_HOST` / `CODEPILOT_WEBUI_PORT` 环境变量，用于覆盖 Web UI 默认监听地址和端口。
+- 新增 `CODEPILOT_HOME` 环境变量，用于隔离全局状态、数据库、Web UI/飞书日志和项目运行数据。
+- `codepilot-dev` 默认使用 `~/.codepilot-dev` 和 Web UI 端口 `8767`，正式 `codepilot` 继续使用 `~/.codepilot` 的既有数据。
 
 ### 0.7.0 - 2026-05-20
 

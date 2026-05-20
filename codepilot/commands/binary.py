@@ -206,7 +206,7 @@ def binary_verify(release_dir: Path | None):
 
 
 @binary.command("prepare")
-@click.option("--version", "target_version", required=True, help="目标版本号，例如 0.7.1")
+@click.option("--version", "target_version", required=True, help="目标版本号，例如 0.7.2")
 @click.option(
     "--artifact",
     "artifacts",
