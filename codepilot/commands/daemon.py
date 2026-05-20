@@ -21,8 +21,10 @@ from codepilot.core.paths import _slugify_project_name, global_storage_root
 from codepilot.core.runtime import codepilot_command, is_process_alive, reap_stalled_tasks
 from codepilot.core.service_launcher import (
     CREATE_NEW_PROCESS_GROUP,
+    CREATE_NO_WINDOW,
     DETACHED_PROCESS,
     append_log_header,
+    hidden_windows_startupinfo,
     spawn_detached_command_via_launcher as _spawn_detached_command_via_launcher,
 )
 from codepilot.core.text_decode import decode_subprocess_text
@@ -166,7 +168,8 @@ def _spawn_detached_daemon(
         child_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
         popen_kwargs["env"] = child_env
     if os.name == "nt":
-        popen_kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        popen_kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        popen_kwargs["startupinfo"] = hidden_windows_startupinfo()
     else:
         popen_kwargs["start_new_session"] = True
     return subprocess.Popen(cmd, **popen_kwargs)

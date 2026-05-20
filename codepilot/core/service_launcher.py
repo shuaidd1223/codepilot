@@ -17,6 +17,18 @@ CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_NO_WINDOW = 0x08000000
 
 
+def hidden_windows_startupinfo() -> subprocess.STARTUPINFO | None:
+    if os.name != "nt":
+        return None
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        return startupinfo
+    except Exception:
+        return None
+
+
 class DetachedProcessHandle:
     """Small Popen-like handle for a process started by the launcher."""
 
@@ -88,7 +100,8 @@ def spawn_detached_command_via_launcher(
             close_fds=True,
             cwd=cwd_text,
             env=popen_env,
-            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+            startupinfo=hidden_windows_startupinfo(),
         )
         return int(proc.pid)
 
@@ -99,6 +112,9 @@ import sys
 
 payload = json.loads(sys.argv[1])
 log_fp = open(payload["log"], "ab")
+startupinfo = subprocess.STARTUPINFO()
+startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+startupinfo.wShowWindow = 0
 proc = subprocess.Popen(
     payload["cmd"],
     stdin=subprocess.DEVNULL,
@@ -107,7 +123,8 @@ proc = subprocess.Popen(
     close_fds=True,
     cwd=payload.get("cwd") or None,
     env=payload.get("env") or None,
-    creationflags=0x00000008 | 0x00000200,
+    creationflags=0x00000008 | 0x00000200 | 0x08000000,
+    startupinfo=startupinfo,
 )
 print(proc.pid)
 """

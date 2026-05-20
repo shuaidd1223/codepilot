@@ -482,7 +482,7 @@ def command_manifest(
                 "syntax": _cmd(command, "binary prepare --version <版本号>"),
                 "purpose": "更新版本号、构建当前平台、生成发布目录并自动校验。",
                 "when_to_use": "准备一个可交付的本地发布包时。",
-                "examples": [_cmd(command, "binary prepare --version 0.7.4")],
+                "examples": [_cmd(command, "binary prepare --version 0.7.5")],
             },
             {
                 "name": "binary_release",
@@ -501,7 +501,7 @@ def command_manifest(
                 "when_to_use": "发布前自检或 CI 验证时。",
                 "examples": [
                     _cmd(command, "binary verify"),
-                    _cmd(command, "binary verify --release-dir dist/release/codepilot-0.7.3-summary"),
+                    _cmd(command, "binary verify --release-dir dist/release/codepilot-0.7.4-summary"),
                 ],
             },
             {
@@ -647,7 +647,7 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
             {"name": "skill", "syntax": _cmd(command, f"skill <list|search|show|enable|disable|run> -p {project} [--json]"), "purpose": "Manage and run local workflow skill catalog entries.", "when_to_use": "Use to discover or run project workflow skills.", "examples": [_cmd(command, f"skill list -p {project} --json")]},
             {"name": "webhook", "syntax": _cmd(command, "webhook [--host 127.0.0.1] [--port 8765]"), "purpose": "Start the lightweight HTTP webhook service.", "when_to_use": "Use when external systems need to POST tasks or receive status notifications.", "examples": [_cmd(command, "webhook --host 127.0.0.1 --port 8765")]},
             {"name": "feishu", "syntax": _cmd(command, "feishu <start|status|logs|stop|run|handle-event>"), "purpose": "Manage the Feishu long-connection bot.", "when_to_use": "Use for Feishu status cards, Q&A, task control, and notifications.", "examples": [_cmd(command, "feishu start"), _cmd(command, "feishu status")]},
-            {"name": "binary_prepare", "syntax": _cmd(command, "binary prepare --version <version>"), "purpose": "Update version, build the current platform, generate a release directory, and verify it.", "when_to_use": "Use to prepare a local release package.", "examples": [_cmd(command, "binary prepare --version 0.7.4")]},
+            {"name": "binary_prepare", "syntax": _cmd(command, "binary prepare --version <version>"), "purpose": "Update version, build the current platform, generate a release directory, and verify it.", "when_to_use": "Use to prepare a local release package.", "examples": [_cmd(command, "binary prepare --version 0.7.5")]},
             {"name": "binary_release", "syntax": _cmd(command, "binary release [--build-current] [--artifact platform=path]"), "purpose": "Assemble existing binaries into a standard release directory.", "when_to_use": "Use when preparing artifacts for release.", "examples": [_cmd(command, "binary release --build-current"), _cmd(command, f"binary release --artifact linux-x86_64=dist/binary/linux-x86_64/{binary}")]},
             {"name": "binary_verify", "syntax": _cmd(command, "binary verify [--release-dir <release-dir>]"), "purpose": "Verify release directory, archives, and checksums.", "when_to_use": "Use before publishing.", "examples": [_cmd(command, "binary verify")]},
             {"name": "ai_template", "syntax": _cmd(command, "ai template [--format md|json|guide] [--language en|zh-CN]"), "purpose": "Return the task template, machine-readable schema, or filling guide.", "when_to_use": "Use before external AI batch-imports tasks with `add -f`.", "examples": [_cmd(command, "ai template --format json"), _cmd(command, "ai template --format guide --language zh-CN")]},

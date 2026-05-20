@@ -165,6 +165,37 @@ def test_webui_spawn_detached_resets_pyinstaller_env_for_frozen_parent(tmp_path,
     assert captured["kwargs"]["env"]["PATH"] == os.environ["PATH"]
 
 
+def test_webui_spawn_detached_hides_windows_console_for_frozen_parent(tmp_path, monkeypatch):
+    if svc.os.name != "nt":
+        return
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(svc.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(svc.os, "name", "nt")
+    captured = {}
+
+    class _FakeProc:
+        pid = 1234
+        returncode = None
+
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(svc.subprocess, "Popen", fake_popen)
+
+    svc._spawn_detached("127.0.0.1", 9876)
+
+    flags = captured["kwargs"]["creationflags"]
+    assert flags & svc.CREATE_NO_WINDOW
+    assert flags & svc.DETACHED_PROCESS
+    assert flags & svc.CREATE_NEW_PROCESS_GROUP
+    assert captured["kwargs"]["startupinfo"].wShowWindow == 0
+
+
 def test_webui_restart_port_env_overrides_stale_meta(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
     monkeypatch.setenv("CODEPILOT_WEBUI_PORT", "9876")

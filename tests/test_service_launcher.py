@@ -31,6 +31,8 @@ def test_service_launcher_uses_direct_detached_spawn_when_parent_is_frozen(tmp_p
     if service_launcher.os.name == "nt":
         assert captured["kwargs"]["creationflags"] & service_launcher.DETACHED_PROCESS
         assert captured["kwargs"]["creationflags"] & service_launcher.CREATE_NEW_PROCESS_GROUP
+        assert captured["kwargs"]["creationflags"] & service_launcher.CREATE_NO_WINDOW
+        assert captured["kwargs"]["startupinfo"].wShowWindow == 0
     else:
         assert captured["kwargs"]["start_new_session"] is True
 

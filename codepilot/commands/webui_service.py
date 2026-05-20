@@ -24,6 +24,12 @@ from codepilot.commands.feishu import ensure_service_running_if_enabled
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import global_storage_root
 from codepilot.core.runtime import is_process_alive, stop_process_tree
+from codepilot.core.service_launcher import (
+    CREATE_NEW_PROCESS_GROUP,
+    CREATE_NO_WINDOW,
+    DETACHED_PROCESS,
+    hidden_windows_startupinfo,
+)
 from codepilot.core.text_decode import decode_subprocess_text
 
 
@@ -263,9 +269,8 @@ def _spawn_detached(host: str, port: int) -> subprocess.Popen:
         popen_kwargs["env"] = child_env
 
     if os.name == "nt":
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — child has no console
-        # and does not die when the launching terminal closes.
-        popen_kwargs["creationflags"] = 0x00000008 | 0x00000200
+        popen_kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        popen_kwargs["startupinfo"] = hidden_windows_startupinfo()
     else:
         # POSIX: new session detaches from the controlling terminal.
         popen_kwargs["start_new_session"] = True

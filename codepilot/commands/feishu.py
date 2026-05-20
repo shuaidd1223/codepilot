@@ -18,7 +18,7 @@ import click
 
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import global_storage_root
-from codepilot.core.runtime import codepilot_command, is_process_alive, stop_process_tree
+from codepilot.core.runtime import codepilot_command, is_process_alive, no_window_kwargs, stop_process_tree
 from codepilot.core.service_launcher import DetachedProcessHandle, append_log_header, spawn_detached_command_via_launcher
 from codepilot.core.text_decode import decode_subprocess_text
 from codepilot.feishu_runtime import runtime_root, worker_script
@@ -300,7 +300,12 @@ def _spawn_detached() -> DetachedProcessHandle:
 
 
 def _spawn_worker() -> subprocess.Popen:
-    return subprocess.Popen(_worker_command(), cwd=str(_repo_root()), env=_build_worker_env())
+    return subprocess.Popen(
+        _worker_command(),
+        cwd=str(_repo_root()),
+        env=_build_worker_env(),
+        **no_window_kwargs(new_process_group=True),
+    )
 
 
 def _supervise_worker() -> None:
