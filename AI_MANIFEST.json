@@ -1,6 +1,6 @@
 {
   "name": "CodePilot",
-  "version": "0.1.0",
+  "version": "0.7.0",
   "command_name": "codepilot",
   "description": "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。",
   "calling_principles": [
@@ -474,7 +474,7 @@
       "purpose": "更新版本号、构建当前平台、生成发布目录并自动校验。",
       "when_to_use": "准备一个可交付的本地发布包时。",
       "examples": [
-        "codepilot binary prepare --version 0.1.1"
+        "codepilot binary prepare --version 0.7.1"
       ]
     },
     {
@@ -494,7 +494,7 @@
       "when_to_use": "发布前自检或 CI 验证时。",
       "examples": [
         "codepilot binary verify",
-        "codepilot binary verify --release-dir dist/release/codepilot-0.1.0-summary"
+        "codepilot binary verify --release-dir dist/release/codepilot-0.7.0-summary"
       ]
     },
     {

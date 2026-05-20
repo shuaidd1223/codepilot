@@ -2,6 +2,8 @@
 
 CodePilot 是一个本地工程工作流 CLI，用来把自然语言需求转成可执行任务，并串起规划、执行、审查、巡检、服务运维和发布流程。
 
+当前版本：`0.7.0`
+
 ## 快速开始
 
 首次接入一个仓库：
@@ -160,7 +162,7 @@ codepilot skill list -p <项目名> --json
 ```bash
 codepilot binary build
 codepilot binary install --binary <path-to-binary>
-codepilot binary prepare --version 0.1.1
+codepilot binary prepare --version <目标版本号>
 codepilot binary release --build-current
 codepilot binary verify
 codepilot binary where
@@ -290,6 +292,63 @@ codepilot ai prompt
 
 - `AI_MANIFEST.json`
 - `AI_USAGE.zh-CN.md`
+
+## 版本更新日志
+
+版本划分依据来自 Git 历史中的连续大功能批次；当前仓库没有历史 tag，因此以下记录把已合入提交按能力边界回填为语义化版本。`0.x` 阶段允许在 minor 版本中包含入口调整和配置迁移。
+
+### 0.7.0 - 2026-05-20
+
+- 新增 `config init`、`config validate` 等配置治理入口，并优化配置异常提示。
+- 增加 Codex CLI 会话存储与 Windows TUI 兼容支持。
+- 强化 MCP 任务模板校验、session 检测和 WebApp 文件搜索性能。
+- 继续收敛默认 OpenCode 运行路径，补齐文件上传、`@` 文件引用和配置自动修复能力。
+- 统一 EditorConfig / GitAttributes，并补充相关测试。
+
+### 0.6.0 - 2026-05-08 至 2026-05-13
+
+- 引入 CLI family 注册表、`fallback_cli_order`、OpenCode runtime、provider 动态配置和 env bridge。
+- 完成 CodePilot MCP server、工具注册表、任务/上下文/运维/外部集成 MCP 工具和 chat 内 MCP 生命周期绑定。
+- 新增 scheduled / event agent、成本护栏、循环熔断、审计日志和默认 scheduled agent。
+- 扩展二进制构建，支持 vendor CLI 抓取、校验、缓存、bundled CLI 打包与安装释放。
+- 更新 OpenCode 工作流隔离配置、运行时 `/agent <name>` 切换和相关 smoke/回归验证。
+
+### 0.5.0 - 2026-04-29 至 2026-04-30
+
+- 新增 `explore`、`wiki`、`note`、`trace`、`hud`、`clarify`、`plan`、`build-fix`、`skill`、`hook` 等项目工作流入口。
+- 增强项目级 setup、事件插件、wiki ingest、会话上下文保留和本地技能运行。
+- 接入飞书卡片交互、中文命令别名、项目注册、安全确认、需求提交和会话继续能力。
+- 完善 DeepSeek provider 配置、任务模板示例、Web UI 草稿隔离和通知呈现。
+- 对飞书、AI provider、Web UI、question runtime、agent support 等热点模块做复杂度治理和测试补强。
+
+### 0.4.0 - 2026-04-24 至 2026-04-28
+
+- 收敛命令面板为 `task` / `ui` / `binary` 分组，明确淘汰旧入口。
+- 建立结构化 reviewer verdict、Web verdict 面板、progress bus 事件和 LLM heartbeat 渲染。
+- 强化任务模板合规校验，删除 `--no-ai` / `--allow-empty` 占位通道，支持 Markdown 批量导入。
+- 引入飞书长连接控制、自然语言命令分发、敏感操作二次确认和 secrets 覆盖配置。
+- 重构包目录、失败分诊、Web 动作、run_builtin、数据库和分类器等核心热点。
+
+### 0.3.0 - 2026-04-20 至 2026-04-23
+
+- 引入 dual phase agents、worktree 隔离执行、AI triage、项目级 provider 覆盖和全局配置叠加。
+- 新增 webhook 服务、项目服务化、daemon 状态反馈、依赖健康/代码规模/复杂度 inspect 信号。
+- 拆分 AI Gateway、auto workflow、chat/webui/go 交互控制器、inspect 信号采集和存储层边界。
+- 增强 Web UI SSE 可靠性、任务/会话/需求分页、批量操作和任务归档。
+- 增加 planner 质量门、任务 evidence 字段、结构化任务模板和防填充任务规则。
+
+### 0.2.0 - 2026-04-16 至 2026-04-19
+
+- 新增 chat mode、Web UI、AI intent routing、daemon 自动启动 UI、WebUI 持久服务和会话管理。
+- 增加 doctor、cleanup、inspect 定时扫描、任务去重、需求输入框、任务 cancel/resume/stats 等运维能力。
+- 支持 per-task feature branch、进程树清理、Windows 控制台编码修复和 Rich markup 安全转义。
+- 引入需求澄清与侦察阶段，拆分 planner/executor，并开始拆分 AI、run、binary 等大模块。
+
+### 0.1.0 - 2026-04-11 至 2026-04-12
+
+- 初始化 CodePilot 项目，建立自然语言工作流入口。
+- 接入 Codex 默认工作流、运行时控制、二进制打包和版本化发布流程。
+- 提供 AI integration manifest、发布说明和基础审查产物。
 
 ## Skill 包
 

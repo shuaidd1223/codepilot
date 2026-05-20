@@ -472,7 +472,7 @@ def command_manifest(
                 "syntax": _cmd(command, "binary prepare --version <版本号>"),
                 "purpose": "更新版本号、构建当前平台、生成发布目录并自动校验。",
                 "when_to_use": "准备一个可交付的本地发布包时。",
-                "examples": [_cmd(command, "binary prepare --version 0.1.1")],
+                "examples": [_cmd(command, "binary prepare --version 0.7.1")],
             },
             {
                 "name": "binary_release",
@@ -491,7 +491,7 @@ def command_manifest(
                 "when_to_use": "发布前自检或 CI 验证时。",
                 "examples": [
                     _cmd(command, "binary verify"),
-                    _cmd(command, "binary verify --release-dir dist/release/codepilot-0.1.0-summary"),
+                    _cmd(command, "binary verify --release-dir dist/release/codepilot-0.7.0-summary"),
                 ],
             },
             {
