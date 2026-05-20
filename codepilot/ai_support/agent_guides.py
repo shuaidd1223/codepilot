@@ -11,6 +11,8 @@ def ai_guide_markdown(*, command_name: str = "codepilot", language: str = "en") 
     if normalize_agent_language(language) == "en":
         return f"""# CodePilot AI Usage Guide
 
+Language: [简体中文](AI_USAGE.zh-CN.md) | English
+
 This guide is for other AI agents. For the latest machine-readable command list, use `{_cmd(command, "ai manifest")}`. For this Markdown guide, use `{_cmd(command, "ai guide")}`.
 
 ## Core Calling Rules
@@ -70,6 +72,8 @@ Required rules:
 5. `--no-ai` / `--allow-empty` are removed; empty placeholder tasks are not allowed.
 """
     return f"""# CodePilot AI 调用手册
+
+语言版本：中文 | [English](AI_USAGE.en-US.md)
 
 这份手册是写给其他 AI / Agent 的静态入口。最新机器可读清单以 `{_cmd(command, "ai manifest")}` 为准，最新 Markdown 手册以 `{_cmd(command, "ai guide")}` 为准。
 

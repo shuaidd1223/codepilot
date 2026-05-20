@@ -1,5 +1,7 @@
 # CodePilot Skill 化集成指南
 
+语言版本：中文 | [English](Skill化集成指南.en-US.md)
+
 本文说明如何把 CodePilot 作为 Skill 提供给其他 AI / Agent 调用，并保持 Skill 与当前 CLI 命令结构同步。
 
 ## 1. Skill 目录

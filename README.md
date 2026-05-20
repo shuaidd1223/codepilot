@@ -1,5 +1,7 @@
 # CodePilot
 
+Language: 中文 | [English](README.en-US.md)
+
 CodePilot 是一个本地工程工作流 CLI，用来把自然语言需求转成可执行任务，并串起规划、执行、审查、巡检、服务运维和发布流程。
 
 当前版本：`0.7.4`
@@ -193,6 +195,9 @@ opencode = "opencode"
 # Agent-facing task templates, prompts, MCP/OpenCode instructions, and preferred model output language.
 # Valid values: en, zh-CN. Default: en.
 agent_language = "en"
+# Builtin executor dirty-worktree preflight policy.
+# stop = skip execution; commit = save a preflight commit; stash = git stash and record restore notes.
+preflight_dirty_worktree = "stop"
 # 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个
 fallback_cli_order = ["claude", "codex", "opencode"]
 
@@ -266,10 +271,12 @@ simple_model = "deepseek-v4-flash"
 ## 文档导航
 
 - 说明文档：[中文](docs/说明文档.zh-CN.md) / [English](docs/说明文档.en-US.md)
-- 操作文档：[docs/操作文档.zh-CN.md](docs/操作文档.zh-CN.md)
-- AI / Agent 调用手册：[docs/AI与Agent调用手册.zh-CN.md](docs/AI与Agent调用手册.zh-CN.md)
-- Skill 化集成指南：[docs/Skill化集成指南.zh-CN.md](docs/Skill化集成指南.zh-CN.md)
-- 项目服务说明：[docs/project-services.md](docs/project-services.md)
+- 操作文档：[中文](docs/操作文档.zh-CN.md) / [English](docs/操作文档.en-US.md)
+- AI / Agent 调用手册：[中文](docs/AI与Agent调用手册.zh-CN.md) / [English](docs/AI与Agent调用手册.en-US.md)
+- Skill 化集成指南：[中文](docs/Skill化集成指南.zh-CN.md) / [English](docs/Skill化集成指南.en-US.md)
+- 项目服务说明：[中文](docs/project-services.md) / [English](docs/project-services.en-US.md)
+- 工作流状态约定：[中文](docs/workflow-state.zh-CN.md) / [English](docs/workflow-state.en-US.md)
+- 静态 AI 调用手册：[中文](AI_USAGE.zh-CN.md) / [English](AI_USAGE.en-US.md)
 
 ## 给其他 AI / Agent 的标准入口
 
@@ -295,6 +302,7 @@ codepilot ai prompt
 
 - `AI_MANIFEST.json`
 - `AI_USAGE.zh-CN.md`
+- `AI_USAGE.en-US.md`
 
 ## 版本更新日志
 

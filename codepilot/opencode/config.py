@@ -45,7 +45,7 @@ class OpenCodeConfig:
     profile: OpenCodeProfileConfig = field(default_factory=OpenCodeProfileConfig)
     agent: OpenCodeAgentConfig = field(default_factory=OpenCodeAgentConfig)
     commands: dict[str, OpenCodeCommandConfig] = field(default_factory=dict)
-    agent_language: str = "en"
+    agent_language: str = ""
     permission_mode: str = "ask"
     permissions: dict[str, Any] = field(default_factory=dict)
     model: str = ""

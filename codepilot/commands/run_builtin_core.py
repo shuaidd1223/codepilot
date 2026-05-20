@@ -10,6 +10,7 @@ from typing import Optional
 
 from codepilot.storage import database as db
 from codepilot.ai_support.service import normalize_agent_name, resolve_dual_phase_agents
+from codepilot.core.config import normalize_preflight_dirty_worktree
 from codepilot.core.paths import project_storage_root
 from codepilot.commands.run_git import (
     _git_current_branch,
@@ -17,6 +18,7 @@ from codepilot.commands.run_git import (
     _git_is_repo,
     _git_local_branch_exists,
 )
+from codepilot.commands.run_shell import _run_command
 
 
 def _runner_module():
@@ -46,7 +48,13 @@ def _builtin_runtime_dir(project: dict) -> Path:
     return output_dir
 
 
-def _builtin_preflight_error(project_path: Path, auto_commit: bool, agent_mode: str = "codex") -> str:
+def _builtin_preflight_error(
+    project_path: Path,
+    auto_commit: bool,
+    agent_mode: str = "codex",
+    *,
+    dirty_worktree_policy: str = "stop",
+) -> str:
     """Return a human-readable reason why builtin execution should not start yet."""
     review_requires_git = normalize_agent_name(agent_mode or "dual") == "codex"
     if review_requires_git and not _git_is_repo(project_path):
@@ -61,12 +69,193 @@ def _builtin_preflight_error(project_path: Path, auto_commit: bool, agent_mode: 
             "为避免执行完成后才在提交阶段失败，本次跳过执行且不消耗重试次数。"
             "请先执行 git init 并完成首次提交，或改用 --no-auto-commit 再执行。"
         )
-    if auto_commit and _git_has_changes(project_path):
+    policy = normalize_preflight_dirty_worktree(dirty_worktree_policy)
+    if _git_is_repo(project_path) and _git_has_changes(project_path) and policy == "stop":
         return (
             "内置执行器检测到主工作区已有未提交改动。"
-            "为避免 run 结束后回合并到 base_branch 时卡住，本次跳过执行且不消耗重试次数。"
-            "请先提交/暂存现有改动，或改用 --no-auto-commit 再执行。"
+            "当前预检策略为 stop，本次跳过执行且不消耗重试次数。"
+            "请先提交/暂存现有改动，或在 AGENTS.toml 的 [automation] 中设置 "
+            'preflight_dirty_worktree = "commit" / "stash"。'
         )
+    return ""
+
+
+def _git_status_short(project_path: Path) -> str:
+    code, output = _run_command(
+        ["git", "status", "--short", "--untracked-files=all"],
+        cwd=project_path,
+        timeout=30,
+    )
+    if code != 0:
+        raise RuntimeError(f"git status 失败:\n{output}")
+    return output.strip()
+
+
+def _preflight_record_path(project: dict, task_id: int, action: str) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    return _builtin_runtime_dir(project) / f"task-{task_id}-preflight-{action}-{timestamp}.md"
+
+
+def _record_preflight_dirty_worktree(
+    project: dict,
+    task: dict,
+    *,
+    action: str,
+    content: str,
+    exit_code: int = 0,
+) -> Path:
+    task_id = int(task.get("id") or 0)
+    record_path = _preflight_record_path(project, task_id, action)
+    record_path.write_text(content, encoding="utf-8")
+    started_at = datetime.now()
+    output = f"{content}\n\n记录文件: {record_path}"
+    try:
+        db.create_task_log(
+            task_id=task_id,
+            agent="system",
+            phase="preflight",
+            output=output,
+            exit_code=exit_code,
+            started_at=started_at.isoformat(),
+            finished_at=datetime.now().isoformat(),
+            duration=0,
+        )
+    except Exception:
+        pass
+    return record_path
+
+
+def _commit_preflight_dirty_worktree(
+    project_path: Path,
+    project: dict,
+    task: dict,
+    *,
+    status: str,
+) -> str:
+    task_id = int(task.get("id") or 0)
+    title = " ".join(str(task.get("title") or "").strip().split())[:60] or "untitled"
+    add_code, add_output = _run_command(["git", "add", "-A"], cwd=project_path, timeout=120)
+    if add_code != 0:
+        return f"预检提交失败：git add 失败:\n{add_output}"
+
+    diff_code, _ = _run_command(["git", "diff", "--cached", "--quiet"], cwd=project_path, timeout=30)
+    if diff_code == 0:
+        return ""
+
+    subject = f"codepilot preflight: save worktree before task #{task_id}"
+    body = "\n".join(
+        [
+            f"Task: #{task_id} {title}",
+            "",
+            "Dirty workspace status before commit:",
+            status or "(empty)",
+        ]
+    )
+    commit_code, commit_output = _run_command(
+        ["git", "commit", "-m", subject, "-m", body],
+        cwd=project_path,
+        timeout=300,
+    )
+    if commit_code != 0:
+        return f"预检提交失败：git commit 失败:\n{commit_output}"
+
+    sha_code, sha_output = _run_command(["git", "rev-parse", "--short", "HEAD"], cwd=project_path, timeout=30)
+    sha = sha_output.strip() if sha_code == 0 else ""
+    content = "\n".join(
+        [
+            "# CodePilot Preflight Commit",
+            "",
+            f"- Task: #{task_id} {title}",
+            f"- Commit: {sha or '(unknown)'}",
+            "",
+            "## Dirty Workspace Status",
+            "",
+            "```text",
+            status or "(empty)",
+            "```",
+        ]
+    )
+    _record_preflight_dirty_worktree(project, task, action="commit", content=content)
+    return ""
+
+
+def _stash_preflight_dirty_worktree(
+    project_path: Path,
+    project: dict,
+    task: dict,
+    *,
+    status: str,
+) -> str:
+    task_id = int(task.get("id") or 0)
+    title = " ".join(str(task.get("title") or "").strip().split())[:60] or "untitled"
+    message = f"codepilot preflight stash before task #{task_id}: {title}"
+    stash_code, stash_output = _run_command(
+        ["git", "stash", "push", "--include-untracked", "-m", message],
+        cwd=project_path,
+        timeout=300,
+    )
+    if stash_code != 0:
+        return f"预检 stash 失败:\n{stash_output}"
+    if "No local changes to save" in stash_output:
+        return ""
+
+    ref_code, ref_output = _run_command(
+        ["git", "stash", "list", "-n", "1", "--format=%gd%x09%s"],
+        cwd=project_path,
+        timeout=30,
+    )
+    stash_ref = "stash@{0}"
+    if ref_code == 0 and ref_output.strip():
+        stash_ref = ref_output.strip().split("\t", 1)[0].strip() or stash_ref
+
+    content = "\n".join(
+        [
+            "# CodePilot Preflight Stash",
+            "",
+            f"- Task: #{task_id} {title}",
+            f"- Stash: {stash_ref}",
+            f"- Message: {message}",
+            "",
+            "## Restore",
+            "",
+            "```bash",
+            f"git stash show -p {stash_ref}",
+            f"git stash pop {stash_ref}",
+            "```",
+            "",
+            "## Dirty Workspace Status",
+            "",
+            "```text",
+            status or "(empty)",
+            "```",
+        ]
+    )
+    _record_preflight_dirty_worktree(project, task, action="stash", content=content)
+    return ""
+
+
+def _handle_preflight_dirty_worktree(
+    project_path: Path,
+    project: dict,
+    task: dict,
+    dirty_worktree_policy: str,
+) -> str:
+    """Apply configured dirty-worktree policy before builtin execution starts."""
+    policy = normalize_preflight_dirty_worktree(dirty_worktree_policy)
+    if policy == "stop":
+        return ""
+    if not _git_is_repo(project_path) or not _git_has_changes(project_path):
+        return ""
+    try:
+        status = _git_status_short(project_path)
+    except Exception as exc:
+        return f"读取预检工作区状态失败: {exc}"
+    if not status:
+        return ""
+    if policy == "commit":
+        return _commit_preflight_dirty_worktree(project_path, project, task, status=status)
+    if policy == "stash":
+        return _stash_preflight_dirty_worktree(project_path, project, task, status=status)
     return ""
 
 

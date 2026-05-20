@@ -38,6 +38,42 @@ task_workspace = "branch"
     return project_path
 
 
+def _init_git_repo(project_path: Path) -> str:
+    run_cmd._run_command(["git", "init"], cwd=project_path, timeout=60)
+    run_cmd._run_command(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, timeout=30)
+    run_cmd._run_command(["git", "config", "user.email", "test@example.com"], cwd=project_path, timeout=30)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    run_cmd._run_command(["git", "add", "README.md"], cwd=project_path, timeout=30)
+    code, output = run_cmd._run_command(["git", "commit", "-m", "init"], cwd=project_path, timeout=120)
+    assert code == 0, output
+    return run_cmd._git_current_branch(project_path)
+
+
+def _register_project_with_dirty_policy(tmp_path: Path, policy: str) -> Path:
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    base_branch = _init_git_repo(project_path)
+    config_file = project_path / "AGENTS.toml"
+    config_file.write_text(
+        f"""
+[project]
+name = "demo"
+base_branch = "{base_branch}"
+
+[automation]
+per_task_branch = false
+task_workspace = "direct"
+preflight_dirty_worktree = "{policy}"
+""".strip(),
+        encoding="utf-8",
+    )
+    run_cmd._run_command(["git", "add", "AGENTS.toml"], cwd=project_path, timeout=30)
+    code, output = run_cmd._run_command(["git", "commit", "-m", "add config"], cwd=project_path, timeout=120)
+    assert code == 0, output
+    db.register_project("demo", str(project_path), base_branch=base_branch, config_file=str(config_file))
+    return project_path
+
+
 def test_run_backlog_quiet_mode_skips_dashboard_render_on_success(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     _register_project_with_config(tmp_path)
@@ -108,6 +144,79 @@ def test_run_backlog_does_not_repeat_same_preflight_skip_notification(tmp_path, 
     assert first["requeued"] == 1
     assert second["requeued"] == 1
     assert [item["event"] for item in notifications] == ["preflight_skip"]
+
+
+def test_run_backlog_default_dirty_worktree_policy_stops_even_without_auto_commit(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = _register_project_with_dirty_policy(tmp_path, "stop")
+    (project_path / "README.md").write_text("# demo\nlocal edit\n", encoding="utf-8")
+    task = db.create_task("demo", "blocked by dirty tree", agent="dual", max_retries=2)
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("executor should not start")),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False, quiet=True)
+    current = db.get_task(task["id"])
+
+    assert stats["requeued"] == 1
+    assert current["status"] == "backlog"
+    assert current["retry_count"] == 0
+    assert "未提交改动" in (current["error_message"] or "")
+
+
+def test_run_backlog_dirty_worktree_policy_commit_saves_preflight_changes(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = _register_project_with_dirty_policy(tmp_path, "commit")
+    (project_path / "README.md").write_text("# demo\nlocal edit\n", encoding="utf-8")
+    (project_path / "scratch.txt").write_text("scratch\n", encoding="utf-8")
+    task = db.create_task("demo", "commit dirty tree", agent="dual", max_retries=2)
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin"),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False, quiet=True)
+    current = db.get_task(task["id"])
+    code, log_output = run_cmd._run_command(["git", "log", "-1", "--pretty=%s%n%b"], cwd=project_path, timeout=30)
+    status_code, status_output = run_cmd._run_command(["git", "status", "--short"], cwd=project_path, timeout=30)
+
+    assert stats["done"] == 1
+    assert current["status"] == "done"
+    assert code == 0
+    assert f"codepilot preflight: save worktree before task #{task['id']}" in log_output
+    assert "scratch.txt" in log_output
+    assert status_code == 0
+    assert status_output.strip() == ""
+
+
+def test_run_backlog_dirty_worktree_policy_stash_records_preflight_log(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = _register_project_with_dirty_policy(tmp_path, "stash")
+    (project_path / "README.md").write_text("# demo\nlocal edit\n", encoding="utf-8")
+    (project_path / "scratch.txt").write_text("scratch\n", encoding="utf-8")
+    task = db.create_task("demo", "stash dirty tree", agent="dual", max_retries=2)
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin"),
+    )
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False, quiet=True)
+    current = db.get_task(task["id"])
+    status_code, status_output = run_cmd._run_command(["git", "status", "--short"], cwd=project_path, timeout=30)
+    stash_code, stash_output = run_cmd._run_command(["git", "stash", "list"], cwd=project_path, timeout=30)
+    logs = db.list_task_logs(task["id"])
+
+    assert stats["done"] == 1
+    assert current["status"] == "done"
+    assert status_code == 0
+    assert status_output.strip() == ""
+    assert stash_code == 0
+    assert f"codepilot preflight stash before task #{task['id']}" in stash_output
+    assert any(log["phase"] == "preflight" and "git stash pop" in log["output"] for log in logs)
 
 
 def test_notify_task_event_routes_generic_progress_without_feishu_for_user_source(tmp_path, monkeypatch):
@@ -382,4 +491,3 @@ def test_run_backlog_recovers_failed_dirty_task_branch_before_selecting_work(tmp
 
     assert stats["done"] == 1
     assert current["status"] == "done"
-

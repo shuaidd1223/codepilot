@@ -39,6 +39,7 @@ DEFAULT_AGENT_COMMANDS: dict[str, str] = {
     "opencode": "cp-opencode",
 }
 DEFAULT_FALLBACK_CLI_ORDER: list[str] = ["claude", "codex", "opencode"]
+PREFLIGHT_DIRTY_WORKTREE_POLICIES: tuple[str, ...] = ("stop", "commit", "stash")
 SUPPORTED_AGENT_LANGUAGES: tuple[str, ...] = ("en", "zh-CN")
 LEGACY_AGENT_COMMAND_KEYS: tuple[str, ...] = ("codex_cmd", "claude_cmd")
 INTERVAL_PATTERN = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
@@ -119,6 +120,42 @@ def normalize_agent_language(raw: object = None) -> str:
     raise ConfigError(
         "automation.agent_language 只支持 en 或 zh-CN；"
         "可用别名包括 en-US/english、zh/zh-CN/中文。"
+    )
+
+
+def normalize_preflight_dirty_worktree(raw: object = None) -> str:
+    """Normalize how builtin preflight handles an already-dirty worktree."""
+    text = str(raw or "").strip()
+    if not text:
+        return "stop"
+    lowered = text.lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "stop": "stop",
+        "block": "stop",
+        "halt": "stop",
+        "fail": "stop",
+        "停止执行": "stop",
+        "commit": "commit",
+        "auto_commit": "commit",
+        "analyze_commit": "commit",
+        "analyze_then_commit": "commit",
+        "分析后提交": "commit",
+        "stash": "stash",
+        "stash_and_log": "stash",
+        "stash_then_log": "stash",
+        "暂存": "stash",
+        "暂存并记录": "stash",
+        "暂存并写文档": "stash",
+        "暂存并写日志": "stash",
+        "暂存并写日志记录": "stash",
+        "暂存并写文档/日志记录": "stash",
+    }
+    normalized = aliases.get(lowered) or aliases.get(text)
+    if normalized:
+        return normalized
+    raise ConfigError(
+        "automation.preflight_dirty_worktree 只支持 stop、commit、stash；"
+        "分别表示停止执行、分析后提交、stash 并记录。"
     )
 
 
@@ -348,6 +385,9 @@ class AutomationConfig:
     # branch: 在项目工作目录创建任务分支，完成后合并并删除；
     # worktree: 为每个任务创建独立 git worktree，并链接常见依赖目录。
     task_workspace: str = "branch"
+    # 执行预检发现已有未提交改动时的处理策略：
+    # stop: 停止执行；commit: 先提交现有改动；stash: stash 现有改动并记录。
+    preflight_dirty_worktree: str = "stop"
     # 两阶段规划：先让 planner 读代码（侦察），再拆任务。关闭后变回一次性规划。
     two_stage_planning: bool = True
     # 需求不具体时主动反问澄清。关闭后遇到模糊需求直接硬拆。
@@ -522,6 +562,9 @@ class AgentsConfig:
                 max_retries=automation.get("max_retries", 3),
                 per_task_branch=automation.get("per_task_branch", True),
                 task_workspace=automation.get("task_workspace", "branch"),
+                preflight_dirty_worktree=normalize_preflight_dirty_worktree(
+                    automation.get("preflight_dirty_worktree")
+                ),
                 two_stage_planning=automation.get("two_stage_planning", True),
                 clarify_vague_requirements=automation.get("clarify_vague_requirements", True),
                 clarify_max_turns=automation.get("clarify_max_turns", 3),
@@ -1150,6 +1193,9 @@ per_task_branch = true
 # worktree = 使用独立临时 worktree
 # 缺失或配置错误时默认使用 branch
 task_workspace = "branch"
+# 执行预检发现主工作区已有未提交改动时的处理策略：
+# stop = 停止执行（默认）；commit = 分析状态后提交；stash = stash 并写入日志记录
+preflight_dirty_worktree = "stop"
 # 规划前先做代码侦察，再拆任务
 two_stage_planning = true
 # 需求模糊时先反问澄清

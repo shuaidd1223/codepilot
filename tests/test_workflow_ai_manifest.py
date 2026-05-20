@@ -71,6 +71,60 @@ def test_repo_ai_usage_file_stays_in_sync():
     assert guide_path.read_text(encoding="utf-8") == ai_guide_markdown(language="zh-CN")
 
 
+def test_repo_ai_usage_english_file_stays_in_sync():
+    guide_path = Path(__file__).resolve().parents[1] / "AI_USAGE.en-US.md"
+
+    assert guide_path.read_text(encoding="utf-8") == ai_guide_markdown(language="en")
+
+
+def test_active_explanation_docs_are_bilingual_and_linked():
+    root = Path(__file__).resolve().parents[1]
+    pairs = [
+        ("README.md", "README.en-US.md"),
+        ("docs/说明文档.zh-CN.md", "docs/说明文档.en-US.md"),
+        ("docs/操作文档.zh-CN.md", "docs/操作文档.en-US.md"),
+        ("docs/AI与Agent调用手册.zh-CN.md", "docs/AI与Agent调用手册.en-US.md"),
+        ("docs/Skill化集成指南.zh-CN.md", "docs/Skill化集成指南.en-US.md"),
+        ("docs/workflow-state.zh-CN.md", "docs/workflow-state.en-US.md"),
+        ("docs/project-services.md", "docs/project-services.en-US.md"),
+        ("AI_USAGE.zh-CN.md", "AI_USAGE.en-US.md"),
+    ]
+
+    for zh_rel, en_rel in pairs:
+        zh_path = root / zh_rel
+        en_path = root / en_rel
+        assert zh_path.exists(), zh_rel
+        assert en_path.exists(), en_rel
+        zh_text = zh_path.read_text(encoding="utf-8")
+        en_text = en_path.read_text(encoding="utf-8")
+        assert Path(en_rel).name in zh_text
+        assert Path(zh_rel).name in en_text
+
+
+def test_readme_navigation_lists_bilingual_active_docs():
+    root = Path(__file__).resolve().parents[1]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    readme_en = (root / "README.en-US.md").read_text(encoding="utf-8")
+    expected_links = [
+        "docs/说明文档.zh-CN.md",
+        "docs/说明文档.en-US.md",
+        "docs/操作文档.zh-CN.md",
+        "docs/操作文档.en-US.md",
+        "docs/AI与Agent调用手册.zh-CN.md",
+        "docs/AI与Agent调用手册.en-US.md",
+        "docs/Skill化集成指南.zh-CN.md",
+        "docs/Skill化集成指南.en-US.md",
+        "docs/project-services.md",
+        "docs/project-services.en-US.md",
+        "AI_USAGE.zh-CN.md",
+        "AI_USAGE.en-US.md",
+    ]
+
+    for link in expected_links:
+        assert link in readme
+        assert link in readme_en
+
+
 def test_ai_guide_command_outputs_markdown_usage():
     runner = CliRunner()
     result = runner.invoke(main, ["ai", "guide"])

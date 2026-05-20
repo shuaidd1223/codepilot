@@ -11,6 +11,7 @@ from codepilot.mcp.launchers.language import (
     ENGLISH_INTERACTION_INSTRUCTIONS,
 )
 from codepilot.mcp.launchers import UnsupportedAgentError, build_mcp_launch_plan
+from codepilot.opencode.config import OpenCodeConfig
 
 
 def _server(tmp_path: Path) -> dict[str, dict[str, object]]:
@@ -347,6 +348,24 @@ def test_mcp_launchers_can_inject_chinese_interaction_rules(tmp_path: Path):
 
     assert claude.command[-3] == f"{CHINESE_INTERACTION_INSTRUCTIONS}\n\n用户请求：\nCheck project health."
     assert codex.command[-1] == f"{CHINESE_INTERACTION_INSTRUCTIONS}\n\n用户请求：\nCheck project health."
+
+
+def test_opencode_launcher_language_overrides_unset_tool_config_language(tmp_path: Path):
+    config_path = tmp_path / "opencode.json"
+
+    plan = build_mcp_launch_plan(
+        "opencode",
+        executable="opencode-bin",
+        mcp_servers=_server(tmp_path),
+        config_path=config_path,
+        opencode_config=OpenCodeConfig(),
+        language="zh-CN",
+    )
+
+    payload = json.loads(plan.config_files[str(config_path)])
+    assert payload["instructions"][0].endswith("codepilot.zh-CN.md")
+    assert "任务状态" in payload["command"]
+    assert "Task Status" not in payload["command"]
 
 
 def test_launcher_rejects_unknown_agent_name(tmp_path: Path):

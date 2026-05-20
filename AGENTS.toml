@@ -57,11 +57,10 @@ stale_minutes = 30
 
 # 自动规划与执行配置。
 # task_workspace: direct=主工作区直接改；branch=主工作区临时分支；worktree=独立临时 worktree。
+# preflight_dirty_worktree: stop=停止；commit=预检提交；stash=stash 并记录。
 [automation]
 # 自然语言需求默认规划智能体。
 planner = "opencode"
-# 智能体消费的任务模板、prompt 和输出语言偏好；支持 en / zh-CN，默认 en。
-agent_language = "en"
 # chat 默认启动的 MCP agent；留空时使用 opencode。
 default_agent = ""
 # 规划出的任务默认执行智能体；显式 --agent / UI 选择会覆盖它。
@@ -82,6 +81,8 @@ max_retries = 3
 per_task_branch = false
 # direct / branch / worktree；缺失或非法值默认 branch。
 task_workspace = "direct"
+# stop / commit / stash；预检发现未提交改动时的处理策略，默认 stop。
+preflight_dirty_worktree = "stop"
 # 规划前先侦察代码，再拆任务。
 two_stage_planning = true
 # 需求模糊时先反问澄清。
@@ -94,6 +95,8 @@ max_review_rounds = 2
 agent_silence_timeout_seconds = 0
 # 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。
 fallback_cli_order = ["codex", "opencode"]
+# 智能体 prompt / 任务内容 / 输出语言偏好：en 或 zh-CN；本项目默认 zh-CN。
+agent_language = "zh-CN"
 
 # 定时/手动巡检配置。planner 留空时按 显式参数 > [agents].planner > codex 解析。
 [inspect]

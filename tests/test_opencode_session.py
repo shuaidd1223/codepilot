@@ -6,6 +6,8 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from codepilot.core.config import AgentsConfig
 from codepilot.storage import database as db
 from tests.chat_flow_testkit import register_project
@@ -114,6 +116,44 @@ def test_run_opencode_message_normalizes_project_alias_for_mcp_and_session_scope
     mcp_command = opencode_config["mcp"]["codepilot"]["command"]
     assert mcp_command[mcp_command.index("--project") + 1] == "codepilot-dev"
     assert db.get_service_state("opencode_chat", "feishu:chat-a:codepilot-dev")
+
+
+@pytest.mark.parametrize("source", ["web", "feishu"])
+def test_run_opencode_message_uses_project_agent_language_for_headless_channels(
+    tmp_path: Path,
+    monkeypatch,
+    source: str,
+):
+    runtime_root = _isolate_opencode_runtime(tmp_path, monkeypatch)
+    project_path = register_project(tmp_path, monkeypatch)
+    (project_path / "AGENTS.toml").write_text(
+        '[project]\nname = "demo"\n\n[automation]\nagent_language = "zh-CN"\n',
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_run(command, *, cwd, env, capture_output, timeout, **_kwargs):
+        calls.append({"command": command, "cwd": cwd, "env": env})
+        stdout = "\n".join(
+            [
+                json.dumps({"type": "session.updated", "sessionID": f"ses_{source}"}),
+                json.dumps({"type": "message.part", "role": "assistant", "text": "收到。"}),
+            ]
+        )
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("codepilot.opencode.session.subprocess.run", fake_run)
+
+    from codepilot.opencode.session import run_opencode_message
+
+    result = run_opencode_message("demo", "看一下当前状态", source=source, external_session_id="chat-a")
+
+    assert result["ok"] is True
+    config_path = Path(calls[0]["env"]["OPENCODE_CONFIG"])
+    assert config_path.is_relative_to(runtime_root)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["instructions"][0].endswith("codepilot.zh-CN.md")
+    assert "任务状态" in payload["command"]
 
 
 def test_run_opencode_message_uses_binary_mcp_command_when_frozen(tmp_path: Path, monkeypatch):

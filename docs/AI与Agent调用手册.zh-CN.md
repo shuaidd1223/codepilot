@@ -1,5 +1,7 @@
 # CodePilot AI 与 Agent 调用手册
 
+语言版本：中文 | [English](AI与Agent调用手册.en-US.md)
+
 本文面向其他 AI / Agent / 自动化系统，目标是让调用方稳定地读状态、创建明确工作、排障和接入服务。
 
 ## 1. 调用原则

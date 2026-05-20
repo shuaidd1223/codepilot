@@ -47,10 +47,19 @@ def test_cli_families_declare_env_bridge_config():
     assert opencode.env_bridge.source_providers == "smart_pick"
 
 
-def test_native_auth_file_takes_priority_over_config_key(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "auth_relative_path",
+    [
+        Path(".claude") / "auth.json",
+        Path(".claude") / ".credentials.json",
+        Path(".claude.json"),
+    ],
+)
+def test_native_auth_file_takes_priority_over_config_key(tmp_path, monkeypatch, auth_relative_path):
     home = tmp_path / "home"
-    (home / ".claude").mkdir(parents=True)
-    (home / ".claude" / "auth.json").write_text("{}", encoding="utf-8")
+    auth_file = home / auth_relative_path
+    auth_file.parent.mkdir(parents=True, exist_ok=True)
+    auth_file.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     cfg = _cfg({"claude-sonnet": {"api_key": "sk-should-not-inject"}})

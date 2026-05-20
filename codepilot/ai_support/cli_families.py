@@ -46,6 +46,14 @@ def _claude_auth_path() -> Path:
     return _home_path(".claude", "auth.json")
 
 
+def _claude_credentials_path() -> Path:
+    return _home_path(".claude", ".credentials.json")
+
+
+def _claude_global_config_path() -> Path:
+    return _home_path(".claude.json")
+
+
 def _codex_auth_path() -> Path:
     return _home_path(".codex", "auth.json")
 
@@ -98,7 +106,11 @@ CLI_FAMILIES: dict[str, CLIFamily] = {
             family_name="claude",
             target_var="ANTHROPIC_API_KEY",
             source_providers=ANTHROPIC_PROVIDER_KEYS,
-            native_auth_paths=(_claude_auth_path,),
+            native_auth_paths=(
+                _claude_auth_path,
+                _claude_credentials_path,
+                _claude_global_config_path,
+            ),
         ),
     ),
     "codex": CLIFamily(

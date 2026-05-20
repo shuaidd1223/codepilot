@@ -62,6 +62,7 @@ def test_config_empty_dict_uses_declared_defaults():
     assert cfg.automation.max_retries == 3
     assert cfg.automation.per_task_branch is True
     assert cfg.automation.task_workspace == "branch"
+    assert cfg.automation.preflight_dirty_worktree == "stop"
     assert cfg.automation.two_stage_planning is True
     assert cfg.automation.clarify_vague_requirements is True
     assert cfg.automation.clarify_max_turns == 3
@@ -82,6 +83,12 @@ def test_config_empty_dict_uses_declared_defaults():
     assert cfg.classifier.timeout == 30
     assert cfg.webhook_provider == "auto"
     assert cfg.webhook_secret == ""
+
+
+def test_config_parses_preflight_dirty_worktree_policy():
+    cfg = AgentsConfig.from_dict({"automation": {"preflight_dirty_worktree": "stash"}})
+
+    assert cfg.automation.preflight_dirty_worktree == "stash"
 
 
 def test_config_sync_updates_old_config_and_removes_unknown_keys(tmp_path, monkeypatch):
@@ -163,6 +170,7 @@ extra = "drop"
     assert parsed["automation"]["task_agent"] == "dual"
     assert parsed["automation"]["executor"] == "builtin"
     assert parsed["automation"]["task_workspace"] == "branch"
+    assert parsed["automation"]["preflight_dirty_worktree"] == "stop"
     assert parsed["automation"]["per_task_branch"] is True
     assert parsed["automation"]["two_stage_planning"] is True
     assert parsed["automation"]["max_review_rounds"] == 2

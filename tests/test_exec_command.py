@@ -39,6 +39,24 @@ def test_exec_dry_run_reports_provider_preflight_without_running(tmp_path, monke
     assert payload["data"]["preflight"]["project_configured"] is True
 
 
+def test_exec_dry_run_honors_claude_native_auth(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    auth_file = home / ".claude" / ".credentials.json"
+    auth_file.parent.mkdir(parents=True)
+    auth_file.write_text("{}", encoding="utf-8")
+    _init_project(tmp_path, monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    result = CliRunner().invoke(
+        main,
+        ["exec", "-p", "project", "--provider", "claude", "--dry-run", "--json", "--", "claude", "--version"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["preflight"]["missing_env"] == []
+
+
 def test_exec_run_records_project_local_log_and_event(tmp_path, monkeypatch):
     project = _init_project(tmp_path, monkeypatch)
     register = CliRunner().invoke(

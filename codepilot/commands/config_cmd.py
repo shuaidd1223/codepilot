@@ -98,6 +98,13 @@ def _fallback_cli_order(raw: Any) -> list[str]:
     return list(config_mod.DEFAULT_FALLBACK_CLI_ORDER)
 
 
+def _preflight_dirty_worktree(raw: Any) -> str:
+    try:
+        return config_mod.normalize_preflight_dirty_worktree(raw)
+    except config_mod.ConfigError:
+        return "stop"
+
+
 def _opencode_permission(raw: Any) -> dict[str, Any]:
     opencode = raw if isinstance(raw, dict) else {}
     permission = opencode.get("permission") if isinstance(opencode.get("permission"), dict) else {}
@@ -282,6 +289,7 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
             "max_retries": _int(automation.get("max_retries"), 3, min_value=0),
             "per_task_branch": _bool(automation.get("per_task_branch"), True),
             "task_workspace": _choice(automation.get("task_workspace"), {"direct", "branch", "worktree"}, "branch"),
+            "preflight_dirty_worktree": _preflight_dirty_worktree(automation.get("preflight_dirty_worktree")),
             "two_stage_planning": _bool(automation.get("two_stage_planning"), True),
             "clarify_vague_requirements": _bool(automation.get("clarify_vague_requirements"), True),
             "clarify_max_turns": _int(automation.get("clarify_max_turns"), 3, min_value=0),
@@ -356,6 +364,7 @@ SECTION_COMMENTS: dict[str, list[str]] = {
     "automation": [
         "自动规划与执行配置。",
         "task_workspace: direct=主工作区直接改；branch=主工作区临时分支；worktree=独立临时 worktree。",
+        "preflight_dirty_worktree: stop=停止；commit=预检提交；stash=stash 并记录。",
     ],
     "inspect": [
         "定时/手动巡检配置。planner 留空时按 显式参数 > [agents].planner > codex 解析。",
@@ -398,6 +407,7 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("automation", "max_retries"): ["单个子任务失败后的最大重试次数。"],
     ("automation", "per_task_branch"): ["是否为任务创建独立执行分支；false 时按当前工作区执行。"],
     ("automation", "task_workspace"): ["direct / branch / worktree；缺失或非法值默认 branch。"],
+    ("automation", "preflight_dirty_worktree"): ["stop / commit / stash；预检发现未提交改动时的处理策略，默认 stop。"],
     ("automation", "two_stage_planning"): ["规划前先侦察代码，再拆任务。"],
     ("automation", "clarify_vague_requirements"): ["需求模糊时先反问澄清。"],
     ("automation", "clarify_max_turns"): ["最多澄清轮数，达到后按当前信息规划。"],
@@ -639,6 +649,11 @@ def _raw_config_errors(data: dict[str, Any]) -> list[str]:
         workspace = str(raw_workspace).strip().lower() if isinstance(raw_workspace, str) else ""
         if workspace not in {"direct", "branch", "worktree"}:
             errors.append(f"automation.task_workspace 值无效: {raw_workspace}")
+    if "preflight_dirty_worktree" in automation:
+        try:
+            config_mod.normalize_preflight_dirty_worktree(automation.get("preflight_dirty_worktree"))
+        except config_mod.ConfigError as exc:
+            errors.append(str(exc))
     if "agent_language" in automation:
         try:
             config_mod.normalize_agent_language(automation.get("agent_language"))

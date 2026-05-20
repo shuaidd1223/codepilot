@@ -185,6 +185,24 @@ class TestConfigValidate:
             assert result.exit_code == 1
             assert "automation.task_workspace" in result.output
 
+    def test_config_validate_reports_invalid_preflight_dirty_worktree(self):
+        """Test config validate reports raw invalid automation.preflight_dirty_worktree."""
+        from codepilot.commands.config_cmd import config_group
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "AGENTS.toml"
+            config_path.write_text(
+                '[project]\nname = "demo"\nbase_branch = "main"\n\n'
+                '[automation]\npreflight_dirty_worktree = "archive"\n',
+                encoding="utf-8",
+            )
+
+            runner = CliRunner()
+            result = runner.invoke(config_group, ["validate", tmpdir])
+
+            assert result.exit_code == 1
+            assert "automation.preflight_dirty_worktree" in result.output
+
     def test_config_validate_reports_invalid_agent_language(self):
         """Test config validate reports raw invalid automation.agent_language."""
         from codepilot.commands.config_cmd import config_group

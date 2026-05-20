@@ -94,6 +94,7 @@ from codepilot.commands.run_builtin import (  # noqa: F401
     _builtin_runtime_dir,
     _builtin_preflight_error,
     _builtin_base_branch_lock_error,
+    _handle_preflight_dirty_worktree,
     _task_phase_override,
     _resolve_dual_phase_agents_for_task,
     _builtin_review_requires_git,
@@ -709,4 +710,3 @@ def run(
         f"\n[dim]Run 完成: processed={stats['processed']} done={stats['done']} "
         f"failed={stats['failed']} requeued={stats['requeued']} cancelled={stats['cancelled']}[/dim]"
     )
-

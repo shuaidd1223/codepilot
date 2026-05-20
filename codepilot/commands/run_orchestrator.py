@@ -16,6 +16,7 @@ from pathlib import Path
 
 import click
 
+from codepilot.core.config import normalize_preflight_dirty_worktree
 from codepilot.storage import database as db
 
 
@@ -37,6 +38,7 @@ class _RunContext:
     max_review_rounds: int
     per_task_branch_enabled: bool
     task_workspace: str
+    preflight_dirty_worktree: str = "stop"
 
 
 @dataclass
@@ -73,6 +75,9 @@ def _resolve_run_context(project_record: dict, *, shell: str, executor: str) -> 
     task_workspace = str(getattr(getattr(config, "automation", None), "task_workspace", "branch") or "branch").strip().lower()
     if task_workspace not in {"direct", "branch", "worktree"}:
         task_workspace = "branch"
+    preflight_dirty_worktree = normalize_preflight_dirty_worktree(
+        getattr(getattr(config, "automation", None), "preflight_dirty_worktree", "stop")
+    )
 
     return _RunContext(
         project=project_record,
@@ -84,6 +89,7 @@ def _resolve_run_context(project_record: dict, *, shell: str, executor: str) -> 
         max_review_rounds=max_review_rounds,
         per_task_branch_enabled=per_task_branch_enabled,
         task_workspace=task_workspace,
+        preflight_dirty_worktree=preflight_dirty_worktree,
     )
 
 
@@ -114,9 +120,21 @@ def _prepare_task_workspace(
             if runner._builtin_review_requires_git(task.get("agent", "codex"), task=task, project_ref=context.project)
             else "dual"
         )
-        preflight_error = runner._builtin_preflight_error(context.project_path, auto_commit, effective_agent_mode)
+        preflight_error = runner._builtin_preflight_error(
+            context.project_path,
+            auto_commit,
+            effective_agent_mode,
+            dirty_worktree_policy=context.preflight_dirty_worktree,
+        )
         if resume_existing_task_branch and "未提交改动" in preflight_error:
             preflight_error = ""
+        if not preflight_error and not resume_existing_task_branch:
+            preflight_error = runner._handle_preflight_dirty_worktree(
+                context.project_path,
+                context.project,
+                task,
+                context.preflight_dirty_worktree,
+            )
 
     if context.per_task_branch_enabled and not preflight_error and not dry_run:
         try:
@@ -1027,4 +1045,3 @@ def run_backlog(
             time.sleep(2)
 
     return stats
-

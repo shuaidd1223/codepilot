@@ -13,6 +13,7 @@ from typing import Any
 import click
 
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
+from codepilot.ai_support.cli_families import get_family
 from codepilot.core import event_plugins
 from codepilot.core.output import echo
 from codepilot.storage import database as db
@@ -80,12 +81,17 @@ def _provider_executable(provider: str, command_parts: tuple[str, ...]) -> str:
     return DEFAULT_PROVIDER_COMMANDS.get(provider, command_parts[0] if command_parts else "")
 
 
+def _has_native_auth(provider: str) -> bool:
+    family = get_family(provider)
+    return bool(family and family.env_bridge and family.env_bridge.has_native_auth())
+
+
 def _preflight(project_info: dict, provider: str, command_parts: tuple[str, ...], cwd: Path) -> dict[str, Any]:
     executable = _provider_executable(provider, command_parts)
     resolved_executable = shutil.which(executable) if executable else None
     env_groups = PROVIDER_ENV_HINTS.get(provider, ())
     missing_env = []
-    if env_groups and not any(os.environ.get(name) for name in env_groups):
+    if env_groups and not _has_native_auth(provider) and not any(os.environ.get(name) for name in env_groups):
         missing_env = list(env_groups)
     return {
         "project_configured": bool(project_info.get("config_file")) and Path(str(project_info.get("config_file"))).exists(),

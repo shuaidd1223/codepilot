@@ -10,6 +10,7 @@ from codepilot.commands.run_builtin_core import (  # noqa: F401
     _builtin_base_branch_lock_error,
     _builtin_preflight_error,
     _builtin_review_requires_git,
+    _handle_preflight_dirty_worktree,
     _builtin_runtime_dir,
     _bullet_lines,
     _collect_project_conventions_snippet,
@@ -46,4 +47,3 @@ from codepilot.commands.run_builtin_prompts import (  # noqa: F401
     _extract_review_verdict,
     parse_review_output,
 )
-

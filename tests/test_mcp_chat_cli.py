@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import click
@@ -103,6 +104,29 @@ def test_chat_defaults_to_opencode_without_config(tmp_path: Path, monkeypatch):
 
     assert result.exit_code == 0
     assert calls == [{"agent": "opencode", "project": None, "prompt": ""}]
+
+
+def test_chat_prepare_uses_project_agent_language_for_opencode_profile(tmp_path: Path, monkeypatch):
+    project_path = _isolate(tmp_path, monkeypatch)
+    runtime_root = tmp_path / "codepilot-home"
+    monkeypatch.setattr("codepilot.opencode.paths.global_storage_root", lambda: runtime_root)
+    db.register_project("demo", str(project_path))
+    (project_path / "AGENTS.toml").write_text(
+        '[project]\nname = "demo"\n\n[automation]\nagent_language = "zh-CN"\n',
+        encoding="utf-8",
+    )
+
+    from codepilot.commands import chat as chat_cmd
+
+    monkeypatch.setattr(chat_cmd, "_ensure_mcp_sdk_available", lambda: None)
+
+    launch = chat_cmd._prepare_mcp_agent_chat(agent="opencode", project=None, prompt="")
+
+    config_path = Path(launch.env["OPENCODE_CONFIG"])
+    assert config_path.is_relative_to(runtime_root)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["instructions"][0].endswith("codepilot.zh-CN.md")
+    assert "任务状态" in payload["command"]
 
 
 def test_chat_session_option_restores_codepilot_opencode_session(tmp_path: Path, monkeypatch):

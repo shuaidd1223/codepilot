@@ -951,11 +951,13 @@ def test_run_backlog_falls_back_to_main_workspace_when_per_task_branch_disabled(
 name = "demo"
 base_branch = "{base_branch}"
 
-[automation]
-per_task_branch = false
-""".strip(),
+    [automation]
+    per_task_branch = false
+    """.strip(),
         encoding="utf-8",
     )
+    subprocess.run(["git", "add", "AGENTS.toml"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "add config"], cwd=project_path, capture_output=True, check=True)
 
     db.register_project("demo", str(project_path), base_branch=base_branch)
     task = db.create_task("demo", "compat fallback", agent="dual", max_retries=2)
@@ -1222,4 +1224,3 @@ def test_finalize_failed_task_workspace_abandons_dirty_branch_on_terminal_failur
     assert run_cmd._git_current_branch(project_path) == base_branch
     assert run_cmd._git_local_branch_exists(project_path, branch) is False
     assert (project_path / "scratch.txt").exists() is False
-

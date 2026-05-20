@@ -7,6 +7,9 @@ adding ``[automation] fallback_cli_order`` and ``[providers.opencode]``.
 
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 import pytest
 
 from codepilot.core.config import (
@@ -96,6 +99,14 @@ def test_agent_language_defaults_to_english():
     cfg = AgentsConfig.from_dict({})
 
     assert cfg.automation.agent_language == "en"
+
+
+def test_repository_agents_toml_sets_agent_language_to_chinese():
+    config_path = Path(__file__).resolve().parents[1] / "AGENTS.toml"
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    cfg = AgentsConfig.from_dict(data, config_file_path=str(config_path))
+
+    assert cfg.automation.agent_language == "zh-CN"
 
 
 @pytest.mark.parametrize(

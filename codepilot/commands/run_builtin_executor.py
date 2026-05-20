@@ -183,6 +183,14 @@ def _agent_language_for_context(ctx: _ExecutorContext) -> str:
     return str(getattr(cfg.automation, "agent_language", "en") or "en")
 
 
+def _dirty_worktree_policy_for_project(project: dict, project_path: Path) -> str:
+    try:
+        cfg = load_project_config(project) or load_project_config(project_path) or AgentsConfig.from_dict({})
+        return str(getattr(cfg.automation, "preflight_dirty_worktree", "stop") or "stop")
+    except Exception:
+        return "stop"
+
+
 def _select_builtin_phase_fallback_agent(
     ctx: _ExecutorContext,
     *,
@@ -855,9 +863,22 @@ def _run_builtin_executor(
         if _runner_module()._builtin_review_requires_git(task.get("agent", "codex"), task=task, project_ref=project)
         else "dual"
     )
-    preflight_error = _runner_module()._builtin_preflight_error(working_path, auto_commit, effective_agent_mode)
+    dirty_worktree_policy = _dirty_worktree_policy_for_project(project, project_path)
+    preflight_error = _runner_module()._builtin_preflight_error(
+        working_path,
+        auto_commit,
+        effective_agent_mode,
+        dirty_worktree_policy=dirty_worktree_policy,
+    )
     if allow_dirty_resume and "未提交改动" in preflight_error:
         preflight_error = ""
+    if not preflight_error and not allow_dirty_resume:
+        preflight_error = _runner_module()._handle_preflight_dirty_worktree(
+            working_path,
+            project,
+            task,
+            dirty_worktree_policy,
+        )
     if preflight_error:
         raise PreflightSkipError(preflight_error)
 
