@@ -261,6 +261,30 @@ node_command = "node"
     assert SECRETS_FILENAME in (project / ".gitignore").read_text(encoding="utf-8").splitlines()
 
 
+def test_config_sync_succeeds_without_existing_secrets_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    project = tmp_path / "demo"
+    project.mkdir()
+    _write(
+        project / "AGENTS.toml",
+        """
+[project]
+name = "demo"
+base_branch = "main"
+
+[feishu_bot]
+enabled = true
+app_id = "cli-demo"
+node_command = "node"
+""".strip(),
+    )
+
+    result = CliRunner().invoke(main, ["config", "sync", str(project)])
+
+    assert result.exit_code == 0, result.output
+    assert not (project / SECRETS_FILENAME).exists()
+
+
 def test_config_sync_keeps_existing_feishu_secret_file_value(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     project = tmp_path / "demo"

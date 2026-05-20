@@ -119,6 +119,61 @@ def test_webui_start_ensures_daemon_service(tmp_path, monkeypatch):
     assert "项目 demo 任务执行服务已后台启动" in result.output
 
 
+def test_webui_spawn_command_uses_frozen_executable_without_module_args(monkeypatch):
+    monkeypatch.setattr(svc.sys, "executable", r"C:\Tools\CodePilot\codepilot.exe")
+    monkeypatch.setattr(svc.sys, "frozen", True, raising=False)
+
+    cmd = svc._foreground_ui_command("127.0.0.1", 9876)
+
+    assert cmd == [
+        r"C:\Tools\CodePilot\codepilot.exe",
+        "ui",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "9876",
+        "--no-open",
+    ]
+    assert "-m" not in cmd
+
+
+def test_webui_restart_port_env_overrides_stale_meta(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_WEBUI_PORT", "9876")
+    db.upsert_service_state(
+        "webui",
+        "_global",
+        pid=4321,
+        status="stopped",
+        log_path=str(svc.LOG_FILE),
+        meta={"pid": 4321, "host": "127.0.0.1", "port": 8766},
+    )
+
+    class _FakeProc:
+        pid = 5678
+        returncode = None
+
+        def poll(self):
+            return None
+
+    captured: dict[str, int | str] = {}
+
+    def fake_spawn(host: str, port: int):
+        captured["host"] = host
+        captured["port"] = port
+        return _FakeProc()
+
+    monkeypatch.setattr(svc, "is_process_alive", lambda _pid: False)
+    monkeypatch.setattr(svc, "_spawn_detached", fake_spawn)
+    monkeypatch.setattr(svc.time, "sleep", lambda _: None)
+
+    result = CliRunner().invoke(svc.webui, ["restart", "--no-daemon"])
+
+    assert result.exit_code == 0
+    assert captured == {"host": "127.0.0.1", "port": 9876}
+    assert db.get_service_state("webui", "_global")["meta"]["port"] == 9876
+
+
 def test_webui_stop_falls_back_to_listener_pid_when_pid_file_is_stale(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
     db.upsert_service_state(
@@ -182,4 +237,3 @@ def test_webui_stop_succeeds_if_process_exits_during_final_grace_period(tmp_path
     assert result.exit_code == 0
     assert "以下 PID 停止时返回失败，但进程已退出：33024" in result.output
     assert "Web UI 已停止" in result.output
-

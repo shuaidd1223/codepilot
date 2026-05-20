@@ -188,7 +188,8 @@ def get_write_conn():
     conn = _cfg_open_connection(_get_db_path())
     try:
         yield conn
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 事务异常时回滚
         conn.rollback()
         raise
     else:
@@ -344,7 +345,8 @@ def _read_project_config_name(project: dict) -> str:
         except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
             import tomli as tomllib  # type: ignore[no-redef]
         data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 读取 TOML 文件失败时使用空字符串
         return ""
     project_data = data.get("project") if isinstance(data, dict) else None
     if not isinstance(project_data, dict):
@@ -440,7 +442,8 @@ def _publish_task_updated_event(task: Optional[dict], changed_fields: set[str]) 
             event_id_prefix=f"task-{task.get('id')}",
         )
         dispatch_event_to_sinks(project_root, event)
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 发布事件失败不应阻止主流程
         return
 
 

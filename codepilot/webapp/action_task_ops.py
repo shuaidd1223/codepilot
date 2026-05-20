@@ -177,7 +177,8 @@ def cancel_task_action(task_id: int, *, message: str = "") -> dict:
     try:
         if wt and wt != project_path:
             stop_worktree_leftovers(wt, wait_seconds=3)
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 清理 worktree 失败不应阻止任务取消
         pass
 
     _append_event(f"任务 #{task_id} 已取消。", level="warning", project=task["project"], task_id=task_id)

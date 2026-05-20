@@ -74,7 +74,8 @@ def _emit_ui_state_event(kind: str, *, project: str | None = None, task_id: int 
                 "payload": dict(payload or {}),
             },
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 发送 UI 状态事件失败不应阻止主流程
         pass
 
 
@@ -154,7 +155,8 @@ def _mark_stale_job_after_restart(job: dict, shell) -> dict:
 def _persist_job(job: dict) -> None:
     try:
         job_id = int(job.get("id") or 0)
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 解析 job ID 失败时使用空 ID
         return
     if job_id <= 0:
         return
@@ -166,14 +168,16 @@ def _persist_job(job: dict) -> None:
             status=str(job.get("status") or ""),
             meta=dict(job),
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 持久化 job 状态失败不应阻止主流程
         pass
 
 
 def _load_persisted_jobs() -> list[dict]:
     try:
         rows = db.list_service_states(_JOB_SERVICE)
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 读取 job 状态失败时使用空列表
         return []
     jobs: list[dict] = []
     for row in rows:
@@ -182,7 +186,8 @@ def _load_persisted_jobs() -> list[dict]:
             continue
         try:
             meta["id"] = int(meta.get("id") or row.get("scope") or 0)
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # 解析 job ID 失败则跳过
             continue
         if int(meta.get("id") or 0) > 0:
             jobs.append(dict(meta))
@@ -256,7 +261,8 @@ def _is_job_cancel_requested(job_id: int) -> bool:
 def _coerce_pid(value: object) -> int:
     try:
         pid = int(value or 0)
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 转换为 PID 失败则返回 0
         return 0
     return pid if pid > 0 else 0
 
@@ -280,7 +286,8 @@ def _kill_job_process_tree(job: dict) -> list[int]:
     for pid in _job_process_pids(job):
         try:
             stop_process_tree(pid, wait_seconds=3)
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # 停止进程树失败不应阻止清理
             pass
         killed.append(pid)
     return killed

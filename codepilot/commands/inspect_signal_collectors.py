@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +15,17 @@ from codepilot.commands.inspect_signal_collectors_dependency_health import (
 from codepilot.commands.inspect_signal_collectors_todos import collect_todos
 from codepilot.storage import database as db
 from codepilot.core.text_decode import decode_subprocess_text
+
+
+__all__ = [
+    "collect_code_metrics",
+    "collect_dependency_health",
+    "collect_failed_tasks",
+    "collect_git_log",
+    "collect_pytest_collect",
+    "collect_ruff",
+    "collect_todos",
+]
 
 
 def _run_git(args: list[str], cwd: Path, timeout: int = 20) -> str:
@@ -60,13 +73,26 @@ def _which(cmd: str) -> Optional[str]:
     return shutil.which(cmd)
 
 
+def _python_module_available(module: str) -> bool:
+    return find_spec(module) is not None
+
+
+def _ruff_command() -> list[str] | None:
+    if _python_module_available("ruff"):
+        return [sys.executable, "-m", "ruff"]
+    if _which("ruff"):
+        return ["ruff"]
+    return None
+
+
 def collect_ruff(project_path: Path, limit: int = 30) -> str:
     """Run ruff in report-only mode if available."""
-    if not _which("ruff"):
+    command = _ruff_command()
+    if command is None:
         return "（ruff 未安装，跳过）"
     try:
         result = subprocess.run(
-            ["ruff", "check", ".", "--output-format", "concise", "--quiet"],
+            [*command, "check", ".", "--output-format", "concise", "--quiet"],
             cwd=str(project_path),
             capture_output=True,
             text=False,

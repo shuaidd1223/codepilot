@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Mapping
+
+
+CODEPILOT_HOME_ENV = "CODEPILOT_HOME"
 
 
 def _slugify_project_name(text: str, *, fallback: str = "project") -> str:
@@ -41,9 +45,12 @@ def project_storage_root(
     if not name and path_value:
         name = Path(path_value).expanduser().name
 
-    return Path.home() / ".codepilot" / "data" / _slugify_project_name(name)
+    return global_storage_root() / "data" / _slugify_project_name(name)
 
 
 def global_storage_root() -> Path:
     """Return the CodePilot root for cross-project state."""
+    override = os.environ.get(CODEPILOT_HOME_ENV, "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
     return Path.home() / ".codepilot"

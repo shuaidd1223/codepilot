@@ -32,6 +32,8 @@ LOG_FILE = STATE_DIR / "webui.log"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
+WEBUI_HOST_ENV = "CODEPILOT_WEBUI_HOST"
+WEBUI_PORT_ENV = "CODEPILOT_WEBUI_PORT"
 
 
 def _service_scope() -> str:
@@ -40,6 +42,42 @@ def _service_scope() -> str:
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _env_host() -> str | None:
+    raw = os.environ.get(WEBUI_HOST_ENV, "").strip()
+    return raw or None
+
+
+def _env_port() -> int | None:
+    raw = os.environ.get(WEBUI_PORT_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise click.ClickException(f"{WEBUI_PORT_ENV} 必须是整数端口：{raw}") from exc
+    if value <= 0 or value > 65535:
+        raise click.ClickException(f"{WEBUI_PORT_ENV} 超出有效端口范围：{value}")
+    return value
+
+
+def _default_host() -> str:
+    return _env_host() or DEFAULT_HOST
+
+
+def _default_port() -> int:
+    return _env_port() or DEFAULT_PORT
+
+
+def _resolve_start_host_port(host: str | None, port: int | None) -> tuple[str, int]:
+    return host or _default_host(), port if port is not None else _default_port()
+
+
+def _resolve_restart_host_port(host: str | None, port: int | None, meta: dict) -> tuple[str, int]:
+    resolved_host = host or _env_host() or meta.get("host") or DEFAULT_HOST
+    resolved_port = port if port is not None else (_env_port() or int(meta.get("port") or DEFAULT_PORT))
+    return str(resolved_host), int(resolved_port)
 
 
 def _read_meta() -> dict:
@@ -89,11 +127,11 @@ def _cleanup_files() -> None:
 
 def _service_host_port() -> tuple[str, int]:
     meta = _read_meta()
-    host = str(meta.get("host") or DEFAULT_HOST)
+    host = str(meta.get("host") or _default_host())
     try:
-        port = int(meta.get("port") or DEFAULT_PORT)
+        port = int(meta.get("port") or _default_port())
     except Exception:
-        port = DEFAULT_PORT
+        port = _default_port()
     return host, port
 
 
@@ -101,9 +139,9 @@ def _sync_state_pid(pid: int) -> None:
     meta = _read_meta()
     meta["pid"] = int(pid)
     if "host" not in meta:
-        meta["host"] = DEFAULT_HOST
+        meta["host"] = _default_host()
     if "port" not in meta:
-        meta["port"] = DEFAULT_PORT
+        meta["port"] = _default_port()
     if "started_at" not in meta:
         meta["started_at"] = _now_iso()
     db.upsert_service_state(
@@ -189,6 +227,14 @@ def _remaining_service_pids(targets: list[int], *, wait_seconds: float = 2.0) ->
         time.sleep(0.2)
 
 
+def _foreground_ui_command(host: str, port: int) -> list[str]:
+    command = [sys.executable]
+    if not getattr(sys, "frozen", False):
+        command.extend(["-m", "codepilot"])
+    command.extend(["ui", "--host", host, "--port", str(port), "--no-open"])
+    return command
+
+
 def _spawn_detached(host: str, port: int) -> subprocess.Popen:
     """Spawn `codepilot ui --host ... --port ... --no-open` as a detached process.
 
@@ -203,10 +249,7 @@ def _spawn_detached(host: str, port: int) -> subprocess.Popen:
     except Exception:
         pass
 
-    cmd = [
-        sys.executable, "-m", "codepilot", "ui",
-        "--host", host, "--port", str(port), "--no-open",
-    ]
+    cmd = _foreground_ui_command(host, port)
 
     popen_kwargs = {
         "stdin": subprocess.DEVNULL,
@@ -241,17 +284,18 @@ def webui():
 
 
 @webui.command("start")
-@click.option("--host", default=DEFAULT_HOST, show_default=True, help="监听地址")
-@click.option("--port", type=int, default=DEFAULT_PORT, show_default=True, help="监听端口")
+@click.option("--host", default=None, help=f"监听地址，默认读取 {WEBUI_HOST_ENV} 或 {DEFAULT_HOST}")
+@click.option("--port", type=int, default=None, help=f"监听端口，默认读取 {WEBUI_PORT_ENV} 或 {DEFAULT_PORT}")
 @click.option("--open/--no-open", "open_browser", default=True, show_default=True, help="启动后在浏览器打开")
 @click.option("--daemon/--no-daemon", "start_daemon", default=True, show_default=True, help="同时确保 daemon 后台运行")
 @click.option("--project", "-p", default="", help="同时启动指定项目的任务执行服务")
-def start_cmd(host: str, port: int, open_browser: bool, start_daemon: bool, project: str) -> None:
+def start_cmd(host: str | None, port: int | None, open_browser: bool, start_daemon: bool, project: str) -> None:
     """启动 Web UI 后台服务（即使关掉终端也保持运行）。"""
+    resolved_host, resolved_port = _resolve_start_host_port(host, port)
     existing = _alive_pid()
     if existing:
         meta = _read_meta()
-        url = f"http://{meta.get('host', host)}:{meta.get('port', port)}/"
+        url = f"http://{meta.get('host', resolved_host)}:{meta.get('port', resolved_port)}/"
         echo(f"[yellow]Web UI 已在运行（PID={existing}） {url}[/yellow]")
         echo("[dim]如果需要重启：codepilot ui restart[/dim]")
         if start_daemon:
@@ -263,7 +307,7 @@ def start_cmd(host: str, port: int, open_browser: bool, start_daemon: bool, proj
     _cleanup_files()
 
     try:
-        proc = _spawn_detached(host, port)
+        proc = _spawn_detached(resolved_host, resolved_port)
     except Exception as exc:
         echo(f"[red]启动失败：{safe(exc)}[/red]")
         raise click.Abort()
@@ -282,9 +326,9 @@ def start_cmd(host: str, port: int, open_browser: bool, start_daemon: bool, proj
         raise click.Abort()
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _write_meta(proc.pid, host, port)
+    _write_meta(proc.pid, resolved_host, resolved_port)
 
-    url = f"http://{host}:{port}/"
+    url = f"http://{resolved_host}:{resolved_port}/"
     echo(f"[green]Web UI 已启动[/green]  PID={proc.pid}  {url}")
     echo(f"[dim]日志: {LOG_FILE}[/dim]")
     echo("[dim]停止: codepilot ui stop[/dim]")
@@ -383,8 +427,7 @@ def stop_cmd() -> None:
 def restart_cmd(ctx: click.Context, host: str | None, port: int | None, open_browser: bool, start_daemon: bool, project: str) -> None:
     """重启 Web UI 服务（沿用上次的 host/port，也可通过选项覆盖）。"""
     meta = _read_meta()
-    resolved_host = host or meta.get("host") or DEFAULT_HOST
-    resolved_port = port if port is not None else int(meta.get("port") or DEFAULT_PORT)
+    resolved_host, resolved_port = _resolve_restart_host_port(host, port, meta)
 
     targets = _service_targets()
     failures: list[int] = []
@@ -434,4 +477,3 @@ def logs_cmd(tail: int) -> None:
     if tail > 0 and len(lines) > tail:
         lines = lines[-tail:]
     click.echo("\n".join(lines))
-

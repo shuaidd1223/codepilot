@@ -357,7 +357,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         extra = body.get("extra") if isinstance(body.get("extra"), dict) else {}
         try:
             task_id = int(body.get("task_id")) if body.get("task_id") is not None else None
-        except Exception:
+        except (ValueError, TypeError):
+            # task_id 无法转换为整数时使用 None
             task_id = None
 
         from codepilot.core import progress_bus
@@ -1005,7 +1006,8 @@ def start_ui_server(
                 "started_at": _now_iso(),
             },
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 记录服务状态失败不应阻止服务器启动
         pass
     if open_browser:
         opener = browser_opener or webbrowser.open

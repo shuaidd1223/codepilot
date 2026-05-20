@@ -171,13 +171,18 @@ def _supported_provider(raw: Any) -> dict[str, Any] | None:
 
 
 def _load_toml_dict(path: Path) -> dict[str, Any]:
-    try:
-        with open(path, "rb") as handle:
-            import tomllib
+    """Load TOML file and return as dict.
 
-            data = tomllib.load(handle)
-    except Exception:
+    Missing optional overlay files are treated as empty; invalid TOML still
+    raises so callers can report real configuration errors.
+    """
+    import tomllib
+
+    if not path.exists():
         return {}
+
+    with open(path, "rb") as handle:
+        data = tomllib.load(handle)
     return data if isinstance(data, dict) else {}
 
 
@@ -618,6 +623,23 @@ def _resolve_config_target(path: Path | None, *, use_global: bool = False) -> Pa
     return target.resolve()
 
 
+def _raw_config_errors(data: dict[str, Any]) -> list[str]:
+    """Validate raw values that canonicalization would otherwise normalize away."""
+    errors: list[str] = []
+    automation = data.get("automation")
+    if automation is None:
+        return errors
+    if not isinstance(automation, dict):
+        return ["[automation] 必须是 TOML table。"]
+
+    if "task_workspace" in automation:
+        raw_workspace = automation.get("task_workspace")
+        workspace = str(raw_workspace).strip().lower() if isinstance(raw_workspace, str) else ""
+        if workspace not in {"direct", "branch", "worktree"}:
+            errors.append(f"automation.task_workspace 值无效: {raw_workspace}")
+    return errors
+
+
 @click.group("config")
 def config_group() -> None:
     """维护 AGENTS.toml 配置文件。"""
@@ -672,3 +694,381 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
     click.echo(f"已同步配置: {config_path}")
     if write_secrets:
         click.echo(f"已迁移飞书 App Secret 到: {config_path.parent / config_mod.SECRETS_FILENAME}")
+
+
+@config_group.command("init")
+@click.option("--global", "global_mode", is_flag=True, help="初始化全局配置（~/.codepilot/AGENTS.toml）")
+@click.option("--path", "path", type=click.Path(path_type=Path), help="指定配置目录或文件路径")
+@click.option("--non-interactive", is_flag=True, help="非交互模式，使用默认值")
+def init_config(global_mode: bool, path: Path | None, non_interactive: bool) -> None:
+    """交互式初始化 AGENTS.toml 配置文件。"""
+    import shutil
+    from rich.console import Console
+    from rich.panel import Panel
+
+    console = Console()
+
+    # 确定配置路径
+    if global_mode:
+        config_path = config_mod.resolve_global_config_path()
+    elif path is not None:
+        target = Path(path).expanduser()
+        config_path = target if target.is_file() else (target / config_mod.CONFIG_FILENAME)
+    else:
+        found = config_mod.find_config()
+        if found is not None:
+            config_path = found.resolve()
+        else:
+            config_path = (Path.cwd() / config_mod.CONFIG_FILENAME).resolve()
+
+    # 如果配置文件已存在，询问是否覆盖
+    if config_path.exists():
+        if non_interactive:
+            raise click.ClickException(f"配置文件已存在: {config_path}。如需同步现有配置，请运行 codepilot config sync。")
+        overwrite = click.confirm(f"配置文件已存在: {config_path}\n是否覆盖？", default=False)
+        if not overwrite:
+            click.echo("已取消。")
+            return
+
+    console.print(Panel.fit("[bold blue]CodePilot 配置向导[/bold blue]", border_style="blue"))
+
+    # 初始化配置数据
+    data: dict[str, Any] = {}
+    project_name = config_path.parent.name
+
+    # 1. 项目配置
+    console.print("\n[bold]1. 项目配置[/bold]")
+    if not non_interactive:
+        project_name = click.prompt("项目名称", default=project_name, show_default=True)
+        base_branch = click.prompt("Git 主分支", default="main", show_default=True)
+        default_mode = click.prompt("默认任务智能体", default="codex", show_default=True)
+    else:
+        base_branch = "main"
+        default_mode = "codex"
+
+    data["project"] = {
+        "name": project_name,
+        "base_branch": base_branch,
+        "default_mode": default_mode,
+    }
+
+    # 2. 检测 CLI 工具
+    console.print("\n[bold]2. 检测 CLI 工具[/bold]")
+    cli_tools = ["claude", "codex", "opencode"]
+    detected_tools: dict[str, str] = {}
+
+    for tool in cli_tools:
+        tool_path = shutil.which(tool)
+        if tool_path:
+            detected_tools[tool] = tool_path
+            console.print(f"  ✓ {tool}: [green]{tool_path}[/green]")
+        else:
+            console.print(f"  ✗ {tool}: [dim]未找到[/dim]")
+
+    if not non_interactive and detected_tools:
+        console.print("\n配置 CLI 命令映射？（回车跳过则使用默认）")
+        commands: dict[str, str] = {}
+        for tool in detected_tools:
+            cmd = click.prompt(f"  {tool} 命令", default=tool, show_default=True)
+            commands[tool] = cmd
+        data["agents"] = {"commands": commands}
+    else:
+        data["agents"] = {"commands": {}}
+
+    # 3. 配置 AI Provider
+    console.print("\n[bold]3. AI Provider 配置[/bold]")
+
+    providers: dict[str, Any] = {}
+    provider_choices = ["deepseek", "openai", "claude", "qwen", "hunyuan", "ollama", "custom"]
+
+    if not non_interactive:
+        while True:
+            console.print("\n可选 Provider:")
+            for i, p in enumerate(provider_choices, 1):
+                console.print(f"  {i}. {p}")
+            console.print("  0. 完成配置")
+
+            choice = click.prompt("选择要配置的 Provider（输入编号）", default="0", show_default=False)
+
+            if choice == "0":
+                break
+
+            try:
+                idx = int(choice) - 1
+                if idx < 0 or idx >= len(provider_choices):
+                    console.print("[red]无效的选择[/red]")
+                    continue
+                provider_name = provider_choices[idx]
+                provider_config = _interactive_provider_config(provider_name, console)
+                if provider_config:
+                    providers[provider_name] = provider_config
+            except ValueError:
+                console.print("[red]请输入数字[/red]")
+    else:
+        # 非交互模式：默认启用 deepseek
+        providers["deepseek"] = {
+            "enabled": True,
+            "model": "",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "",
+            "max_tokens": 8192,
+            "temperature": 0.7,
+            "auto_model_selection": True,
+            "simple_model": "deepseek-v4-flash",
+            "complex_model": "deepseek-v4-pro",
+        }
+
+    data["providers"] = providers
+
+    # 4. 自动化配置
+    console.print("\n[bold]4. 自动化配置[/bold]")
+    if not non_interactive:
+        task_agent = click.prompt("任务执行智能体", default="dual", show_default=True)
+        task_workspace = click.prompt("任务工作空间 (direct/branch/worktree)", default="branch", show_default=True)
+        auto_execute = click.confirm("是否自动执行任务？", default=True)
+    else:
+        task_agent = "dual"
+        task_workspace = "branch"
+        auto_execute = True
+
+    data["automation"] = {
+        "task_agent": task_agent,
+        "task_workspace": task_workspace,
+        "auto_execute": auto_execute,
+        "auto_commit": True,
+        "max_tasks": 5,
+        "max_retries": 3,
+        "per_task_branch": True,
+        "two_stage_planning": True,
+        "clarify_vague_requirements": True,
+    }
+
+    # 5. 飞书机器人（可选）
+    if not non_interactive:
+        console.print("\n[bold]5. 飞书机器人配置（可选）[/bold]")
+        enable_feishu = click.confirm("是否配置飞书机器人？", default=False)
+        if enable_feishu:
+            app_id = click.prompt("飞书 App ID", default="", show_default=False)
+            data["feishu_bot"] = {
+                "enabled": True,
+                "app_id": app_id,
+                "node_command": "node",
+                "default_project": project_name,
+                "command_prefix": "",
+            }
+        else:
+            data["feishu_bot"] = {"enabled": False}
+    else:
+        data["feishu_bot"] = {"enabled": False}
+
+    # 生成规范化的配置
+    canonical = _canonical_config(data, project_name=project_name)
+
+    # 如果有 API Key，写入 secrets 文件
+    secrets_data: dict[str, Any] = {"providers": {}, "feishu_bot": {}}
+    has_secrets = False
+
+    for name, cfg in providers.items():
+        api_key = cfg.get("api_key", "")
+        if api_key:
+            if "providers" not in secrets_data:
+                secrets_data["providers"] = {}
+            secrets_data["providers"][name] = {"api_key": api_key}
+            has_secrets = True
+            # 从主配置中移除 API Key
+            canonical["providers"][name]["api_key"] = ""
+
+    # 写入配置文件
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    content = render_agents_toml(canonical)
+    config_path.write_text(content, encoding="utf-8")
+
+    console.print(f"\n[green]✓[/green] 配置文件已生成: {config_path}")
+
+    if has_secrets:
+        secrets_path = config_path.parent / config_mod.SECRETS_FILENAME
+        secrets_content = render_secrets_toml(_canonical_secrets(secrets_data))
+        secrets_path.write_text(secrets_content, encoding="utf-8")
+        if not global_mode:
+            ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME)
+        console.print(f"[green]✓[/green] Secrets 已写入: {secrets_path}")
+
+    console.print(Panel.fit("[bold green]配置完成！[/bold green]", border_style="green"))
+    console.print("\n下一步：")
+    console.print("  1. 编辑配置文件：", config_path)
+    console.print("  2. 验证配置：codepilot config validate")
+    console.print("  3. 检查环境：codepilot doctor")
+
+
+def _interactive_provider_config(provider_name: str, console: Any) -> dict[str, Any] | None:
+    """交互式配置单个 Provider。"""
+    console.print(f"\n配置 [bold]{provider_name}[/bold] Provider:")
+
+    enabled = click.confirm("  是否启用？", default=(provider_name == "deepseek"))
+    if not enabled:
+        return None
+
+    config = _get_provider_example(provider_name)
+    config["enabled"] = True
+
+    api_key = click.prompt("  API Key（留空使用环境变量）", default="", show_default=False)
+    if api_key:
+        config["api_key"] = api_key
+
+    model = click.prompt("  模型名称", default=config.get("model", ""), show_default=bool(config.get("model")))
+    if model:
+        config["model"] = model
+
+    base_url = click.prompt("  自定义接口地址（留空使用默认）", default=config.get("base_url", ""), show_default=False)
+    if base_url:
+        config["base_url"] = base_url
+
+    return config
+
+
+def _get_provider_example(provider_name: str) -> dict[str, Any]:
+    """获取 Provider 示例配置。"""
+    if provider_name in PROVIDER_EXAMPLES:
+        return PROVIDER_EXAMPLES[provider_name].copy()
+    return {
+        "enabled": True,
+        "model": "",
+        "base_url": "",
+        "api_key": "",
+        "max_tokens": 4096,
+        "temperature": 0.7,
+    }
+
+
+@config_group.command("validate")
+@click.argument("path", required=False, type=click.Path(path_type=Path))
+@click.option("--global", "global_mode", is_flag=True, help="验证全局配置")
+@click.option("--fix", is_flag=True, help="自动修复可修复的问题")
+def validate_config(path: Path | None, global_mode: bool, fix: bool) -> None:
+    """验证 AGENTS.toml 配置文件的完整性和正确性。"""
+    from rich.console import Console
+    from rich.panel import Panel
+
+    console = Console()
+
+    # 确定配置路径
+    config_path = _resolve_config_target(path, use_global=global_mode)
+    if not config_path.exists():
+        console.print(f"[red]✗[/red] 配置文件不存在: {config_path}")
+        console.print("\n运行 [bold]codepilot config init[/bold] 来创建配置文件。")
+        raise SystemExit(1)
+
+    console.print(Panel.fit(f"[bold]验证配置: {config_path}[/bold]", border_style="blue"))
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    fixes: list[str] = []
+
+    # 1. 验证 TOML 格式
+    console.print("\n[bold]1. 检查 TOML 格式...[/bold]")
+    try:
+        data = _load_toml_dict(config_path)
+        console.print("[green]✓[/green] TOML 格式正确")
+    except Exception as exc:
+        console.print(f"[red]✗[/red] TOML 格式错误: {exc}")
+        raise SystemExit(1) from exc
+
+    # 2. 验证配置完整性
+    console.print("\n[bold]2. 检查配置完整性...[/bold]")
+    errors.extend(_raw_config_errors(data))
+    canonical = _canonical_config(data, project_name=config_path.parent.name)
+
+    # 检查必需字段
+    project = canonical.get("project", {})
+    if not project.get("name"):
+        errors.append("project.name 未设置")
+    if not project.get("base_branch"):
+        warnings.append("project.base_branch 未设置，默认使用 'main'")
+
+    # 3. 验证 Provider 配置
+    console.print("\n[bold]3. 检查 AI Provider...[/bold]")
+    providers = canonical.get("providers", {})
+    if not providers:
+        warnings.append("未配置任何 Provider，AI 功能将不可用")
+
+    for name, cfg in providers.items():
+        if not isinstance(cfg, dict):
+            errors.append(f"Provider {name} 配置格式错误")
+            continue
+
+        if cfg.get("enabled"):
+            api_key = cfg.get("api_key", "")
+            if not api_key:
+                # 检查环境变量
+                env_var = f"{name.upper()}_API_KEY"
+                if env_var not in __import__("os").environ:
+                    warnings.append(f"Provider {name} 未设置 api_key，且环境变量 {env_var} 未设置")
+
+            model = cfg.get("model", "")
+            if not model and not cfg.get("auto_model_selection"):
+                warnings.append(f"Provider {name} 未设置 model")
+
+    # 4. 验证 CLI 工具可用性
+    console.print("\n[bold]4. 检查 CLI 工具...[/bold]")
+    import shutil
+
+    agents = canonical.get("agents", {})
+    commands = agents.get("commands", {})
+    if isinstance(commands, dict):
+        for family, cmd in commands.items():
+            cmd_str = str(cmd)
+            if "/" in cmd_str or "\\" in cmd_str:
+                # 路径
+                if not Path(cmd_str).exists():
+                    warnings.append(f"CLI 工具路径不存在: {cmd_str}")
+            else:
+                # 命令
+                if not shutil.which(cmd_str):
+                    warnings.append(f"CLI 工具未找到: {cmd_str}")
+
+    # 5. 验证自动化配置
+    console.print("\n[bold]5. 检查自动化配置...[/bold]")
+    automation = canonical.get("automation", {})
+    task_workspace = automation.get("task_workspace", "branch")
+    if task_workspace not in {"direct", "branch", "worktree"}:
+        errors.append(f"automation.task_workspace 值无效: {task_workspace}")
+        if fix:
+            automation["task_workspace"] = "branch"
+            fixes.append("automation.task_workspace 已修复为 'branch'")
+
+    # 输出结果
+    console.print("\n[bold]验证结果:[/bold]")
+
+    if warnings:
+        console.print(f"\n[yellow]警告 ({len(warnings)}):[/yellow]")
+        for i, w in enumerate(warnings, 1):
+            console.print(f"  {i}. {w}")
+
+    if errors:
+        console.print(f"\n[red]错误 ({len(errors)}):[/red]")
+        for i, e in enumerate(errors, 1):
+            console.print(f"  {i}. {e}")
+
+    if not errors and not warnings:
+        console.print("\n[green]✓[/green] 配置验证通过，未发现问题。")
+
+    # 自动修复
+    if fix and fixes:
+        console.print(f"\n[bold]自动修复 ({len(fixes)}):[/bold]")
+        for fix_msg in fixes:
+            console.print(f"  • {fix_msg}")
+
+        # 重新渲染配置
+        content = render_agents_toml(canonical)
+        config_path.write_text(content, encoding="utf-8")
+        console.print(f"\n[green]✓[/green] 配置文件已更新: {config_path}")
+
+    # 退出码
+    if errors:
+        raise SystemExit(1)
+    elif warnings:
+        console.print("\n[yellow]配置验证完成，发现警告。[/yellow]")
+        raise SystemExit(0)
+    else:
+        console.print("\n[green]配置验证完成，未发现问题。[/green]")
+        raise SystemExit(0)

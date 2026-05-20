@@ -206,7 +206,7 @@ def binary_verify(release_dir: Path | None):
 
 
 @binary.command("prepare")
-@click.option("--version", "target_version", required=True, help="目标版本号，例如 0.1.1")
+@click.option("--version", "target_version", required=True, help="目标版本号，例如 0.7.2")
 @click.option(
     "--artifact",
     "artifacts",
@@ -276,4 +276,3 @@ def binary_prepare(
             raise click.ClickException("版本已更新，但发布目录校验失败。")
         echo(f"[green][OK] 发布目录校验通过[/green]  {verification.release_dir}")
         click.echo(f"  checked_files: {verification.checked_files}")
-
