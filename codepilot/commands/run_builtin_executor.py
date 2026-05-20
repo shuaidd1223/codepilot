@@ -75,6 +75,8 @@ _BUILTIN_TOOLING_FAILURE_PATTERNS = (
     "command not found",
     "not recognized as",
     "no such file or directory",
+    "[errno 22] invalid argument",
+    "invalid argument",
     "authentication failed",
     "login required",
     "api key",

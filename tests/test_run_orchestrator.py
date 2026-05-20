@@ -444,6 +444,49 @@ def test_prepare_task_workspace_resumes_existing_task_branch(tmp_path, monkeypat
     assert workspace.execution_path == project_path
 
 
+def test_prepare_task_workspace_resumes_dirty_existing_worktree(tmp_path, monkeypatch):
+    project_path = tmp_path / "project"
+    worktree_path = tmp_path / "task-worktree"
+    project_path.mkdir()
+    worktree_path.mkdir()
+    task = {"id": 33, "title": "resume dirty worktree", "agent": "dual"}
+    expected_branch = run_cmd._task_branch_name(task["id"], task["title"])
+    context = run_orchestrator_mod._RunContext(
+        project={"name": "demo", "path": str(project_path)},
+        project_path=project_path,
+        config=None,
+        base_branch="dev",
+        shell_info=object(),
+        executor="builtin",
+        max_review_rounds=2,
+        per_task_branch_enabled=True,
+        task_workspace="worktree",
+    )
+
+    monkeypatch.setattr(run_cmd, "_builtin_review_requires_git", lambda *args, **kwargs: False)
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(run_cmd, "_handle_preflight_dirty_worktree", lambda *args, **kwargs: "")
+    monkeypatch.setattr(run_cmd, "_builtin_base_branch_lock_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        run_cmd,
+        "_git_prepare_task_worktree",
+        lambda *args, **kwargs: (expected_branch, worktree_path),
+    )
+    monkeypatch.setattr(run_cmd, "_git_has_changes", lambda path: Path(path) == worktree_path)
+
+    workspace = run_orchestrator_mod._prepare_task_workspace(
+        context,
+        task,
+        auto_commit=True,
+        dry_run=False,
+    )
+
+    assert workspace.preflight_error == ""
+    assert workspace.task_branch == expected_branch
+    assert workspace.execution_path == worktree_path
+    assert workspace.resume_existing_task_branch is True
+
+
 def test_run_backlog_recovers_failed_dirty_task_branch_before_selecting_work(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

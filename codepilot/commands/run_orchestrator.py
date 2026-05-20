@@ -157,6 +157,11 @@ def _prepare_task_workspace(
                 if prepared_branch:
                     task_branch = prepared_branch
                 execution_path = prepared_worktree
+                try:
+                    if runner._git_has_changes(prepared_worktree):
+                        resume_existing_task_branch = True
+                except Exception:
+                    pass
             elif context.task_workspace == "branch":
                 if not resume_existing_task_branch:
                     prepared_branch = runner._git_prepare_task_branch(

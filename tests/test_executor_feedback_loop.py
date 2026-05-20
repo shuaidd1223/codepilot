@@ -445,6 +445,14 @@ def test_dual_builder_tooling_failure_falls_back_to_reviewer_agent(
     assert logs[0]["exit_code"] == 1
 
 
+def test_codex_windows_invalid_argument_is_tooling_failure():
+    """Windows Popen can surface broken Codex launches as a bare OSError."""
+    assert run_mod._is_builtin_agent_tooling_failure(
+        "codex-review",
+        "[Errno 22] Invalid argument",
+    )
+
+
 def test_review_loop_disabled_when_max_rounds_one(fake_project, monkeypatch, tmp_path):
     """max_review_rounds=1 reverts to legacy single-pass behavior."""
     from codepilot.ai_support import service as ai_mod
@@ -604,4 +612,3 @@ def test_config_threads_max_review_rounds():
     from codepilot.core.config import AutomationConfig
     cfg = AutomationConfig()
     assert cfg.max_review_rounds == 2
-
