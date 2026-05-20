@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from click.testing import CliRunner
 
 from codepilot.storage import database as db
@@ -135,6 +137,32 @@ def test_webui_spawn_command_uses_frozen_executable_without_module_args(monkeypa
         "--no-open",
     ]
     assert "-m" not in cmd
+
+
+def test_webui_spawn_detached_resets_pyinstaller_env_for_frozen_parent(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(svc.sys, "frozen", True, raising=False)
+    captured = {}
+
+    class _FakeProc:
+        pid = 1234
+        returncode = None
+
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(svc.subprocess, "Popen", fake_popen)
+
+    proc = svc._spawn_detached("127.0.0.1", 9876)
+
+    assert proc.pid == 1234
+    assert captured["kwargs"]["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+    assert captured["kwargs"]["env"]["PATH"] == os.environ["PATH"]
 
 
 def test_webui_restart_port_env_overrides_stale_meta(tmp_path, monkeypatch):

@@ -146,6 +146,13 @@ def build_binary(
     if not binary_path.exists():
         raise RuntimeError(f"构建命令已完成，但没有找到产物文件：{binary_path}")
 
+    source_web_dir = root / "codepilot" / "web"
+    if source_web_dir.exists():
+        target_web_dir = dist_dir / "web"
+        if target_web_dir.exists():
+            shutil.rmtree(target_web_dir)
+        shutil.copytree(source_web_dir, target_web_dir)
+
     return BuildResult(
         binary_path=binary_path.resolve(),
         dist_dir=dist_dir.resolve(),
@@ -174,6 +181,13 @@ def install_binary(
         shutil.copy2(source, destination)
     if platform.system().lower() != "windows":
         destination.chmod(destination.stat().st_mode | 0o755)
+
+    source_web_dir = source.parent / "web"
+    if source_web_dir.exists():
+        target_web_dir = destination_dir / "web"
+        if target_web_dir.exists():
+            shutil.rmtree(target_web_dir)
+        shutil.copytree(source_web_dir, target_web_dir)
 
     path_registered = False
     registration_message = ""
@@ -223,4 +237,3 @@ __all__ = [
     "validate_version_string",
     "verify_release_bundle",
 ]
-

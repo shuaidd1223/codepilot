@@ -257,6 +257,10 @@ def _spawn_detached(host: str, port: int) -> subprocess.Popen:
         "stderr": log_fp,
         "close_fds": True,
     }
+    if getattr(sys, "frozen", False):
+        child_env = os.environ.copy()
+        child_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        popen_kwargs["env"] = child_env
 
     if os.name == "nt":
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — child has no console

@@ -2,6 +2,70 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from codepilot.webapp import server as webui_mod
+
+
+def test_web_ui_loads_index_from_package_resources_when_web_dir_path_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(webui_mod, "_WEB_DIR", tmp_path / "missing-web-dir")
+
+    body = webui_mod._load_web_file("index.html")
+
+    assert b"/static/app.js" in body
+
+
+def test_web_ui_loads_index_from_pkgutil_when_traversable_resources_unavailable(tmp_path, monkeypatch):
+    def _missing_resources(_package: str):
+        raise FileNotFoundError("resources unavailable")
+
+    monkeypatch.setattr(webui_mod, "_WEB_DIR", tmp_path / "missing-web-dir")
+    monkeypatch.setattr(webui_mod.resources, "files", _missing_resources)
+
+    body = webui_mod._load_web_file("index.html")
+
+    assert b"/static/app.js" in body
+
+
+def test_web_ui_loads_index_from_installed_binary_sidecar_web_dir(tmp_path, monkeypatch):
+    def _missing_resources(_package: str):
+        raise FileNotFoundError("resources unavailable")
+
+    install_dir = tmp_path / "install-bin"
+    sidecar = install_dir / "web"
+    sidecar.mkdir(parents=True)
+    (sidecar / "index.html").write_bytes(b"<script src=\"/static/app.js\"></script>")
+
+    monkeypatch.setattr(webui_mod, "_WEB_DIR", tmp_path / "missing-web-dir")
+    monkeypatch.setattr(webui_mod.pkgutil, "get_data", lambda _package, _resource: None)
+    monkeypatch.setattr(webui_mod.resources, "files", _missing_resources)
+    monkeypatch.setattr(webui_mod.sys, "executable", str(install_dir / "codepilot.exe"))
+
+    body = webui_mod._load_web_file("index.html")
+
+    assert b"/static/app.js" in body
+
+
+def test_web_ui_resource_loader_rejects_static_path_traversal():
+    with pytest.raises(FileNotFoundError):
+        webui_mod._load_web_file("../pyproject.toml")
+
+
+def test_web_ui_serves_nested_static_package_resources_when_web_dir_path_missing(tmp_path, monkeypatch):
+    class _StaticProbe:
+        sent: tuple[bytes, str] | None = None
+
+        def _send_bytes(self, body: bytes, content_type: str, status=200) -> None:
+            self.sent = (body, content_type)
+
+    monkeypatch.setattr(webui_mod, "_WEB_DIR", tmp_path / "missing-web-dir")
+    probe = _StaticProbe()
+
+    assert webui_mod.DashboardHandler._serve_static(probe, "boundaries/AppStateBoundary.js") is True
+    assert probe.sent is not None
+    assert b"CP.AppStateBoundary" in probe.sent[0]
+    assert probe.sent[1] == "application/javascript; charset=utf-8"
+
 
 def test_task_detail_component_keeps_single_computed_block():
     source = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")
@@ -320,7 +384,7 @@ def test_chat_view_wires_streaming_session_runs_and_stop_action():
     assert "sessionRuns: {}" in app_state
     assert "opencodeRuntime" in app_state
     assert ".session-process-panel" in styles
-    assert ".chat-input-bar.is-streaming" in styles
+    assert ".chat-input-area.is-streaming" in styles
     assert ".runtime-control-bar" in styles
     assert ".embedded-messages" in styles
     assert "overflow-y: auto" in styles

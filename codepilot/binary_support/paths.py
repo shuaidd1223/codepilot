@@ -176,6 +176,10 @@ def _build_command(
     if templates_dir.exists():
         cmd.extend(["--add-data", _pyinstaller_data_arg(templates_dir, "codepilot/templates")])
 
+    web_dir = project_root / "codepilot" / "web"
+    if web_dir.exists():
+        cmd.extend(["--add-data", _pyinstaller_data_arg(web_dir, "codepilot/web")])
+
     cmd.append(str(project_root / "codepilot" / "__main__.py"))
     return cmd
 
@@ -293,4 +297,3 @@ def register_install_dir(directory: str | Path) -> tuple[bool, str]:
     if platform.system().lower() == "windows":
         return _register_windows_path(target)
     return _register_posix_path(target)
-

@@ -182,6 +182,9 @@ def test_binary_build_command_invokes_pyinstaller(tmp_path, monkeypatch):
     (tmp_path / "codepilot" / "__main__.py").write_text("print('ok')\n", encoding="utf-8")
     (tmp_path / "codepilot" / "templates").mkdir()
     (tmp_path / "codepilot" / "templates" / "demo.md").write_text("x", encoding="utf-8")
+    (tmp_path / "codepilot" / "web" / "boundaries").mkdir(parents=True)
+    (tmp_path / "codepilot" / "web" / "index.html").write_text("<html></html>", encoding="utf-8")
+    (tmp_path / "codepilot" / "web" / "boundaries" / "AppStateBoundary.js").write_text("export {};\n", encoding="utf-8")
     dist_dir = tmp_path / "dist-out"
     build_dir = tmp_path / "build-out"
     captured = {}
@@ -210,6 +213,10 @@ def test_binary_build_command_invokes_pyinstaller(tmp_path, monkeypatch):
     assert result.binary_path == (dist_dir / "codepilot").resolve()
     assert "--onefile" in captured["cmd"]
     assert "--collect-all" in captured["cmd"]
+    data_args = [captured["cmd"][idx + 1] for idx, item in enumerate(captured["cmd"]) if item == "--add-data"]
+    assert any(str(tmp_path / "codepilot" / "web") in item and "codepilot/web" in item for item in data_args)
+    assert (dist_dir / "web" / "index.html").read_text(encoding="utf-8") == "<html></html>"
+    assert (dist_dir / "web" / "boundaries" / "AppStateBoundary.js").exists()
 
 
 def test_binary_where_command_prints_default_dir(tmp_path, monkeypatch):
@@ -241,6 +248,10 @@ def test_resolve_release_inputs_uses_dist_binaries_by_default(tmp_path, monkeypa
 def test_create_release_bundle_generates_manifest_checksums_and_archives(tmp_path):
     binary_path = tmp_path / "codepilot.exe"
     binary_path.write_text("binary", encoding="utf-8")
+    source_web_dir = tmp_path / "web" / "boundaries"
+    source_web_dir.mkdir(parents=True)
+    (tmp_path / "web" / "index.html").write_text("<html></html>", encoding="utf-8")
+    (source_web_dir / "AppStateBoundary.js").write_text("export {};\n", encoding="utf-8")
     output_dir = tmp_path / "release"
 
     result = binary_mod.create_release_bundle(
@@ -260,6 +271,8 @@ def test_create_release_bundle_generates_manifest_checksums_and_archives(tmp_pat
     assert len(result.artifacts) == 1
     artifact = result.artifacts[0]
     assert artifact.staged_path.exists()
+    assert (output_dir / "windows-x86_64" / "web" / "index.html").exists()
+    assert (output_dir / "windows-x86_64" / "web" / "boundaries" / "AppStateBoundary.js").exists()
     assert artifact.archive_path.exists()
     assert artifact.archive_format == "zip"
     install_script = output_dir / "windows-x86_64" / "install-codepilot.cmd"
@@ -274,6 +287,9 @@ def test_create_release_bundle_generates_manifest_checksums_and_archives(tmp_pat
     assert artifact.archive_path.name in checksums
     assert "发布说明" in result.guide_path.read_text(encoding="utf-8")
     assert "AI 调用手册" in result.ai_guide_path.read_text(encoding="utf-8")
+    members = binary_mod._read_archive_members(artifact.archive_path, artifact.archive_format)
+    assert "codepilot-1.2.3-windows-x86_64/web/index.html" in members
+    assert "codepilot-1.2.3-windows-x86_64/web/boundaries/AppStateBoundary.js" in members
     assert json.loads(result.ai_manifest_path.read_text(encoding="utf-8"))["name"] == "CodePilot"
     assert "发布摘要" in result.summary_path.read_text(encoding="utf-8")
 
@@ -556,4 +572,3 @@ def test_webui_command_removed_and_points_to_ui():
     assert result.exit_code != 0
     assert "命令 `webui` 已移除" in result.output
     assert "codepilot ui <start|status|logs|stop|restart>" in result.output
-

@@ -97,6 +97,9 @@ def test_binary_install_releases_bundled_vendor_files(tmp_path, monkeypatch):
     source_dir.mkdir(parents=True)
     source = source_dir / "codepilot"
     source.write_text("binary", encoding="utf-8")
+    web_dir = source_dir / "web"
+    web_dir.mkdir()
+    (web_dir / "index.html").write_text("<html></html>", encoding="utf-8")
     vendor_dir = source_dir / "bin" / "vendor"
     vendor_dir.mkdir(parents=True)
     (vendor_dir / "opencode").write_text("opencode-binary", encoding="utf-8")
@@ -136,5 +139,6 @@ def test_binary_install_releases_bundled_vendor_files(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert (target_dir / "codepilot").exists()
+    assert (target_dir / "web" / "index.html").read_text(encoding="utf-8") == "<html></html>"
     assert (target_dir / "vendor" / "opencode").read_text(encoding="utf-8") == "opencode-binary"
     assert (target_dir / "vendor" / "manifest.json").exists()

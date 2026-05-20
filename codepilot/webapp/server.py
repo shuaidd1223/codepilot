@@ -20,13 +20,16 @@ from __future__ import annotations
 
 import json
 import os
+import pkgutil
 import re
+import sys
 import threading
 import webbrowser
+from importlib import resources
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 from urllib.parse import ParseResult, parse_qs, unquote, urlparse
 
@@ -102,15 +105,58 @@ _UI_STARTED_AT = _now_iso()
 _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 
+def _web_asset_parts(rel: str) -> tuple[str, ...]:
+    normalized = str(rel or "").replace("\\", "/").strip("/")
+    path = PurePosixPath(normalized)
+    parts = tuple(part for part in path.parts if part not in {"", "."})
+    if not parts or any(part == ".." for part in parts):
+        raise FileNotFoundError(rel)
+    return parts
+
+
 def _load_web_file(name: str) -> bytes:
-    path = _WEB_DIR / name
-    return path.read_bytes()
+    parts = _web_asset_parts(name)
+    try:
+        packaged = pkgutil.get_data("codepilot", "/".join(("web", *parts)))
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        packaged = None
+    if packaged is not None:
+        return packaged
+    try:
+        return resources.files("codepilot").joinpath("web", *parts).read_bytes()
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        pass
+    for base in _candidate_web_dirs():
+        try:
+            candidate = base.joinpath(*parts).resolve()
+            candidate.relative_to(base.resolve())
+        except (ValueError, OSError):
+            continue
+        if candidate.is_file():
+            return candidate.read_bytes()
+    raise FileNotFoundError(name)
+
+
+def _candidate_web_dirs() -> list[Path]:
+    candidates = [_WEB_DIR]
+    executable = getattr(sys, "executable", "")
+    if executable:
+        executable_dir = Path(executable).resolve().parent
+        candidates.extend([executable_dir / "web", executable_dir / "codepilot" / "web"])
+    bundle_root = getattr(sys, "_MEIPASS", "")
+    if bundle_root:
+        candidates.append(Path(bundle_root).resolve() / "codepilot" / "web")
+    return candidates
 
 
 def _safe_web_path(rel: str) -> Path | None:
     """Resolve *rel* under _WEB_DIR, preventing path traversal."""
     try:
-        candidate = (_WEB_DIR / rel).resolve()
+        parts = _web_asset_parts(rel)
+    except FileNotFoundError:
+        return None
+    try:
+        candidate = _WEB_DIR.joinpath(*parts).resolve()
         base = _WEB_DIR.resolve()
         candidate.relative_to(base)
     except (ValueError, OSError):
@@ -327,11 +373,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send_bytes(body, "text/html; charset=utf-8")
 
     def _serve_static(self, rel: str) -> bool:
-        target = _safe_web_path(rel)
-        if not target:
+        try:
+            body = _load_web_file(rel)
+        except FileNotFoundError:
             return False
-        content_type = _CONTENT_TYPES.get(target.suffix.lower(), "application/octet-stream")
-        self._send_bytes(target.read_bytes(), content_type)
+        suffix = PurePosixPath(str(rel or "").replace("\\", "/")).suffix.lower()
+        content_type = _CONTENT_TYPES.get(suffix, "application/octet-stream")
+        self._send_bytes(body, content_type)
         return True
 
     def _read_json_body(self) -> dict:
@@ -1013,4 +1061,3 @@ def start_ui_server(
         opener = browser_opener or webbrowser.open
         threading.Timer(0.3, lambda: opener(f"http://{bound_host}:{bound_port}/")).start()
     return server
-

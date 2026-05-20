@@ -216,6 +216,7 @@ def _write_release_archive(
     ai_guide_path: Path,
     ai_manifest_path: Path,
     vendor_dir: Path | None = None,
+    web_dir: Path | None = None,
 ) -> None:
     """Create the platform archive with binary, installer, and Chinese guide."""
     if archive_format == "zip":
@@ -228,6 +229,9 @@ def _write_release_archive(
             for vendor_file in _iter_vendor_files(vendor_dir):
                 relative = str(vendor_file.relative_to(vendor_dir)).replace("\\", "/")
                 bundle.write(vendor_file, arcname=f"{folder_name}/bin/vendor/{relative}")
+            for web_file in _iter_tree_files(web_dir):
+                relative = str(web_file.relative_to(web_dir)).replace("\\", "/")
+                bundle.write(web_file, arcname=f"{folder_name}/web/{relative}")
         return
 
     if archive_format == "tar.gz":
@@ -240,15 +244,22 @@ def _write_release_archive(
             for vendor_file in _iter_vendor_files(vendor_dir):
                 relative = str(vendor_file.relative_to(vendor_dir)).replace("\\", "/")
                 bundle.add(vendor_file, arcname=f"{folder_name}/bin/vendor/{relative}")
+            for web_file in _iter_tree_files(web_dir):
+                relative = str(web_file.relative_to(web_dir)).replace("\\", "/")
+                bundle.add(web_file, arcname=f"{folder_name}/web/{relative}")
         return
 
     raise RuntimeError(f"不支持的压缩格式：{archive_format}")
 
 
 def _iter_vendor_files(vendor_dir: Path | None) -> list[Path]:
-    if vendor_dir is None or not vendor_dir.exists():
+    return _iter_tree_files(vendor_dir)
+
+
+def _iter_tree_files(root: Path | None) -> list[Path]:
+    if root is None or not root.exists():
         return []
-    return sorted(path for path in vendor_dir.rglob("*") if path.is_file())
+    return sorted(path for path in root.rglob("*") if path.is_file())
 
 
 def _stage_vendor_bundle(source_path: Path, artifact_dir: Path) -> Path | None:
@@ -261,6 +272,18 @@ def _stage_vendor_bundle(source_path: Path, artifact_dir: Path) -> Path | None:
         shutil.rmtree(staged_vendor_dir)
     shutil.copytree(source_vendor_dir, staged_vendor_dir)
     return staged_vendor_dir
+
+
+def _stage_web_assets(source_path: Path, artifact_dir: Path) -> Path | None:
+    source_web_dir = source_path.parent / "web"
+    if not source_web_dir.exists():
+        return None
+
+    staged_web_dir = artifact_dir / "web"
+    if staged_web_dir.exists():
+        shutil.rmtree(staged_web_dir)
+    shutil.copytree(source_web_dir, staged_web_dir)
+    return staged_web_dir
 
 
 def _read_archive_members(archive_path: Path, archive_format: str) -> set[str]:
@@ -349,10 +372,10 @@ def create_release_bundle(
     guide_path = release_dir / "README.zh-CN.md"
     guide_path.write_text(_release_guide_text(name, release_version, normalized_artifacts), encoding="utf-8")
     ai_guide_path = release_dir / "AI_USAGE.zh-CN.md"
-    ai_guide_path.write_text(ai_guide_markdown(command_name=name), encoding="utf-8")
+    ai_guide_path.write_text(ai_guide_markdown(command_name=name, language="zh-CN"), encoding="utf-8")
     ai_manifest_path = release_dir / "AI_MANIFEST.json"
     ai_manifest_path.write_text(
-        manifest_json(version=release_version, command_name=name, binary_name=name),
+        manifest_json(version=release_version, command_name=name, binary_name=name, language="zh-CN"),
         encoding="utf-8",
     )
 
@@ -366,6 +389,7 @@ def create_release_bundle(
         staged_path = artifact_dir / staged_name
         shutil.copy2(source_path, staged_path)
         vendor_dir = _stage_vendor_bundle(source_path, artifact_dir)
+        web_dir = _stage_web_assets(source_path, artifact_dir)
         script_name = _release_script_name(platform_tag)
         script_path = artifact_dir / script_name
         script_path.write_text(_release_script_text(platform_tag, staged_name), encoding="utf-8", newline="\n")
@@ -385,6 +409,7 @@ def create_release_bundle(
             ai_guide_path=ai_guide_path,
             ai_manifest_path=ai_manifest_path,
             vendor_dir=vendor_dir,
+            web_dir=web_dir,
         )
 
         binary_sha = _sha256_file(staged_path)
@@ -408,6 +433,7 @@ def create_release_bundle(
                 "archive_path": str(archive_path),
                 "archive_format": archive_format,
                 "install_script": str(script_path),
+                "web_assets": str(web_dir) if web_dir else "",
                 "binary_sha256": binary_sha,
                 "archive_sha256": archive_sha,
             }
@@ -524,6 +550,7 @@ def _verify_archive_members(
     archive_format: str,
     staged: Path,
     install_script: Path,
+    web_dir: Path | None = None,
     issues: list[str],
 ) -> None:
     if archive_format == "zip" and archive.suffix.lower() != ".zip":
@@ -545,6 +572,9 @@ def _verify_archive_members(
         f"{folder_name}/AI_USAGE.zh-CN.md",
         f"{folder_name}/AI_MANIFEST.json",
     }
+    for web_file in _iter_tree_files(web_dir):
+        relative = str(web_file.relative_to(web_dir)).replace("\\", "/")
+        expected_members.add(f"{folder_name}/web/{relative}")
     missing = sorted(member for member in expected_members if member not in members)
     if missing:
         issues.append(f"压缩包缺少预期文件: {archive.name} -> {', '.join(missing)}")
@@ -559,6 +589,7 @@ def _verify_archive_file(
     archive_format: str,
     staged: Path,
     install_script: Path,
+    web_dir: Path | None,
     issues: list[str],
 ) -> int:
     if not archive.exists():
@@ -576,6 +607,7 @@ def _verify_archive_file(
         archive_format=archive_format,
         staged=staged,
         install_script=install_script,
+        web_dir=web_dir,
         issues=issues,
     )
     return 1
@@ -591,9 +623,12 @@ def _verify_manifest_artifact(
     staged = Path(artifact.get("staged_path", ""))
     archive = Path(artifact.get("archive_path", ""))
     install_script = Path(artifact.get("install_script", ""))
+    web_dir = Path(artifact.get("web_assets", "")) if artifact.get("web_assets") else None
     for label, path in (("二进制", staged), ("压缩包", archive), ("安装脚本", install_script)):
         if not path.exists():
             issues.append(f"{label}不存在: {path}")
+    if web_dir is not None and not web_dir.exists():
+        issues.append(f"Web 静态资源目录不存在: {web_dir}")
 
     checked_files = 0
     checked_files += _verify_staged_file(
@@ -611,6 +646,7 @@ def _verify_manifest_artifact(
         archive_format=artifact.get("archive_format", ""),
         staged=staged,
         install_script=install_script,
+        web_dir=web_dir,
         issues=issues,
     )
     return checked_files
@@ -650,4 +686,3 @@ def verify_release_bundle(release_dir: str | Path) -> VerificationResult:
         )
 
     return VerificationResult(root, manifest_path, checksum_path, checked_files, issues)
-
