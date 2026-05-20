@@ -231,6 +231,28 @@ def test_binary_build_command_invokes_pyinstaller(tmp_path, monkeypatch):
     assert (dist_dir / "feishu" / "feishu_notify.mjs").exists()
 
 
+def test_binary_build_command_uses_python_when_parent_is_frozen(tmp_path, monkeypatch):
+    project_root = tmp_path
+    dist_dir = tmp_path / "dist-out"
+    build_dir = tmp_path / "build-out"
+    expected_python = r"C:\Python313\python.exe"
+
+    monkeypatch.setattr(binary_paths_mod.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(binary_paths_mod.sys, "executable", r"C:\Users\Admin\bin\codepilot.exe")
+    monkeypatch.delenv("CODEPILOT_BUILD_PYTHON", raising=False)
+    monkeypatch.setattr(binary_paths_mod.shutil, "which", lambda name: expected_python if name == "python" else None)
+
+    cmd = binary_paths_mod._build_command(
+        project_root=project_root,
+        dist_dir=dist_dir,
+        build_dir=build_dir,
+        name="codepilot",
+        clean=True,
+    )
+
+    assert cmd[:3] == [expected_python, "-m", "PyInstaller"]
+
+
 def test_binary_build_fails_when_feishu_runtime_dependencies_missing(tmp_path, monkeypatch):
     (tmp_path / "codepilot").mkdir()
     (tmp_path / "codepilot" / "__main__.py").write_text("print('ok')\n", encoding="utf-8")

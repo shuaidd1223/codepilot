@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -140,6 +141,24 @@ def _pyinstaller_data_arg(source: Path, dest: str) -> str:
     return f"{source}{separator}{dest}"
 
 
+def _build_python_executable() -> str:
+    override = os.environ.get("CODEPILOT_BUILD_PYTHON", "").strip()
+    if override:
+        return override
+
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+
+    candidates = ["python", "python3"]
+    if platform.system().lower() == "windows":
+        candidates.append("py")
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return "python"
+
+
 def _build_command(
     *,
     project_root: Path,
@@ -149,7 +168,7 @@ def _build_command(
     clean: bool,
 ) -> list[str]:
     cmd = [
-        sys.executable,
+        _build_python_executable(),
         "-m",
         "PyInstaller",
         "--noconfirm",
