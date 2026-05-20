@@ -250,16 +250,13 @@ Look at the signals below and surface 0 to {max_tasks} improvement candidates th
 
 [Hard rules]
 - Each candidate MUST cite `evidence` referencing a concrete line/file/commit from the signals. No evidence → drop the candidate yourself; do not emit it.
-- `title` ≤ 40 Chinese characters; `goal` = 2–3 sentences covering "what to do + why".
+- `title` ≤ 80 characters; `goal` = 2–3 sentences covering "what to do + why".
 - Do NOT propose generic items like "补一下文档", "加日志", "通用优化", "重构一下" unless the signal names the exact target.
 - Do NOT repeat anything in the existing-tasks list below.
 - Fill `effort` honestly; prefer `small`/`medium`. If it smells like `large`, split or skip.
 
 [Language rules]
-- Instruction language is English (above).
-- The following output fields MUST be Chinese: `title`, `goal`, `rationale`.
-- The following output fields are fixed vocabulary (English): `priority` ∈ P1–P4, `kind` ∈ enum, `effort` ∈ enum.
-- `evidence` may be Chinese or English, but must point at a signal line.
+{language_rules}
 
 ## 已存在任务（backlog / in-progress）
 {existing_titles}
@@ -532,13 +529,29 @@ def _build_inspection_prompt(
     project_name: str,
     max_new_tasks: int,
     signal_results: list[InspectSignalResult],
+    language: str = "en",
 ) -> str:
     existing = _existing_titles(project_name)
+    if str(language or "en").strip().lower() in {"zh", "zh-cn", "chinese", "中文"}:
+        language_rules = (
+            "- Instruction language is English (above).\n"
+            "- The following output fields MUST be Chinese: `title`, `goal`, `rationale`.\n"
+            "- The following output fields are fixed vocabulary (English): `priority` ∈ P1–P4, `kind` ∈ enum, `effort` ∈ enum.\n"
+            "- `evidence` may be Chinese or English, but must point at a signal line."
+        )
+    else:
+        language_rules = (
+            "- Instruction language is English.\n"
+            "- The following output fields MUST be English: `title`, `goal`, `rationale`.\n"
+            "- The following output fields are fixed vocabulary (English): `priority` ∈ P1–P4, `kind` ∈ enum, `effort` ∈ enum.\n"
+            "- `evidence` must point at a signal line and may quote raw signal text when needed."
+        )
     return INSPECT_PROMPT.format(
         project_name=project_name,
         max_tasks=max_new_tasks,
         existing_titles=existing,
         signal_sections=_render_signal_sections(signal_results),
+        language_rules=language_rules,
     )
 
 
@@ -732,10 +745,12 @@ def run_inspection(
             "note": "本轮所有信号都是空/跳过，不触发 LLM，避免硬规划填充任务。",
         }
 
+    cfg = load_project_config(project_info)
     prompt = _build_inspection_prompt(
         project_name=project_name,
         max_new_tasks=max_new_tasks,
         signal_results=signal_results,
+        language=str(getattr(getattr(cfg, "automation", None), "agent_language", "en") or "en"),
     )
 
     provider_key = ""
@@ -1012,5 +1027,3 @@ def inspect(
         emit_inspection_result_fn=_emit_result_after_stream,
         echo_fn=echo,
     )
-
-

@@ -12,8 +12,8 @@ from codepilot.mcp.launchers import (
     normalize_mcp_servers,
 )
 from codepilot.mcp.launchers.language import (
-    CHINESE_INTERACTION_INSTRUCTIONS,
-    with_chinese_interaction_instructions,
+    interaction_instructions,
+    with_interaction_instructions,
 )
 
 
@@ -24,6 +24,7 @@ def build_launch_plan(
     mcp_servers: Mapping[str, Any] | Iterable[MCPServerSpec] | None = None,
     env: Mapping[str, str] | None = None,
     session: str | None = None,
+    language: str = "en",
 ) -> LaunchPlan:
     config = {"mcpServers": _claude_servers(normalize_mcp_servers(mcp_servers))}
     config_args = ["--mcp-config", json_config_text(config), "--strict-mcp-config"]
@@ -31,7 +32,7 @@ def build_launch_plan(
     base = [executable, *config_args, "--dangerously-skip-permissions"]
     if prompt:
         # Headless one-shot via --print.
-        prompt_text = with_chinese_interaction_instructions(prompt)
+        prompt_text = with_interaction_instructions(prompt, language=language)
         command = [
             *base,
             "-p",
@@ -45,7 +46,7 @@ def build_launch_plan(
         command = [
             *base,
             "--append-system-prompt",
-            CHINESE_INTERACTION_INSTRUCTIONS,
+            interaction_instructions(language),
         ]
         if session_id:
             command.extend(["--resume", session_id])

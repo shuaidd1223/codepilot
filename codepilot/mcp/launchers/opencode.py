@@ -10,7 +10,7 @@ from codepilot.mcp.launchers import (
     LaunchPlan,
     MCPServerSpec,
 )
-from codepilot.opencode.config import OpenCodeConfig
+from codepilot.opencode.config import OpenCodeConfig, default_opencode_config
 from codepilot.opencode.paths import opencode_runtime_config_path
 from codepilot.opencode.profile import build_opencode_profile
 
@@ -24,10 +24,14 @@ def build_launch_plan(
     config_path: str | Path | None = None,
     opencode_config: OpenCodeConfig | None = None,
     session: str | None = None,
+    language: str = "en",
 ) -> LaunchPlan:
     target_path = Path(config_path or opencode_runtime_config_path())
+    effective_config = opencode_config or default_opencode_config()
+    if opencode_config is None or not getattr(effective_config, "agent_language", ""):
+        effective_config.agent_language = language
     profile = build_opencode_profile(
-        opencode_config,
+        effective_config,
         mcp_servers=mcp_servers,
         base_path=target_path.parent,
         config_path=target_path,

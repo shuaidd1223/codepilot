@@ -33,6 +33,8 @@ class TestConfigInit:
 
             assert result.exit_code == 0, result.output
             assert (Path(tmpdir) / "AGENTS.toml").exists()
+            parsed = tomllib.loads((Path(tmpdir) / "AGENTS.toml").read_text(encoding="utf-8"))
+            assert parsed["automation"]["agent_language"] == "en"
 
     def test_config_init_non_interactive_refuses_to_overwrite_existing_config(self):
         """Test config init --non-interactive does not clobber existing config."""
@@ -182,3 +184,21 @@ class TestConfigValidate:
 
             assert result.exit_code == 1
             assert "automation.task_workspace" in result.output
+
+    def test_config_validate_reports_invalid_agent_language(self):
+        """Test config validate reports raw invalid automation.agent_language."""
+        from codepilot.commands.config_cmd import config_group
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "AGENTS.toml"
+            config_path.write_text(
+                '[project]\nname = "demo"\nbase_branch = "main"\n\n'
+                '[automation]\nagent_language = "fr"\n',
+                encoding="utf-8",
+            )
+
+            runner = CliRunner()
+            result = runner.invoke(config_group, ["validate", tmpdir])
+
+            assert result.exit_code == 1
+            assert "automation.agent_language" in result.output

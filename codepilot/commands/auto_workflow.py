@@ -47,10 +47,10 @@ def _normalize_agent_name(value: str) -> str:
     return normalize_agent_name(value)
 
 
-def _build_task_markdown_from_plan(item: dict) -> str:
+def _build_task_markdown_from_plan(item: dict, *, language: str = "en") -> str:
     from codepilot.ai_support.service import build_task_markdown_from_plan
 
-    return build_task_markdown_from_plan(item)
+    return build_task_markdown_from_plan(item, language=language)
 
 
 def _shell():
@@ -590,6 +590,13 @@ def _resolve_planning_mode(project_info: dict) -> bool:
     return bool(not cfg or getattr(cfg.automation, "two_stage_planning", True))
 
 
+def _agent_language_for_project(project_path: str) -> str:
+    cfg = load_project_config(project_path)
+    if cfg and getattr(cfg, "automation", None):
+        return str(getattr(cfg.automation, "agent_language", "en") or "en")
+    return "en"
+
+
 def _list_existing_open_tasks(project_name: str) -> list[dict]:
     return _planning_flow.list_existing_open_tasks(project_name)
 
@@ -647,6 +654,7 @@ def _create_tasks_from_breakdown(
     max_retries: int,
     task_source: str = "user",
 ) -> list[dict]:
+    agent_language = _agent_language_for_project(project_path)
     return _planning_flow.create_tasks_from_breakdown(
         breakdown=breakdown,
         project_name=project_name,
@@ -655,7 +663,7 @@ def _create_tasks_from_breakdown(
         priority=priority,
         max_retries=max_retries,
         task_source=task_source,
-        build_task_markdown_from_plan=_build_task_markdown_from_plan,
+        build_task_markdown_from_plan=lambda item: _build_task_markdown_from_plan(item, language=agent_language),
     )
 
 
@@ -968,4 +976,3 @@ def run_requirement_workflow(
         decision=decision,
         quiet=quiet,
     )
-

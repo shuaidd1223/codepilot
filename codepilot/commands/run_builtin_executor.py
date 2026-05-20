@@ -178,6 +178,11 @@ class _ExecutorContext:
     silence_timeout: int = 0
 
 
+def _agent_language_for_context(ctx: _ExecutorContext) -> str:
+    cfg = load_project_config(ctx.config_ref or ctx.project_path) or AgentsConfig.from_dict({})
+    return str(getattr(cfg.automation, "agent_language", "en") or "en")
+
+
 def _select_builtin_phase_fallback_agent(
     ctx: _ExecutorContext,
     *,
@@ -535,6 +540,7 @@ def _run_builder_round(
         project_path=ctx.project_path,
         review_round=round_num,
         previous_review_feedback=previous_findings,
+        language=_agent_language_for_context(ctx),
     )
     try:
         agent, exit_code, output, started = _run_phase_with_tooling_fallback(
@@ -607,6 +613,7 @@ def _run_reviewer_round(
         review_round=round_num,
         previous_findings=previous_findings,
         changed_files=changed_files,
+        language=_agent_language_for_context(ctx),
     )
     try:
         agent, exit_code, output, started = _run_phase_with_tooling_fallback(

@@ -19,6 +19,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Mapping
 
+from codepilot.core.config import normalize_agent_language
+
 _PROMPTS_DIR = Path(__file__).resolve().parent
 
 
@@ -26,21 +28,26 @@ class PromptNotFoundError(LookupError):
     """Raised when the requested prompt file doesn't exist."""
 
 
-@lru_cache(maxsize=64)
-def _read_prompt_file(name: str) -> str:
-    """Return the raw text of ``codepilot/prompts/<name>.md``.
+@lru_cache(maxsize=128)
+def _read_prompt_file(name: str, language: str = "en") -> str:
+    """Return the raw text of ``codepilot/prompts/<name>.<language>.md``.
 
     The cache means production callers (webui, auto-workflow) pay at most
     one disk read per prompt per process. Tests that need to re-load after
     editing a file on disk can call :func:`clear_cache`.
     """
-    path = _PROMPTS_DIR / f"{name}.md"
+    lang = normalize_agent_language(language)
+    path = _PROMPTS_DIR / f"{name}.{lang}.md"
     if not path.is_file():
-        raise PromptNotFoundError(f"prompt template '{name}.md' not found under {_PROMPTS_DIR}")
+        path = _PROMPTS_DIR / f"{name}.md"
+    if not path.is_file():
+        raise PromptNotFoundError(
+            f"prompt template '{name}.{lang}.md' or '{name}.md' not found under {_PROMPTS_DIR}"
+        )
     return path.read_text(encoding="utf-8")
 
 
-def load_prompt(name: str, /, **kwargs: object) -> str:
+def load_prompt(name: str, /, *, language: str = "en", **kwargs: object) -> str:
     """Load ``name``'s Markdown template, optionally substituting kwargs.
 
     When called with no kwargs, returns the raw file contents verbatim —
@@ -53,7 +60,7 @@ def load_prompt(name: str, /, **kwargs: object) -> str:
     ``format_map`` with a preserving view, so missing keys stay as
     ``{key}`` instead of raising ``KeyError``.
     """
-    template = _read_prompt_file(name)
+    template = _read_prompt_file(name, normalize_agent_language(language))
     if not kwargs:
         return template
     return template.format_map(_PreservingFormat(kwargs))

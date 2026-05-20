@@ -106,6 +106,9 @@ def build_opencode_config_from_agents_config(
     if cfg is None:
         return result
 
+    if getattr(cfg, "automation", None):
+        result.agent_language = str(getattr(cfg.automation, "agent_language", "en") or "en")
+
     _apply_project_permission_config(result, cfg)
 
     selected_provider = _select_default_provider_name(cfg)

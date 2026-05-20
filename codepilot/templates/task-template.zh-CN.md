@@ -1,7 +1,7 @@
 <!--
 Template scaffolding is in English.
 Planner-filled placeholders (title, goal, criteria, notes, builder/reviewer responsibilities, etc.)
-MUST be written in English by default. Use task-template.zh-CN.md for Chinese task content.
+MUST be written in Chinese per task_breakdown.md language rules.
 -->
 
 # {title}

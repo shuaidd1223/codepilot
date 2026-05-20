@@ -3,10 +3,72 @@
 from __future__ import annotations
 
 from codepilot.ai_support.agent_commands import _cmd, normalize_command_name
+from codepilot.core.config import normalize_agent_language
 
-def ai_guide_markdown(*, command_name: str = "codepilot") -> str:
+def ai_guide_markdown(*, command_name: str = "codepilot", language: str = "en") -> str:
     """Return an AI-oriented Markdown guide."""
     command = normalize_command_name(command_name)
+    if normalize_agent_language(language) == "en":
+        return f"""# CodePilot AI Usage Guide
+
+This guide is for other AI agents. For the latest machine-readable command list, use `{_cmd(command, "ai manifest")}`. For this Markdown guide, use `{_cmd(command, "ai guide")}`.
+
+## Core Calling Rules
+
+1. Prefer non-interactive commands.
+2. Prefer `--json` or `{_cmd(command, "ai manifest")}` when structured output is needed.
+3. Submit high-level requirements with `{command} "requirement text"` or `{_cmd(command, 'go "requirement text"')}`.
+4. Treat questions about project status, task counts, completion, failed tasks, running tasks, or service status as Q&A.
+5. `chat`, Web UI sessions, and Feishu free text enter OpenCode + CodePilot MCP and can receive questions, requirements, or operation intent directly.
+6. Use `{_cmd(command, "task ...")}` for task operations.
+7. Use `{_cmd(command, "binary ...")}` for releases.
+8. External AI systems must read `{_cmd(command, "ai template --format json")}` before submitting tasks directly.
+9. Use `clarify` / `plan` explicitly when a deterministic spec or plan artifact is needed.
+
+## Recommended Commands
+
+### Project Setup
+
+```bash
+{_cmd(command, "setup . --dry-run --json")}
+{_cmd(command, "setup .")}
+{_cmd(command, "doctor --project <project-name> --services --json")}
+```
+
+### Submit Requirements
+
+```bash
+{command} "fix task retry logic and add tests"
+{_cmd(command, 'go "fix task retry logic and add tests" -p <project-name>')}
+```
+
+### Status and Evidence
+
+```bash
+{_cmd(command, "status -p <project-name> --json")}
+{_cmd(command, "hud -p <project-name> --preset full --json")}
+{_cmd(command, 'explore -p <project-name> --prompt "find task template" --json')}
+{_cmd(command, "trace -p <project-name> --limit 30 --json")}
+```
+
+### Task Template
+
+If an external AI submits tasks via `add -f tasks.json` / `add -f tasks.md`, it must read the template first:
+
+```bash
+{_cmd(command, "ai template")}
+{_cmd(command, "ai template --format json")}
+{_cmd(command, "ai template --format guide")}
+```
+
+Required rules:
+
+1. Humans should use `{command} "requirement text"` instead of direct `add`.
+2. Each `tasks.json` item must include template-compliant `content`.
+3. Each `tasks.md` section must be a complete task template.
+4. `add -t "title"` and `tasks.txt` call AI to generate content and validate it.
+5. `--no-ai` / `--allow-empty` are removed; empty placeholder tasks are not allowed.
+"""
     return f"""# CodePilot AI 调用手册
 
 这份手册是写给其他 AI / Agent 的静态入口。最新机器可读清单以 `{_cmd(command, "ai manifest")}` 为准，最新 Markdown 手册以 `{_cmd(command, "ai guide")}` 为准。
@@ -459,9 +521,27 @@ retry 123
 """
 
 
-def ai_prompt_text(*, command_name: str = "codepilot") -> str:
+def ai_prompt_text(*, command_name: str = "codepilot", language: str = "en") -> str:
     """Return a compact prompt for another AI to operate CodePilot safely."""
     command = normalize_command_name(command_name)
+    if normalize_agent_language(language) == "en":
+        return (
+            "You are calling CodePilot, a local engineering workflow CLI. Prefer non-interactive commands. "
+            f"Submit requirements directly with `{command} \"requirement text\"`. "
+            "chat, Web UI sessions, and Feishu free text enter OpenCode + CodePilot MCP and can receive questions, requirements, or operation intent directly. "
+            "Treat project status, task counts, completion, failed tasks, running tasks, and service status as Q&A. "
+            f"For failed-task repair loops, prefer `{_cmd(command, 'build-fix -p <project-name> --task-id <task_id> --json')}`. "
+            "If you must submit tasks directly without the planner, provide complete task-template content; "
+            f"read `{_cmd(command, 'ai template --format json')}` first. "
+            "There is no --no-ai / --allow-empty placeholder path; missing sections are rejected. "
+            f"For status use `{_cmd(command, 'status -p <project-name> --json')}`. "
+            f"For one task use `{_cmd(command, 'task show <task_id> --json')}`. "
+            f"For environment checks use `{_cmd(command, 'doctor --json')}`. "
+            f"For troubleshooting use `{_cmd(command, 'task logs <task_id>')}`; stop tasks with `{_cmd(command, 'task stop <task_id>')}`; retry failed tasks with `{_cmd(command, 'task retry <task_id>')}`. "
+            f"For a UI, start `{_cmd(command, 'ui')}`. "
+            f"For release prep, prefer `{_cmd(command, 'binary prepare --version <version>')}`. "
+            f"For the full command list, call `{_cmd(command, 'ai manifest')}`."
+        )
     return (
         "你正在调用 CodePilot 这个本地 CLI。优先使用非交互命令。"
         f"提交需求时直接用 `{command} \"需求文本\"`。"

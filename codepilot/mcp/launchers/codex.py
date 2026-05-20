@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from codepilot.mcp.launchers import LaunchPlan, MCPServerSpec, normalize_mcp_servers
-from codepilot.mcp.launchers.language import with_chinese_interaction_instructions
+from codepilot.mcp.launchers.language import with_interaction_instructions
 
 
 def build_launch_plan(
@@ -20,6 +20,7 @@ def build_launch_plan(
     mcp_servers: Mapping[str, Any] | Iterable[MCPServerSpec] | None = None,
     env: Mapping[str, str] | None = None,
     session: str | None = None,
+    language: str = "en",
 ) -> LaunchPlan:
     servers = normalize_mcp_servers(mcp_servers)
     config = {"mcp_servers": _codex_servers(servers)}
@@ -35,7 +36,7 @@ def build_launch_plan(
             "--ephemeral",
             "--dangerously-bypass-approvals-and-sandbox",
         ]
-        command.append(with_chinese_interaction_instructions(prompt))
+        command.append(with_interaction_instructions(prompt, language=language))
     else:
         # Interactive TUI. Codex has no equivalent of Claude's --append-system-prompt,
         # so Chinese interaction rules are not injected here; users can set their own

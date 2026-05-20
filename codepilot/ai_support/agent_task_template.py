@@ -7,20 +7,72 @@ from pathlib import Path
 from typing import Any
 
 from codepilot.ai_support.agent_commands import _cmd, normalize_command_name
+from codepilot.core.config import normalize_agent_language
 from codepilot.core.task_template import required_task_template_headings
 
 TASK_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "task-template.md"
+TASK_TEMPLATE_ZH_PATH = Path(__file__).resolve().parent.parent / "templates" / "task-template.zh-CN.md"
 
 
-def _task_template_markdown() -> str:
+def _task_template_markdown(*, language: str = "en") -> str:
     """Load the canonical task-template.md content."""
-    return TASK_TEMPLATE_PATH.read_text(encoding="utf-8", errors="replace")
+    path = TASK_TEMPLATE_ZH_PATH if normalize_agent_language(language) == "zh-CN" else TASK_TEMPLATE_PATH
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
-def _task_template_example_content() -> str:
+def _task_template_example_content(*, language: str = "en") -> str:
     """Render an import-ready example from the canonical task template."""
 
-    replacements = {
+    if normalize_agent_language(language) == "en":
+        replacements = {
+            "title": "Stream builder subprocess logs to the Web UI",
+            "agent": "dual",
+            "priority": "P0",
+            "depends_on": "T3",
+            "risk_level": "medium",
+            "scope_budget": "up to 3 files / ~180 LOC",
+            "owner": "unassigned",
+            "goal": "Forward builder subprocess stdout/stderr to progress_bus in real time and keep the Web UI task detail view updated with the latest logs.",
+            "builder_responsibilities": (
+                "- Capture incremental stdout/stderr from the builder subprocess\n"
+                "- Publish log deltas as progress_bus events\n"
+                "- Append live log updates in the Web UI task detail view"
+            ),
+            "not_in_scope": (
+                "- Do not refactor executor scheduling\n"
+                "- Do not modify the task database schema"
+            ),
+            "forbidden": (
+                "- Do not commit secrets, tokens, or local machine path config\n"
+                "- Do not swallow subprocess exit codes or failure exceptions"
+            ),
+            "files": (
+                "- `codepilot/commands/run_live_runner.py`\n"
+                "- `codepilot/core/progress_bus.py`\n"
+                "- `codepilot/web/components/TaskDetail.js`"
+            ),
+            "evidence": "The existing task detail view already depends on progress_bus events; builder subprocess output should enter the Web UI through the same channel.",
+            "notes": (
+                "- Real-time forwarding must avoid blocking subprocess exit\n"
+                "- Failure paths must still preserve the original exit code and error message"
+            ),
+            "criteria": (
+                "- [ ] Builder stdout/stderr are continuously appended in task details while the subprocess runs\n"
+                "- [ ] Subprocess failures still preserve the original exit code and error message"
+            ),
+            "ac_matrix": (
+                "| AC | Command | Expected | Evidence |\n"
+                "| :--- | :--- | :--- | :--- |\n"
+                "| AC1 | `pytest tests/test_run_orchestrator.py -q` | Passes and covers live log events | pytest output |\n"
+                "| AC2 | `pytest tests/test_webui_api.py -q` | Passes and covers task detail refresh | pytest output |"
+            ),
+            "reviewer_responsibilities": (
+                "- Check that log forwarding cannot block subprocess exit\n"
+                "- Check that failure paths still show errors and preserve exit codes"
+            ),
+        }
+    else:
+        replacements = {
         "title": "Builder 子进程日志实时推送",
         "agent": "dual",
         "priority": "P0",
@@ -66,20 +118,21 @@ def _task_template_example_content() -> str:
             "- 检查日志转发不会阻塞子进程退出\n"
             "- 检查失败路径仍能展示错误并保留退出码"
         ),
-    }
-    content = _task_template_markdown()
+        }
+    content = _task_template_markdown(language=language)
     for name, value in replacements.items():
         content = content.replace("{" + name + "}", value)
     return content
 
 
-def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
+def task_template_schema(*, command_name: str = "codepilot", language: str = "en") -> dict[str, Any]:
     """Return a machine-readable description of the task template.
 
     Intended for external AIs that plan tasks themselves and submit finished
     content to CodePilot via `add -f tasks.json`.
     """
     command = normalize_command_name(command_name)
+    lang = normalize_agent_language(language)
     placeholders = [
         {"name": "title", "required": True, "type": "string",
          "description": "任务标题。动宾结构，能准确表达本任务交付物，不要用『优化』『完善』等泛词。",
@@ -137,14 +190,79 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
          "aliases": ["depends_on", "dependsOn"],
          "description": "依赖的 task id 列表，可传数组、逗号分隔字符串或单个整数。"},
     ]
-    batch_example_content = _task_template_example_content()
+    if lang == "en":
+        placeholders = [
+            {"name": "title", "required": True, "type": "string",
+             "description": "Task title. Use a concrete verb-object phrase that names the deliverable; avoid vague words such as optimize or improve.",
+             "example": "Stream builder subprocess stdout to CLI and Web through progress_bus"},
+            {"name": "agent", "required": False, "type": "string", "default": "dual",
+             "description": "Agent identity for execution: builder / reviewer / dual. dual means a builder-reviewer loop.",
+             "example": "dual"},
+            {"name": "priority", "required": False, "type": "string", "default": "P2",
+             "description": "Priority: P0 / P1 / P2 / P3.",
+             "example": "P1"},
+            {"name": "depends_on", "required": False, "type": "string", "default": "none",
+             "description": "Upstream task dependencies such as T1 or T3; use none when there are no dependencies.",
+             "example": "T2"},
+            {"name": "risk_level", "required": False, "type": "string", "default": "unassessed",
+             "description": "Risk level: low / medium / high / unassessed.",
+             "example": "medium"},
+            {"name": "scope_budget", "required": False, "type": "string", "default": "not specified",
+             "description": "Change budget, for example up to 3 files / ~200 LOC.",
+             "example": "up to 2 files / ~120 LOC"},
+            {"name": "owner", "required": False, "type": "string", "default": "unassigned",
+             "description": "Owner; use unassigned when no owner is known."},
+            {"name": "goal", "required": True, "type": "string",
+             "description": "Task goal. One or two sentences explaining what should change into what.",
+             "example": "Emit token and elapsed-time data as heartbeat events for every LLM call."},
+            {"name": "builder_responsibilities", "required": True, "type": "markdown_list",
+             "description": "In Scope: concrete items the builder must complete, written as a markdown list."},
+            {"name": "not_in_scope", "required": True, "type": "markdown_list",
+             "description": "Out of Scope: areas this task must not touch, so the builder does not drift."},
+            {"name": "forbidden", "required": True, "type": "markdown_list",
+             "description": "Hard boundaries: actions that are absolutely forbidden, such as adding migrations or changing public APIs."},
+            {"name": "files", "required": False, "type": "markdown_list",
+             "description": "Files In Scope: files or directories the task may modify."},
+            {"name": "evidence", "required": True, "type": "string",
+             "description": "Planning Evidence: cite recon results, project context, or existing task context. Empty evidence is treated as fabricated planning.",
+             "example": "Recon found ai_gateway_api.py uses blocking calls; progress_bus.py already supports emit(extra=...); no overlapping backlog item exists."},
+            {"name": "notes", "required": False, "type": "string",
+             "description": "Risks & Notes: execution risks and prerequisites."},
+            {"name": "criteria", "required": True, "type": "markdown_list",
+             "description": "Acceptance Criteria: objectively verifiable outcomes."},
+            {"name": "ac_matrix", "required": True, "type": "markdown_table",
+             "description": "Verification Matrix: table mapping each AC to the verification command/action, expected result, and evidence location."},
+            {"name": "reviewer_responsibilities", "required": True, "type": "markdown_list",
+             "description": "Reviewer Checkpoints: concrete items the reviewer must verify."},
+        ]
+        batch_fields = [
+            {"name": "title", "required": True, "type": "string", "description": "Task title; the only required title field."},
+            {"name": "content", "required": True, "type": "string",
+             "aliases": ["body", "description"],
+             "description": "Complete task markdown. When provided, AI content generation is skipped; render it from task-template.md before import."},
+            {"name": "agent", "required": False, "type": "string",
+             "description": "Override the command-line -a value; examples: dual / claude / codex / openai-gpt4o."},
+            {"name": "priority", "required": False, "type": "string",
+             "description": "P0 / P1 / P2 / P3. Default: P2."},
+            {"name": "depends", "required": False, "type": "array|string|int",
+             "aliases": ["depends_on", "dependsOn"],
+             "description": "Dependent task id list; accepts an array, comma-separated string, or single integer."},
+        ]
+    batch_example_content = _task_template_example_content(language=lang)
+    content_language = "Chinese" if lang == "zh-CN" else "English"
     return {
-        "template_path": str(TASK_TEMPLATE_PATH),
-        "template_markdown": _task_template_markdown(),
+        "template_path": str(TASK_TEMPLATE_ZH_PATH if lang == "zh-CN" else TASK_TEMPLATE_PATH),
+        "template_markdown": _task_template_markdown(language=lang),
         "language": {
+            "selected": lang,
+            "supported": ["en", "zh-CN"],
             "scaffolding": "English",
-            "placeholders": "Chinese",
-            "note": "模板骨架保持英文，所有占位符（标题、目标、验收标准、备注、职责等）必须用中文，与 task_breakdown.md 的语言规则一致。",
+            "placeholders": content_language,
+            "note": (
+                "Keep template scaffolding and section headings in English; fill all human-readable placeholders in English."
+                if lang == "en"
+                else "模板骨架保持英文，所有占位符（标题、目标、验收标准、备注、职责等）必须用中文，与 task_breakdown.md 的语言规则一致。"
+            ),
         },
         "placeholders": placeholders,
         "validation": {
@@ -159,12 +277,16 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
             ],
         },
         "batch_import": {
-            "command": _cmd(command, "add -p <项目名> -f <tasks.json|tasks.md|tasks.txt>"),
-            "description": "支持三种格式：JSON 数组（每条带 content）、Markdown 多任务串联、纯文本（每行一个标题，逐条 AI 生成）。所有路径都会做 task-template 合规校验，没有占位通道。",
+            "command": _cmd(command, "add -p <project-name> -f <tasks.json|tasks.md|tasks.txt>") if lang == "en" else _cmd(command, "add -p <项目名> -f <tasks.json|tasks.md|tasks.txt>"),
+            "description": (
+                "Supports JSON arrays with content, Markdown multi-task documents, and plain text titles. Every path validates task-template compliance; there is no placeholder channel."
+                if lang == "en"
+                else "支持三种格式：JSON 数组（每条带 content）、Markdown 多任务串联、纯文本（每行一个标题，逐条 AI 生成）。所有路径都会做 task-template 合规校验，没有占位通道。"
+            ),
             "fields": batch_fields,
             "example": [
                 {
-                    "title": "Builder 子进程日志实时推送",
+                    "title": "Stream builder subprocess logs in real time" if lang == "en" else "Builder 子进程日志实时推送",
                     "priority": "P0",
                     "agent": "dual",
                     "content": batch_example_content,
@@ -175,22 +297,42 @@ def task_template_schema(*, command_name: str = "codepilot") -> dict[str, Any]:
                 "JSON 批量：每条必须自带模板合规 content（按 ai template --format json 给出的 schema），缺章节直接拒绝。",
                 "Markdown 批量：每个任务都是完整 task-template；多个任务之间用 `---` 串联，且分隔线后紧跟下一个一级标题。",
                 "纯文本批量：每行一个标题，CodePilot 逐行调用 --agent 指定的模型生成 content；生成失败或缺章节同样会拒绝整批，绝不静默写入空任务。",
-                "content 中的语言应为中文；模板骨架（章节名）保持英文。",
-                "人工不应直接调 add；要批量管理任务请走 `python -m codepilot \"需求文本\"` 由规划器拆分。",
+                (
+                    f"content must be written in {content_language}; template section headings remain English."
+                    if lang == "en"
+                    else "content 中的语言应为中文；模板骨架（章节名）保持英文。"
+                ),
+                (
+                    "Humans should not call add directly; use `python -m codepilot \"requirement text\"` and let the planner split work."
+                    if lang == "en"
+                    else "人工不应直接调 add；要批量管理任务请走 `python -m codepilot \"需求文本\"` 由规划器拆分。"
+                ),
             ],
         },
         "filling_rules": [
-            "所有占位符内容必须用中文书写，仅模板骨架保留英文。",
-            "goal / criteria / builder_responsibilities 必须具体可验证；避免『尽量』『如果可能』等模糊措辞。",
-            "evidence 留空会被质量门标记为 fabricated planning；即便是从外部 AI 规划，也要填入你获取到的上下文依据。",
-            "risk_level 为『高』时，Reviewer Checkpoints 必须额外列出回滚验证步骤。",
-            "Forbidden / Out of Scope 要明确写出，Reviewer 会据此判定 builder 是否越界。",
+            *(
+                [
+                    "All placeholder content must be written in English; only the template section headings stay fixed.",
+                    "goal / criteria / builder_responsibilities must be concrete and verifiable; avoid vague terms like 'if possible'.",
+                    "Leaving evidence empty is flagged as fabricated planning; include the context basis even when planning externally.",
+                    "When risk_level is high, Reviewer Checkpoints must include rollback verification.",
+                    "Forbidden / Out of Scope must be explicit because reviewers use them to detect scope drift.",
+                ]
+                if lang == "en"
+                else [
+                    "所有占位符内容必须用中文书写，仅模板骨架保留英文。",
+                    "goal / criteria / builder_responsibilities 必须具体可验证；避免『尽量』『如果可能』等模糊措辞。",
+                    "evidence 留空会被质量门标记为 fabricated planning；即便是从外部 AI 规划，也要填入你获取到的上下文依据。",
+                    "risk_level 为『高』时，Reviewer Checkpoints 必须额外列出回滚验证步骤。",
+                    "Forbidden / Out of Scope 要明确写出，Reviewer 会据此判定 builder 是否越界。",
+                ]
+            ),
         ],
         "see_also": [
             _cmd(command, "ai manifest"),
             _cmd(command, "ai guide"),
-            _cmd(command, "add -p <项目名> -f <tasks.json>"),
-            _cmd(command, "add -p <项目名> -f <tasks.md>"),
+            _cmd(command, "add -p <project-name> -f <tasks.json>") if lang == "en" else _cmd(command, "add -p <项目名> -f <tasks.json>"),
+            _cmd(command, "add -p <project-name> -f <tasks.md>") if lang == "en" else _cmd(command, "add -p <项目名> -f <tasks.md>"),
         ],
     }
 
@@ -199,30 +341,36 @@ def task_template_schema_json(
     *,
     indent: int = 2,
     command_name: str = "codepilot",
+    language: str = "en",
 ) -> str:
     """Serialize task_template_schema() as JSON."""
     return json.dumps(
-        task_template_schema(command_name=command_name),
+        task_template_schema(command_name=command_name, language=language),
         ensure_ascii=False,
         indent=indent,
     )
 
 
-def task_template_guide_markdown(*, command_name: str = "codepilot") -> str:
+def task_template_guide_markdown(*, command_name: str = "codepilot", language: str = "en") -> str:
     """Return a Chinese-language filling guide aimed at external AI planners."""
     command = normalize_command_name(command_name)
-    schema = task_template_schema(command_name=command)
+    lang = normalize_agent_language(language)
+    schema = task_template_schema(command_name=command, language=lang)
+    yes = "Yes" if lang == "en" else "是"
+    no = "No" if lang == "en" else "否"
+    example_label = "Example" if lang == "en" else "示例"
+    alias_label = "Aliases" if lang == "en" else "别名"
     placeholder_rows = "\n".join(
-        f"| `{{{item['name']}}}` | {'是' if item.get('required') else '否'} | "
+        f"| `{{{item['name']}}}` | {yes if item.get('required') else no} | "
         f"{item.get('type', '-')} | {item['description']}"
-        + (f"<br/>*示例：{item['example']}*" if item.get('example') else "")
+        + (f"<br/>*{example_label}: {item['example']}*" if item.get('example') else "")
         + " |"
         for item in schema["placeholders"]
     )
     batch_rows = "\n".join(
-        f"| `{item['name']}` | {'是' if item.get('required') else '否'} | "
+        f"| `{item['name']}` | {yes if item.get('required') else no} | "
         f"{item.get('type', '-')} | {item['description']}"
-        + (f"<br/>*别名：{', '.join(item['aliases'])}*" if item.get('aliases') else "")
+        + (f"<br/>*{alias_label}: {', '.join(item['aliases'])}*" if item.get('aliases') else "")
         + " |"
         for item in schema["batch_import"]["fields"]
     )
@@ -230,6 +378,52 @@ def task_template_guide_markdown(*, command_name: str = "codepilot") -> str:
     example_json = json.dumps(
         schema["batch_import"]["example"], ensure_ascii=False, indent=2
     )
+    if lang == "en":
+        return f"""# CodePilot Task Template Filling Guide
+
+This guide is for **external AI planners**. After splitting tasks in your own workflow, render them into a format CodePilot accepts and submit them with `{_cmd(command, 'add -p <project-name> -f <tasks.json>')}`. If each task is already rendered as complete task-template Markdown, use `{_cmd(command, 'add -p <project-name> -f <tasks.md>')}` and separate tasks with `---`.
+
+## Language Rules
+
+- Template scaffolding and section headings stay in English.
+- All placeholder content (title, goal, acceptance criteria, responsibilities, notes, etc.) must be written in English.
+
+## Template Placeholders
+
+Read the full template with `{_cmd(command, 'ai template')}`. Placeholder rules:
+
+| Placeholder | Required | Type | Description |
+| :--- | :--- | :--- | :--- |
+{placeholder_rows}
+
+## Batch Import JSON Format
+
+Use `{_cmd(command, 'add -p <project-name> -f <tasks.json>')}`. The file is an array of objects:
+
+| Field | Required | Type | Description |
+| :--- | :--- | :--- | :--- |
+{batch_rows}
+
+### Minimal Example
+
+```json
+{example_json}
+```
+
+### Notes
+
+{chr(10).join(f"- {note}" for note in schema["batch_import"]["notes"])}
+
+## Filling Rules
+
+{rules}
+
+## Related Commands
+
+- `{_cmd(command, 'ai template')}` — output the raw task-template.md
+- `{_cmd(command, 'ai template --format json')}` — output this machine-readable schema
+- `{_cmd(command, 'ai manifest')}` — complete command list
+"""
     return f"""# CodePilot 任务模板填充指南
 
 这份指南写给**外部 AI 规划器**：你在自己的流程里拆出任务后，按本指南把结果渲染成 CodePilot 可接收的格式，然后用 `{_cmd(command, 'add -p <项目名> -f <tasks.json>')}` 批量投递。若你已经把每条任务渲染成完整 task-template markdown，也可以改用 `{_cmd(command, 'add -p <项目名> -f <tasks.md>')}`，多个任务之间用 `---` 分隔。

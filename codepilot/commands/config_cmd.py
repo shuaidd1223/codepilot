@@ -292,6 +292,7 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
                 min_value=0,
             ),
             "fallback_cli_order": _fallback_cli_order(automation.get("fallback_cli_order")),
+            "agent_language": config_mod.normalize_agent_language(automation.get("agent_language")),
         },
         "inspect": {
             "enabled": _bool(inspect.get("enabled"), False),
@@ -403,6 +404,7 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("automation", "max_review_rounds"): ["Builder/Reviewer 闭环最大轮数；1 等于关闭闭环。"],
     ("automation", "agent_silence_timeout_seconds"): ["CLI 连续无输出多少秒后终止；0 表示关闭保护。"],
     ("automation", "fallback_cli_order"): ["文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。"],
+    ("automation", "agent_language"): ["智能体 prompt / 任务内容 / 输出语言偏好：en 或 zh-CN；默认 en。"],
     ("inspect", "enabled"): ["是否启用 daemon 定时巡检。"],
     ("inspect", "interval_seconds"): ["巡检间隔秒数。"],
     ("inspect", "max_new_tasks_per_round"): ["每轮巡检最多新增候选任务数。"],
@@ -637,6 +639,11 @@ def _raw_config_errors(data: dict[str, Any]) -> list[str]:
         workspace = str(raw_workspace).strip().lower() if isinstance(raw_workspace, str) else ""
         if workspace not in {"direct", "branch", "worktree"}:
             errors.append(f"automation.task_workspace 值无效: {raw_workspace}")
+    if "agent_language" in automation:
+        try:
+            config_mod.normalize_agent_language(automation.get("agent_language"))
+        except config_mod.ConfigError as exc:
+            errors.append(str(exc))
     return errors
 
 
@@ -834,6 +841,7 @@ def init_config(global_mode: bool, path: Path | None, non_interactive: bool) -> 
     data["automation"] = {
         "task_agent": task_agent,
         "task_workspace": task_workspace,
+        "agent_language": "en",
         "auto_execute": auto_execute,
         "auto_commit": True,
         "max_tasks": 5,
@@ -976,7 +984,17 @@ def validate_config(path: Path | None, global_mode: bool, fix: bool) -> None:
     # 2. 验证配置完整性
     console.print("\n[bold]2. 检查配置完整性...[/bold]")
     errors.extend(_raw_config_errors(data))
-    canonical = _canonical_config(data, project_name=config_path.parent.name)
+    try:
+        canonical = _canonical_config(data, project_name=config_path.parent.name)
+    except config_mod.ConfigError as exc:
+        message = str(exc)
+        if message and message not in errors:
+            errors.append(message)
+        safe_data = dict(data)
+        safe_automation = dict(safe_data.get("automation") or {})
+        safe_automation.pop("agent_language", None)
+        safe_data["automation"] = safe_automation
+        canonical = _canonical_config(safe_data, project_name=config_path.parent.name)
 
     # 检查必需字段
     project = canonical.get("project", {})

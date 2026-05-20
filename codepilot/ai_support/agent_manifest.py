@@ -7,22 +7,32 @@ from typing import Any
 
 from codepilot import __version__
 from codepilot.ai_support.agent_commands import _cmd, normalize_command_name
+from codepilot.core.config import normalize_agent_language
 
 def command_manifest(
     *,
     version: str | None = None,
     command_name: str = "codepilot",
     binary_name: str = "codepilot",
+    language: str = "en",
 ) -> dict[str, Any]:
     """Return a machine-readable manifest for other AI tools."""
     command = normalize_command_name(command_name)
     manifest_version = (version or __version__).strip()
     binary = normalize_command_name(binary_name)
+    lang = normalize_agent_language(language)
+    if lang == "en":
+        return _english_command_manifest(command=command, version=manifest_version, binary=binary)
     return {
         "name": "CodePilot",
         "version": manifest_version,
         "command_name": command,
-        "description": "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。",
+        "language": lang,
+        "description": (
+            "Local engineering workflow CLI that turns natural-language requirements into tasks and coordinates planning, execution, review, operations, and release."
+            if lang == "en"
+            else "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。"
+        ),
             "calling_principles": [
                 "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
                 "需要结构化结果时，优先使用 `hud --json`、`status --json`、`task show --json`、`doctor --json`、`task find --json`、`ai manifest`。",
@@ -565,16 +575,105 @@ def command_manifest(
     }
 
 
+def _english_command_manifest(*, command: str, version: str, binary: str) -> dict[str, Any]:
+    project = "<project-name>"
+    return {
+        "name": "CodePilot",
+        "version": version,
+        "command_name": command,
+        "language": "en",
+        "description": "Local engineering workflow CLI that turns natural-language requirements into tasks and coordinates planning, execution, review, operations, and release.",
+        "calling_principles": [
+            "Prefer non-interactive commands and avoid chat mode unless a persistent conversation is explicitly needed.",
+            "When structured output is needed, prefer `hud --json`, `status --json`, `task show --json`, `doctor --json`, `task find --json`, or `ai manifest`.",
+            f"To submit a natural-language requirement, call `{command} \"requirement text\"` or `{command} go \"requirement text\"`.",
+            "Chat, Web UI sessions, and Feishu free text all route through OpenCode + CodePilot MCP; free text may express a question, requirement, or operation intent.",
+            "Call `clarify` / `plan` or MCP tools explicitly when deterministic artifacts are required.",
+            "If the user asks about project state, task counts, completion ratio, failed tasks, running tasks, or service status, treat it as a question and let CodePilot read local task/project data.",
+            f"For release artifacts, prefer `{_cmd(command, 'binary prepare --version <version>')}`.",
+            f"If a task is running, inspect its phase with `{_cmd(command, f'status -p {project} -v')}` before deciding whether to view logs or stop it.",
+            f"If a failed task needs a full repair loop, prefer `{_cmd(command, f'build-fix -p {project} --task-id <task_id> --json')}`; use `{_cmd(command, 'task retry <task_id>')}` only to requeue it.",
+        ],
+        "structured_outputs": [
+            {"command": _cmd(command, "ai manifest"), "format": "json", "purpose": "Return this machine-readable command manifest."},
+            {"command": _cmd(command, "ai guide"), "format": "markdown", "purpose": "Return the AI usage guide."},
+            {"command": _cmd(command, "ai template --format json"), "format": "json", "purpose": "Return task-template fields and batch-import schema."},
+            {"command": _cmd(command, "setup . --dry-run --json"), "format": "json", "purpose": "Preview project setup actions without writing hooks."},
+            {"command": _cmd(command, f'self-update -p {project} --dry-run --json "improvement goal"'), "format": "json", "purpose": "Run self-improvement preflight and planning without creating tasks or changing code."},
+            {"command": _cmd(command, f"status -p {project} --json"), "format": "json", "purpose": "Return project task status and task lists."},
+            {"command": _cmd(command, f"hud -p {project} --preset full --json"), "format": "json", "purpose": "Return queue, running task, recent activity, and service status."},
+            {"command": _cmd(command, "explore --prompt <question> --json"), "format": "json", "purpose": "Read-only project exploration with evidence, sources, and limitations."},
+            {"command": _cmd(command, f"plan -p {project} <requirement> --json"), "format": "json", "purpose": "Create a reviewable plan artifact with risks, verification matrix, and task candidates."},
+            {"command": _cmd(command, f"task find <keyword> -p {project} --json"), "format": "json", "purpose": "Search tasks and return structured matches."},
+            {"command": _cmd(command, "task show <task_id> --json"), "format": "json", "purpose": "Return one task's full metadata, content, errors, delivery record, and log summary."},
+            {"command": _cmd(command, "doctor --json"), "format": "json", "purpose": "Check local environment, CLI tools, configuration, and database health."},
+            {"command": _cmd(command, "event schema --json"), "format": "json", "purpose": "Return CodePilot event types and payload-field contracts."},
+            {"command": _cmd(command, f"hook validate -p {project} --json"), "format": "json", "purpose": "Validate project hook registry and provider-neutral lifecycle events."},
+            {"command": _cmd(command, "exec --provider codex --dry-run --json -- codex --version"), "format": "json", "purpose": "Run provider preflight or command smoke checks in the project context."},
+            {"command": _cmd(command, f"build-fix -p {project} --json"), "format": "json", "purpose": "Run the failed-task repair loop with validation and verdict output."},
+            {"command": _cmd(command, f'skill run ralplan -p {project} --provider codex --input "requirement" --json'), "format": "json", "purpose": "Run an enabled local workflow skill and return structured output."},
+            {"command": _cmd(command, f"wiki query <keyword> -p {project} --json"), "format": "json", "purpose": "Search the local project wiki for durable project knowledge."},
+            {"command": _cmd(command, f"note show -p {project} --json"), "format": "json", "purpose": "Read persistent project working memory."},
+            {"command": _cmd(command, f"trace -p {project} --json"), "format": "json", "purpose": "Return recent project activity across tasks, logs, services, and workflow state."},
+        ],
+        "commands": [
+            {"name": "init", "syntax": _cmd(command, "init <path>"), "purpose": "Initialize a project and generate AGENTS.toml.", "when_to_use": "Use when connecting a repository for the first time.", "examples": [_cmd(command, "init ."), _cmd(command, "init D:\\repo -n demo")]},
+            {"name": "setup", "syntax": _cmd(command, "setup [path] [--name <project-name>] [--dry-run] [--json]"), "purpose": "Prepare project .codepilot state, sync AGENTS.toml, and register the project.", "when_to_use": "Use before installing hooks or when preparing CodePilot project state.", "examples": [_cmd(command, "setup ."), _cmd(command, "setup . --dry-run --json")]},
+            {"name": "self_update", "syntax": _cmd(command, f'self-update -p {project} --dry-run [--provider codex] "improvement goal" [--json]'), "purpose": "Run a project-local self-improvement dry run that collects evidence and produces an upgrade plan without changing code.", "when_to_use": "Use when CodePilot should audit its own project state before creating tasks or making changes.", "examples": [_cmd(command, f'self-update -p {project} --dry-run --json "Improve multi-agent compatibility"')]},
+            {"name": "goal", "syntax": f'{command} "requirement text"', "purpose": "Submit a natural-language requirement for CodePilot to classify, plan, and optionally execute.", "when_to_use": "Use when another AI wants CodePilot to own the implementation workflow.", "examples": [f'{command} "Fix task retry logic and add tests"']},
+            {"name": "go", "syntax": _cmd(command, f"go <requirement-or-question> [--project {project}]"), "purpose": "Explicit natural-language entrypoint for questions, planning, and execution.", "when_to_use": "Use when project/planner/executor options must be explicit.", "examples": [_cmd(command, f'go "How many tasks are complete?" -p {project}'), _cmd(command, f'go "Fix task retry logic and add tests" -p {project}')]},
+            {"name": "chat", "syntax": _cmd(command, f"chat [-p {project}] [-a opencode]"), "purpose": "Start the CodePilot-managed OpenCode TUI with isolated config, MCP, commands, provider/model, and permissions.", "when_to_use": "Use for persistent interactive sessions.", "examples": [_cmd(command, f"chat -p {project} -a opencode")]},
+            {"name": "status", "syntax": _cmd(command, f"status -p {project} [-v|--json]"), "purpose": "Show task overview, running state, and latest output.", "when_to_use": "Use to check backlog, stuck tasks, or active phases.", "examples": [_cmd(command, f"status -p {project} -v"), _cmd(command, f"status -p {project} --json")]},
+            {"name": "hud", "syntax": _cmd(command, f"hud [-p {project}] [--all] [--preset minimal|focused|full] [--watch|--json]"), "purpose": "Show a lightweight workflow HUD with queue, running tasks, activity, and services.", "when_to_use": "Use for quick workspace health checks.", "examples": [_cmd(command, f"hud -p {project} --preset full --json")]},
+            {"name": "task_logs", "syntax": _cmd(command, "task logs <task_id> [--tail N|--full]"), "purpose": "Read real-time or historical task logs.", "when_to_use": "Use for task execution details and error context.", "examples": [_cmd(command, "task logs 7"), _cmd(command, "task logs 7 --tail 50")]},
+            {"name": "task_show", "syntax": _cmd(command, "task show <task_id> [--logs|--json]"), "purpose": "Read full task metadata, content, errors, delivery record, and log summary.", "when_to_use": "Use when the exact task id is known.", "examples": [_cmd(command, "task show 7 --json")]},
+            {"name": "task_retry", "syntax": _cmd(command, "task retry <task_id>"), "purpose": "Reset a failed/cancelled task and put it back into backlog.", "when_to_use": "Use for manual requeueing.", "examples": [_cmd(command, "task retry 7")]},
+            {"name": "task_stop", "syntax": _cmd(command, "task stop <task_id> [-m <reason>]"), "purpose": "Stop a running task.", "when_to_use": "Use when a task is stuck or going in the wrong direction.", "examples": [_cmd(command, 'task stop 7 -m "wrong direction"')]},
+            {"name": "run", "syntax": _cmd(command, f"run -p {project} [--executor builtin|dispatch]"), "purpose": "Execute backlog tasks.", "when_to_use": "Use when tasks already exist and should run now.", "examples": [_cmd(command, f"run -p {project} --executor builtin --no-auto-commit")]},
+            {"name": "build_fix", "syntax": _cmd(command, f"build-fix -p {project} [--task-id <id>] [--verify-command <cmd>] [--json]"), "purpose": "Collect failure context, retry repair, run validation, and produce a verdict.", "when_to_use": "Use when failed tasks need a complete repair loop.", "examples": [_cmd(command, f'build-fix -p {project} --task-id 7 --verify-command "pytest tests/test_x.py -q" --json')]},
+            {"name": "doctor", "syntax": _cmd(command, f"doctor [--project {project}] [--services] [--fix] [--json]"), "purpose": "Check environment, configuration, CLI tools, API keys, database, and services.", "when_to_use": "Use for environment or setup troubleshooting.", "examples": [_cmd(command, "doctor --json"), _cmd(command, "doctor --fix --json")]},
+            {"name": "inspect", "syntax": _cmd(command, f"inspect -p {project} [--once|--status|--stop|--json]"), "purpose": "Inspect project signals and create candidate tasks.", "when_to_use": "Use to discover technical debt, failed-task patterns, and improvement candidates.", "examples": [_cmd(command, f"inspect -p {project} --once")]},
+            {"name": "explore", "syntax": _cmd(command, f"explore --prompt <question> [-p {project}] [--use-wiki|--no-wiki] [--json]"), "purpose": "Read-only exploration of files, Git, task logs, wiki, and inspect signals.", "when_to_use": "Use when planning needs local evidence but should not modify anything.", "examples": [_cmd(command, 'explore --prompt "find task template" --json')]},
+            {"name": "clarify", "syntax": _cmd(command, f"clarify [-p {project}] [--quick|--standard] <requirement> [--json]"), "purpose": "Generate a pre-execution requirement specification artifact.", "when_to_use": "Use when a requirement is still vague but should not create tasks yet.", "examples": [_cmd(command, f'clarify -p {project} "Improve doctor" --json')]},
+            {"name": "plan", "syntax": _cmd(command, f"plan [-p {project}] <requirement> [--from-spec <path>] [--use-wiki|--no-wiki] [--json]"), "purpose": "Generate a reviewable plan artifact with scope, risks, verification matrix, and task candidates.", "when_to_use": "Use when requirements are ready for plan review but should not enter backlog.", "examples": [_cmd(command, f'plan -p {project} "Add explore" --json')]},
+            {"name": "wiki", "syntax": _cmd(command, "wiki <add|list|query|update|delete|refresh|lint|ingest> ..."), "purpose": "Maintain local Markdown project knowledge.", "when_to_use": "Use to record or query build commands, architecture facts, failure modes, and decisions.", "examples": [_cmd(command, f'wiki query -p {project} "build" --json')]},
+            {"name": "note", "syntax": _cmd(command, "note <add|show|prune|clear> ..."), "purpose": "Maintain persistent project working memory.", "when_to_use": "Use to preserve important context across sessions.", "examples": [_cmd(command, f'note add -p {project} "pytest -q is the main validation command"')]},
+            {"name": "trace", "syntax": _cmd(command, f"trace [-p {project}] [--task <task_id>] [--limit N] [--json]"), "purpose": "Show recent activity across task lifecycle, logs, service heartbeats, and workflow state.", "when_to_use": "Use to understand what happened recently.", "examples": [_cmd(command, f"trace -p {project} --limit 30")]},
+            {"name": "ui", "syntax": _cmd(command, "ui [--host 127.0.0.1] [--port 8766] | ui <start|status|logs|stop|restart>"), "purpose": "Run or manage the Web UI.", "when_to_use": "Use for graphical multi-project overview or persistent UI service management.", "examples": [_cmd(command, "ui --no-open --port 8877"), _cmd(command, "ui start")]},
+            {"name": "daemon", "syntax": _cmd(command, f"daemon -p {project} [--status|--stop]"), "purpose": "Continuously poll backlog and execute tasks for a project.", "when_to_use": "Use when tasks should run continuously in the background.", "examples": [_cmd(command, f"daemon -p {project} --status")]},
+            {"name": "event", "syntax": _cmd(command, f"event <schema|list|register|enable|disable|test> [--project {project}] [--json]"), "purpose": "Manage project event sink registry and event schema.", "when_to_use": "Use for hook/event plugin integration.", "examples": [_cmd(command, "event schema --json"), _cmd(command, f"event list -p {project} --json")]},
+            {"name": "hook", "syntax": _cmd(command, f"hook <plan|validate|test|logs|install|uninstall> -p {project} [--json]"), "purpose": "Manage project hook registry and lifecycle event validation.", "when_to_use": "Use to verify hook/event integrations.", "examples": [_cmd(command, f"hook validate -p {project} --json")]},
+            {"name": "exec", "syntax": _cmd(command, f"exec -p {project} --provider codex|claude|gemini|custom [--dry-run] [--json] -- <command...>"), "purpose": "Run provider-neutral command smoke checks with project-local audit events.", "when_to_use": "Use to verify agent CLIs or custom commands in project context.", "examples": [_cmd(command, f"exec -p {project} --provider codex --dry-run --json -- codex --version")]},
+            {"name": "skill", "syntax": _cmd(command, f"skill <list|search|show|enable|disable|run> -p {project} [--json]"), "purpose": "Manage and run local workflow skill catalog entries.", "when_to_use": "Use to discover or run project workflow skills.", "examples": [_cmd(command, f"skill list -p {project} --json")]},
+            {"name": "webhook", "syntax": _cmd(command, "webhook [--host 127.0.0.1] [--port 8765]"), "purpose": "Start the lightweight HTTP webhook service.", "when_to_use": "Use when external systems need to POST tasks or receive status notifications.", "examples": [_cmd(command, "webhook --host 127.0.0.1 --port 8765")]},
+            {"name": "feishu", "syntax": _cmd(command, "feishu <start|status|logs|stop|run|handle-event>"), "purpose": "Manage the Feishu long-connection bot.", "when_to_use": "Use for Feishu status cards, Q&A, task control, and notifications.", "examples": [_cmd(command, "feishu start"), _cmd(command, "feishu status")]},
+            {"name": "binary_prepare", "syntax": _cmd(command, "binary prepare --version <version>"), "purpose": "Update version, build the current platform, generate a release directory, and verify it.", "when_to_use": "Use to prepare a local release package.", "examples": [_cmd(command, "binary prepare --version 0.7.2")]},
+            {"name": "binary_release", "syntax": _cmd(command, "binary release [--build-current] [--artifact platform=path]"), "purpose": "Assemble existing binaries into a standard release directory.", "when_to_use": "Use when preparing artifacts for release.", "examples": [_cmd(command, "binary release --build-current"), _cmd(command, f"binary release --artifact linux-x86_64=dist/binary/linux-x86_64/{binary}")]},
+            {"name": "binary_verify", "syntax": _cmd(command, "binary verify [--release-dir <release-dir>]"), "purpose": "Verify release directory, archives, and checksums.", "when_to_use": "Use before publishing.", "examples": [_cmd(command, "binary verify")]},
+            {"name": "ai_template", "syntax": _cmd(command, "ai template [--format md|json|guide] [--language en|zh-CN]"), "purpose": "Return the task template, machine-readable schema, or filling guide.", "when_to_use": "Use before external AI batch-imports tasks with `add -f`.", "examples": [_cmd(command, "ai template --format json"), _cmd(command, "ai template --format guide --language zh-CN")]},
+        ],
+        "workflows": [
+            {"name": "Submit and execute a new requirement", "steps": [_cmd(command, "setup ."), f'{command} "Implement a requirement"', _cmd(command, f"status -p {project} -v"), _cmd(command, "task show <task_id>"), _cmd(command, "task logs <task_id>")]},
+            {"name": "Use the OpenCode workflow in chat or Feishu", "steps": ["Ask questions directly, such as `How many tasks are done?`.", "Submit requirements as natural language; OpenCode can call CodePilot MCP planning and task tools.", "Use explicit operations like `retry 123` or `tasks failed`, or describe the operation in natural language.", "Call `clarify` / `plan` explicitly when deterministic artifacts are needed."]},
+            {"name": "Debug a running task", "steps": [_cmd(command, f"status -p {project} -v"), _cmd(command, "task show <task_id>"), _cmd(command, "task logs <task_id> --tail 80"), _cmd(command, "task stop <task_id>")]},
+            {"name": "Retry a failed or cancelled task", "steps": [_cmd(command, "task logs <task_id> --tail 80"), _cmd(command, "task retry <task_id>"), _cmd(command, f"run -p {project}")]},
+            {"name": "Prepare a release package", "steps": [_cmd(command, "binary prepare --version <version>"), _cmd(command, "binary verify")]},
+            {"name": "Import externally planned tasks", "steps": [_cmd(command, "ai template --format json"), "# Render tasks.json according to the schema; each item needs complete English task-template markdown in `content`.", _cmd(command, f"add -p {project} -f tasks.json"), _cmd(command, f"status -p {project} -v")]},
+        ],
+    }
+
+
 def manifest_json(
     indent: int = 2,
     *,
     version: str | None = None,
     command_name: str = "codepilot",
     binary_name: str = "codepilot",
+    language: str = "en",
 ) -> str:
     """Serialize the AI command manifest as JSON."""
     return json.dumps(
-        command_manifest(version=version, command_name=command_name, binary_name=binary_name),
+        command_manifest(version=version, command_name=command_name, binary_name=binary_name, language=language),
         ensure_ascii=False,
         indent=indent,
     )

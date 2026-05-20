@@ -93,6 +93,32 @@ def test_build_inspection_prompt_renders_signal_sections_from_unified_model(monk
     assert "## 信号 2：最近失败或取消的任务\n（跳过）" in prompt
 
 
+def test_build_inspection_prompt_defaults_to_english_output_language(monkeypatch):
+    monkeypatch.setattr(inspect_cmd, "_existing_titles", lambda _project: "(none)")
+
+    prompt = inspect_cmd._build_inspection_prompt(
+        project_name="demo",
+        max_new_tasks=2,
+        signal_results=[],
+    )
+
+    assert "The following output fields MUST be English" in prompt
+    assert "The following output fields MUST be Chinese" not in prompt
+
+
+def test_build_inspection_prompt_can_request_chinese_output_language(monkeypatch):
+    monkeypatch.setattr(inspect_cmd, "_existing_titles", lambda _project: "（无）")
+
+    prompt = inspect_cmd._build_inspection_prompt(
+        project_name="demo",
+        max_new_tasks=2,
+        signal_results=[],
+        language="zh-CN",
+    )
+
+    assert "The following output fields MUST be Chinese" in prompt
+
+
 def test_materialize_inspection_output_dry_run_skips_db_write(tmp_path, monkeypatch):
     project = tmp_path / "demo"
     project.mkdir()

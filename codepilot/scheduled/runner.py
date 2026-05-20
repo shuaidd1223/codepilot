@@ -60,6 +60,26 @@ def _build_command(agent: str, prompt: str, commands: dict[str, str] | None) -> 
     return family.name, [cmd, *args], int(provider.timeout or 180)
 
 
+def _configured_agent_language(config: AgentsConfig | None) -> str:
+    if config is not None and getattr(config, "automation", None):
+        return str(getattr(config.automation, "agent_language", "en") or "en")
+    return "en"
+
+
+def _wrap_agent_prompt(prompt: str, *, language: str) -> str:
+    body = str(prompt or "").strip()
+    normalized = str(language or "en").strip().lower()
+    if normalized in {"zh", "zh-cn", "chinese", "中文"}:
+        prefix = "请使用简体中文输出。"
+        if body.startswith(prefix):
+            return body
+        return f"{prefix}\n\n任务：\n{body}" if body else prefix
+    prefix = "Please respond in English."
+    if body.startswith(prefix):
+        return body
+    return f"{prefix}\n\nTask:\n{body}" if body else prefix
+
+
 def _node_modules_path() -> str:
     # Kept local to avoid relying on provider private helpers from this narrow runner.
     return str(Path(os.environ.get("APPDATA", "")) / "npm" / "node_modules")
@@ -171,7 +191,10 @@ def run_agent_job(
     if str(job.get("type") or "") != "agent_job":
         raise ValueError("scheduled runner only accepts agent_job payloads")
 
-    prompt = str(job.get("prompt") or "")
+    prompt = _wrap_agent_prompt(
+        str(job.get("prompt") or ""),
+        language=_configured_agent_language(config),
+    )
     agent, command, default_timeout = _build_command(str(job.get("agent") or ""), prompt, commands)
     timeout = int(timeout_seconds or default_timeout)
     env = _build_env(mcp_servers, agent=agent, config=config)

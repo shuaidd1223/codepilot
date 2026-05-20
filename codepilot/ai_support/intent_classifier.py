@@ -6,8 +6,17 @@ from collections.abc import Callable
 from typing import Optional
 
 from codepilot.ai_support.gateway_options import _resolve_gateway_options
-from codepilot.ai_support.intent_rules import INTENT_PROMPT, INTENT_SCHEMA
+from codepilot.ai_support.intent_rules import INTENT_SCHEMA
+from codepilot.core.config import load_project_config
 from codepilot.gateway.types import GatewayCallOptions
+from codepilot.prompts import load_prompt
+
+
+def _agent_language_for_ref(project_path: str = "", config_ref: str = "") -> str:
+    cfg = load_project_config(config_ref or project_path)
+    if cfg and getattr(cfg, "automation", None):
+        return str(getattr(cfg.automation, "agent_language", "en") or "en")
+    return "en"
 
 
 def classify_intent_with_rules(
@@ -51,8 +60,9 @@ def classify_intent_with_rules(
     from codepilot.core import progress_bus
 
     with progress_bus.llm_context(stage="planner", label="意图分类"):
+        prompt_template = load_prompt("intent", language=_agent_language_for_ref(project_path, config_ref))
         response = call_structured_prompt(
-            prompt=INTENT_PROMPT.format(text=text),
+            prompt=prompt_template.format(text=text),
             schema=INTENT_SCHEMA,
             options=shared_options,
         )

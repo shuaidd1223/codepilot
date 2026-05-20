@@ -68,12 +68,22 @@ def test_repo_ai_manifest_file_stays_in_sync():
 def test_repo_ai_usage_file_stays_in_sync():
     guide_path = Path(__file__).resolve().parents[1] / "AI_USAGE.zh-CN.md"
 
-    assert guide_path.read_text(encoding="utf-8") == ai_guide_markdown()
+    assert guide_path.read_text(encoding="utf-8") == ai_guide_markdown(language="zh-CN")
 
 
 def test_ai_guide_command_outputs_markdown_usage():
     runner = CliRunner()
     result = runner.invoke(main, ["ai", "guide"])
+
+    assert result.exit_code == 0
+    assert "# CodePilot AI Usage Guide" in result.output
+    assert "codepilot status -p <project-name> --json" in result.output
+    assert "codepilot ai manifest" in result.output
+
+
+def test_ai_guide_command_can_output_chinese_markdown_usage():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "guide", "--language", "zh-CN"])
 
     assert result.exit_code == 0
     assert "# CodePilot AI 调用手册" in result.output
@@ -86,8 +96,8 @@ def test_ai_prompt_command_outputs_short_agent_prompt():
     result = runner.invoke(main, ["ai", "prompt"])
 
     assert result.exit_code == 0
-    assert "codepilot \"需求文本\"" in result.output
-    assert "codepilot binary prepare --version <版本号>" in result.output
+    assert "codepilot \"requirement text\"" in result.output
+    assert "codepilot binary prepare --version <version>" in result.output
 
 
 def test_ai_template_default_outputs_raw_markdown():
@@ -108,8 +118,10 @@ def test_ai_template_json_returns_structured_schema():
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert "template_markdown" in payload
+    assert payload["language"]["selected"] == "en"
+    assert payload["language"]["supported"] == ["en", "zh-CN"]
     assert payload["language"]["scaffolding"] == "English"
-    assert payload["language"]["placeholders"] == "Chinese"
+    assert payload["language"]["placeholders"] == "English"
 
     placeholder_names = {item["name"] for item in payload["placeholders"]}
     for required in ("title", "goal", "evidence", "criteria", "ac_matrix"):
@@ -155,14 +167,35 @@ def test_ai_template_json_batch_example_matches_full_template_structure():
             assert f"## {heading}" in content
 
 
-def test_ai_template_guide_renders_chinese_markdown():
+def test_ai_template_guide_renders_english_markdown_by_default():
     runner = CliRunner()
     result = runner.invoke(main, ["ai", "template", "--format", "guide"])
+
+    assert result.exit_code == 0
+    assert "# CodePilot Task Template Filling Guide" in result.output
+    assert "Template Placeholders" in result.output
+    assert "Batch Import JSON Format" in result.output
+
+
+def test_ai_template_guide_can_render_chinese_markdown():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "template", "--format", "guide", "--language", "zh-CN"])
 
     assert result.exit_code == 0
     assert "# CodePilot 任务模板填充指南" in result.output
     assert "模板占位符" in result.output
     assert "批量导入 JSON 格式" in result.output
+
+
+def test_ai_template_json_can_render_chinese_schema():
+    runner = CliRunner()
+    result = runner.invoke(main, ["ai", "template", "--format", "json", "--language", "zh-CN"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["language"]["selected"] == "zh-CN"
+    assert payload["language"]["placeholders"] == "Chinese"
+    assert "Builder 子进程日志实时推送" in payload["batch_import"]["example"][0]["title"]
 
 
 def test_ai_template_command_name_override_propagates():
@@ -193,4 +226,3 @@ def test_manifest_advertises_ai_template_command():
     assert any("hook validate" in cmd for cmd in outputs)
     assert any("skill run" in cmd for cmd in outputs)
     assert any("self-update" in cmd and "--dry-run --json" in cmd for cmd in outputs)
-

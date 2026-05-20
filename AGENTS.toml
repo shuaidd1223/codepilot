@@ -60,6 +60,8 @@ stale_minutes = 30
 [automation]
 # 自然语言需求默认规划智能体。
 planner = "opencode"
+# 智能体消费的任务模板、prompt 和输出语言偏好；支持 en / zh-CN，默认 en。
+agent_language = "en"
 # chat 默认启动的 MCP agent；留空时使用 opencode。
 default_agent = ""
 # 规划出的任务默认执行智能体；显式 --agent / UI 选择会覆盖它。

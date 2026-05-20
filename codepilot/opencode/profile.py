@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from codepilot.core.config import normalize_agent_language
 from codepilot.mcp.launchers import MCPServerSpec, normalize_mcp_servers
 from codepilot.opencode.config import OpenCodeCommandConfig, OpenCodeConfig, default_opencode_config
 from codepilot.opencode.paths import opencode_runtime_root
@@ -42,12 +43,14 @@ def build_opencode_profile(
 
     agent_name = _agent_name(config)
     commands = _commands(config, agent_name)
+    language = normalize_agent_language(getattr(config, "agent_language", "en"))
     # instructions 文件路径解析（OpenCode 源码 packages/opencode/src/session/instruction.ts）：
     # - 相对路径：通过 globUp() 从 CWD（项目根目录）向上搜索，不会到 config 目录下找
     # - 绝对路径：glob(basename, {cwd: dirname}) 直接读取
     # - `~/` 前缀：展开为 $HOME 后按绝对路径处理
     # 所以必须用绝对路径，不能依赖相对 path。
-    instructions_path = str((config_dir / "instructions" / "codepilot.zh-CN.md").resolve())
+    instructions_file = "codepilot.zh-CN.md" if language == "zh-CN" else "codepilot.en.md"
+    instructions_path = str((config_dir / "instructions" / instructions_file).resolve())
     payload: dict[str, Any] = {
         "$schema": OPENCODE_CONFIG_SCHEMA,
         "mcp": _opencode_servers(normalize_mcp_servers(mcp_servers)),
@@ -83,8 +86,9 @@ def build_opencode_profile(
         str(resolved_config_path): _json_text(payload),
         str(tui_path): _json_text(tui_payload),
         str(config_dir / "agents" / f"{agent_name}.md"): _agent_markdown(config, agent_name),
-        str(config_dir / "instructions" / "codepilot.zh-CN.md"): _runtime_instructions_markdown(
-            config.profile.brand_name
+        str(config_dir / "instructions" / instructions_file): _runtime_instructions_markdown(
+            config.profile.brand_name,
+            language=language,
         ),
         str(config_dir / "package.json"): _json_text(_tui_plugin_package()),
         str(config_dir / "tui-plugins" / "codepilot-brand.tsx"): _brand_tui_plugin(config.profile.brand_name),
@@ -115,11 +119,12 @@ def _agent_name(config: OpenCodeConfig) -> str:
 
 
 def _agent_payload(config: OpenCodeConfig, agent_name: str) -> dict[str, Any]:
-    # 语言与展示规则由 instructions 配置文件（codepilot.zh-CN.md）维护，
+    # 语言与展示规则由 instructions 配置文件维护，
     # agent prompt 只保留功能描述，不重复注入语言指令。
-    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name)
+    language = normalize_agent_language(config.agent_language)
+    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name, language=config.agent_language)
     payload: dict[str, Any] = {
-        "description": config.agent.description or f"{config.profile.brand_name} 项目工作流智能体",
+        "description": config.agent.description or _default_agent_description(config.profile.brand_name, language=language),
         "prompt": prompt,
     }
     if config.agent.model:
@@ -128,15 +133,29 @@ def _agent_payload(config: OpenCodeConfig, agent_name: str) -> dict[str, Any]:
 
 
 def _agent_markdown(config: OpenCodeConfig, agent_name: str) -> str:
-    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name)
+    language = normalize_agent_language(config.agent_language)
+    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name, language=config.agent_language)
     return (
         f"# {agent_name}\n\n"
-        f"{config.agent.description or f'{config.profile.brand_name} 项目工作流智能体'}\n\n"
+        f"{config.agent.description or _default_agent_description(config.profile.brand_name, language=language)}\n\n"
         f"{prompt}\n"
     )
 
 
-def _default_agent_prompt(brand_name: str) -> str:
+def _default_agent_description(brand_name: str, *, language: str = "en") -> str:
+    brand = str(brand_name or "CodePilot").strip() or "CodePilot"
+    if normalize_agent_language(language) == "en":
+        return f"{brand} project workflow agent"
+    return f"{brand} 项目工作流智能体"
+
+
+def _default_agent_prompt(brand_name: str, *, language: str = "en") -> str:
+    if normalize_agent_language(language) == "en":
+        return (
+            f"You are {brand_name}, a project workflow agent running inside OpenCode. "
+            "Prefer CodePilot MCP tools for task status, task creation, project inspection, failed-task repair loops, Hook triggers, "
+            "and controlled workflow operations. Use raw shell commands cautiously only when MCP capabilities do not cover the need."
+        )
     return (
         f"你是 {brand_name}，运行在 OpenCode 内的项目工作流智能体。"
         "优先使用 CodePilot MCP 工具查看任务状态、创建任务、巡检项目、执行失败修复闭环、触发 Hook "
@@ -144,7 +163,7 @@ def _default_agent_prompt(brand_name: str) -> str:
     )
 
 
-def _runtime_instructions_content(brand_name: str) -> str:
+def _runtime_instructions_content(brand_name: str, *, language: str = "en") -> str:
     """生成 instructions 配置文件内容。
 
     语言与展示规则通过 OpenCode 配置文件的 ``instructions`` 字段加载，
@@ -152,6 +171,30 @@ def _runtime_instructions_content(brand_name: str) -> str:
     每次模型调用时发送，不受 agent prompt 工程方式的影响。
     """
     brand = str(brand_name or "CodePilot").strip() or "CodePilot"
+    if normalize_agent_language(language) == "en":
+        return (
+            "# Language and Display Rules\n"
+            "\n"
+            "## General\n"
+            f"You are `{brand}`. All interactive output must be written in English. "
+            "Regardless of the language used internally for reasoning, final answers, status notes, "
+            "tool-call explanations, error explanations, permission request reasons, and thinking/reasoning summaries must be English.\n"
+            "\n"
+            "## Thinking / Reasoning\n"
+            "- If OpenCode displays thinking / reasoning / analysis content, output an English summary and do not output Chinese.\n"
+            "- Avoid Chinese headings or sentences in visible reasoning summaries.\n"
+            "\n"
+            "## Output Content\n"
+            "- Code identifiers, commands, file paths, API names, MCP tool names, and raw error codes may remain as-is.\n"
+            "- When requesting permission, explain in English what you will do, why it is needed, and what risk it carries.\n"
+            "\n"
+            "## Paste Hint\n"
+            "If the user asks how to paste into the input box, explain these options:\n"
+            "- `Shift+Insert` — most universal and supported by nearly every terminal\n"
+            "- `Ctrl+Shift+V` — supported by most modern terminals\n"
+            "- Right click — paste in Windows Terminal by default\n"
+            "- `Ctrl+V` requires releasing that shortcut in Windows Terminal settings before OpenCode can receive it"
+        )
     return (
         "# 语言与展示规则\n"
         "\n"
@@ -185,25 +228,29 @@ def _runtime_instructions_content(brand_name: str) -> str:
     )
 
 
-def _runtime_instructions_markdown(brand_name: str) -> str:
-    return f"# {brand_name or 'CodePilot'} 中文交互规则\n\n{_runtime_instructions_content(brand_name)}\n"
+def _runtime_instructions_markdown(brand_name: str, *, language: str = "en") -> str:
+    title = "中文交互规则" if normalize_agent_language(language) == "zh-CN" else "English Interaction Rules"
+    return f"# {brand_name or 'CodePilot'} {title}\n\n{_runtime_instructions_content(brand_name, language=language)}\n"
 
 
 def _commands(config: OpenCodeConfig, agent_name: str) -> dict[str, dict[str, str]]:
-    commands = _default_commands(agent_name)
+    commands = _default_commands(agent_name, language=config.agent_language)
     for name, raw in config.commands.items():
         command_name = str(name).strip()
         if not command_name:
             continue
-        commands[command_name] = _command_payload(raw, agent_name)
+        commands[command_name] = _command_payload(raw, agent_name, language=config.agent_language)
     return commands
 
 
-def _command_payload(raw: OpenCodeCommandConfig, default_agent: str) -> dict[str, str]:
+def _command_payload(raw: OpenCodeCommandConfig, default_agent: str, *, language: str = "en") -> dict[str, str]:
+    english = normalize_agent_language(language) == "en"
     payload = {
-        "description": raw.description or "CodePilot 工作流命令",
+        "description": raw.description or ("CodePilot workflow command" if english else "CodePilot 工作流命令"),
         "template": _with_chinese_command_instruction(
             raw.template or raw.description or "请使用 CodePilot MCP 工具完成这个工作流。"
+        ) if not english else _with_english_command_instruction(
+            raw.template or raw.description or "Use CodePilot MCP tools to complete this workflow."
         ),
         "agent": raw.agent or default_agent,
     }
@@ -222,7 +269,40 @@ def _with_chinese_command_instruction(template: str) -> str:
     return suffix
 
 
-def _default_commands(agent_name: str) -> dict[str, dict[str, str]]:
+def _with_english_command_instruction(template: str) -> str:
+    body = str(template or "").strip()
+    suffix = "Use English throughout; command names, file paths, code identifiers, and raw error codes may remain as-is."
+    if suffix in body:
+        return body
+    if body:
+        return f"{body}\n\n{suffix}"
+    return suffix
+
+
+def _default_commands(agent_name: str, *, language: str = "en") -> dict[str, dict[str, str]]:
+    if normalize_agent_language(language) == "en":
+        return {
+            "Task Status": {
+                "description": "View the current CodePilot task status.",
+                "template": "List current CodePilot tasks and summarize backlog, in-progress, failed, and risky work in English.",
+                "agent": agent_name,
+            },
+            "Create Task": {
+                "description": "Create CodePilot tasks from the current requirement.",
+                "template": "Create CodePilot tasks from the user's requirement. Use English throughout; ask follow-up questions only when critical details are missing.",
+                "agent": agent_name,
+            },
+            "Fix Failed": {
+                "description": "Inspect failed CodePilot tasks and plan the smallest repair.",
+                "template": "Find failed CodePilot tasks, inspect the selected failure reason, and give the smallest controlled repair plan in English.",
+                "agent": agent_name,
+            },
+            "Project Inspect": {
+                "description": "Run a read-only CodePilot project inspection workflow.",
+                "template": "Use CodePilot inspection and context tools to summarize actionable project risks in English without modifying files.",
+                "agent": agent_name,
+            },
+        }
     return {
         "任务状态": {
             "description": "查看当前 CodePilot 任务状态。",

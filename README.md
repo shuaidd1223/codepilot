@@ -190,6 +190,9 @@ codex = "codex"
 opencode = "opencode"
 
 [automation]
+# Agent-facing task templates, prompts, MCP/OpenCode instructions, and preferred model output language.
+# Valid values: en, zh-CN. Default: en.
+agent_language = "en"
 # 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个
 fallback_cli_order = ["claude", "codex", "opencode"]
 
@@ -221,7 +224,7 @@ model = "gpt-5.4"
 - `OPENCODE_CONFIG_DIR`：包含 `agents/codepilot.md`、`commands/*.md`、`instructions/*.md`、`tui-plugins/codepilot-brand.tsx`，用于 OpenCode 原生 agent/command/plugin 发现。
 - `OPENCODE_DISABLE_TERMINAL_TITLE=1`：禁用 OpenCode 自己的终端标题更新，由 CodePilot 把终端窗口/标签标题设置为工具品牌。
 
-OpenCode 套壳品牌、TUI、中文交互规则、默认 agent 和内置 commands 都属于 CodePilot 工具级定制，随包代码发布，不需要业务项目在 `AGENTS.toml` 中配置 `[opencode.*]`。业务项目目录不会生成 `.codepilot/opencode/`；运行时文件只写入用户级 `~/.codepilot/opencode/<项目标识>/`，用来落地项目注册名、MCP 启动命令、隔离会话数据和项目级模型选择。
+OpenCode 套壳品牌、TUI、交互语言规则、默认 agent 和内置 commands 都属于 CodePilot 工具级定制，随包代码发布，不需要业务项目在 `AGENTS.toml` 中配置 `[opencode.*]`。业务项目目录不会生成 `.codepilot/opencode/`；运行时文件只写入用户级 `~/.codepilot/opencode/<项目标识>/`，用来落地项目注册名、MCP 启动命令、隔离会话数据和项目级模型选择。默认注入英文交互规则；如需简体中文 agent 输出，在 `[automation]` 设置 `agent_language = "zh-CN"`。
 
 业务项目只需要配置实际使用的模型供应商和权限策略。例如：
 
@@ -262,7 +265,7 @@ simple_model = "deepseek-v4-flash"
 
 ## 文档导航
 
-- 说明文档：[docs/说明文档.zh-CN.md](docs/说明文档.zh-CN.md)
+- 说明文档：[中文](docs/说明文档.zh-CN.md) / [English](docs/说明文档.en-US.md)
 - 操作文档：[docs/操作文档.zh-CN.md](docs/操作文档.zh-CN.md)
 - AI / Agent 调用手册：[docs/AI与Agent调用手册.zh-CN.md](docs/AI与Agent调用手册.zh-CN.md)
 - Skill 化集成指南：[docs/Skill化集成指南.zh-CN.md](docs/Skill化集成指南.zh-CN.md)

@@ -92,6 +92,39 @@ def test_custom_fallback_cli_order_is_respected():
     assert cfg.automation.fallback_cli_order == ["opencode", "codex"]
 
 
+def test_agent_language_defaults_to_english():
+    cfg = AgentsConfig.from_dict({})
+
+    assert cfg.automation.agent_language == "en"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("en", "en"),
+        ("en-US", "en"),
+        ("english", "en"),
+        ("zh", "zh-CN"),
+        ("zh-CN", "zh-CN"),
+        ("中文", "zh-CN"),
+    ],
+)
+def test_agent_language_aliases_are_normalized(raw: str, expected: str):
+    cfg = AgentsConfig.from_dict({"automation": {"agent_language": raw}})
+
+    assert cfg.automation.agent_language == expected
+
+
+def test_invalid_agent_language_raises_actionable_config_error():
+    with pytest.raises(ConfigError) as excinfo:
+        AgentsConfig.from_dict({"automation": {"agent_language": "fr"}})
+
+    message = str(excinfo.value)
+    assert "automation.agent_language" in message
+    assert "en" in message
+    assert "zh-CN" in message
+
+
 def test_providers_opencode_section_parses_like_other_providers():
     cfg = AgentsConfig.from_dict(
         {

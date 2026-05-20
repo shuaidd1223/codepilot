@@ -39,6 +39,7 @@ DEFAULT_AGENT_COMMANDS: dict[str, str] = {
     "opencode": "cp-opencode",
 }
 DEFAULT_FALLBACK_CLI_ORDER: list[str] = ["claude", "codex", "opencode"]
+SUPPORTED_AGENT_LANGUAGES: tuple[str, ...] = ("en", "zh-CN")
 LEGACY_AGENT_COMMAND_KEYS: tuple[str, ...] = ("codex_cmd", "claude_cmd")
 INTERVAL_PATTERN = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
 INTERVAL_MULTIPLIERS: dict[str, int] = {
@@ -103,6 +104,22 @@ def _parse_fallback_cli_order(raw: object) -> list[str]:
         )
     cleaned = [str(item).strip() for item in raw if str(item or "").strip()]
     return cleaned or list(DEFAULT_FALLBACK_CLI_ORDER)
+
+
+def normalize_agent_language(raw: object = None) -> str:
+    """Normalize the project-level agent prompt/output language."""
+    text = str(raw or "").strip()
+    if not text:
+        return "en"
+    lowered = text.lower().replace("_", "-")
+    if lowered in {"en", "en-us", "english"}:
+        return "en"
+    if lowered in {"zh", "zh-cn", "zh-hans", "chinese", "cn"} or text in {"中文", "简体中文"}:
+        return "zh-CN"
+    raise ConfigError(
+        "automation.agent_language 只支持 en 或 zh-CN；"
+        "可用别名包括 en-US/english、zh/zh-CN/中文。"
+    )
 
 
 def _required_config_text(raw: object, path: str) -> str:
@@ -346,6 +363,8 @@ class AutomationConfig:
     # 文本模式 CLI 兜底顺序：缺失或不可用时按此列表向后退。
     # 默认 ["claude", "codex", "opencode"]，opencode 作为最终兜底（用已配 API key）。
     fallback_cli_order: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_CLI_ORDER))
+    # 智能体 prompt / 任务内容 / 输出语言偏好。仅影响 agent-facing 内容。
+    agent_language: str = "en"
     scheduled_agents: dict[str, ScheduledAgentConfig] = field(default_factory=dict)
     event_agents: dict[str, EventAgentConfig] = field(default_factory=dict)
 
@@ -445,6 +464,7 @@ class AgentsConfig:
         opencode = data.get("opencode", {})
         commands_map = _parse_agent_commands(agents.get("commands"))
         fallback_cli_order = _parse_fallback_cli_order(automation.get("fallback_cli_order"))
+        agent_language = normalize_agent_language(automation.get("agent_language"))
         scheduled_agents = _parse_scheduled_agents(automation.get("scheduled_agents"))
         event_agents = _parse_event_agents(automation.get("event_agents"))
         opencode_permission = _parse_opencode_permission(opencode)
@@ -508,6 +528,7 @@ class AgentsConfig:
                 max_review_rounds=automation.get("max_review_rounds", 2),
                 agent_silence_timeout_seconds=automation.get("agent_silence_timeout_seconds", 0),
                 fallback_cli_order=fallback_cli_order,
+                agent_language=agent_language,
                 scheduled_agents=scheduled_agents,
                 event_agents=event_agents,
             ),
@@ -1141,6 +1162,8 @@ max_review_rounds = 2
 agent_silence_timeout_seconds = 0
 # 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。
 fallback_cli_order = ["claude", "codex", "opencode"]
+# 智能体 prompt / 任务内容 / 输出语言偏好：en 或 zh-CN；默认 en。
+agent_language = "en"
 
 [inspect]
 # 定时巡检配置

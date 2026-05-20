@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from codepilot.core.config import load_project_config
+from codepilot.prompts import load_prompt as _load_prompt
 
 # Re-export everything from companion modules so the public API is unchanged.
 from codepilot.ai_support.providers import (  # noqa: F401 (re-export)
@@ -165,6 +166,14 @@ def resolve_dual_phase_agents(
     return builder_agent, reviewer_agent
 
 
+def agent_language_for_config_ref(config_ref: str | Path | dict | None) -> str:
+    """Return the configured agent-facing language for a project/config ref."""
+    cfg = load_project_config(config_ref) if config_ref else None
+    if cfg and getattr(cfg, "automation", None):
+        return str(getattr(cfg.automation, "agent_language", "en") or "en")
+    return "en"
+
+
 def generate_task_content(
     title: str,
     project_path: str = "",
@@ -197,7 +206,7 @@ def generate_task_content(
         normalize_agent_name=normalize_agent_name,
         check_provider_availability=check_provider_availability,
         collect_project_context=_collect_project_context,
-        task_prompt_template=TASK_PROMPT_TEMPLATE,
+        task_prompt_template=_load_prompt("task_single", language=agent_language_for_config_ref(config_ref or project_path)),
         api_provider_keys=set(API_PROVIDERS.keys()),
         cli_provider_keys=set(CLI_PROVIDERS.keys()),
     )
@@ -484,12 +493,14 @@ def _run_opencode_schema_prompt(
     )
 
 
-def build_task_markdown_from_plan(task: dict) -> str:
+def build_task_markdown_from_plan(task: dict, *, language: str = "en") -> str:
     """Convert a structured plan item into task markdown using task templates."""
+    template_name = "task-template.zh-CN.md" if str(language).lower().startswith("zh") else "task-template.md"
     return _task_planning.build_task_markdown_from_plan(
         task,
         normalize_agent_name=normalize_agent_name,
-        template_path=Path(__file__).resolve().parent.parent / "templates" / "task-template.md",
+        template_path=Path(__file__).resolve().parent.parent / "templates" / template_name,
+        language=language,
     )
 
 
@@ -502,6 +513,7 @@ def _run_recon_stage(
     planner_normalized: str,
     config_ref: str | Path | None,
     project_context: str,
+    language: str = "en",
     progress_prefix: str = "  [recon]",
 ) -> dict:
     """Run the reconnaissance stage: let the planner read the project before planning."""
@@ -513,6 +525,7 @@ def _run_recon_stage(
         planner_normalized=planner_normalized,
         config_ref=config_ref,
         project_context=project_context,
+        language=language,
         progress_prefix=progress_prefix,
         run_claude_schema_prompt=_run_claude_schema_prompt,
         run_codex_schema_prompt=_run_codex_schema_prompt,
@@ -568,6 +581,7 @@ def generate_task_breakdown(
         two_stage=two_stage,
         parse_result=parse_result,
         existing_tasks=existing_tasks,
+        language=agent_language_for_config_ref(config_ref or project_path),
         normalize_agent_name=normalize_agent_name,
         collect_planner_context=collect_planner_context,
         format_existing_block=format_existing_block,
@@ -578,6 +592,3 @@ def generate_task_breakdown(
         run_opencode_schema_prompt=_run_opencode_schema_prompt,
         parse_automation_planner_result_fn=parse_automation_planner_result,
     )
-
-
-

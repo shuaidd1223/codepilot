@@ -47,6 +47,7 @@ def build_mcp_launch_plan(
     opencode_config: Any | None = None,
     session: str | None = None,
     opencode_session: str | None = None,  # deprecated alias
+    language: str = "en",
 ) -> LaunchPlan:
     """Build a dry launch plan for one supported chat agent family."""
     family = get_family(agent)
@@ -68,6 +69,7 @@ def build_mcp_launch_plan(
             mcp_servers=mcp_servers,
             env=env,
             session=effective_session,
+            language=language,
         )
     if family.name == "codex":
         from codepilot.mcp.launchers.codex import build_launch_plan
@@ -78,6 +80,7 @@ def build_mcp_launch_plan(
             mcp_servers=mcp_servers,
             env=env,
             session=effective_session,
+            language=language,
         )
 
     from codepilot.mcp.launchers.opencode import build_launch_plan
@@ -90,6 +93,7 @@ def build_mcp_launch_plan(
         config_path=config_path,
         opencode_config=opencode_config,
         session=effective_session,
+        language=language,
     )
 
 

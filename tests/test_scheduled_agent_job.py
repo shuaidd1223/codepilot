@@ -58,7 +58,7 @@ def test_run_agent_job_builds_headless_commands_for_cli_families(tmp_path: Path)
     assert calls[0]["args"] == [
         "claude-bin",
         "-p",
-        "Check project health.",
+        "Please respond in English.\n\nTask:\nCheck project health.",
         "--output-format",
         "text",
         "--dangerously-skip-permissions",
@@ -69,9 +69,9 @@ def test_run_agent_job_builds_headless_commands_for_cli_families(tmp_path: Path)
         "--ephemeral",
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
-        "Check project health.",
+        "Please respond in English.\n\nTask:\nCheck project health.",
     ]
-    assert calls[2]["args"] == ["opencode-bin", "run", "Check project health."]
+    assert calls[2]["args"] == ["opencode-bin", "run", "Please respond in English.\n\nTask:\nCheck project health."]
     assert [call.get("input") for call in calls] == [None, None, None]
     assert [result.exit_code for result in results] == [0, 0, 0]
     assert results[0].stdout.startswith("done")
@@ -125,6 +125,22 @@ def test_run_agent_job_injects_family_runtime_env_from_config(tmp_path: Path, mo
     )
 
     assert calls[0]["env"]["OPENAI_API_KEY"] == "sk-test"
+
+
+def test_run_agent_job_can_wrap_prompt_for_chinese_agent_language(tmp_path: Path):
+    calls: list[dict[str, Any]] = []
+    cfg = AgentsConfig.from_dict({"automation": {"agent_language": "zh-CN"}})
+
+    run_agent_job(
+        _job("codex"),
+        project_root=tmp_path,
+        dry_run=False,
+        subprocess_run=_fake_run_factory(calls),
+        commands={"codex": "codex-bin"},
+        config=cfg,
+    )
+
+    assert calls[0]["args"][-1] == "请使用简体中文输出。\n\n任务：\nCheck project health."
 
 
 def test_run_agent_job_dry_run_returns_command_without_subprocess(tmp_path: Path):

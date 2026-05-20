@@ -67,6 +67,7 @@ def build_task_markdown_from_plan(
     *,
     normalize_agent_name: Callable[[str], str],
     template_path: Path,
+    language: str = "en",
 ) -> str:
     """Convert a structured plan item into task markdown using task templates."""
 
@@ -86,7 +87,7 @@ def build_task_markdown_from_plan(
     def _ac_matrix(criteria_items: list[str]) -> str:
         rows = [str(item).strip() for item in (criteria_items or []) if str(item).strip()]
         if not rows:
-            rows = ["待补充"]
+            rows = ["待补充" if chinese else "The requested behavior is verified."]
         header = (
             "| AC # | Criterion | Verification Command / Action | Expected Result | Evidence Location |\n"
             "| :--- | :--- | :--- | :--- | :--- |"
@@ -97,29 +98,30 @@ def build_task_markdown_from_plan(
             body_lines.append(f"| AC-{i + 1} | {safe} |  |  |  |")
         return header + "\n" + "\n".join(body_lines)
 
-    title = str(task.get("title") or "").strip() or "未命名任务"
-    goal = str(task.get("goal") or "").strip() or "待补充"
+    chinese = str(language).lower().startswith("zh")
+    title = str(task.get("title") or "").strip() or ("未命名任务" if chinese else "Untitled task")
+    goal = str(task.get("goal") or "").strip() or ("待补充" if chinese else "Complete the requested scoped change.")
     acceptance_items = _coerce_list(task.get("acceptance_criteria"))
-    acceptance = _bullet(acceptance_items, "待补充")
+    acceptance = _bullet(acceptance_items, "待补充" if chinese else "The requested behavior is delivered and verified.")
     ac_matrix = _ac_matrix(acceptance_items)
-    builder_notes = _bullet(_coerce_list(task.get("builder_notes")), "待补充")
-    reviewer_notes = _bullet(_coerce_list(task.get("reviewer_notes")), "待补充")
-    files = _bullet(_coerce_list(task.get("files")), "待确认")
-    notes = _bullet(_coerce_list(task.get("notes")), "无")
-    forbidden = _bullet(_coerce_list(task.get("forbidden")), "不改动任务声明范围外的生产代码；不做无关重构。")
-    not_in_scope = _bullet(_coerce_list(task.get("not_in_scope")), "与本任务目标无关的模块、文档、部署流程。")
+    builder_notes = _bullet(_coerce_list(task.get("builder_notes")), "待补充" if chinese else "Implement only the scoped task requirements.")
+    reviewer_notes = _bullet(_coerce_list(task.get("reviewer_notes")), "待补充" if chinese else "Verify the acceptance criteria and scope boundaries.")
+    files = _bullet(_coerce_list(task.get("files")), "待确认" if chinese else "To be confirmed by implementation.")
+    notes = _bullet(_coerce_list(task.get("notes")), "无" if chinese else "No additional notes.")
+    forbidden = _bullet(_coerce_list(task.get("forbidden")), "不改动任务声明范围外的生产代码；不做无关重构。" if chinese else "Do not modify production code outside the declared task scope; do not perform unrelated refactors.")
+    not_in_scope = _bullet(_coerce_list(task.get("not_in_scope")), "与本任务目标无关的模块、文档、部署流程。" if chinese else "Modules, documentation, deployment flows, or work unrelated to this task goal.")
     priority = str(task.get("priority") or "").strip() or "P2"
-    risk_level = str(task.get("risk_level") or "").strip() or "待评估"
-    scope_budget = str(task.get("scope_budget") or "").strip() or "未设定"
-    owner = str(task.get("owner") or "").strip() or "未指派"
-    evidence = str(task.get("evidence") or "").strip() or "（未提供规划依据，建议人工复核）"
+    risk_level = str(task.get("risk_level") or "").strip() or ("待评估" if chinese else "unassessed")
+    scope_budget = str(task.get("scope_budget") or "").strip() or ("未设定" if chinese else "not specified")
+    owner = str(task.get("owner") or "").strip() or ("未指派" if chinese else "unassigned")
+    evidence = str(task.get("evidence") or "").strip() or ("（未提供规划依据，建议人工复核）" if chinese else "No planning evidence was provided; human review is recommended.")
     dep_indices_raw = task.get("depends_on_indices")
     dep_indices = (
         [i for i in dep_indices_raw if isinstance(i, int) and i >= 0]
         if isinstance(dep_indices_raw, list)
         else []
     )
-    depends_on = "无" if not dep_indices else ", ".join(f"T{idx + 1}" for idx in dep_indices)
+    depends_on = ("无" if chinese else "none") if not dep_indices else ", ".join(f"T{idx + 1}" for idx in dep_indices)
 
     normalized_agent = normalize_agent_name(str(task.get("agent") or "dual"))
     template_text = template_path.read_text(encoding="utf-8", errors="replace")
@@ -156,6 +158,7 @@ def run_recon_stage(
     planner_normalized: str,
     config_ref: str | Path | None,
     project_context: str,
+    language: str = "en",
     progress_prefix: str = "  [recon]",
     run_claude_schema_prompt: Callable[..., dict],
     run_codex_schema_prompt: Callable[..., dict],
@@ -164,9 +167,10 @@ def run_recon_stage(
     get_progress_callback: Callable[[], Callable[[str], None] | None],
 ) -> dict:
     """Run reconnaissance before the planning stage."""
-    from codepilot.ai_support.prompts import RECON_PROMPT_TEMPLATE, RECON_SCHEMA
+    from codepilot.ai_support.prompts import RECON_SCHEMA
+    from codepilot.prompts import load_prompt
 
-    prompt = RECON_PROMPT_TEMPLATE.format(
+    prompt = load_prompt("task_recon", language=language).format(
         title=title,
         project_context=project_context or "(No project context; inspect via tools.)",
     )
@@ -289,6 +293,7 @@ def generate_task_breakdown(
     two_stage: bool = True,
     parse_result: bool = True,
     existing_tasks: Optional[list[dict]] = None,
+    language: str = "en",
     normalize_agent_name: Callable[[str], str],
     collect_planner_context: Callable[[str, str], str],
     format_existing_block: Callable[[Optional[list[dict]]], str],
@@ -300,7 +305,8 @@ def generate_task_breakdown(
     parse_automation_planner_result_fn: Callable[..., dict],
 ) -> dict:
     """Generate a structured subtask breakdown for a high-level goal."""
-    from codepilot.ai_support.prompts import TASK_BREAKDOWN_PROMPT_TEMPLATE, TASK_BREAKDOWN_SCHEMA
+    from codepilot.ai_support.prompts import TASK_BREAKDOWN_SCHEMA
+    from codepilot.prompts import load_prompt
 
     max_tasks = max(1, min(max_tasks, 8))
     normalized = normalize_agent_name(planner)
@@ -314,11 +320,12 @@ def generate_task_breakdown(
             planner_normalized=normalized,
             config_ref=config_ref,
             project_context=context,
+            language=language,
         )
 
     recon_block = format_recon_block_fn(recon)
     existing_block = format_existing_block(existing_tasks)
-    prompt = TASK_BREAKDOWN_PROMPT_TEMPLATE.format(
+    prompt = load_prompt("task_breakdown", language=language).format(
         title=title,
         project_context=context or "(Context collection failed; plan from requirement only.)",
         recon_block=recon_block,

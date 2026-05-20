@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from codepilot.mcp.launchers.language import CHINESE_INTERACTION_INSTRUCTIONS
+from codepilot.mcp.launchers.language import (
+    CHINESE_INTERACTION_INSTRUCTIONS,
+    ENGLISH_INTERACTION_INSTRUCTIONS,
+)
 from codepilot.mcp.launchers import UnsupportedAgentError, build_mcp_launch_plan
 
 
@@ -36,7 +39,7 @@ def test_claude_launcher_injects_mcp_config_with_cli_flag(tmp_path: Path):
         "--strict-mcp-config",
         "--dangerously-skip-permissions",
         "-p",
-        f"{CHINESE_INTERACTION_INSTRUCTIONS}\n\n用户请求：\nCheck project health.",
+            f"{ENGLISH_INTERACTION_INSTRUCTIONS}\n\nUser request:\nCheck project health.",
         "--output-format",
         "text",
     ]
@@ -68,7 +71,7 @@ def test_claude_launcher_without_prompt_starts_interactive_tui(tmp_path: Path):
         "--strict-mcp-config",
         "--dangerously-skip-permissions",
         "--append-system-prompt",
-        CHINESE_INTERACTION_INSTRUCTIONS,
+        ENGLISH_INTERACTION_INSTRUCTIONS,
     ]
     assert "-p" not in plan.command
 
@@ -110,7 +113,7 @@ def test_codex_launcher_injects_mcp_servers_with_config_overrides(tmp_path: Path
         "--ephemeral",
         "--dangerously-bypass-approvals-and-sandbox",
     ]
-    assert plan.command[-1] == f"{CHINESE_INTERACTION_INSTRUCTIONS}\n\n用户请求：\nCheck project health."
+    assert plan.command[-1] == f"{ENGLISH_INTERACTION_INSTRUCTIONS}\n\nUser request:\nCheck project health."
     assert plan.mcp_config == {
         "mcp_servers": {
             "filesystem": {
@@ -323,7 +326,27 @@ def test_opencode_launcher_without_mcp_still_uses_config_file():
     payload = json.loads(plan.config_files[config_path])
     assert payload["mcp"] == {}
     assert payload["default_agent"] == "codepilot"
-    assert "任务状态" in payload["command"]
+    assert "Task Status" in payload["command"]
+
+
+def test_mcp_launchers_can_inject_chinese_interaction_rules(tmp_path: Path):
+    claude = build_mcp_launch_plan(
+        "claude",
+        executable="claude-bin",
+        prompt="Check project health.",
+        mcp_servers=_server(tmp_path),
+        language="zh-CN",
+    )
+    codex = build_mcp_launch_plan(
+        "codex",
+        executable="codex-bin",
+        prompt="Check project health.",
+        mcp_servers=_server(tmp_path),
+        language="zh-CN",
+    )
+
+    assert claude.command[-3] == f"{CHINESE_INTERACTION_INSTRUCTIONS}\n\n用户请求：\nCheck project health."
+    assert codex.command[-1] == f"{CHINESE_INTERACTION_INSTRUCTIONS}\n\n用户请求：\nCheck project health."
 
 
 def test_launcher_rejects_unknown_agent_name(tmp_path: Path):
