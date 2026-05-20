@@ -62,7 +62,8 @@ def _usage_stats_from_service_state() -> dict:
                 "updated_at": str(meta.get("updated_at") or state.get("updated_at") or ""),
                 "by_model": meta.get("by_model") if isinstance(meta.get("by_model"), dict) else {},
             }
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 读取 ai_usage 状态失败时使用已收集的数据
         return out
     return out
 
@@ -82,7 +83,8 @@ def _provider_availability_from_service_state() -> dict:
                 "source": str(meta.get("source") or ""),
                 "updated_at": str(meta.get("updated_at") or state.get("updated_at") or ""),
             }
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 读取 ai_provider 状态失败时使用已收集的数据
         return out
     return out
 
@@ -167,7 +169,8 @@ def daemon_health_payload(project: str | None = None, *, stale_after_seconds: in
         out["project"] = str(meta.get("project") or state.get("scope") or "")
         try:
             db_pid = int(state.get("pid") or 0)
-        except Exception:
+        except (ValueError, TypeError):
+            # pid 无法转换为整数时默认为 0
             db_pid = 0
         if db_pid:
             out["pid"] = db_pid
@@ -241,12 +244,14 @@ def project_summary(project: dict, *, job_count: int | None = None) -> dict:
     try:
         from codepilot.commands.daemon import daemon_service_status
         daemon_status = daemon_service_status(project["name"])
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 获取 daemon 状态失败时使用默认状态
         daemon_status = {"running": False, "pid": 0, "project": project["name"], "log": ""}
     try:
         from codepilot.commands.inspect import inspect_service_status
         inspect_status = inspect_service_status(project["name"])
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # 获取 inspect 状态失败时使用默认状态
         inspect_status = {"running": False, "pid": 0, "project": project["name"], "log": ""}
     return {
         "name": project["name"],
@@ -290,7 +295,8 @@ def dashboard_payload(selected_project: str | None = None) -> dict:
         tasks_by_project[name] = [_task_payload(task) for task in raw_tasks]
         try:
             jobs_by_project[name] = shell.list_ui_jobs(name)
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # 获取 jobs 失败时使用空列表
             jobs_by_project[name] = []
 
     projects = [

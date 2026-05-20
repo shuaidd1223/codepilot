@@ -63,6 +63,25 @@ codepilot task archive <task_id>
 codepilot task rm <task_id>
 ```
 
+### 配置管理
+
+```bash
+# 交互式初始化配置文件
+codepilot config init
+codepilot config init --global
+codepilot config init --path /path/to/project
+
+# 验证配置文件
+codepilot config validate
+codepilot config validate --global
+codepilot config validate --fix
+
+# 同步配置文件（补默认项、移除未知项）
+codepilot config sync
+codepilot config sync --global
+codepilot config sync --dry-run
+```
+
 ### 队列、服务与排障
 
 ```bash
