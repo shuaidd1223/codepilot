@@ -51,9 +51,24 @@ def test_feishu_worker_sends_processing_feedback():
 
     # sendReply 现在应返回 message_id
     assert "return res?.data?.message_id || null" in content, "sendReply 应返回 message_id"
-    # updateReply 使用 client.im.message.update 更新已有消息
+    # updateReply 使用 client.im.message.patch 更新交互卡片；update 只支持文本/富文本。
     assert "async function updateReply" in content, "worker 必须包含 updateReply 函数"
-    assert "client.im.message.update" in content, "updateReply 应调用 im.message.update API"
+    assert "client.im.message.patch" in content, "updateReply 应调用 im.message.patch API"
+
+
+def test_feishu_worker_patches_interactive_cards_instead_of_text_update():
+    """处理中卡片是 interactive，不能用只支持文本/富文本的 update 接口。"""
+    worker_path = Path(__file__).resolve().parents[1] / "codepilot" / "feishu_worker.mjs"
+    content = worker_path.read_text(encoding="utf-8")
+
+    update_start = content.index("async function updateReply")
+    update_body = content[update_start:content.index("\nconst dispatcher", update_start)]
+
+    assert "client.im.message.patch" in update_body
+    assert "data: {" in update_body
+    assert "content: JSON.stringify(card)" in update_body
+    assert "msg_type: 'interactive'" not in update_body
+    assert "client.im.message.update" not in update_body
 
 
 def test_feishu_worker_sends_processing_feedback_before_python():

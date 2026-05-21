@@ -14,262 +14,27 @@ import sys
 import time
 import json
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 import urllib.request
 
 from codepilot.ai_support.planner_context import collect_planner_context
-from codepilot.ai_support.provider_adapters import build_api_client
+from codepilot.ai_support.provider_adapters import (
+    ANTHROPIC_AVAILABLE as ANTHROPIC_AVAILABLE,
+    OPENAI_AVAILABLE as OPENAI_AVAILABLE,
+)
+from codepilot.ai_support.provider_registry import (
+    API_PROVIDERS,
+    APIProvider,
+    CLI_COMMAND_ENV_VARS,
+    CLI_PROVIDERS,
+    CLIProvider,
+    _resolve_api_provider_from_registry,
+)
 from codepilot.core.config import load_project_config
 from codepilot.core.text_decode import decode_subprocess_text
-
-
-@dataclass
-class CLIProvider:
-    """命令行 AI Provider 配置."""
-    name: str
-    cmd: str  # 命令名或完整路径
-    args_template: list[str] = field(default_factory=list)  # 如 ["-p", "{prompt}"]
-    env_prepend: dict = field(default_factory=dict)  # 额外的环境变量
-    timeout: int = 180
-
-    def find_executable(self) -> Optional[Path]:
-        """查找可执行文件."""
-        # 完整路径
-        if Path(self.cmd).exists():
-            return Path(self.cmd)
-        # PATH 中查找
-        found = shutil.which(self.cmd)
-        return Path(found) if found else None
-
-
-@dataclass
-class APIProvider:
-    """API AI Provider 配置."""
-    name: str
-    provider_type: str  # "openai" | "anthropic" | "custom"
-    model: str
-    api_key: str = ""
-    base_url: str = ""  # 自定义 API 端点
-    max_tokens: int = 4096
-    temperature: float = 0.7
-    api_env_vars: tuple[str, ...] = ()
-    usage_key: str = ""
-    auto_model_selection: bool = False
-    simple_model: str = ""
-    complex_model: str = ""
-    thinking: str = ""  # "", "auto", "enabled", "disabled"
-    reasoning_effort: str = ""  # "", "auto", "high", "max"
-    balance_endpoint: str = ""
-
-    def requires_api_key(self) -> bool:
-        """Whether this provider needs an API key."""
-        if self.base_url.startswith(("http://localhost", "http://127.0.0.1")):
-            return False
-        return True
-
-    def resolve_api_key(self) -> str:
-        """Resolve API key from explicit config or supported environment variables."""
-        if self.api_key:
-            return self.api_key
-        for env_var in self.api_env_vars:
-            value = os.environ.get(env_var, "").strip()
-            if value:
-                return value
-        if not self.requires_api_key():
-            return "local-provider"
-        return ""
-
-    def build_client(self):
-        """构建 API 客户端."""
-        return build_api_client(self)
-
-
-
-# CLI Providers（命令行方式）
-CLI_PROVIDERS: dict[str, CLIProvider] = {
-    # Claude Code CLI（官方）
-    "claude": CLIProvider(
-        name="Claude Code",
-        cmd="claude",
-        args_template=["-p", "{prompt}", "--output-format", "text", "--dangerously-skip-permissions"],
-        timeout=180,
-    ),
-    # Claude Code via Node.js（Windows 兼容）
-    "claude-node": CLIProvider(
-        name="Claude Code (Node)",
-        cmd="node",
-        args_template=[
-            "{node_modules}/@anthropic-ai/claude-code/cli.js",
-            "-p", "{prompt}", "--output-format", "text", "--dangerously-skip-permissions"
-        ],
-        timeout=180,
-    ),
-    # OpenAI Codex CLI
-    "codex": CLIProvider(
-        name="OpenAI Codex",
-        cmd="codex",
-        args_template=[
-            "exec", "--ephemeral", "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "{prompt}",
-        ],
-        timeout=180,
-    ),
-    # OpenCode CLI (sst/opencode) — provider-agnostic; backend selected by env vars
-    # injected via codepilot.ai_support.opencode_runtime when invoked.
-    "opencode": CLIProvider(
-        name="OpenCode",
-        cmd="opencode",
-        args_template=["run", "{prompt}"],
-        timeout=180,
-    ),
-    # Google Gemini CLI（如果有）
-    "gemini": CLIProvider(
-        name="Google Gemini CLI",
-        cmd="gemini",
-        args_template=["-p", "{prompt}"],
-        timeout=180,
-    ),
-    # 腾讯云 Cloud CLI
-    "cloud": CLIProvider(
-        name="Tencent Cloud CLI",
-        cmd="cloud",
-        args_template=["-p", "{prompt}"],
-        timeout=180,
-    ),
-}
-
-# API Providers（API 接口方式）
-API_PROVIDERS: dict[str, APIProvider] = {
-    # OpenAI GPT 系列
-    "openai-gpt4": APIProvider(
-        name="OpenAI GPT-4",
-        provider_type="openai",
-        model="gpt-4-turbo-preview",
-        max_tokens=4096,
-        api_env_vars=("OPENAI_API_KEY",),
-    ),
-    "openai-gpt4o": APIProvider(
-        name="OpenAI GPT-4o",
-        provider_type="openai",
-        model="gpt-4o",
-        max_tokens=4096,
-        api_env_vars=("OPENAI_API_KEY",),
-    ),
-    "openai-gpt35": APIProvider(
-        name="OpenAI GPT-3.5 Turbo",
-        provider_type="openai",
-        model="gpt-3.5-turbo",
-        max_tokens=2048,
-        api_env_vars=("OPENAI_API_KEY",),
-    ),
-    # Claude via API
-    "claude-opus": APIProvider(
-        name="Claude 3 Opus",
-        provider_type="anthropic",
-        model="claude-opus-4-20241120",
-        max_tokens=4096,
-        api_env_vars=("ANTHROPIC_API_KEY",),
-    ),
-    "claude-sonnet": APIProvider(
-        name="Claude 3.5 Sonnet",
-        provider_type="anthropic",
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
-        api_env_vars=("ANTHROPIC_API_KEY",),
-    ),
-    "claude-haiku": APIProvider(
-        name="Claude 3 Haiku",
-        provider_type="anthropic",
-        model="claude-3-5-haiku-20240307",
-        max_tokens=2048,
-        api_env_vars=("ANTHROPIC_API_KEY",),
-    ),
-    # 腾讯云混元大模型
-    "hunyuan": APIProvider(
-        name="腾讯云混元",
-        provider_type="openai",  # 混元兼容 OpenAI 格式
-        model="hunyuan",
-        base_url="https://hunyuan.cloud.tencent.com",
-        max_tokens=4096,
-        api_env_vars=("HUNYUAN_API_KEY",),
-    ),
-    # 智谱 GLM
-    "zhipu-glm4": APIProvider(
-        name="智谱 GLM-4",
-        provider_type="openai",
-        model="glm-4",
-        base_url="https://open.bigmodel.cn/api/paas/v4",
-        max_tokens=4096,
-        api_env_vars=("ZHIPU_API_KEY",),
-    ),
-    # 百度文心一言
-    "wenxin": APIProvider(
-        name="百度文心一言",
-        provider_type="openai",
-        model="ernie-4.0-8k-latest",
-        base_url="https://qianfan.baidubce.com/v2",
-        max_tokens=4096,
-        api_env_vars=("ERNIE_API_KEY",),
-    ),
-    # 阿里通义千问
-    "qwen": APIProvider(
-        name="阿里通义千问",
-        provider_type="openai",
-        model="qwen-plus",
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        max_tokens=4096,
-        api_env_vars=("DASHSCOPE_API_KEY",),
-    ),
-    # DeepSeek
-    "deepseek": APIProvider(
-        name="DeepSeek",
-        provider_type="openai",
-        model="",
-        base_url="https://api.deepseek.com",
-        max_tokens=8192,
-        api_env_vars=("DEEPSEEK_API_KEY",),
-        usage_key="deepseek",
-        auto_model_selection=True,
-        simple_model="deepseek-v4-flash",
-        complex_model="deepseek-v4-pro",
-        thinking="auto",
-        reasoning_effort="auto",
-        balance_endpoint="/user/balance",
-    ),
-    # 本地 Ollama
-    "ollama": APIProvider(
-        name="Ollama (本地)",
-        provider_type="openai",
-        model="llama3",
-        base_url="http://localhost:11434/v1",
-        max_tokens=4096,
-        api_env_vars=(),
-    ),
-    # Groq（免费高配额）
-    "groq": APIProvider(
-        name="Groq",
-        provider_type="openai",
-        model="llama-3.1-70b-versatile",
-        base_url="https://api.groq.com/openai/v1",
-        max_tokens=4096,
-        api_env_vars=("GROQ_API_KEY",),
-    ),
-}
-
-
-# Built dynamically from the family registry so adding a new family in
-# cli_families.py automatically wires its env-var override here.
-def _build_cli_command_env_vars() -> dict[str, str]:
-    from codepilot.ai_support.cli_families import CLI_FAMILIES
-
-    return {family.name: family.env_var for family in CLI_FAMILIES.values()}
-
-
-CLI_COMMAND_ENV_VARS: dict[str, str] = _build_cli_command_env_vars()
 
 
 def resolve_api_provider(
@@ -278,36 +43,15 @@ def resolve_api_provider(
     *,
     config_file: str | Path | None = None,
 ) -> APIProvider:
-    """Return an API provider with AGENTS.toml overrides applied."""
-    if provider_key not in API_PROVIDERS:
-        raise KeyError(provider_key)
+    """Return an API provider while preserving legacy registry monkeypatching."""
+    return _resolve_api_provider_from_registry(
+        provider_key,
+        API_PROVIDERS,
+        project_path,
+        config_file=config_file,
+    )
 
-    provider = replace(API_PROVIDERS[provider_key])
-    cfg = load_project_config(project_path, config_file=config_file)
-    provider_cfg = cfg.providers.get(provider_key) if cfg else None
-    if not provider_cfg:
-        return provider
 
-    if provider_cfg.api_key:
-        provider.api_key = provider_cfg.api_key.strip()
-    if provider_cfg.model:
-        provider.model = provider_cfg.model.strip()
-        provider.auto_model_selection = False
-    if provider_cfg.base_url:
-        provider.base_url = provider_cfg.base_url.strip()
-    provider.max_tokens = int(provider_cfg.max_tokens or provider.max_tokens)
-    provider.temperature = float(provider_cfg.temperature)
-    if provider_cfg.auto_model_selection is not None:
-        provider.auto_model_selection = bool(provider_cfg.auto_model_selection)
-    if provider_cfg.simple_model:
-        provider.simple_model = provider_cfg.simple_model.strip()
-    if provider_cfg.complex_model:
-        provider.complex_model = provider_cfg.complex_model.strip()
-    if provider_cfg.thinking:
-        provider.thinking = provider_cfg.thinking.strip().lower()
-    if provider_cfg.reasoning_effort:
-        provider.reasoning_effort = provider_cfg.reasoning_effort.strip().lower()
-    return provider
 _PROJECT_MARKER_FILES = (
     "AGENTS.toml",
     "pyproject.toml",
@@ -1280,5 +1024,3 @@ def fetch_provider_balance(provider: APIProvider, *, timeout: float = 4.0) -> di
         payload.setdefault("available", True)
         return payload
     return {"available": False, "error": "invalid balance response"}
-
-

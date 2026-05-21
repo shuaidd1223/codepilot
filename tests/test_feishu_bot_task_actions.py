@@ -225,6 +225,10 @@ def test_feishu_natural_language_status_uses_opencode(tmp_path, monkeypatch):
 
 def test_feishu_short_chinese_command_aliases_do_not_fall_back_to_help(tmp_path, monkeypatch):
     project_path = _setup_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "codepilot.opencode.session.run_opencode_message",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("快捷命令不应进入 OpenCode")),
+    )
     db.create_task(
         project="demo",
         title="短中文命令识别",
@@ -241,6 +245,7 @@ def test_feishu_short_chinese_command_aliases_do_not_fall_back_to_help(tmp_path,
         "看任务": "CodePilot 任务面板",
         "服务": "项目服务状态",
         "全局": "CodePilot 全局状态",
+        "当前项目": "CodePilot 项目总览",
     }
 
     for text, expected in cases.items():

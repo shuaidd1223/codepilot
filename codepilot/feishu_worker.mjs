@@ -339,11 +339,10 @@ async function updateReply(chatId, messageId, card) {
     log('skip update reply', { chatId, reason: !messageId ? 'no message_id' : 'no card' });
     return;
   }
-  log('update interactive reply', { chatId, messageId });
-  await client.im.message.update({
-    params: { message_id: messageId },
+  log('patch interactive reply', { chatId, messageId });
+  await client.im.message.patch({
+    path: { message_id: messageId },
     data: {
-      msg_type: 'interactive',
       content: JSON.stringify(card),
     },
   });

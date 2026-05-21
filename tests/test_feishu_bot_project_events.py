@@ -152,7 +152,7 @@ def test_feishu_event_payload_dedupes_same_message_id(tmp_path, monkeypatch):
     calls = []
 
     monkeypatch.setattr(
-        "codepilot.feishu_bot.handle_command_text",
+        "codepilot.feishu_bot.command_handlers.handle_command_text",
         lambda text, **kwargs: calls.append({"text": text, "kwargs": kwargs}) or {
             "type": "text",
             "text": "ok",
@@ -172,7 +172,7 @@ def test_feishu_event_payload_prefers_event_id_for_dedup(tmp_path, monkeypatch):
     calls = []
 
     monkeypatch.setattr(
-        "codepilot.feishu_bot.handle_command_text",
+        "codepilot.feishu_bot.command_handlers.handle_command_text",
         lambda text, **kwargs: calls.append({"text": text, "kwargs": kwargs}) or {
             "type": "text",
             "text": "ok",
@@ -190,7 +190,7 @@ def test_feishu_event_payload_prefers_event_id_for_dedup(tmp_path, monkeypatch):
 def test_feishu_event_payload_failure_keeps_dedup_record(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        "codepilot.feishu_bot.handle_command_text",
+        "codepilot.feishu_bot.command_handlers.handle_command_text",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
