@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from click.testing import CliRunner
 
+from codepilot.commands import add as add_cmd
 from codepilot.core.event_plugins import register_jsonl_sink
 from codepilot.cli import main
 from codepilot.core.workflow_state import (
@@ -23,6 +25,14 @@ from codepilot.core.workflow_state import (
 )
 from codepilot.storage import database as db
 from tests.workflow_testkit import init_test_db as _init_test_db
+
+
+def _register_demo_project(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    (project_path / "README.md").write_text("doctor and explore commands live here\n", encoding="utf-8")
+    return db.register_project("demo", str(project_path))
 
 
 def test_workflow_state_create_read_update_and_directory_convention(tmp_path):
@@ -278,3 +288,138 @@ def test_workflow_status_human_output_shows_agent_session(tmp_path, monkeypatch)
     assert "Agent Session" in result.output or "Agent" in result.output
     assert "人肉验证" in result.output
     assert "intake" in result.output
+
+
+def test_workflow_next_list_returns_latest_next_actions_json(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+
+    clarify = CliRunner().invoke(main, ["clarify", "-p", "demo", "改进 doctor", "--json"])
+    assert clarify.exit_code == 0, clarify.output
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "workflow next"
+    data = payload["data"]
+    assert data["project"] == "demo"
+    assert data["source"]["mode"] == "clarify"
+    assert any(action["id"] == "plan_from_spec" for action in data["next_actions"])
+    assert db.get_task_stats("demo")["total"] == 0
+    assert Path(data["source"]["context_path"]).is_relative_to(Path(project["path"]))
+
+
+def test_workflow_next_executes_plan_from_spec_without_shelling_suggested_command(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    clarify = CliRunner().invoke(main, ["clarify", "-p", "demo", "改进 doctor", "--json"])
+    assert clarify.exit_code == 0, clarify.output
+    clarify_data = json.loads(clarify.output)["data"]
+    context_path = Path(clarify_data["context_path"])
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    for action in context["next_actions"]:
+        if action["id"] == "plan_from_spec":
+            action["suggested_command"] = "codepilot run -p demo --once --json"
+    context_path.write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", "plan_from_spec", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    data = payload["data"]
+    plan_result = data["result"]
+    assert data["action"]["id"] == "plan_from_spec"
+    assert plan_result["source"] == "spec"
+    assert plan_result["source_path"] == clarify_data["artifact_path"]
+    assert Path(plan_result["plan_path"]).exists()
+    assert Path(plan_result["plan_path"]).is_relative_to(Path(project["path"]))
+
+
+def test_workflow_next_executes_import_tasks_from_task_batch_not_suggested_command(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    plan = CliRunner().invoke(main, ["plan", "-p", "demo", "新增 explore", "--json"])
+    assert plan.exit_code == 0, plan.output
+    plan_data = json.loads(plan.output)["data"]
+
+    context_path = Path(plan_data["context_path"])
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    for action in context["next_actions"]:
+        if action["id"] == "import_tasks":
+            action["suggested_command"] = r"codepilot add -p demo -f C:\does-not-exist\tasks.json"
+    context_path.write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    state = read_workflow_state(project["path"], mode="plan")
+    poisoned_actions = []
+    for action in state["next_actions"]:
+        cloned = dict(action)
+        if cloned["id"] == "import_tasks":
+            cloned["suggested_command"] = r"codepilot add -p demo -f C:\does-not-exist\tasks.json"
+        poisoned_actions.append(cloned)
+    update_workflow_state(project["path"], "plan", next_actions=poisoned_actions)
+
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", "import_tasks", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    data = payload["data"]
+    assert data["action"]["id"] == "import_tasks"
+    assert data["result"]["task_batch_path"] == plan_data["task_batch_path"]
+    assert data["result"]["count"] == len(plan_data["task_candidates"])
+    assert len(db.list_tasks(project="demo")) == len(plan_data["task_candidates"])
+
+
+def test_workflow_next_rejects_unknown_and_high_risk_actions_by_default(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    project_path = Path(project["path"])
+    context_path = project_path / ".codepilot" / "context" / "unknown.json"
+    context_path.parent.mkdir(parents=True)
+    context_path.write_text(
+        json.dumps(
+            {
+                "next_actions": [
+                    {
+                        "id": "unknown_action",
+                        "label": "未知动作",
+                        "risk": "low",
+                        "suggested_command": "codepilot run -p demo --once",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    start_workflow(project_path, mode="plan", session_id="unknown", context_path=context_path)
+    update_workflow_state(
+        project_path,
+        "plan",
+        next_actions=[
+            {
+                "id": "unknown_action",
+                "label": "未知动作",
+                "risk": "low",
+                "suggested_command": "codepilot run -p demo --once",
+            }
+        ],
+    )
+
+    unknown = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", "unknown_action", "--json"])
+    assert unknown.exit_code != 0
+    unknown_payload = json.loads(unknown.output)
+    assert unknown_payload["ok"] is False
+    assert "不支持" in unknown_payload["error"]["message"]
+
+    plan = CliRunner().invoke(main, ["plan", "-p", "demo", "新增 explore", "--json"])
+    assert plan.exit_code == 0, plan.output
+
+    high_risk = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", "execute_directly", "--json"])
+    assert high_risk.exit_code != 0
+    high_risk_payload = json.loads(high_risk.output)
+    assert high_risk_payload["ok"] is False
+    assert "高风险" in high_risk_payload["error"]["message"]

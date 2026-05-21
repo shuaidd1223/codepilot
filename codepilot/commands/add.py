@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import click
@@ -440,31 +441,22 @@ def _single_add(
         click.echo(f"\n  内容预览: {preview}")
 
 
-def _batch_add(
-    project: str,
-    batch_file: Path,
+def _prepare_batch_add_items(
+    items: list[dict],
+    *,
     agent: str,
     priority: str,
     dep_list: list[int] | None,
     proj_path: str,
-    json_mode: bool,
+    batch_suffix: str,
     config_ref: str | Path | None = None,
-):
-    """批量添加任务，所有格式都强制模板合规、不允许空 content。"""
-    echo(f"[cyan]批量导入: {batch_file}[/cyan]")
-    items = _parse_batch_file(batch_file)
-    batch_suffix = batch_file.suffix.lower()
+    progress: Callable[[str, int, int, object], None] | None = None,
+) -> list[dict[str, object]]:
     is_json_batch = batch_suffix == ".json"
     is_markdown_batch = batch_suffix in MARKDOWN_BATCH_SUFFIXES
 
-    if not items:
-        echo("[yellow]文件中没有找到有效任务[/yellow]")
-        return
-
-    echo(f"[cyan]将导入 {len(items)} 个任务...[/cyan]")
-    click.echo()
-
     prepared_items: list[dict[str, object]] = []
+    total = len(items)
     for i, item in enumerate(items, 1):
         item_title = item.get("title") or item.get("name") or str(item)
         item_priority = item.get("priority", priority)
@@ -494,7 +486,8 @@ def _batch_add(
         #   失败或缺章节同样拒绝；不再有「失败就静默放空」的回退。
         user_content = item.get("content") or item.get("body") or item.get("description")
 
-        echo(f"[dim]{i}/{len(items)}[/dim] {item_title} ", nl=False)
+        if progress:
+            progress("item_start", i, total, item_title)
         if isinstance(user_content, str) and user_content.strip():
             content = user_content
             if is_json_batch or is_markdown_batch:
@@ -503,26 +496,26 @@ def _batch_add(
                     error_factory = _json_batch_error if is_json_batch else _markdown_batch_error
                     raise error_factory(
                         i,
-                        item_title,
+                        str(item_title),
                         f"content 缺少关键章节: {', '.join(missing)}",
                     )
         else:
             if is_json_batch:
                 raise _json_batch_error(
                     i,
-                    item_title,
+                    str(item_title),
                     "缺少 content，请按 `python -m codepilot ai template --format json` 给出的 schema 准备",
                 )
             if is_markdown_batch:
                 raise _markdown_batch_error(
                     i,
-                    item_title,
+                    str(item_title),
                     "缺少可导入的 markdown 任务正文",
                 )
             # 纯文本批量：每行一个标题，逐条走 AI 生成 + 校验。
             try:
                 content = generate_task_content(
-                    item_title,
+                    str(item_title),
                     project_path=proj_path,
                     agent=item_agent,
                     config_ref=config_ref,
@@ -550,8 +543,12 @@ def _batch_add(
                 "depends_on": item_dep,
             }
         )
-        echo("[green]ok[/green]")
+        if progress:
+            progress("item_ok", i, total, item_title)
+    return prepared_items
 
+
+def _create_batch_add_tasks(project: str, prepared_items: list[dict[str, object]]) -> list[dict]:
     results = []
     for item in prepared_items:
         task = db.create_task(
@@ -563,6 +560,76 @@ def _batch_add(
             depends_on=item.get("depends_on"),
         )
         results.append(task)
+    return results
+
+
+def import_task_batch_file(
+    project: str,
+    batch_file: Path,
+    *,
+    agent: str = "codex",
+    priority: str = "P2",
+    dep_list: list[int] | None = None,
+    proj_path: str = "",
+    config_ref: str | Path | None = None,
+) -> list[dict]:
+    """Validate and import a task batch file without invoking the Click command."""
+    items = _parse_batch_file(batch_file)
+    if not items:
+        return []
+    prepared_items = _prepare_batch_add_items(
+        items,
+        agent=agent,
+        priority=priority,
+        dep_list=dep_list,
+        proj_path=proj_path,
+        batch_suffix=batch_file.suffix.lower(),
+        config_ref=config_ref,
+    )
+    return _create_batch_add_tasks(project, prepared_items)
+
+
+def _batch_add(
+    project: str,
+    batch_file: Path,
+    agent: str,
+    priority: str,
+    dep_list: list[int] | None,
+    proj_path: str,
+    json_mode: bool,
+    config_ref: str | Path | None = None,
+):
+    """批量添加任务，所有格式都强制模板合规、不允许空 content。"""
+    echo(f"[cyan]批量导入: {batch_file}[/cyan]")
+    items = _parse_batch_file(batch_file)
+
+    if not items:
+        echo("[yellow]文件中没有找到有效任务[/yellow]")
+        return
+
+    echo(f"[cyan]将导入 {len(items)} 个任务...[/cyan]")
+    click.echo()
+
+    def _progress(event: str, i: int, total: int, item_title: object) -> None:
+        del total
+        if event == "item_start":
+            echo(f"[dim]{i}/{len(items)}[/dim] {item_title} ", nl=False)
+        elif event == "item_ok":
+            echo("[green]ok[/green]")
+
+    prepared_items = _prepare_batch_add_items(
+        items,
+        agent=agent,
+        priority=priority,
+        dep_list=dep_list,
+        proj_path=proj_path,
+        batch_suffix=batch_file.suffix.lower(),
+        config_ref=config_ref,
+        progress=_progress,
+    )
+
+    results = _create_batch_add_tasks(project, prepared_items)
+    for task in results:
         echo(f"[green]+ #{task['id']}[/green]")
 
     if json_mode:
