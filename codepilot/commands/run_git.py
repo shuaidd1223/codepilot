@@ -249,9 +249,24 @@ def _safe_relative_context_pattern(raw_pattern: str) -> str:
     return pattern
 
 
+def _path_lexists(path: Path) -> bool:
+    return os.path.lexists(str(path))
+
+
+def _path_is_context_link(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(callable(is_junction) and is_junction())
+
+
 def _link_context_dir(source: Path, target: Path) -> bool:
     if target.exists():
         return True
+    if _path_lexists(target):
+        _remove_context_link(target)
+        if _path_lexists(target):
+            return False
     target.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         code, _ = _run_command(["cmd", "/c", "mklink", "/J", str(target), str(source)], cwd=target.parent, timeout=60)
@@ -265,26 +280,66 @@ def _link_context_dir(source: Path, target: Path) -> bool:
 
 def _remove_context_link(path: Path) -> None:
     try:
-        if path.is_symlink():
+        if _path_is_context_link(path):
             path.unlink()
             return
-        is_junction = getattr(path, "is_junction", None)
-        if callable(is_junction) and is_junction():
-            path.rmdir()
     except OSError:
-        return
+        try:
+            path.rmdir()
+        except OSError:
+            return
 
 
-def _remove_task_worktree_context_links(worktree_path: Path) -> None:
-    for pattern in DEFAULT_WORKTREE_CONTEXT_LINK_PATTERNS:
+def _remove_task_worktree_context_links(worktree_path: Path, link_patterns: Sequence[str] | None = None) -> None:
+    for pattern in _normalize_worktree_context_link_patterns(link_patterns):
         for path in worktree_path.glob(pattern):
             _remove_context_link(path)
 
 
-def _iter_context_link_dirs(source_root: Path) -> list[Path]:
+def _normalize_worktree_context_link_patterns(patterns: Sequence[str] | None) -> tuple[str, ...]:
+    if patterns is None:
+        return DEFAULT_WORKTREE_CONTEXT_LINK_PATTERNS
+    return tuple(str(pattern).strip() for pattern in patterns if str(pattern).strip())
+
+
+def _context_relative_path(source_root: Path, source: Path) -> Path:
+    return source.relative_to(source_root)
+
+
+def _composer_vendor_requires_physical_copy(source_root: Path, source: Path) -> bool:
+    try:
+        relative = _context_relative_path(source_root, source)
+    except ValueError:
+        return False
+    return (
+        relative.as_posix() == "vendor"
+        and (source_root / "composer.json").is_file()
+        and (source / "composer").is_dir()
+    )
+
+
+def _copy_context_dir(source: Path, target: Path) -> bool:
+    if _path_is_context_link(target):
+        _remove_context_link(target)
+    if target.exists():
+        return True
+    if _path_lexists(target):
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copytree(source, target, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+        return True
+    except OSError:
+        return False
+
+
+def _iter_context_link_dirs(source_root: Path, link_patterns: Sequence[str] | None = None) -> list[Path]:
     dirs: list[Path] = []
     seen: set[Path] = set()
-    for pattern in DEFAULT_WORKTREE_CONTEXT_LINK_PATTERNS:
+    for pattern in _normalize_worktree_context_link_patterns(link_patterns):
+        pattern = _safe_relative_context_pattern(pattern)
+        if not pattern:
+            continue
         for source in source_root.glob(pattern):
             if not source.is_dir():
                 continue
@@ -300,6 +355,7 @@ def _copy_task_worktree_context(
     project_path: Path,
     worktree_path: Path,
     patterns: Sequence[str] | None = None,
+    link_patterns: Sequence[str] | None = None,
 ) -> None:
     """Copy configured local context files into a task worktree.
 
@@ -312,9 +368,13 @@ def _copy_task_worktree_context(
     if source_root == target_root or not source_root.is_dir() or not target_root.is_dir():
         return
 
-    for source in _iter_context_link_dirs(source_root):
-        relative = source.resolve().relative_to(source_root)
-        _link_context_dir(source, target_root / relative)
+    for source in _iter_context_link_dirs(source_root, link_patterns):
+        relative = _context_relative_path(source_root, source)
+        target = target_root / relative
+        if _composer_vendor_requires_physical_copy(source_root, source):
+            _copy_context_dir(source, target)
+        else:
+            _link_context_dir(source, target)
 
     effective_patterns = _normalize_worktree_context_patterns(patterns)
     for raw_pattern in effective_patterns:
@@ -333,7 +393,7 @@ def _copy_task_worktree_context(
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir():
-                shutil.copytree(source, target, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+                _copy_context_dir(source, target)
             else:
                 shutil.copy2(source, target)
 
@@ -351,6 +411,7 @@ def _git_prepare_task_worktree(
     base_branch: str,
     worktree_path: Path,
     context_patterns: Sequence[str] | None = None,
+    context_link_patterns: Sequence[str] | None = None,
 ) -> tuple[str, Path]:
     if not _git_is_repo(project_path):
         return "", project_path.resolve()
@@ -374,7 +435,7 @@ def _git_prepare_task_worktree(
                 f"目标 worktree 路径已被其他分支占用: {target_path} ({branch_label})\n"
                 "请先手动清理该 worktree 或更换 worktree_base。"
             )
-        _copy_task_worktree_context(project_path, target_path, context_patterns)
+        _copy_task_worktree_context(project_path, target_path, context_patterns, context_link_patterns)
         return task_branch, target_path
     elif target_path.exists() and not _path_is_empty_directory(target_path):
         # 路径存在但 git 不认识——多半是上轮 crash 留下的残骸。如果这条路径
@@ -435,7 +496,7 @@ def _git_prepare_task_worktree(
     )
     if code != 0:
         raise RuntimeError(f"创建任务 worktree 失败:\n{output}")
-    _copy_task_worktree_context(project_path, target_path, context_patterns)
+    _copy_task_worktree_context(project_path, target_path, context_patterns, context_link_patterns)
     return task_branch, target_path
 
 
@@ -445,6 +506,7 @@ def _git_cleanup_task_worktree(
     worktree_path: Path | str | None,
     task_branch: str = "",
     keep_branch: bool = False,
+    context_link_patterns: Sequence[str] | None = None,
 ) -> None:
     if not _git_is_repo(project_path) or not worktree_path:
         return
@@ -460,7 +522,7 @@ def _git_cleanup_task_worktree(
             raise RuntimeError(
                 f"拒绝移除不属于任务分支的 worktree: {target_path} ({branch_label})"
             )
-        _remove_task_worktree_context_links(target_path)
+        _remove_task_worktree_context_links(target_path, context_link_patterns)
         code, output = _run_command(
             ["git", "worktree", "remove", "--force", str(target_path)],
             cwd=project_path,
@@ -646,5 +708,4 @@ def _git_auto_commit(project_path: Path, task_id: int, title: str) -> str:
 
     sha_code, sha_output = _run_command(["git", "rev-parse", "--short", "HEAD"], cwd=project_path, timeout=30)
     return sha_output.strip() if sha_code == 0 else ""
-
 

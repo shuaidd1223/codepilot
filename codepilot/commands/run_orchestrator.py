@@ -38,6 +38,8 @@ class _RunContext:
     max_review_rounds: int
     per_task_branch_enabled: bool
     task_workspace: str
+    worktree_context_patterns: tuple[str, ...] | None = None
+    worktree_context_link_patterns: tuple[str, ...] | None = None
     preflight_dirty_worktree: str = "stop"
 
 
@@ -75,6 +77,8 @@ def _resolve_run_context(project_record: dict, *, shell: str, executor: str) -> 
     task_workspace = str(getattr(getattr(config, "automation", None), "task_workspace", "branch") or "branch").strip().lower()
     if task_workspace not in {"direct", "branch", "worktree"}:
         task_workspace = "branch"
+    worktree_context_patterns = getattr(getattr(config, "automation", None), "worktree_context_patterns", None)
+    worktree_context_link_patterns = getattr(getattr(config, "automation", None), "worktree_context_link_patterns", None)
     preflight_dirty_worktree = normalize_preflight_dirty_worktree(
         getattr(getattr(config, "automation", None), "preflight_dirty_worktree", "stop")
     )
@@ -89,6 +93,8 @@ def _resolve_run_context(project_record: dict, *, shell: str, executor: str) -> 
         max_review_rounds=max_review_rounds,
         per_task_branch_enabled=per_task_branch_enabled,
         task_workspace=task_workspace,
+        worktree_context_patterns=worktree_context_patterns,
+        worktree_context_link_patterns=worktree_context_link_patterns,
         preflight_dirty_worktree=preflight_dirty_worktree,
     )
 
@@ -153,6 +159,8 @@ def _prepare_task_workspace(
                         title=task["title"],
                         config=context.config,
                     ),
+                    context_patterns=context.worktree_context_patterns,
+                    context_link_patterns=context.worktree_context_link_patterns,
                 )
                 if prepared_branch:
                     task_branch = prepared_branch

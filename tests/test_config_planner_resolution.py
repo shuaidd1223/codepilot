@@ -62,6 +62,8 @@ def test_config_empty_dict_uses_declared_defaults():
     assert cfg.automation.max_retries == 3
     assert cfg.automation.per_task_branch is True
     assert cfg.automation.task_workspace == "branch"
+    assert cfg.automation.worktree_context_patterns is None
+    assert cfg.automation.worktree_context_link_patterns is None
     assert cfg.automation.preflight_dirty_worktree == "stop"
     assert cfg.automation.two_stage_planning is True
     assert cfg.automation.clarify_vague_requirements is True
@@ -170,6 +172,8 @@ extra = "drop"
     assert parsed["automation"]["task_agent"] == "dual"
     assert parsed["automation"]["executor"] == "builtin"
     assert parsed["automation"]["task_workspace"] == "branch"
+    assert parsed["automation"]["worktree_context_patterns"] == [".env*"]
+    assert "vendor" not in parsed["automation"]["worktree_context_link_patterns"]
     assert parsed["automation"]["preflight_dirty_worktree"] == "stop"
     assert parsed["automation"]["per_task_branch"] is True
     assert parsed["automation"]["two_stage_planning"] is True

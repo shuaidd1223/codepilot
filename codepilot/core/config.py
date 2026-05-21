@@ -107,6 +107,18 @@ def _parse_fallback_cli_order(raw: object) -> list[str]:
     return cleaned or list(DEFAULT_FALLBACK_CLI_ORDER)
 
 
+def _parse_optional_string_list(raw: object, path: str) -> tuple[str, ...] | None:
+    """Parse optional string-or-list config values without applying defaults."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        return (text,) if text else tuple()
+    if not isinstance(raw, (list, tuple)):
+        raise ConfigError(f"{path} 必须是字符串或字符串列表。")
+    return tuple(str(item).strip() for item in raw if str(item or "").strip())
+
+
 def normalize_agent_language(raw: object = None) -> str:
     """Normalize the project-level agent prompt/output language."""
     text = str(raw or "").strip()
@@ -385,6 +397,10 @@ class AutomationConfig:
     # branch: 在项目工作目录创建任务分支，完成后合并并删除；
     # worktree: 为每个任务创建独立 git worktree，并链接常见依赖目录。
     task_workspace: str = "branch"
+    # 创建任务 worktree 后复制的本地上下文文件/目录；None 表示使用工具默认值。
+    worktree_context_patterns: tuple[str, ...] | None = None
+    # 创建任务 worktree 后链接的本地依赖目录；None 表示使用工具默认值。
+    worktree_context_link_patterns: tuple[str, ...] | None = None
     # 执行预检发现已有未提交改动时的处理策略：
     # stop: 停止执行；commit: 先提交现有改动；stash: stash 现有改动并记录。
     preflight_dirty_worktree: str = "stop"
@@ -562,6 +578,14 @@ class AgentsConfig:
                 max_retries=automation.get("max_retries", 3),
                 per_task_branch=automation.get("per_task_branch", True),
                 task_workspace=automation.get("task_workspace", "branch"),
+                worktree_context_patterns=_parse_optional_string_list(
+                    automation.get("worktree_context_patterns"),
+                    "automation.worktree_context_patterns",
+                ),
+                worktree_context_link_patterns=_parse_optional_string_list(
+                    automation.get("worktree_context_link_patterns"),
+                    "automation.worktree_context_link_patterns",
+                ),
                 preflight_dirty_worktree=normalize_preflight_dirty_worktree(
                     automation.get("preflight_dirty_worktree")
                 ),
@@ -1193,6 +1217,11 @@ per_task_branch = true
 # worktree = 使用独立临时 worktree
 # 缺失或配置错误时默认使用 branch
 task_workspace = "branch"
+# 复制到任务 worktree 的本地上下文。PHP/Composer 项目可加入 "vendor"，避免
+# Composer autoloader 的 baseDir 指向主工作区或已删除 worktree。
+worktree_context_patterns = [".env*"]
+# 链接到任务 worktree 的依赖目录。Composer vendor 不建议放在这里。
+worktree_context_link_patterns = ["node_modules", ".venv", "venv", "env", ".tox", ".nox", ".gradle", "target", "build", "cmake-build-*", ".dart_tool", "Pods", "Carthage", ".terraform", ".serverless"]
 # 执行预检发现主工作区已有未提交改动时的处理策略：
 # stop = 停止执行（默认）；commit = 分析状态后提交；stash = stash 并写入日志记录
 preflight_dirty_worktree = "stop"

@@ -98,6 +98,16 @@ def _fallback_cli_order(raw: Any) -> list[str]:
     return list(config_mod.DEFAULT_FALLBACK_CLI_ORDER)
 
 
+def _string_list(raw: Any, default: list[str]) -> list[str]:
+    if isinstance(raw, str):
+        text = raw.strip()
+        return [text] if text else list(default)
+    if isinstance(raw, (list, tuple)):
+        cleaned = [str(item).strip() for item in raw if str(item or "").strip()]
+        return cleaned
+    return list(default)
+
+
 def _preflight_dirty_worktree(raw: Any) -> str:
     try:
         return config_mod.normalize_preflight_dirty_worktree(raw)
@@ -289,6 +299,27 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
             "max_retries": _int(automation.get("max_retries"), 3, min_value=0),
             "per_task_branch": _bool(automation.get("per_task_branch"), True),
             "task_workspace": _choice(automation.get("task_workspace"), {"direct", "branch", "worktree"}, "branch"),
+            "worktree_context_patterns": _string_list(automation.get("worktree_context_patterns"), [".env*"]),
+            "worktree_context_link_patterns": _string_list(
+                automation.get("worktree_context_link_patterns"),
+                [
+                    "node_modules",
+                    ".venv",
+                    "venv",
+                    "env",
+                    ".tox",
+                    ".nox",
+                    ".gradle",
+                    "target",
+                    "build",
+                    "cmake-build-*",
+                    ".dart_tool",
+                    "Pods",
+                    "Carthage",
+                    ".terraform",
+                    ".serverless",
+                ],
+            ),
             "preflight_dirty_worktree": _preflight_dirty_worktree(automation.get("preflight_dirty_worktree")),
             "two_stage_planning": _bool(automation.get("two_stage_planning"), True),
             "clarify_vague_requirements": _bool(automation.get("clarify_vague_requirements"), True),

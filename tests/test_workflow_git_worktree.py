@@ -23,6 +23,7 @@ from codepilot.cli import main
 from codepilot.commands import add as add_cmd
 from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
+from codepilot.commands import run_git as run_git_cmd
 from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
 
@@ -168,6 +169,54 @@ def test_git_prepare_task_worktree_links_common_dependency_dirs(tmp_path):
     assert (project_path / "vendor" / "pkg" / "autoload.php").exists()
     assert (project_path / ".venv" / "pyvenv.cfg").exists()
     assert (project_path / "cmake-build-debug" / "CMakeCache.txt").exists()
+
+
+def test_git_prepare_task_worktree_copies_composer_vendor_instead_of_linking(tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    worktree_base = tmp_path / "worktrees"
+
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    (project_path / "composer.json").write_text(
+        '{"autoload":{"psr-4":{"app\\\\":"app/"}}}\n',
+        encoding="utf-8",
+    )
+    (project_path / ".gitignore").write_text("vendor/\n", encoding="utf-8")
+    (project_path / "vendor" / "composer").mkdir(parents=True)
+    (project_path / "vendor" / "composer" / "autoload_psr4.php").write_text(
+        "<?php\n$vendorDir = dirname(__DIR__);\n$baseDir = dirname($vendorDir);\nreturn ['app\\\\' => [$baseDir . '/app']];\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "README.md", "composer.json", ".gitignore"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+
+    base_branch = run_cmd._git_current_branch(project_path)
+    project_info = {
+        "name": "demo",
+        "path": str(project_path),
+        "worktree_base": str(worktree_base),
+    }
+    worktree_target = run_cmd._task_worktree_path(project_info, task_id=18, title="Composer deps")
+
+    branch_name, worktree_path = run_cmd._git_prepare_task_worktree(
+        project_path,
+        task_id=18,
+        title="Composer deps",
+        base_branch=base_branch,
+        worktree_path=worktree_target,
+    )
+
+    worktree_vendor = worktree_path / "vendor"
+    assert (worktree_vendor / "composer" / "autoload_psr4.php").exists()
+    assert run_git_cmd._path_is_context_link(worktree_vendor) is False
+
+    run_cmd._git_cleanup_task_worktree(project_path, worktree_path=worktree_path, task_branch=branch_name)
+    assert (project_path / "vendor" / "composer" / "autoload_psr4.php").exists()
 
 
 def test_git_prepare_task_worktree_allows_existing_empty_dir(tmp_path):
