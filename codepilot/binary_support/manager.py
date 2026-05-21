@@ -8,7 +8,9 @@ Implementation is split across four focused modules:
 - :mod:`codepilot.binary_version` -- pyproject/``__init__.py`` version helpers.
 - :mod:`codepilot.binary_release` -- release bundle creation and verification.
 
-This shell re-exports the public API for backwards compatibility. The three
+This shell re-exports the public API for backwards compatibility. Legacy
+private helper names remain available as module attributes through explicit
+re-export aliases, but are intentionally omitted from ``__all__``. The three
 orchestrator functions (:func:`build_binary`, :func:`install_binary`,
 :func:`resolve_install_source`) remain defined here so that tests which
 monkeypatch their shell-module-level dependencies (e.g. ``default_build_dir``,
@@ -21,20 +23,19 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from codepilot.core.text_decode import decode_subprocess_text
 from codepilot.binary_support.paths import (
-    _binary_candidates,
-    _broadcast_windows_env_change,
+    _binary_candidates as _binary_candidates,
+    _broadcast_windows_env_change as _broadcast_windows_env_change,
     _build_command,
-    _normalize_arch,
-    _normalize_path,
-    _preferred_posix_profile,
-    _pyinstaller_data_arg,
-    _register_posix_path,
-    _register_windows_path,
+    _normalize_arch as _normalize_arch,
+    _normalize_path as _normalize_path,
+    _preferred_posix_profile as _preferred_posix_profile,
+    _pyinstaller_data_arg as _pyinstaller_data_arg,
+    _register_posix_path as _register_posix_path,
+    _register_windows_path as _register_windows_path,
     current_platform_tag,
     default_build_dir,
     default_dist_dir,
@@ -50,18 +51,18 @@ from codepilot.binary_support.paths import (
     running_binary_path,
 )
 from codepilot.binary_support.release import (
-    _archive_name,
-    _archive_root_folder,
-    _merge_release_inputs,
-    _posix_install_script,
-    _read_archive_members,
-    _release_guide_text,
-    _release_script_name,
-    _release_script_text,
-    _release_summary_text,
-    _sha256_file,
-    _windows_install_script,
-    _write_release_archive,
+    _archive_name as _archive_name,
+    _archive_root_folder as _archive_root_folder,
+    _merge_release_inputs as _merge_release_inputs,
+    _posix_install_script as _posix_install_script,
+    _read_archive_members as _read_archive_members,
+    _release_guide_text as _release_guide_text,
+    _release_script_name as _release_script_name,
+    _release_script_text as _release_script_text,
+    _release_summary_text as _release_summary_text,
+    _sha256_file as _sha256_file,
+    _windows_install_script as _windows_install_script,
+    _write_release_archive as _write_release_archive,
     create_release_bundle,
     resolve_release_dir,
     resolve_release_inputs,
