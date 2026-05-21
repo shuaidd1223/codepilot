@@ -103,6 +103,8 @@ class TaskListItem(TypedDict):
     latest: str
     error_message: str
     skip_reason: str
+    blocked_reason: Optional[str]
+    suggested_actions: Optional[list[str]]
     delivery_record: str
     created_at: str
     started_at: str
