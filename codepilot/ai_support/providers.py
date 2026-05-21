@@ -21,11 +21,7 @@ from typing import Any, Callable, Optional
 import urllib.request
 
 from codepilot.ai_support.planner_context import collect_planner_context
-from codepilot.ai_support.provider_adapters import (
-    ANTHROPIC_AVAILABLE,
-    OPENAI_AVAILABLE,
-    build_api_client,
-)
+from codepilot.ai_support.provider_adapters import build_api_client
 from codepilot.core.config import load_project_config
 from codepilot.core.text_decode import decode_subprocess_text
 
@@ -1284,6 +1280,5 @@ def fetch_provider_balance(provider: APIProvider, *, timeout: float = 4.0) -> di
         payload.setdefault("available", True)
         return payload
     return {"available": False, "error": "invalid balance response"}
-
 
 

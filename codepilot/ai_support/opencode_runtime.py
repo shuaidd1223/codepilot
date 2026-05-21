@@ -27,8 +27,7 @@ from __future__ import annotations
 import enum
 import json
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from codepilot.core.config import AgentsConfig, ProviderAPIConfig
 

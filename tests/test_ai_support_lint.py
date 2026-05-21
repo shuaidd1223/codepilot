@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-def test_ai_support_classifier_and_clarification_have_no_unused_symbols() -> None:
+def test_selected_ai_support_modules_have_no_unused_symbols() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [
@@ -15,6 +15,9 @@ def test_ai_support_classifier_and_clarification_have_no_unused_symbols() -> Non
             "check",
             "--select",
             "F401,F841",
+            "codepilot/ai_support/opencode_runtime.py",
+            "codepilot/ai_support/prompts.py",
+            "codepilot/ai_support/providers.py",
             "codepilot/ai_support/classifier.py",
             "codepilot/ai_support/clarification_protocol.py",
         ],
