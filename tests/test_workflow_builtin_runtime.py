@@ -441,3 +441,44 @@ def test_run_backlog_cleans_worktree_leftovers_after_builtin_failure(tmp_path, m
     assert current["active_pid"] is None
     assert current["current_log_path"] is None
 
+
+def test_builder_done_review_timeout_preserves_builder_evidence(tmp_path, monkeypatch):
+    """Orchestrator must not lose builder success evidence on reviewer timeout."""
+    import subprocess
+
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# repo", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=project_path, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True)
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "review timeout test", agent="dual", max_retries=2)
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+
+    class _TimeoutExecutor:
+        def __call__(self, *args, **kwargs):
+            return run_cmd.ExecutionResult(
+                exit_code=1,
+                output="builder success evidence",
+                summary="✅ Builder 已完成但 ❌ Reviewer 超时，可以重试 review 或接受 builder 结果",
+                executor="builtin",
+            )
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", _TimeoutExecutor())
+    monkeypatch.setattr(run_cmd, "_triage_review_failure", lambda *a, **kw: None)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+
+    assert "Builder 已完成" in (current.get("error_message") or ""), "Error message must mention builder done"
+    assert "超时" in (current.get("error_message") or ""), "Error message must mention timeout"
+    # Builder evidence is preserved in result.output; the orchestrator emits it
+    # via _emit_phase_summaries so it appears in console / task logs. The
+    # error_message must clearly distinguish timeout from regular failure.
+    assert current["status"] in {"backlog", "failed"}
+

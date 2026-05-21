@@ -625,3 +625,65 @@ def test_config_threads_max_review_rounds():
     from codepilot.core.config import AutomationConfig
     cfg = AutomationConfig()
     assert cfg.max_review_rounds == 2
+
+
+def test_reviewer_timeout_preserves_builder_evidence(fake_project, monkeypatch, tmp_path):
+    """Reviewer TimeoutExpired must be caught; builder success evidence preserved."""
+    import subprocess
+
+    from codepilot.ai_support import service as ai_mod
+
+    class _BuilderThenTimeout:
+        builder_done = False
+
+        def __call__(self, *, task, project_path, phase, prompt):
+            if phase == "builder":
+                self.builder_done = True
+                return "codex", 0, "builder output ok"
+            raise subprocess.TimeoutExpired("codex-review --uncommitted", timeout=1800)
+
+    monkeypatch.setattr(ai_mod, "_phase_stub", _BuilderThenTimeout())
+    monkeypatch.setattr(run_mod, "_write_task_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_mod, "_git_changed_files", lambda project_path: [])
+
+    task = _sample_task()
+    task_file = tmp_path / "42-task.md"
+    task_file.write_text("stub", encoding="utf-8")
+
+    result = run_mod._run_builtin_executor(
+        task, fake_project, task_file, auto_commit=False, max_review_rounds=2,
+    )
+
+    assert result.exit_code != 0
+    assert result.output == "builder output ok"
+    assert "timeout" in (result.summary or "").lower() or "超时" in (result.summary or "")
+
+
+def test_map_builtin_loop_outcome_builder_done_review_timeout(fake_project, tmp_path):
+    """builder_done_review_timeout maps to non-zero exit with builder evidence."""
+    task = _sample_task()
+    task_file = tmp_path / "42-task.md"
+    task_file.write_text("stub", encoding="utf-8")
+    ctx = run_mod._ExecutorContext(
+        task=task,
+        project=fake_project,
+        project_path=Path(fake_project["path"]),
+        config_ref=None,
+        output_dir=tmp_path,
+        task_file=task_file,
+        max_rounds=2,
+        task_id_for_events=task["id"],
+    )
+    outcome = run_mod._BuiltinLoopOutcome(
+        status="builder_done_review_timeout",
+        round_num=1,
+        builder=run_mod._PhaseOutcome(agent="codex", exit_code=0, output="builder evidence"),
+        summary="reviewer 超时，builder 已完成",
+    )
+
+    result = run_mod._map_builtin_loop_outcome(ctx, outcome, auto_commit=False)
+
+    assert result.exit_code != 0
+    assert result.output == "builder evidence"
+    assert result.deterministic_failure is False
+    assert "超时" in result.summary

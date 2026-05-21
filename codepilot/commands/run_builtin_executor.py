@@ -646,7 +646,11 @@ def _run_reviewer_round(
             message=f"{label} 异常终止：{exc}",
             extra={"round": round_num, "round_total": ctx.max_rounds, "phase_kind": "reviewer"},
         )
-        raise
+        agent = _expected_phase_agent_label(ctx.task, "reviewer", ctx.config_ref)
+        started = datetime.now()
+        phase_name = "reviewer" if round_num == 1 else f"reviewer-r{round_num}"
+        _runner_module()._write_task_log(ctx.task["id"], agent, phase_name, str(exc), 1, started)
+        return _PhaseOutcome(agent=agent, exit_code=1, output=str(exc), display_phase=display_phase)
     phase_name = "reviewer" if round_num == 1 else f"reviewer-r{round_num}"
     _runner_module()._write_task_log(ctx.task["id"], agent, phase_name, output, exit_code, started)
     if exit_code != 0:
@@ -707,6 +711,12 @@ def _finalize_executor_success(
     )
 
 
+def _is_reviewer_timeout_error(reviewer: _PhaseOutcome) -> bool:
+    """Check whether a failed reviewer outcome was caused by a timeout."""
+    output = str(reviewer.output or "")
+    return "timed out" in output.lower() or "timeout" in output.lower() or "超时" in output
+
+
 def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
     """Run builder/reviewer rounds until success or a terminal failure state."""
     from codepilot.core import progress_bus
@@ -726,12 +736,19 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
             previous_findings=previous_findings,
         )
         if reviewer.exit_code != 0:
+            _is_timeout = _is_reviewer_timeout_error(reviewer)
+            status = "builder_done_review_timeout" if _is_timeout else "reviewer_error"
+            summary = (
+                "✅ Builder 已完成但 ❌ Reviewer 超时，可以重试 review、切换 reviewer 或接受 builder 结果"
+                if _is_timeout
+                else "review 命令执行失败"
+            )
             return _BuiltinLoopOutcome(
-                status="reviewer_error",
+                status=status,
                 round_num=round_num,
                 builder=builder,
                 reviewer=reviewer,
-                summary="review 命令执行失败",
+                summary=summary,
             )
 
         verdict_model = parse_reviewer_output(reviewer.output or "")
@@ -813,6 +830,18 @@ def _map_builtin_loop_outcome(
             review_output=reviewer_output,
             summary=outcome.summary or "review 命令执行失败",
             executor="builtin",
+        )
+
+    if outcome.status == "builder_done_review_timeout":
+        reviewer = outcome.reviewer
+        review_output = reviewer.output if reviewer else ""
+        return ExecutionResult(
+            exit_code=1,
+            output=outcome.builder.output,
+            review_output=review_output,
+            summary=outcome.summary or "✅ Builder 已完成但 ❌ Reviewer 超时",
+            executor="builtin",
+            deterministic_failure=False,
         )
 
     if outcome.status == "pass":

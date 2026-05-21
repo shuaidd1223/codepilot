@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from codepilot.commands import tasks as tasks_cmd
+from codepilot.core.output import echo
 
 
 @click.group("task")
@@ -24,3 +25,14 @@ task_group.add_command(tasks_cmd.edit)
 task_group.add_command(tasks_cmd.rm)
 task_group.add_command(tasks_cmd.find)
 task_group.add_command(tasks_cmd.sweep)
+
+
+def _render_recovery_hints(task: dict) -> None:
+    from codepilot.webapp.task_payloads import _derive_recovery_hints
+
+    hints = _derive_recovery_hints(task)
+    if hints:
+        echo("[yellow]恢复建议[/yellow]")
+        for hint in hints:
+            click.echo(f"  - {hint}")
+        click.echo()

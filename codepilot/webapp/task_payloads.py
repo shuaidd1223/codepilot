@@ -166,6 +166,21 @@ def _compose_log_text(task: dict) -> str:
     return _tail_text(task.get("last_output") or task.get("error_message") or task.get("delivery_record") or "")
 
 
+def _derive_recovery_hints(task: dict) -> list[str]:
+    """Return user-facing recovery suggestions based on task state and error."""
+    status = task.get("status") or ""
+    error = task.get("error_message") or ""
+    task_id = int(task.get("id") or 0)
+    hints: list[str] = []
+    if "超时" in error or "timeout" in error.lower():
+        hints.append(f"重试 review: codepilot task retry #{task_id}")
+        hints.append(f"接受 builder 结果: codepilot task done #{task_id} -m \"review accepted\"")
+        hints.append("切换 reviewer: 编辑任务的 agent 字段为 claude / codex")
+    if status == "backlog" and "review 命令执行失败" in error:
+        hints.append("重试: codepilot task retry #{task_id}")
+    return hints
+
+
 def _task_payload(task: dict) -> dict:
     status = task["status"]
 
@@ -211,6 +226,7 @@ def _task_payload(task: dict) -> dict:
         "completed_at": task.get("completed_at") or "",
         "retry_count": int(task.get("retry_count") or 0),
         "max_retries": int(task.get("max_retries") or 0),
+        "recovery_hints": _derive_recovery_hints(task),
         "actions": {
             "retry": status in {"failed", "cancelled", "backlog"},
             "stop": status == "in_progress",

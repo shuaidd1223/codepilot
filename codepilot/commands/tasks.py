@@ -191,6 +191,8 @@ def _render_show_body(task: dict) -> None:
     _show_block("错误信息", task.get("error_message"))
     _show_block("交付记录", task.get("delivery_record"))
     _show_block("最近输出", task.get("last_output"))
+    from codepilot.commands.task import _render_recovery_hints
+    _render_recovery_hints(task)
 
 
 def _build_show_log_table(logs: list[dict]) -> Table:

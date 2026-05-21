@@ -109,6 +109,7 @@ class TaskListItem(TypedDict):
     completed_at: str
     retry_count: int
     max_retries: int
+    recovery_hints: list[str]
     actions: TaskActions
 
 
