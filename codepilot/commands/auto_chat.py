@@ -16,7 +16,6 @@ import http.client
 import subprocess
 import sys
 import threading
-import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Callable, Optional
@@ -31,24 +30,7 @@ from codepilot.ai_support.interaction_controller import (
 )
 from codepilot import __version__
 from codepilot.commands.auto_chat_commands import (
-    _active_chat_project_name,
     _dispatch_chat_natural_language_command,
-    _execute_chat_command,
-    _execute_inline_chat_command,
-    _inline_click_output,
-    _parse_chat_command,
-    _ParsedChatCommand,
-    _project_arg_or_active,
-    _render_chat_overview,
-    _render_chat_projects_summary,
-    _render_chat_services,
-    _render_chat_sessions,
-    _run_catalog_chat_command,
-    _run_project_switch_chat_command,
-    _run_project_view_chat_command,
-    _run_service_chat_command,
-    _run_task_proxy_chat_command,
-    _switch_chat_project,
 )
 from codepilot.core.runtime import codepilot_command, no_window_kwargs
 
