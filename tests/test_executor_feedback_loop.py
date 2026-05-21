@@ -12,6 +12,8 @@ from codepilot.commands import run as run_mod
 # ─── prompt helpers ─────────────────────────────────────────────────────────
 
 
+ZH_LANGUAGE = "zh-CN"
+
 SAMPLE_CONTENT = """\
 ## 任务目标
 
@@ -54,7 +56,10 @@ def test_bullet_lines_strips_placeholders():
 
 def test_builder_prompt_round1_lists_acceptance_criteria(tmp_path):
     prompt = run_mod._build_builtin_prompt(
-        _sample_task(), tmp_path / "42-task.md", project_path=tmp_path,
+        _sample_task(),
+        tmp_path / "42-task.md",
+        project_path=tmp_path,
+        language=ZH_LANGUAGE,
     )
     # Criteria enumerated inline so builder can cross-check.
     assert "验收标准" in prompt
@@ -74,6 +79,7 @@ def test_builder_prompt_round2_includes_previous_feedback(tmp_path):
         project_path=tmp_path,
         review_round=2,
         previous_review_feedback=feedback,
+        language=ZH_LANGUAGE,
     )
     assert "第 2 轮重做" in prompt
     assert "/history 重启后丢失" in prompt
@@ -85,14 +91,17 @@ def test_builder_prompt_surfaces_agents_md(tmp_path):
         "# Agent rules\n- 每次改动都要跑 pytest 并附结果。", encoding="utf-8",
     )
     prompt = run_mod._build_builtin_prompt(
-        _sample_task(), tmp_path / "42-task.md", project_path=tmp_path,
+        _sample_task(),
+        tmp_path / "42-task.md",
+        project_path=tmp_path,
+        language=ZH_LANGUAGE,
     )
     assert "项目约定" in prompt
     assert "每次改动都要跑 pytest" in prompt
 
 
 def test_reviewer_prompt_enumerates_acceptance_criteria():
-    prompt = run_mod._build_review_prompt(_sample_task())
+    prompt = run_mod._build_review_prompt(_sample_task(), language=ZH_LANGUAGE)
     assert "必须逐条核对" in prompt
     assert "重启后仍能看到" in prompt
     assert "支持清空历史" in prompt
@@ -102,7 +111,7 @@ def test_reviewer_prompt_enumerates_acceptance_criteria():
 
 
 def test_reviewer_prompt_includes_reviewer_notes():
-    prompt = run_mod._build_review_prompt(_sample_task())
+    prompt = run_mod._build_review_prompt(_sample_task(), language=ZH_LANGUAGE)
     assert "SQL 注入" in prompt
 
 
@@ -163,6 +172,10 @@ def fake_project(tmp_path, monkeypatch):
     proj_root = tmp_path / "proj"
     proj_root.mkdir()
     (proj_root / "README.md").write_text("# x", encoding="utf-8")
+    (proj_root / "AGENTS.toml").write_text(
+        '[project]\nname = "demo"\n\n[automation]\nagent_language = "zh-CN"\n',
+        encoding="utf-8",
+    )
 
     # Skip git preflight & commit machinery.
     monkeypatch.setattr(run_mod, "_builtin_preflight_error", lambda *a, **kw: "")
