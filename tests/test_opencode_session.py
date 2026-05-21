@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import ast
+import inspect as py_inspect
 import json
 import subprocess
+import textwrap
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from codepilot.commands.inspect_signal_collectors_code_metrics import _python_complexity_for_function
 from codepilot.core.config import AgentsConfig
 from codepilot.storage import database as db
 from tests.chat_flow_testkit import register_project
@@ -17,6 +21,11 @@ def _isolate_opencode_runtime(tmp_path: Path, monkeypatch) -> Path:
     root = tmp_path / "codepilot-home"
     monkeypatch.setattr("codepilot.opencode.paths.global_storage_root", lambda: root)
     return root
+
+
+def _function_complexity(function) -> int:
+    tree = ast.parse(textwrap.dedent(py_inspect.getsource(function)))
+    return _python_complexity_for_function(tree.body[0])
 
 
 def test_run_opencode_message_starts_new_json_session(tmp_path: Path, monkeypatch):
@@ -158,7 +167,7 @@ def test_run_opencode_message_uses_project_agent_language_for_headless_channels(
 
 def test_run_opencode_message_uses_binary_mcp_command_when_frozen(tmp_path: Path, monkeypatch):
     runtime_root = _isolate_opencode_runtime(tmp_path, monkeypatch)
-    project_path = register_project(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
     monkeypatch.setattr("codepilot.opencode.session.sys.frozen", True, raising=False)
     monkeypatch.setattr("codepilot.opencode.session.sys.executable", r"C:\Tools\CodePilot\codepilot.exe")
     calls = []
@@ -388,6 +397,12 @@ def test_run_opencode_message_reports_timeout_in_chinese(tmp_path: Path, monkeyp
     assert "1" in result["message"]
 
 
+def test_run_opencode_message_stream_entrypoint_stays_below_inspect_threshold():
+    from codepilot.opencode.session import run_opencode_message_stream
+
+    assert _function_complexity(run_opencode_message_stream) < 8
+
+
 def test_run_opencode_message_stream_emits_deltas_tools_and_final_result(
     tmp_path: Path,
     monkeypatch,
@@ -449,6 +464,104 @@ def test_run_opencode_message_stream_emits_deltas_tools_and_final_result(
     assert events[1]["content_delta"] == "第一段"
     assert events[-1]["content_snapshot"] == "第一段第二段"
     assert popen_calls[0]["command"][1:6] == ["run", "--agent", "codepilot", "--format", "json"]
+
+
+def test_run_opencode_message_stream_reports_silent_success_as_invalid_output(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _isolate_opencode_runtime(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
+    events = []
+
+    class FakeStdout:
+        def readline(self):
+            return ""
+
+    class FakeProcess:
+        def __init__(self, *_args, **_kwargs):
+            self.returncode = 0
+            self.stdout = FakeStdout()
+            self.stderr = SimpleNamespace(read=lambda: "")
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr("codepilot.opencode.session.subprocess.Popen", FakeProcess)
+
+    from codepilot.opencode.session import run_opencode_message_stream
+
+    result = run_opencode_message_stream(
+        "demo",
+        "静默输出",
+        source="web",
+        external_session_id="silent",
+        on_event=events.append,
+    )
+
+    assert result["ok"] is False
+    assert result["intent"] == "error"
+    assert "未返回有效回复" in result["message"]
+    assert [event["type"] for event in events] == ["started", "error"]
+    assert events[-1]["error"] == result["message"]
+
+
+def test_run_opencode_message_stream_reports_stderr_failure_and_clears_stale_session(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _isolate_opencode_runtime(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
+    db.upsert_service_state(
+        "opencode_chat",
+        "web:stale:demo",
+        status="active",
+        meta={"opencode_session_id": "ses_stale", "source": "web", "project": "demo"},
+    )
+    events = []
+
+    class FakeStdout:
+        def readline(self):
+            return ""
+
+    class FakeProcess:
+        def __init__(self, command, **_kwargs):
+            self.command = command
+            self.returncode = 2
+            self.stdout = FakeStdout()
+            self.stderr = SimpleNamespace(read=lambda: "session not found")
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr("codepilot.opencode.session.subprocess.Popen", FakeProcess)
+
+    from codepilot.opencode.session import run_opencode_message_stream
+
+    result = run_opencode_message_stream(
+        "demo",
+        "继续",
+        source="web",
+        external_session_id="stale",
+        on_event=events.append,
+    )
+
+    assert result["ok"] is False
+    assert result["intent"] == "error"
+    assert "退出码 2" in result["message"]
+    assert "session not found" in result["message"]
+    assert "已自动清理失效的 OpenCode 会话引用" in result["message"]
+    assert [event["type"] for event in events] == ["started", "error"]
+    assert events[-1]["error"] == result["message"]
+    state = db.get_service_state("opencode_chat", "web:stale:demo") or {}
+    assert state.get("status") == "stale"
+    assert not (state.get("meta") or {}).get("opencode_session_id")
 
 
 def test_run_opencode_message_stream_can_be_cancelled(tmp_path: Path, monkeypatch):

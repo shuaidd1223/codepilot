@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 import os
 import queue
@@ -28,6 +29,33 @@ OPENCODE_CHAT_SERVICE = "opencode_chat"
 DEFAULT_OPENCODE_AGENT = "codepilot"
 DEFAULT_OPENCODE_MESSAGE_TIMEOUT_SECONDS = 300.0
 StreamCallback = Callable[[dict[str, Any]], None]
+_NO_STREAM_LINE = object()
+_STREAM_CLOSED = object()
+
+
+@dataclass
+class _StreamContext:
+    project_name: str
+    message: str
+    source_name: str
+    external_id: str
+    cwd: Path
+    scope: str
+    previous_session_id: str
+    timeout: float
+
+
+@dataclass
+class _StreamState:
+    session_id: str
+    assistant_parts: list[str] = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def content_snapshot(self) -> str:
+        return "".join(self.assistant_parts)
+
+    def reply(self) -> str:
+        return _trim_text(self.content_snapshot().strip(), 4000)
 
 
 def run_opencode_message(
@@ -147,240 +175,394 @@ def run_opencode_message_stream(
 ) -> dict[str, Any]:
     """Send one OpenCode message and report JSON-line output incrementally."""
     db.init_db()
-    project_name = str(project or "").strip()
-    message = str(text or "").strip()
-    source_name = str(source or "").strip() or "external"
-    external_id = str(external_session_id or "").strip() or "default"
+    context, error = _resolve_stream_context(project, text, source, external_session_id, timeout_seconds)
+    if error:
+        return error
+    proc, error = _start_stream_process(context, agent=agent)
+    if error:
+        return error
+    state = _StreamState(session_id=context.previous_session_id)
+    _emit_stream_event(
+        on_event,
+        "started",
+        project=context.project_name,
+        session_id=state.session_id,
+        content_snapshot="",
+        tool_calls=state.tool_calls,
+    )
+    return _run_stream_process(proc, context, state, on_event, stop_event)
+
+
+def _resolve_stream_context(
+    project: str,
+    text: str,
+    source: str,
+    external_session_id: str,
+    timeout_seconds: int | float | None,
+) -> tuple[_StreamContext | None, dict[str, Any] | None]:
+    project_name = _clean_stream_input(project)
+    message = _clean_stream_input(text)
+    source_name = _default_stream_input(source, "external")
+    external_id = _default_stream_input(external_session_id, "default")
     if not project_name:
-        return _error("缺少项目名称，无法启动 OpenCode 会话。")
+        return None, _error("缺少项目名称，无法启动 OpenCode 会话。")
     if not message:
-        return _error("输入不能为空。")
+        return None, _error("输入不能为空。")
 
     project_info = db.get_project(project_name)
     if not project_info:
-        return _error(f"项目 '{project_name}' 未注册。")
-    project_name = str(project_info["name"])
-
+        return None, _error(f"项目 '{project_name}' 未注册。")
+    canonical_project_name = str(project_info["name"])
     cwd = Path(str(project_info["path"])).resolve()
-    scope = _scope(source_name, external_id, project_name)
+    scope = _scope(source_name, external_id, canonical_project_name)
+    return _StreamContext(
+        project_name=canonical_project_name,
+        message=message,
+        source_name=source_name,
+        external_id=external_id,
+        cwd=cwd,
+        scope=scope,
+        previous_session_id=_previous_stream_session_id(scope),
+        timeout=_resolve_timeout_seconds(timeout_seconds),
+    ), None
+
+
+def _clean_stream_input(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _default_stream_input(value: Any, default: str) -> str:
+    cleaned = _clean_stream_input(value)
+    return cleaned if cleaned else default
+
+
+def _previous_stream_session_id(scope: str) -> str:
     previous = db.get_service_state(OPENCODE_CHAT_SERVICE, scope) or {}
     previous_meta = previous.get("meta") if isinstance(previous.get("meta"), dict) else {}
-    previous_session_id = str(previous_meta.get("opencode_session_id") or "").strip()
-    timeout = _resolve_timeout_seconds(timeout_seconds)
+    return str(previous_meta.get("opencode_session_id") or "").strip()
 
+
+def _start_stream_process(
+    context: _StreamContext,
+    *,
+    agent: str | None,
+) -> tuple[Any | None, dict[str, Any] | None]:
     try:
         launch = _prepare_headless_launch(
-            project_name=project_name,
-            project_path=cwd,
-            message=message,
-            previous_session_id=previous_session_id,
+            project_name=context.project_name,
+            project_path=context.cwd,
+            message=context.message,
+            previous_session_id=context.previous_session_id,
             agent=agent,
         )
         proc = subprocess.Popen(
             launch["command"],
-            cwd=str(cwd),
+            cwd=str(context.cwd),
             env=launch["env"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
     except Exception as exc:
-        return _error(f"OpenCode 启动失败：{exc}")
+        return None, _error(f"OpenCode 启动失败：{exc}")
+    return proc, None
 
-    session_id = previous_session_id
-    assistant_parts: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
-    deadline = time.monotonic() + timeout
+
+def _run_stream_process(
+    proc: Any,
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+    stop_event: Any,
+) -> dict[str, Any]:
+    line_queue = _start_stdout_reader(proc)
+    deadline = time.monotonic() + context.timeout
+    try:
+        return_code = _consume_stream_output(proc, line_queue, context, state, on_event, stop_event, deadline)
+    except Exception as exc:
+        return _stream_exception_result(proc, context, state, on_event, exc)
+    if isinstance(return_code, dict):
+        return return_code
+    return _finish_stream_result(proc, return_code, context, state, on_event)
+
+
+def _start_stdout_reader(proc: Any) -> "queue.Queue[str | None]":
+    line_queue: "queue.Queue[str | None]" = queue.Queue()
+    reader = threading.Thread(
+        target=_read_stdout_lines,
+        args=(proc, line_queue),
+        daemon=True,
+        name="codepilot-opencode-stream",
+    )
+    reader.start()
+    return line_queue
+
+
+def _read_stdout_lines(proc: Any, line_queue: "queue.Queue[str | None]") -> None:
+    stdout = getattr(proc, "stdout", None)
+    try:
+        while stdout:
+            raw = stdout.readline()
+            if not raw:
+                break
+            line_queue.put(_decode_stream_stdout_line(raw))
+    finally:
+        line_queue.put(None)
+
+
+def _decode_stream_stdout_line(raw: Any) -> str:
+    if isinstance(raw, bytes):
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return raw.decode("utf-8", errors="replace")
+    return str(raw)
+
+
+def _consume_stream_output(
+    proc: Any,
+    line_queue: "queue.Queue[str | None]",
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+    stop_event: Any,
+    deadline: float,
+) -> int | dict[str, Any]:
+    while True:
+        control_result = _stream_control_result(proc, context, state, on_event, stop_event, deadline)
+        if control_result:
+            return control_result
+        raw_line = _next_stream_line(proc, line_queue)
+        if raw_line is _NO_STREAM_LINE:
+            continue
+        if raw_line is _STREAM_CLOSED:
+            break
+        _apply_stream_line(str(raw_line), context, state, on_event)
+    return proc.wait(timeout=1)
+
+
+def _stream_control_result(
+    proc: Any,
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+    stop_event: Any,
+    deadline: float,
+) -> dict[str, Any] | None:
+    if _stop_requested(stop_event):
+        return _stream_cancelled_result(proc, context, state, on_event)
+    if time.monotonic() > deadline:
+        return _stream_timeout_result(proc, context, state, on_event)
+    return None
+
+
+def _next_stream_line(proc: Any, line_queue: "queue.Queue[str | None]") -> str | object:
+    try:
+        raw_line = line_queue.get(timeout=0.05)
+    except queue.Empty:
+        return _STREAM_CLOSED if proc.poll() is not None else _NO_STREAM_LINE
+    if raw_line is None:
+        return _STREAM_CLOSED if proc.poll() is not None else _NO_STREAM_LINE
+    return raw_line
+
+
+def _apply_stream_line(
+    raw_line: str,
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+) -> None:
+    parsed_event = _loads_json_line(raw_line)
+    if parsed_event is None:
+        return
+    next_session_id = _find_session_id(parsed_event)
+    if next_session_id:
+        state.session_id = next_session_id
+    text_delta = _find_assistant_text(parsed_event)
+    if text_delta:
+        state.assistant_parts.append(text_delta)
+        _emit_stream_delta(context, state, on_event, text_delta)
+    tool_name = _find_tool_name(parsed_event)
+    if tool_name:
+        state.tool_calls.append({"name": tool_name})
+        _emit_stream_tool(context, state, on_event)
+
+
+def _emit_stream_delta(
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+    text_delta: str,
+) -> None:
     _emit_stream_event(
         on_event,
-        "started",
-        project=project_name,
-        session_id=session_id,
-        content_snapshot="",
-        tool_calls=tool_calls,
+        "delta",
+        project=context.project_name,
+        session_id=state.session_id,
+        content_delta=text_delta,
+        content_snapshot=state.content_snapshot(),
+        tool_calls=state.tool_calls,
     )
-    line_queue: "queue.Queue[str | None]" = queue.Queue()
 
-    def _reader() -> None:
-        stdout = getattr(proc, "stdout", None)
-        try:
-            while stdout:
-                raw = stdout.readline()
-                if not raw:
-                    break
-                if isinstance(raw, bytes):
-                    try:
-                        decoded = raw.decode("utf-8")
-                    except UnicodeDecodeError:
-                        decoded = raw.decode("utf-8", errors="replace")
-                else:
-                    decoded = raw
-                line_queue.put(decoded)
-        finally:
-            line_queue.put(None)
 
-    reader = threading.Thread(target=_reader, daemon=True, name="codepilot-opencode-stream")
-    reader.start()
+def _emit_stream_tool(context: _StreamContext, state: _StreamState, on_event: StreamCallback | None) -> None:
+    _emit_stream_event(
+        on_event,
+        "tool",
+        project=context.project_name,
+        session_id=state.session_id,
+        content_snapshot=state.content_snapshot(),
+        tool_calls=state.tool_calls,
+    )
 
-    try:
-        while True:
-            if _stop_requested(stop_event):
-                _terminate_process(proc)
-                result = _cancelled("OpenCode 会话已停止。")
-                _emit_stream_event(
-                    on_event,
-                    "cancelled",
-                    project=project_name,
-                    session_id=session_id,
-                    content_snapshot="".join(assistant_parts),
-                    tool_calls=tool_calls,
-                )
-                return result
-            if time.monotonic() > deadline:
-                _terminate_process(proc)
-                detail = _trim_text(_read_stderr(proc), 800)
-                suffix = f"：{detail}" if detail else "。"
-                result = _error(f"OpenCode 执行超时（{_format_seconds(timeout)} 秒）{suffix}")
-                _emit_stream_event(
-                    on_event,
-                    "error",
-                    project=project_name,
-                    session_id=session_id,
-                    content_snapshot="".join(assistant_parts),
-                    tool_calls=tool_calls,
-                    error=result["message"],
-                )
-                return result
 
-            try:
-                raw_line = line_queue.get(timeout=0.05)
-            except queue.Empty:
-                if proc.poll() is not None:
-                    break
-                continue
+def _stream_cancelled_result(
+    proc: Any,
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+) -> dict[str, Any]:
+    _terminate_process(proc)
+    result = _cancelled("OpenCode 会话已停止。")
+    _emit_stream_event(
+        on_event,
+        "cancelled",
+        project=context.project_name,
+        session_id=state.session_id,
+        content_snapshot=state.content_snapshot(),
+        tool_calls=state.tool_calls,
+    )
+    return result
 
-            if raw_line is None:
-                if proc.poll() is not None:
-                    break
-                continue
-            if raw_line:
-                parsed_event = _loads_json_line(raw_line)
-                if parsed_event is None:
-                    continue
-                next_session_id = _find_session_id(parsed_event)
-                if next_session_id:
-                    session_id = next_session_id
-                text_delta = _find_assistant_text(parsed_event)
-                if text_delta:
-                    assistant_parts.append(text_delta)
-                    _emit_stream_event(
-                        on_event,
-                        "delta",
-                        project=project_name,
-                        session_id=session_id,
-                        content_delta=text_delta,
-                        content_snapshot="".join(assistant_parts),
-                        tool_calls=tool_calls,
-                    )
-                tool_name = _find_tool_name(parsed_event)
-                if tool_name:
-                    tool_calls.append({"name": tool_name})
-                    _emit_stream_event(
-                        on_event,
-                        "tool",
-                        project=project_name,
-                        session_id=session_id,
-                        content_snapshot="".join(assistant_parts),
-                        tool_calls=tool_calls,
-                    )
-                continue
 
-        return_code = proc.wait(timeout=1)
-    except Exception as exc:
-        _terminate_process(proc)
-        result = _error(f"OpenCode 执行失败：{exc}")
-        _emit_stream_event(
-            on_event,
-            "error",
-            project=project_name,
-            session_id=session_id,
-            content_snapshot="".join(assistant_parts),
-            tool_calls=tool_calls,
-            error=result["message"],
-        )
-        return result
+def _stream_timeout_result(
+    proc: Any,
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+) -> dict[str, Any]:
+    _terminate_process(proc)
+    detail = _trim_text(_read_stderr(proc), 800)
+    suffix = f"：{detail}" if detail else "。"
+    result = _error(f"OpenCode 执行超时（{_format_seconds(context.timeout)} 秒）{suffix}")
+    _emit_stream_error(context, state, on_event, result["message"])
+    return result
 
+
+def _stream_exception_result(
+    proc: Any,
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+    exc: Exception,
+) -> dict[str, Any]:
+    _terminate_process(proc)
+    result = _error(f"OpenCode 执行失败：{exc}")
+    _emit_stream_error(context, state, on_event, result["message"])
+    return result
+
+
+def _finish_stream_result(
+    proc: Any,
+    return_code: int,
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+) -> dict[str, Any]:
     if return_code != 0:
-        detail = _trim_text(_read_stderr(proc), 800)
-        cleanup_note = _clear_stale_session_state(
-            scope,
-            previous_session_id=previous_session_id,
-            extracted_session_id=session_id if session_id != previous_session_id else "",
-        )
-        message_body = detail or "没有错误输出。"
-        if cleanup_note:
-            message_body = f"{message_body}\n{cleanup_note}"
-        result = _error(f"OpenCode 执行失败（退出码 {return_code}）：{message_body}")
-        _emit_stream_event(
-            on_event,
-            "error",
-            project=project_name,
-            session_id=session_id,
-            content_snapshot="".join(assistant_parts),
-            tool_calls=tool_calls,
-            error=result["message"],
-        )
-        return result
+        return _stream_failure_result(proc, return_code, context, state, on_event)
+    _sync_project_model_after_headless(context.project_name, context.cwd)
+    _persist_stream_session(context, state)
+    return _stream_success_result(context, state, on_event)
 
-    _sync_project_model_after_headless(project_name, cwd)
-    if session_id:
-        db.upsert_service_state(
-            OPENCODE_CHAT_SERVICE,
-            scope,
-            pid=0,
-            status="active",
-            log_path="",
-            meta={
-                "source": source_name,
-                "external_session_id": external_id,
-                "project": project_name,
-                "opencode_session_id": session_id,
-                "last_message_at": _now_iso(),
-            },
-        )
 
-    reply = _trim_text("".join(assistant_parts).strip(), 4000)
-    if not reply and not tool_calls:
+def _stream_failure_result(
+    proc: Any,
+    return_code: int,
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+) -> dict[str, Any]:
+    detail = _trim_text(_read_stderr(proc), 800)
+    cleanup_note = _clear_stale_session_state(
+        context.scope,
+        previous_session_id=context.previous_session_id,
+        extracted_session_id=state.session_id if state.session_id != context.previous_session_id else "",
+    )
+    message_body = detail or "没有错误输出。"
+    if cleanup_note:
+        message_body = f"{message_body}\n{cleanup_note}"
+    result = _error(f"OpenCode 执行失败（退出码 {return_code}）：{message_body}")
+    _emit_stream_error(context, state, on_event, result["message"])
+    return result
+
+
+def _persist_stream_session(context: _StreamContext, state: _StreamState) -> None:
+    if not state.session_id:
+        return
+    db.upsert_service_state(
+        OPENCODE_CHAT_SERVICE,
+        context.scope,
+        pid=0,
+        status="active",
+        log_path="",
+        meta={
+            "source": context.source_name,
+            "external_session_id": context.external_id,
+            "project": context.project_name,
+            "opencode_session_id": state.session_id,
+            "last_message_at": _now_iso(),
+        },
+    )
+
+
+def _stream_success_result(
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+) -> dict[str, Any]:
+    reply = state.reply()
+    if not reply and not state.tool_calls:
         result = _error("OpenCode 执行完成但未返回有效回复，可能输出格式异常。")
-        _emit_stream_event(
-            on_event,
-            "error",
-            project=project_name,
-            session_id=session_id,
-            content_snapshot=reply,
-            tool_calls=tool_calls,
-            error=result["message"],
-        )
+        _emit_stream_error(context, state, on_event, result["message"], content_snapshot=reply)
         return result
-
     result = {
         "ok": True,
         "intent": "opencode",
-        "project": project_name,
-        "source": source_name,
-        "external_session_id": external_id,
-        "opencode_session_id": session_id,
+        "project": context.project_name,
+        "source": context.source_name,
+        "external_session_id": context.external_id,
+        "opencode_session_id": state.session_id,
         "message": reply or "OpenCode 已完成处理，但没有返回可展示文本。",
-        "tool_calls": tool_calls,
+        "tool_calls": state.tool_calls,
     }
     _emit_stream_event(
         on_event,
         "done",
-        project=project_name,
-        session_id=session_id,
+        project=context.project_name,
+        session_id=state.session_id,
         content_snapshot=result["message"],
-        tool_calls=tool_calls,
+        tool_calls=state.tool_calls,
     )
     return result
+
+
+def _emit_stream_error(
+    context: _StreamContext,
+    state: _StreamState,
+    on_event: StreamCallback | None,
+    error: str,
+    *,
+    content_snapshot: str | None = None,
+) -> None:
+    _emit_stream_event(
+        on_event,
+        "error",
+        project=context.project_name,
+        session_id=state.session_id,
+        content_snapshot=state.content_snapshot() if content_snapshot is None else content_snapshot,
+        tool_calls=state.tool_calls,
+        error=error,
+    )
 
 
 def _prepare_headless_launch(
