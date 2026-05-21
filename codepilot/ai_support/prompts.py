@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from codepilot.ai_support import providers as _providers
 from codepilot.prompts import load_prompt as _load_prompt
 
 
+@dataclass
 class AgentConfig:
     """Agent runtime configuration."""
     builder: str = "codex"  # CLI name or API provider key
@@ -24,13 +26,13 @@ class AgentConfig:
 
     def resolve_builder(self) -> tuple[str, str]:
         """Resolve builder and return (type, name)."""
-        if self.builder in API_PROVIDERS:
+        if self.builder in _providers.API_PROVIDERS:
             return "api", self.builder
         return "cli", self.builder
 
     def resolve_reviewer(self) -> tuple[str, str]:
         """Resolve reviewer and return (type, name)."""
-        if self.reviewer in API_PROVIDERS:
+        if self.reviewer in _providers.API_PROVIDERS:
             return "api", self.reviewer
         return "cli", self.reviewer
 
@@ -157,6 +159,4 @@ RECON_PROMPT_TEMPLATE = _load_prompt("task_recon")
 
 
 TASK_BREAKDOWN_PROMPT_TEMPLATE = _load_prompt("task_breakdown")
-
-
 
