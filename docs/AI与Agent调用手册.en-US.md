@@ -114,6 +114,35 @@ codepilot ai template --format json
 codepilot ai template --format guide
 ```
 
+### 2.10 MCP Default Tool Contract
+
+`codepilot mcp serve --list-tools` and MCP `list_tools` use the same default registry. The default public tool count is 22, excluding the runtime health-check tool `codepilot.health`. When a real MCP service starts, `codepilot.health` is registered in addition to these default tools for liveness checks.
+
+Default public tools:
+
+- `archive_task`
+- `build_fix`
+- `create_task`
+- `daemon_status`
+- `doctor`
+- `edit_task`
+- `exec`
+- `explore`
+- `feishu_notify`
+- `feishu_send_to_user`
+- `generate_breakdown`
+- `hook_trigger`
+- `inspect_project`
+- `list_tasks`
+- `note_add`
+- `run_once`
+- `show_task`
+- `stop_task`
+- `validate_task_template`
+- `webhook_invoke`
+- `wiki_add`
+- `wiki_query`
+
 ## 3. Direct Task Submission
 
 Direct task import is for external AI systems that have already planned work and rendered complete task content. It is not the normal human workflow.

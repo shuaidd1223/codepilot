@@ -29,6 +29,7 @@ DEFAULT_MCP_TOOL_NAMES = {
     "run_once",
     "show_task",
     "stop_task",
+    "validate_task_template",
     "webhook_invoke",
     "wiki_add",
     "wiki_query",
@@ -63,7 +64,7 @@ def test_register_tool_builds_schema_from_annotations():
     }
 
 
-def test_default_mcp_registry_loads_21_tools_without_duplicates():
+def test_default_mcp_registry_loads_22_tools_without_duplicates():
     from codepilot.mcp.tool_registry import default_registry
     from codepilot.mcp.tools import load_default_tools
 

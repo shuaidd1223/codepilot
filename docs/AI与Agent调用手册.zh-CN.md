@@ -141,6 +141,35 @@ codepilot ai template --format json
 codepilot ai template --format guide
 ```
 
+### 2.10 MCP 默认工具契约
+
+`codepilot mcp serve --list-tools` 和 MCP `list_tools` 使用同一份默认注册表。默认公开工具数为 22 个，不包含运行时健康检查工具 `codepilot.health`。启动真实 MCP 服务时，`codepilot.health` 会额外注册用于探活。
+
+默认公开工具：
+
+- `archive_task`
+- `build_fix`
+- `create_task`
+- `daemon_status`
+- `doctor`
+- `edit_task`
+- `exec`
+- `explore`
+- `feishu_notify`
+- `feishu_send_to_user`
+- `generate_breakdown`
+- `hook_trigger`
+- `inspect_project`
+- `list_tasks`
+- `note_add`
+- `run_once`
+- `show_task`
+- `stop_task`
+- `validate_task_template`
+- `webhook_invoke`
+- `wiki_add`
+- `wiki_query`
+
 ## 3. 直接投递任务
 
 直接投递任务仅适合外部 AI / 自动化系统已经完成任务规划的场景。

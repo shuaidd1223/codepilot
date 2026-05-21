@@ -27,6 +27,7 @@ DEFAULT_MCP_TOOL_NAMES = {
     "run_once",
     "show_task",
     "stop_task",
+    "validate_task_template",
     "webhook_invoke",
     "wiki_add",
     "wiki_query",
@@ -178,7 +179,7 @@ def test_mcp_serve_list_tools_outputs_default_registry_tools(tmp_path, monkeypat
     )
 
     assert result.exit_code == 0, result.output
-    assert "21 MCP tools" in result.output
+    assert "22 MCP tools" in result.output
     for name in DEFAULT_MCP_TOOL_NAMES:
         assert f"- {name}" in result.output
 
