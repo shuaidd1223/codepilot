@@ -6,7 +6,13 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from codepilot.ai_support.agent_support import command_manifest
+from codepilot.ai_support.agent_task_template import task_template_schema
 from codepilot.cli import main
+from codepilot.commands import add as add_cmd
+from codepilot.core.task_template import (
+    missing_task_template_sections,
+    unreplaced_task_template_placeholders,
+)
 from codepilot.core.workflow_state import read_workflow_state
 from codepilot.storage import database as db
 from tests.workflow_testkit import init_test_db
@@ -100,6 +106,53 @@ def test_plan_json_includes_next_actions(tmp_path, monkeypatch):
         assert "label" in action
         assert "risk" in action
         assert "suggested_command" in action
+
+
+def test_plan_json_writes_importable_task_batch_artifact(tmp_path, monkeypatch):
+    project = _register_demo(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(main, ["plan", "-p", "demo", "新增 explore", "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    task_batch_path = Path(data["task_batch_path"])
+    context_path = Path(data["context_path"])
+    assert task_batch_path.exists()
+    assert task_batch_path.is_relative_to(Path(project["path"]))
+    assert task_batch_path != context_path
+
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    assert context["task_batch_path"] == str(task_batch_path)
+
+    items = json.loads(task_batch_path.read_text(encoding="utf-8"))
+    assert isinstance(items, list)
+    assert len(items) == len(data["task_candidates"])
+    schema = task_template_schema(language="zh-CN")
+    placeholder_names = [item["name"] for item in schema["placeholders"]]
+    for item in items:
+        assert {"agent", "content", "priority", "title"}.issubset(item)
+        assert item["title"]
+        assert item["priority"] in {"P0", "P1", "P2", "P3"}
+        assert item["agent"]
+        assert missing_task_template_sections(item["content"]) == []
+        assert unreplaced_task_template_placeholders(
+            item["content"],
+            placeholder_names=placeholder_names,
+        ) == []
+
+    import_action = next(action for action in data["next_actions"] if action["id"] == "import_tasks")
+    command = import_action["suggested_command"]
+    assert str(task_batch_path) in command
+    assert str(context_path) not in command
+    assert "--json" not in command
+
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+    import_result = CliRunner().invoke(main, ["add", "-p", "demo", "-f", str(task_batch_path)])
+    assert import_result.exit_code == 0, import_result.output
+    imported = db.list_tasks(project="demo")
+    assert len(imported) == len(items)
+    assert [task["title"] for task in imported] == [item["title"] for item in items]
 
 
 def test_ai_manifest_includes_plan_command():

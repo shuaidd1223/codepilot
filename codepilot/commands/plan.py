@@ -10,6 +10,7 @@ from typing import Any
 
 import click
 
+from codepilot.ai_support.service import build_task_markdown_from_plan
 from codepilot.commands.clarify import _resolve_project, _slugify, _summary
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.output import echo
@@ -159,14 +160,28 @@ def _build_verification_plan(summary: str, files: list[str]) -> list[dict[str, s
     ]
 
 
-def _plan_next_actions(summary: str, project_info: dict, plan_path: str | None = None) -> list[dict[str, str]]:
+def _command_path(path: str | None, placeholder: str) -> str:
+    text = str(path or "").strip() or placeholder
+    if re.search(r"\s", text):
+        escaped = text.replace('"', '\\"')
+        return f'"{escaped}"'
+    return text
+
+
+def _plan_next_actions(
+    summary: str,
+    project_info: dict,
+    plan_path: str | None = None,
+    task_batch_path: str | None = None,
+) -> list[dict[str, str]]:
     project_name = project_info.get("name", "<project>")
+    task_batch_arg = _command_path(task_batch_path, "<task_batch_path>")
     return [
         {
             "id": "import_tasks",
             "label": "将候选任务导入 backlog",
             "risk": "medium",
-            "suggested_command": f"codepilot add -p {project_name} -f <plan_context_path> --json",
+            "suggested_command": f"codepilot add -p {project_name} -f {task_batch_arg}",
         },
         {
             "id": "continue_clarify",
@@ -184,7 +199,7 @@ def _plan_next_actions(summary: str, project_info: dict, plan_path: str | None =
             "id": "abandon_plan",
             "label": "放弃该计划，删除 plan artifact",
             "risk": "low",
-            "suggested_command": f"rm {plan_path}" if plan_path else "rm <plan_path>",
+            "suggested_command": f"rm {_command_path(plan_path, '<plan_path>')}",
         },
     ]
 
@@ -277,6 +292,70 @@ def build_execution_plan(
     return payload
 
 
+def _task_batch_item_from_candidate(candidate: dict[str, Any], payload: dict[str, Any], index: int) -> dict[str, str]:
+    title = str(candidate.get("title") or f"计划候选任务 {index}").strip()
+    priority = str(candidate.get("priority") or "P2").strip().upper()
+    if priority not in {"P0", "P1", "P2", "P3"}:
+        priority = "P2"
+    agent = str(candidate.get("agent") or "dual").strip() or "dual"
+    files = [str(item) for item in candidate.get("files") or [] if str(item).strip()]
+    summary = str(payload.get("summary") or "计划任务").strip()
+    candidate_id = str(candidate.get("id") or f"T{index}").strip()
+    acceptance = [
+        str(item)
+        for item in candidate.get("acceptance_criteria") or []
+        if str(item).strip()
+    ]
+    template_task = {
+        "title": title,
+        "priority": priority,
+        "agent": agent,
+        "risk_level": "中",
+        "scope_budget": f"最多 {max(len(files), 1)} 个文件 / 小范围改动",
+        "owner": "未指派",
+        "goal": str(candidate.get("goal") or f"完成「{summary}」中的 {candidate_id}。").strip(),
+        "acceptance_criteria": acceptance,
+        "builder_notes": [
+            f"完成 plan artifact 中 {candidate_id} 的目标。",
+            "沿用现有模块边界、命名和测试风格。",
+        ],
+        "reviewer_notes": [
+            "确认任务正文满足 task-template 必需章节。",
+            "确认验收标准和验证命令覆盖本任务范围。",
+        ],
+        "files": files,
+        "notes": [str(item) for item in payload.get("risks") or [] if str(item).strip()],
+        "forbidden": [
+            "不要自动导入 backlog 或启动执行器。",
+            "不要提交密钥、令牌、个人配置或生成产物。",
+            "不要改动本候选任务范围外的模块。",
+        ],
+        "not_in_scope": [
+            "不处理 plan artifact 未列出的扩展需求。",
+            "不做与本候选任务无关的重构、格式化或依赖升级。",
+        ],
+        "evidence": (
+            f"来自 plan artifact「{summary}」的任务候选 {candidate_id}；"
+            f"文件范围：{', '.join(files) if files else '待确认'}。"
+        ),
+    }
+    content = build_task_markdown_from_plan(template_task, language="zh-CN")
+    return {
+        "title": title,
+        "priority": priority,
+        "agent": agent,
+        "content": content,
+    }
+
+
+def _build_task_batch_items(payload: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        _task_batch_item_from_candidate(candidate, payload, index)
+        for index, candidate in enumerate(payload.get("task_candidates") or [], 1)
+        if isinstance(candidate, dict)
+    ]
+
+
 def write_plan_artifact(
     project_info: dict,
     requirement: str,
@@ -290,22 +369,34 @@ def write_plan_artifact(
     slug = f"plan-{_slugify(requirement)}-{_now_slug()}"
     plan_path = dirs["plans"] / f"{slug}.md"
     context_path = dirs["context"] / f"{slug}.json"
+    task_batch_path = dirs["context"] / f"{slug}.tasks.json"
     state = start_workflow(
         project_path,
         mode="plan",
         session_id=slug,
         current_phase="drafting",
         context_path=context_path,
-        artifact_paths={"plan": plan_path},
+        artifact_paths={"plan": plan_path, "task_batch": task_batch_path},
     )
     from codepilot.commands.wiki import wiki_context as collect_wiki_context
 
     wiki = collect_wiki_context(project_info, requirement, enabled=use_wiki, limit=5)
     payload = build_execution_plan(requirement, source=source, source_path=source_path, wiki_context=wiki)
-    next_actions = _plan_next_actions(payload["summary"], project_info, plan_path=str(plan_path))
+    task_batch_items = _build_task_batch_items(payload)
+    next_actions = _plan_next_actions(
+        payload["summary"],
+        project_info,
+        plan_path=str(plan_path),
+        task_batch_path=str(task_batch_path),
+    )
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     context_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(payload["plan"], encoding="utf-8", newline="\n")
+    task_batch_path.write_text(
+        json.dumps(task_batch_items, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     context_path.write_text(
         json.dumps(
             {
@@ -318,6 +409,7 @@ def write_plan_artifact(
                 "risks": payload["risks"],
                 "verification_plan": payload["verification_plan"],
                 "wiki_context": payload["wiki_context"],
+                "task_batch_path": str(task_batch_path),
                 "next_actions": next_actions,
                 "state": state,
             },
@@ -334,6 +426,7 @@ def write_plan_artifact(
         "project": {"name": project_info["name"], "path": str(project_path)},
         "plan_path": str(plan_path),
         "context_path": str(context_path),
+        "task_batch_path": str(task_batch_path),
         "summary": payload["summary"],
         "source": payload["source"],
         "source_path": payload["source_path"],
