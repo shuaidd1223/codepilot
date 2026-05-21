@@ -9,11 +9,10 @@ import click
 from codepilot import __version__
 from codepilot.core.console_encoding import configure_console_encoding
 from codepilot.core.runtime import silence_subprocess_windows_if_detached
+from codepilot.storage.database import init_db
 
 configure_console_encoding()
 silence_subprocess_windows_if_detached()
-
-from codepilot.storage.database import init_db
 
 _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "init": ("codepilot.commands.init", "init_"),

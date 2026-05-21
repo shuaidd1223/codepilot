@@ -30,3 +30,26 @@ def test_selected_python_modules_have_no_unused_symbols() -> None:
     )
 
     assert result.returncode == 0, result.stdout
+
+
+def test_cli_and_auto_modules_have_top_level_imports_first() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ruff",
+            "check",
+            "--select",
+            "E402",
+            "codepilot/cli.py",
+            "codepilot/commands/auto.py",
+        ],
+        cwd=repo_root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout

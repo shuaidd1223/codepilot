@@ -20,10 +20,41 @@ from typing import Optional
 
 import click
 
-from codepilot.storage import database as db
 from codepilot.ai_support.interaction_controller import (
     resolve_turn_intent,
 )
+from codepilot.commands.auto_chat import (  # noqa: F401 (re-export)
+    _Spinner,
+    _chat_help,
+    _parse_intent_prefix,
+    _start_chat_ui,
+    run_chat_session,
+)
+from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
+    append_clarification_answer,
+    append_clarification_answer_to_state,
+    assess_requirement_for_planning,
+    build_clarification_state,
+    clarify_requirement,
+    classify_entry_intent,
+    clarification_state_from_assessment,
+    command_intent_guidance,
+    continue_pending_clarification,
+    normalize_clarification_history,
+    resolve_question_answer_options,
+    resolve_shared_gateway_options,
+    normalize_requirement_text,
+    _project_config,
+    _provider_context,
+    _has_explicit_automation_task_agent,
+    _resolve_effective_options,
+    _resolve_task_agent,
+    _should_execute,
+    _should_fallback_codex_planning,
+    resolve_project_for_prompt,
+    run_requirement_workflow,
+)
+from codepilot.storage import database as db
 
 # Re-exported dependencies — tests monkeypatch these on ``codepilot.commands.auto``
 # and the implementation modules resolve them via this shell at call time.
@@ -91,38 +122,6 @@ def _resolve_project_strict(ctx, param, value):
         echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
         raise click.Abort()
     return value
-
-from codepilot.commands.auto_chat import (  # noqa: F401 (re-export)
-    _Spinner,
-    _chat_help,
-    _parse_intent_prefix,
-    _start_chat_ui,
-    run_chat_session,
-)
-from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
-    append_clarification_answer,
-    append_clarification_answer_to_state,
-    assess_requirement_for_planning,
-    build_clarification_state,
-    clarify_requirement,
-    classify_entry_intent,
-    clarification_state_from_assessment,
-    command_intent_guidance,
-    continue_pending_clarification,
-    normalize_clarification_history,
-    resolve_question_answer_options,
-    resolve_shared_gateway_options,
-    normalize_requirement_text,
-    _project_config,
-    _provider_context,
-    _has_explicit_automation_task_agent,
-    _resolve_effective_options,
-    _resolve_task_agent,
-    _should_execute,
-    _should_fallback_codex_planning,
-    resolve_project_for_prompt,
-    run_requirement_workflow,
-)
 
 
 def _json_mode(ctx: click.Context, json_mode: bool) -> bool:
@@ -394,4 +393,3 @@ def chat(
         enable_ui=enable_ui,
         ui_port=ui_port,
     )
-
