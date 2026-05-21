@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-def test_selected_ai_support_modules_have_no_unused_symbols() -> None:
+def test_selected_python_modules_have_no_unused_symbols() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [
@@ -20,6 +20,7 @@ def test_selected_ai_support_modules_have_no_unused_symbols() -> None:
             "codepilot/ai_support/providers.py",
             "codepilot/ai_support/classifier.py",
             "codepilot/ai_support/clarification_protocol.py",
+            "codepilot/commands/add.py",
         ],
         cwd=repo_root,
         text=True,

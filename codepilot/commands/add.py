@@ -16,10 +16,8 @@ from codepilot.ai_support.service import (
     check_provider_availability,
     generate_task_content,
     list_available_providers,
-    normalize_agent_name,
     resolve_agent_with_fallback,
 )
-from codepilot.commands.status import _resolve_project
 from codepilot.core.config import resolve_project_config_reference
 from codepilot.core.output import echo
 from codepilot.core.task_template import missing_task_template_sections
@@ -353,7 +351,6 @@ def add(
         raise click.BadParameter("--title 或 --file 必须指定一个")
 
     # Re-resolve with fallback info (the Click callback doesn't propagate it).
-    default_mode = proj_info.get("default_mode", "dual") if proj_info else "dual"
     effective_agent, fallback_reason, _ = _resolve_agent_info(ctx, agent)
 
     _single_add(
