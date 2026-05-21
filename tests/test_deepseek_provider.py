@@ -74,6 +74,26 @@ def test_deepseek_complex_prompt_uses_configured_complex_model_with_max_thinking
     assert captured["reasoning_effort"] == "max"
 
 
+def test_deepseek_request_profile_can_be_built_without_provider_runner():
+    from codepilot.ai_support.provider_profiles import build_api_request_profile
+    from codepilot.ai_support.providers import API_PROVIDERS
+
+    provider = copy(API_PROVIDERS["deepseek"])
+    provider.model = "legacy-default-should-not-be-used"
+    provider.simple_model = "configured-simple-model"
+    provider.complex_model = "configured-complex-model"
+
+    profile = build_api_request_profile(
+        provider,
+        "架构 重构 迁移 兼容 回归 并发 数据库 调度 发布 安全 权限 多模块 高风险 性能 分布式",
+    )
+
+    assert profile.model == "configured-complex-model"
+    assert profile.difficulty == "xhard"
+    assert profile.thinking == "enabled"
+    assert profile.reasoning_effort == "max"
+
+
 def test_openai_sync_usage_is_recorded(tmp_path, monkeypatch):
     from codepilot.ai_support.providers import API_PROVIDERS, _run_api_provider
     from codepilot.webapp.payloads import ai_status_payload

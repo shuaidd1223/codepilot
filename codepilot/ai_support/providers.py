@@ -25,6 +25,13 @@ from codepilot.ai_support.provider_adapters import (
     ANTHROPIC_AVAILABLE as ANTHROPIC_AVAILABLE,
     OPENAI_AVAILABLE as OPENAI_AVAILABLE,
 )
+from codepilot.ai_support.provider_profiles import (
+    APIRequestProfile as _ProviderAPIRequestProfile,
+    build_api_request_profile as _build_api_request_profile,
+    classify_prompt_difficulty as _classify_prompt_difficulty_impl,
+    is_deepseek_provider as _is_deepseek_provider,
+    provider_usage_key as _provider_usage_key,
+)
 from codepilot.ai_support.provider_registry import (
     API_PROVIDERS,
     APIProvider,
@@ -35,6 +42,12 @@ from codepilot.ai_support.provider_registry import (
 )
 from codepilot.core.config import load_project_config
 from codepilot.core.text_decode import decode_subprocess_text
+
+_APIRequestProfile = _ProviderAPIRequestProfile
+
+
+def _classify_prompt_difficulty(prompt: str, system_prompt: Optional[str] = None) -> str:
+    return _classify_prompt_difficulty_impl(prompt, system_prompt)
 
 
 def resolve_api_provider(
@@ -500,14 +513,6 @@ class _APIRunContext:
     reasoning_effort: str = ""
 
 
-@dataclass(frozen=True)
-class _APIRequestProfile:
-    model: str
-    difficulty: str
-    thinking: str = ""
-    reasoning_effort: str = ""
-
-
 def _build_api_messages(prompt: str, system_prompt: Optional[str] = None) -> list[dict[str, str]]:
     """Build chat-style messages for OpenAI-compatible request payloads."""
     messages: list[dict[str, str]] = []
@@ -531,84 +536,6 @@ def _estimate_tokens(text: str) -> int:
     if not content:
         return 0
     return max(1, (len(content.encode("utf-8")) + 3) // 4)
-
-
-_COMPLEX_TASK_KEYWORDS = (
-    "架构",
-    "重构",
-    "迁移",
-    "兼容",
-    "回归",
-    "并发",
-    "数据库",
-    "调度",
-    "发布",
-    "安全",
-    "权限",
-    "多模块",
-    "高风险",
-    "性能",
-    "分布式",
-    "integration",
-    "migration",
-    "architecture",
-    "refactor",
-    "compatibility",
-    "concurrency",
-    "database",
-    "security",
-    "regression",
-)
-
-_SIMPLE_TASK_KEYWORDS = (
-    "总结",
-    "翻译",
-    "分类",
-    "一句话",
-    "解释",
-    "摘要",
-    "summarize",
-    "translate",
-    "classify",
-)
-
-
-def _classify_prompt_difficulty(prompt: str, system_prompt: Optional[str] = None) -> str:
-    """Small deterministic heuristic for routing cost/quality-sensitive API calls."""
-    text = f"{system_prompt or ''}\n{prompt or ''}".lower()
-    char_count = len(text)
-    score = 0
-    if char_count > 12000:
-        score += 5
-    elif char_count > 6000:
-        score += 4
-    elif char_count > 2500:
-        score += 2
-    elif char_count > 900:
-        score += 1
-
-    keyword_hits = sum(1 for word in _COMPLEX_TASK_KEYWORDS if word in text)
-    score += min(5, keyword_hits)
-    if keyword_hits >= 5:
-        score += 2
-    if any(word in text for word in _SIMPLE_TASK_KEYWORDS) and char_count < 1200:
-        score -= 2
-
-    if score >= 7:
-        return "xhard"
-    if score >= 4:
-        return "hard"
-    if score >= 2:
-        return "medium"
-    return "simple"
-
-
-def _provider_usage_key(provider: Any) -> str:
-    explicit = str(getattr(provider, "usage_key", "") or "").strip()
-    if explicit:
-        return explicit
-    name = str(getattr(provider, "name", "") or "").strip().lower()
-    return name.replace(" ", "-") or "unknown"
 
 
 def mark_provider_unavailable(
@@ -643,56 +570,6 @@ def mark_provider_unavailable(
         db.upsert_service_state("ai_provider", scope, status="unavailable", meta=meta)
     except Exception:
         return
-
-
-def _is_deepseek_provider(provider: Any) -> bool:
-    base_url = str(getattr(provider, "base_url", "") or "").lower()
-    return _provider_usage_key(provider) == "deepseek" or "api.deepseek.com" in base_url
-
-
-def _build_api_request_profile(
-    provider: Any,
-    prompt: str,
-    system_prompt: Optional[str] = None,
-) -> _APIRequestProfile:
-    base_model = str(getattr(provider, "model", "") or "").strip()
-    difficulty = _classify_prompt_difficulty(prompt, system_prompt)
-    model = base_model
-    thinking = ""
-    reasoning_effort = ""
-
-    if _is_deepseek_provider(provider):
-        simple_model = str(getattr(provider, "simple_model", "") or "").strip()
-        complex_model = str(getattr(provider, "complex_model", "") or "").strip()
-        if bool(getattr(provider, "auto_model_selection", False)):
-            if not simple_model or not complex_model:
-                raise RuntimeError(
-                    f"{getattr(provider, 'name', 'provider')} 已开启自动模型切换，"
-                    "但 simple_model / complex_model 未配置完整。"
-                )
-            model = complex_model if difficulty in {"hard", "xhard"} else simple_model
-        else:
-            model = base_model or simple_model or complex_model
-
-        configured_thinking = str(getattr(provider, "thinking", "") or "auto").strip().lower()
-        if configured_thinking in {"enabled", "disabled"}:
-            thinking = configured_thinking
-        elif configured_thinking == "auto":
-            thinking = "enabled" if difficulty in {"hard", "xhard"} else "disabled"
-
-        configured_effort = str(getattr(provider, "reasoning_effort", "") or "auto").strip().lower()
-        if thinking == "enabled":
-            if configured_effort in {"high", "max"}:
-                reasoning_effort = configured_effort
-            else:
-                reasoning_effort = "max" if difficulty == "xhard" else "high"
-
-    return _APIRequestProfile(
-        model=model,
-        difficulty=difficulty,
-        thinking=thinking,
-        reasoning_effort=reasoning_effort,
-    )
 
 
 def _emit_llm_heartbeat(ctx: _APIRunContext, text: str, *, final: bool = False) -> None:
