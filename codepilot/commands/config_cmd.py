@@ -73,6 +73,16 @@ def _optional_string(value: Any) -> str | None:
     return text or None
 
 
+def _optional_non_negative_float(value: Any) -> float | None:
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
 def _agent_commands(raw: Any) -> dict[str, str]:
     """Canonicalize the [agents.commands] map, applying defaults for missing families."""
     merged = dict(config_mod.DEFAULT_AGENT_COMMANDS)
@@ -153,6 +163,66 @@ def _opencode_permission_value(value: Any) -> str | dict[str, Any] | None:
         return nested or None
     value_text = str(value).strip().lower()
     return value_text if value_text in {"ask", "allow", "deny"} else None
+
+
+def _scheduled_agents(raw: Any) -> dict[str, dict[str, Any]]:
+    agents = raw if isinstance(raw, dict) else {}
+    canonical: dict[str, dict[str, Any]] = {}
+    for name in sorted(agents):
+        cfg = agents.get(name)
+        if not isinstance(cfg, dict):
+            continue
+        agent = _string(cfg.get("agent"), "").strip()
+        prompt = _string(cfg.get("prompt"), "").strip()
+        interval = _optional_string(cfg.get("interval"))
+        schedule = _optional_string(cfg.get("schedule"))
+        if not agent or not prompt or (not interval and not schedule):
+            continue
+        item: dict[str, Any] = {
+            "enabled": _bool(cfg.get("enabled"), True),
+            "agent": agent,
+        }
+        if interval:
+            item["interval"] = interval
+        if schedule:
+            item["schedule"] = schedule
+        item["prompt"] = prompt
+        max_cost = _optional_non_negative_float(cfg.get("max_cost_usd"))
+        max_daily_cost = _optional_non_negative_float(cfg.get("max_daily_cost_usd"))
+        if max_cost is not None:
+            item["max_cost_usd"] = max_cost
+        if max_daily_cost is not None:
+            item["max_daily_cost_usd"] = max_daily_cost
+        canonical[str(name)] = item
+    return canonical
+
+
+def _event_agents(raw: Any) -> dict[str, dict[str, Any]]:
+    agents = raw if isinstance(raw, dict) else {}
+    canonical: dict[str, dict[str, Any]] = {}
+    for name in sorted(agents):
+        cfg = agents.get(name)
+        if not isinstance(cfg, dict):
+            continue
+        trigger = _optional_string(cfg.get("trigger"))
+        agent = _string(cfg.get("agent"), "").strip()
+        prompt = _string(cfg.get("prompt"), "").strip()
+        if not trigger or not agent or not prompt:
+            continue
+        item: dict[str, Any] = {
+            "enabled": _bool(cfg.get("enabled"), True),
+            "trigger": trigger,
+            "agent": agent,
+            "prompt": prompt,
+        }
+        max_cost = _optional_non_negative_float(cfg.get("max_cost_usd"))
+        max_daily_cost = _optional_non_negative_float(cfg.get("max_daily_cost_usd"))
+        if max_cost is not None:
+            item["max_cost_usd"] = max_cost
+        if max_daily_cost is not None:
+            item["max_daily_cost_usd"] = max_daily_cost
+        canonical[str(name)] = item
+    return canonical
 
 
 def _supported_provider(raw: Any) -> dict[str, Any] | None:
@@ -255,6 +325,8 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
     opencode = data.get("opencode") if isinstance(data.get("opencode"), dict) else {}
     notifications = data.get("notifications") if isinstance(data.get("notifications"), dict) else {}
     feishu_bot = data.get("feishu_bot") if isinstance(data.get("feishu_bot"), dict) else {}
+    scheduled_agents = _scheduled_agents(automation.get("scheduled_agents"))
+    event_agents = _event_agents(automation.get("event_agents"))
 
     signals = inspect.get("signals", ["git_log", "failed_tasks", "todos"])
     if not isinstance(signals, (list, tuple)) or not all(isinstance(item, str) for item in signals):
@@ -364,6 +436,11 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
         provider_cfg = _supported_provider(providers[name])
         if provider_cfg is not None:
             canonical["providers"][str(name)] = provider_cfg
+
+    if scheduled_agents:
+        canonical["automation"]["scheduled_agents"] = scheduled_agents
+    if event_agents:
+        canonical["automation"]["event_agents"] = event_agents
 
     return canonical
 

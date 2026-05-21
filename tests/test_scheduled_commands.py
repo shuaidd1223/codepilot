@@ -73,6 +73,7 @@ def test_scheduled_list_show_and_run_once_dry_run(tmp_path: Path, monkeypatch):
     assert run["data"]["result"]["dry_run"] is True
     assert run["data"]["result"]["exit_code"] is None
     assert run["data"]["result"]["command"][0] == "codex-bin"
+    assert run["data"]["result"]["command"][-1] == "[prompt]"
     assert run["data"]["job"]["trigger"]["type"] == "manual"
     assert "Sensitive diagnostic prompt that should not be printed in full." not in json.dumps(run, ensure_ascii=False)
 

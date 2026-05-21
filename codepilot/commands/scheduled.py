@@ -54,7 +54,13 @@ def _redact_prompt_from_result(result: Any, prompt: str) -> dict[str, Any]:
     data = copy.deepcopy(result.to_dict())
     command = data.get("command")
     if isinstance(command, list):
-        data["command"] = ["[prompt]" if item == prompt else item for item in command]
+        sensitive_prompt = str(prompt or "")
+        data["command"] = [
+            "[prompt]"
+            if sensitive_prompt and isinstance(item, str) and sensitive_prompt in item
+            else item
+            for item in command
+        ]
     return data
 
 

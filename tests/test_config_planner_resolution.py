@@ -123,6 +123,21 @@ task_workspace = "bad-value"
 max_tasks = 4
 old_flag = true
 
+[automation.scheduled_agents.task_health]
+enabled = true
+agent = "codex"
+interval = "10m"
+prompt = "Review local CodePilot task status and summarize risks."
+max_cost_usd = 0.1
+max_daily_cost_usd = 0.5
+
+[automation.event_agents.failed_task_triage]
+enabled = false
+trigger = "task.failed"
+agent = "codex"
+prompt = "Task {{ task_id }} failed with {{ error_message }}. Suggest the smallest repair."
+max_cost_usd = 0.1
+
 [classifier]
 provider = "deepseek"
 timeout = 10
@@ -179,6 +194,10 @@ extra = "drop"
     assert parsed["automation"]["two_stage_planning"] is True
     assert parsed["automation"]["max_review_rounds"] == 2
     assert parsed["automation"]["agent_silence_timeout_seconds"] == 0
+    assert parsed["automation"]["scheduled_agents"]["task_health"]["interval"] == "10m"
+    assert parsed["automation"]["scheduled_agents"]["task_health"]["prompt"].startswith("Review local")
+    assert parsed["automation"]["event_agents"]["failed_task_triage"]["trigger"] == "task.failed"
+    assert "{{ error_message }}" in parsed["automation"]["event_agents"]["failed_task_triage"]["prompt"]
     assert "classifier" not in parsed
     assert parsed["inspect"]["signals"] == ["git_log", "failed_tasks", "todos"]
     assert parsed["inspect"]["planner"] == ""

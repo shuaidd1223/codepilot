@@ -874,6 +874,38 @@ fallback_cli_order = ["claude", "codex", "opencode"]
 # 智能体 prompt / 任务内容 / 输出语言偏好：en 或 zh-CN；默认 en。
 agent_language = "en"
 
+[automation.scheduled_agents.task_health]
+enabled = true
+agent = "codex"
+interval = "10m"
+prompt = "Review local CodePilot task status, failed tasks, long-running in-progress tasks, and recent scheduler audit records. Summarize risks only and suggest conservative checks."
+max_cost_usd = 0.1
+max_daily_cost_usd = 0.5
+
+[automation.scheduled_agents.daily_summary]
+enabled = true
+agent = "codex"
+interval = "1d"
+prompt = "Prepare a concise daily project summary draft for Feishu. Include task movement, failed or blocked work, and conservative next checks without sending any message."
+max_cost_usd = 0.1
+max_daily_cost_usd = 0.5
+
+[automation.scheduled_agents.auto_inspect]
+enabled = true
+agent = "codex"
+interval = "30m"
+prompt = "Review configured inspect signals and propose a lightweight inspection plan with actionable findings. Do not modify files or execute fixes."
+max_cost_usd = 0.1
+max_daily_cost_usd = 0.5
+
+[automation.event_agents.failed_task_triage]
+enabled = false
+trigger = "task.failed"
+agent = "codex"
+prompt = "Task {{{{ task_id }}}} failed with {{{{ error_message }}}}. Suggest the smallest repair."
+max_cost_usd = 0.1
+max_daily_cost_usd = 0.5
+
 [inspect]
 # 定时巡检配置
 enabled = false

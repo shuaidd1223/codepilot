@@ -5,18 +5,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from codepilot.core.config import load_project_config
+from codepilot.core.config import DEFAULT_TEMPLATE, load_project_config
 from codepilot.scheduled.daemon import run_project_agent_jobs
 from codepilot.scheduled.templates import render_prompt_template
 
 
 def test_default_scheduled_agents_dry_run_end_to_end(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
-    repo_root = Path(__file__).resolve().parents[1]
     project = tmp_path / "project"
     project.mkdir()
     (project / "AGENTS.toml").write_text(
-        (repo_root / "AGENTS.toml").read_text(encoding="utf-8"),
+        DEFAULT_TEMPLATE.format(name="demo"),
         encoding="utf-8",
     )
 

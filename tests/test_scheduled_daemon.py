@@ -21,6 +21,10 @@ from codepilot.scheduled.daemon import (
 UTC = timezone.utc
 
 
+def _wrapped(prompt: str) -> str:
+    return f"Please respond in English.\n\nTask:\n{prompt}"
+
+
 @dataclass
 class Completed:
     args: list[str]
@@ -85,6 +89,7 @@ def test_run_scheduled_agent_jobs_builds_due_jobs_and_uses_runner_dry_run(tmp_pa
     assert summary["jobs"][0]["name"] == "hourly_health"
     assert summary["results"][0].dry_run is True
     assert summary["results"][0].command[0] == "codex-bin"
+    assert summary["results"][0].command[-1] == _wrapped("Check demo at 2026-05-09T09:00:00+00:00.")
     audit = json.loads((tmp_path / ".codepilot" / "scheduled" / "audit.jsonl").read_text().splitlines()[0])
     assert audit["job_name"] == "hourly_health"
     assert audit["trigger"]["type"] == "interval"
@@ -113,7 +118,16 @@ def test_run_event_agent_jobs_consumes_task_updated_sink_as_task_failed(tmp_path
         subprocess_run=_fake_run_factory(calls),
     )
 
-    assert calls == [["codex-bin", "exec", "--ephemeral", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "Task 42 failed: pytest failed"]]
+    assert calls == [
+        [
+            "codex-bin",
+            "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            _wrapped("Task 42 failed: pytest failed"),
+        ]
+    ]
     assert summary["event_count"] == 1
     assert summary["job_count"] == 1
     assert summary["jobs"][0]["trigger"]["event_type"] == "task.failed"
@@ -165,7 +179,16 @@ max_daily_cost_usd = 0.01
         now=datetime(2026, 5, 9, 3, 0, tzinfo=UTC),
     )
 
-    assert calls == [["codex-bin", "exec", "--ephemeral", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "Task 8 failed."]]
+    assert calls == [
+        [
+            "codex-bin",
+            "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            _wrapped("Task 8 failed."),
+        ]
+    ]
     assert loop_summary["results"][0].guard_reason == "loop_circuit_breaker"
     assert first_summary["results"][0].guard_reason == "max_cost_per_day"
     assert disabled_summary["results"][0].guard_reason == "disabled"
