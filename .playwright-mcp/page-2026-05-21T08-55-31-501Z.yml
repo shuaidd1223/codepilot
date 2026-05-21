@@ -1,0 +1,624 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e4]:
+      - text:            
+      - link "Gitee - 基于 Git 的代码托管和研发协作平台" [ref=e6] [cursor=pointer]:
+        - /url: https://gitee.com
+        - img "Gitee - 基于 Git 的代码托管和研发协作平台" [ref=e7]
+      - link "开源" [ref=e8] [cursor=pointer]:
+        - /url: /explore
+      - link "企业版" [ref=e9] [cursor=pointer]:
+        - /url: /enterprises
+      - link "高校版" [ref=e10] [cursor=pointer]:
+        - /url: /education
+      - link "私有云" [ref=e11] [cursor=pointer]:
+        - /url: https://gitee.cn?utm_source=giteecom
+      - link "模力方舟 模力方舟" [ref=e12] [cursor=pointer]:
+        - /url: https://moark.com/serverless-api/?utm_sources=site_nav
+        - text: 模力方舟
+        - img "模力方舟" [ref=e13]
+      - link "AI 队友" [ref=e14] [cursor=pointer]:
+        - /url: https://gitee.com/ai-teammates
+      - generic [ref=e15] [cursor=pointer]:
+        - link "我的" [ref=e16]:
+          - /url: /
+        - img [ref=e17]
+      - generic [ref=e21]:
+        - generic [ref=e23]:
+          - textbox "搜开源" [ref=e24]
+          - img
+        - link [ref=e25] [cursor=pointer]:
+          - /url: https://chat.gitee.com/
+          - img [ref=e26]
+        - link [ref=e29] [cursor=pointer]:
+          - /url: /notifications
+          - img [ref=e30]
+        - generic [ref=e34] [cursor=pointer]:
+          - img [ref=e35]
+          - text:     
+        - generic [ref=e39] [cursor=pointer]:
+          - img "9271694 cool and dull 1750146687" [ref=e40]
+          - img [ref=e41]
+          - text:       
+  - generic [ref=e47]:
+    - link "5 月 21 日 19:00，Gitee 邀你一起赢十三周年好礼！快来直播间和我们互动吧～" [ref=e48] [cursor=pointer]:
+      - /url: https://mp.weixin.qq.com/s/F6L2D0MDvJx4b-IeyQNZmg
+    - generic [ref=e49] [cursor=pointer]: 
+  - generic [ref=e50]:
+    - generic [ref=e51]:
+      - generic:  
+      - generic [ref=e54]:
+        - generic [ref=e55]:
+          - link "richgiteeai" [ref=e58] [cursor=pointer]:
+            - /url: https://chat.gitee.com?repo_owner=shuai_dd&repo_path=workflow
+            - img "richgiteeai" [ref=e59]
+          - generic [ref=e60]:
+            - generic [ref=e61] [cursor=pointer]:
+              - generic [ref=e62]: 
+              - generic [ref=e63]: Watching
+              - generic [ref=e64]: 
+              - text: 
+            - link "1" [ref=e65] [cursor=pointer]:
+              - /url: /shuai_dd/workflow/watchers
+          - generic [ref=e66]:
+            - text: 
+            - link " Star":
+              - /url: /shuai_dd/workflow/star
+              - generic: 
+              - text: Star
+            - link "0":
+              - /url: /shuai_dd/workflow/stargazers
+          - generic [ref=e67]:
+            - link " Fork" [ref=e68] [cursor=pointer]:
+              - /url: "#"
+              - generic [ref=e69]: 
+              - text: Fork
+            - link "0" [ref=e70] [cursor=pointer]:
+              - /url: /shuai_dd/workflow/members
+        - heading " 帅呆呆 / workflow" [level=2] [ref=e71]:
+          - generic [ref=e72]:
+            - generic "这是一个私有仓库" [ref=e73]: 
+            - link "帅呆呆" [ref=e74] [cursor=pointer]:
+              - /url: /shuai_dd
+            - text: /
+            - link "workflow" [ref=e75] [cursor=pointer]:
+              - /url: /shuai_dd/workflow
+      - generic [ref=e78]:
+        - link " 代码" [ref=e79] [cursor=pointer]:
+          - /url: /shuai_dd/workflow
+          - generic [ref=e80]: 
+          - text: 代码
+        - link " Issues 0" [ref=e81] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/issues
+          - generic [ref=e82]: 
+          - text: Issues
+          - generic [ref=e83]: "0"
+        - link " Pull Requests 0" [ref=e84] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/pulls
+          - generic [ref=e85]: 
+          - text: Pull Requests
+          - generic [ref=e86]: "0"
+        - link " Wiki" [ref=e87] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/wikis
+          - generic [ref=e88]: 
+          - text: Wiki
+        - link " 统计" [ref=e89] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/repository/stats/main
+          - generic [ref=e90]: 
+          - text: 统计
+        - link " 流水线" [ref=e91] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/gitee_go
+          - generic [ref=e92]: 
+          - text: 流水线
+        - generic [ref=e95] [cursor=pointer]:
+          - generic [ref=e96]: 
+          - text: 服务
+          - generic [ref=e97]: 
+        - link " 管理" [ref=e98] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/settings
+          - generic [ref=e99]: 
+          - generic [ref=e100]: 管理
+    - generic [ref=e102]:
+      - generic [ref=e104]:
+        - generic [ref=e105] [cursor=pointer]:
+          - generic [ref=e106]: 
+          - text: 仓库设置
+        - generic [ref=e107]:
+          - link "基本信息" [ref=e108] [cursor=pointer]:
+            - /url: /shuai_dd/workflow/settings#index
+          - link "功能设置" [ref=e109] [cursor=pointer]:
+            - /url: /shuai_dd/workflow/settings#function
+          - link "仓库状态" [ref=e110] [cursor=pointer]:
+            - /url: /shuai_dd/workflow/settings#status
+          - link "转移仓库" [ref=e111] [cursor=pointer]:
+            - /url: /shuai_dd/workflow/settings#transfer
+          - link "清空仓库" [ref=e112] [cursor=pointer]:
+            - /url: /shuai_dd/workflow/settings#clear
+          - link "存储库 GC" [ref=e113] [cursor=pointer]:
+            - /url: /shuai_dd/workflow/settings#git-gc
+          - link "删除仓库" [ref=e114] [cursor=pointer]:
+            - /url: /shuai_dd/workflow/settings#remove
+          - link "代码审查设置" [ref=e115] [cursor=pointer]:
+            - /url: /shuai_dd/workflow/settings/review-rules
+        - link "仓库镜像管理" [ref=e117] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/mirrors
+        - generic [ref=e118] [cursor=pointer]:
+          - generic [ref=e119]: 
+          - text: 仓库成员管理
+        - generic [ref=e120] [cursor=pointer]:
+          - generic [ref=e121]: 
+          - text: 部署公钥管理
+        - text:  
+        - generic [ref=e122]:
+          - link "仓库挂件":
+            - /url: /shuai_dd/workflow/widget
+        - link "WebHooks" [ref=e124] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/hooks
+        - link "只读文件管理" [ref=e126] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/readonly/list
+        - link "保护分支设置" [ref=e128] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/branches/setting
+        - link "保护标签设置" [ref=e131] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/tag_rules
+        - link "推送规则设置" [ref=e133] [cursor=pointer]:
+          - /url: /shuai_dd/workflow/push_config
+      - generic [ref=e134]:
+        - generic [ref=e135]:
+          - heading "基本信息" [level=3] [ref=e136]
+          - generic [ref=e138]:
+            - generic [ref=e139]:
+              - generic [ref=e141]: 仓库名称 *
+              - textbox "仓库名称 *" [ref=e142]:
+                - /placeholder: Example Project
+                - text: workflow
+            - generic [ref=e143]:
+              - generic [ref=e144]:
+                - generic [ref=e145]: 路径 *
+                - generic [ref=e146]: 路径 (请注意：仓库路径即仓库访问 URL 地址，更改仓库路径将导致原克隆地址不可用)
+              - generic [ref=e148]:
+                - generic "https://gitee.com/shuai_dd/" [ref=e149]
+                - textbox "路径 * 路径 (请注意：仓库路径即仓库访问 URL 地址，更改仓库路径将导致原克隆地址不可用)" [ref=e150]:
+                  - /placeholder: Example Project Path
+                  - text: workflow
+            - generic [ref=e151]:
+              - generic [ref=e152]: 介绍
+              - textbox "介绍" [ref=e153]:
+                - /placeholder: 用简短的语言来描述一下吧
+                - text: CodePilot - 本地工程工作流 CLI，将自然语言需求转为可执行任务，串联规划、执行、审查、巡检、服务运维和发布流程
+            - generic [ref=e154]:
+              - generic [ref=e155]: 主页
+              - textbox "主页" [ref=e156]:
+                - /placeholder: 输入一个有效的 http 链接
+            - generic [ref=e157]:
+              - generic [ref=e158]: 语言
+              - generic [ref=e159] [cursor=pointer]:
+                - generic [ref=e160]: 
+                - textbox [ref=e161]
+                - generic [ref=e162]: 请选择语言
+            - generic [ref=e163]:
+              - generic [ref=e164]: 默认分支
+              - generic [ref=e165] [cursor=pointer]:
+                - generic [ref=e166]: 
+                - textbox [ref=e167]
+                - generic [ref=e168]: main
+            - generic [ref=e169]:
+              - generic [ref=e171]: 是否开源
+              - generic [ref=e173]:
+                - radio [checked] [ref=e174]
+                - generic [ref=e175] [cursor=pointer]:
+                  - generic [ref=e176]: 开源
+                  - generic [ref=e177]: （所有人可见）
+              - generic [ref=e179]:
+                - radio [ref=e180]
+                - generic [ref=e181] [cursor=pointer]:
+                  - generic [ref=e182]: 私有
+                  - generic [ref=e183]: （仅仓库成员可见）
+              - text:   
+              - generic [ref=e184]:
+                - text: 为保障你的合法权益，请点此
+                - strong [ref=e185]: 选择
+                - text: 合适的开源许可证
+            - button "保存" [ref=e187] [cursor=pointer]
+        - text:                                      
+  - contentinfo [ref=e188]:
+    - generic [ref=e189]:
+      - link "Gitee - 基于 Git 的代码托管和研发协作平台" [ref=e191] [cursor=pointer]:
+        - /url: https://gitee.com
+        - img "Gitee - 基于 Git 的代码托管和研发协作平台" [ref=e192]
+      - generic [ref=e193]: 北京奥思研工智能科技有限公司版权所有
+      - generic [ref=e194]:
+        - generic [ref=e196]:
+          - generic [ref=e198]:
+            - link "Git 大全" [ref=e200] [cursor=pointer]:
+              - /url: /all-about-git
+            - link "Git 命令学习" [ref=e202] [cursor=pointer]:
+              - /url: https://help.gitee.com/learn-Git-Branching/
+            - link "CopyCat 代码克隆检测" [ref=e204] [cursor=pointer]:
+              - /url: https://copycat.gitee.com/
+            - link "APP与插件下载" [ref=e206] [cursor=pointer]:
+              - /url: /appclient
+          - generic [ref=e208]:
+            - link "Gitee 封面人物" [ref=e210] [cursor=pointer]:
+              - /url: /gitee-stars
+            - link "GVP 项目" [ref=e212] [cursor=pointer]:
+              - /url: /gvp
+            - link "Gitee 博客" [ref=e214] [cursor=pointer]:
+              - /url: https://blog.gitee.com/
+            - link "Gitee 公益计划" [ref=e216] [cursor=pointer]:
+              - /url: /enterprises#nonprofit-plan
+            - link "Gitee 持续集成" [ref=e218] [cursor=pointer]:
+              - /url: https://gitee.com/features/gitee-go
+          - generic [ref=e220]:
+            - link "OpenAPI" [ref=e222] [cursor=pointer]:
+              - /url: /api/v5/swagger
+            - link "MCP Server" [ref=e224] [cursor=pointer]:
+              - /url: https://gitee.com/oschina/mcp-gitee
+            - link "帮助文档" [ref=e226] [cursor=pointer]:
+              - /url: https://help.gitee.com
+            - link "在线自助服务" [ref=e228] [cursor=pointer]:
+              - /url: /self_services
+            - link "更新日志" [ref=e230] [cursor=pointer]:
+              - /url: /help/articles/4378
+          - generic [ref=e232]:
+            - link "关于我们" [ref=e234] [cursor=pointer]:
+              - /url: /about_us
+            - link "加入我们" [ref=e236] [cursor=pointer]:
+              - /url: " https://gitee.com/oschina/jobs"
+            - link "使用条款" [ref=e238] [cursor=pointer]:
+              - /url: /terms
+            - link "意见建议" [ref=e240] [cursor=pointer]:
+              - /url: /oschina/git-osc/issues
+            - link "合作伙伴" [ref=e242] [cursor=pointer]:
+              - /url: /links.html
+        - generic [ref=e243]:
+          - generic [ref=e244]:
+            - img "技术交流QQ群" [ref=e246]
+            - paragraph [ref=e247]: 技术交流QQ群
+          - generic [ref=e248]:
+            - img "微信服务号" [ref=e250]
+            - paragraph [ref=e251]: 微信服务号
+          - generic [ref=e253]:
+            - link " client@oschina.cn" [ref=e255] [cursor=pointer]:
+              - /url: "mailto: client@oschina.cn"
+              - generic [ref=e256]: 
+              - text: client@oschina.cn
+            - generic [ref=e258] [cursor=pointer]:
+              - generic [ref=e259]: 
+              - text: 企业版在线使用：400-606-0201
+            - generic [ref=e261] [cursor=pointer]:
+              - generic [ref=e262]: 
+              - generic [ref=e263]: 专业版私有部署：
+              - generic [ref=e264]: 赖经理 13058176526
+    - generic [ref=e267]:
+      - generic [ref=e268]:
+        - generic [ref=e269]:
+          - img "开放原子开源基金会" [ref=e270]
+          - link "开放原子开源基金会" [ref=e271] [cursor=pointer]:
+            - /url: https://www.openatom.org/
+          - generic [ref=e272]: 合作代码托管平台
+        - generic [ref=e273]:
+          - img "违法和不良信息举报中心" [ref=e274]
+          - link "违法和不良信息举报中心" [ref=e275] [cursor=pointer]:
+            - /url: https://www.12377.cn
+        - link "京ICP备2025119063号" [ref=e277] [cursor=pointer]:
+          - /url: http://beian.miit.gov.cn/
+        - generic [ref=e278]:
+          - img "京公网安备11011502039387号" [ref=e279]
+          - link "京公网安备11011502039387号" [ref=e280] [cursor=pointer]:
+            - /url: https://beian.miit.gov.cn/
+      - generic [ref=e281]:
+        - generic [ref=e282]: 
+        - link "简 体" [ref=e283] [cursor=pointer]:
+          - /url: /language/zh-CN
+        - text: /
+        - link "繁 體" [ref=e284] [cursor=pointer]:
+          - /url: /language/zh-TW
+        - text: /
+        - link "English" [ref=e285] [cursor=pointer]:
+          - /url: /language/en
+  - generic [ref=e286]:
+    - generic [ref=e288] [cursor=pointer]: 
+    - text:    
+    - generic [ref=e290] [cursor=pointer]: 
+    - generic [ref=e292] [cursor=pointer]: 
+    - generic [ref=e295] [cursor=pointer]: 
+  - text:  
+  - status [ref=e293]
+  - generic [ref=e296]:
+    - text:  
+    - generic [ref=e297]:
+      - generic [ref=e298] [cursor=pointer]: 
+      - generic [ref=e299]: 许可证向导
+      - generic [ref=e314]:
+        - generic [ref=e315]:
+          - generic [ref=e316]:
+            - generic [ref=e318]:
+              - generic [ref=e320]:
+                - generic [ref=e321]: 流行并广泛使用
+                - generic [ref=e322]: OSI 认证 / 知名且流行的协议
+              - generic [ref=e324]:
+                - generic [ref=e325]: 代码复用条件
+                - generic [ref=e326]: 声明代码重复使用限制
+              - generic [ref=e328]:
+                - generic [ref=e329]: 司法管辖限制
+                - generic [ref=e330]: 声明司法管辖区域范围
+              - generic [ref=e332]:
+                - generic [ref=e333]: 专利授权限制
+                - generic [ref=e334]: 声明专利授权许可
+              - generic [ref=e336]:
+                - generic [ref=e337]: 增强型归属限制
+                - generic [ref=e338]: 是否要求声明增强型归属
+              - generic [ref=e340]:
+                - generic [ref=e341]: "\"隐私漏洞\"使用限制"
+                - generic [ref=e342]: 是否使用解决"隐私漏洞"的许可协议
+              - generic [ref=e344]:
+                - generic [ref=e345]: 推广声明限制
+                - generic [ref=e346]: 是否禁止利用原作名字推广
+            - generic [ref=e347]:
+              - generic [ref=e348]:
+                - strong [ref=e349]:
+                  - text: 你想将结果限定为开放源代码促进会（OSI）所描述的“流行并广泛使用，或拥有广泛社区群”的许可协议吗？
+                  - text: 这将以牺牲一些更冷僻但或许有用的特征为代价来确保该许可协议成为“主流”协议。
+                - generic [ref=e351] [cursor=pointer]:
+                  - generic [ref=e352]: 
+                  - generic [ref=e353]: 请选择
+              - text:         
+          - generic [ref=e354]: 筛选结果
+          - generic [ref=e355]:
+            - generic [ref=e356]:
+              - generic [ref=e357] [cursor=pointer]:
+                - generic [ref=e358]:
+                  - text: MulanPSL-2.0
+                  - generic [ref=e359]: 评分 100
+                - generic [ref=e361]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e362]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Permissive" [ref=e363]': "2. 许可协议类型: Permissive"
+                  - 'generic "司法管辖区: Not specified" [ref=e364]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e365]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e366]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: No" [ref=e367]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e368]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e369]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e370] [cursor=pointer]:
+                - generic [ref=e371]:
+                  - text: AFL-3.0
+                  - generic [ref=e372]: 评分 100
+                - generic [ref=e374]:
+                  - 'generic "流行并广泛使用: No" [ref=e375]': "1. 流行并广泛使用: No"
+                  - 'generic "许可协议类型: Permissive" [ref=e376]': "2. 许可协议类型: Permissive"
+                  - 'generic "司法管辖区: Not specified" [ref=e377]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e378]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e379]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: No" [ref=e380]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e381]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e382]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e383] [cursor=pointer]:
+                - generic [ref=e384]:
+                  - text: AGPL-3.0
+                  - generic [ref=e385]: 评分 100
+                - generic [ref=e387]:
+                  - 'generic "流行并广泛使用: No" [ref=e388]': "1. 流行并广泛使用: No"
+                  - 'generic "许可协议类型: Strong copyleft" [ref=e389]': "2. 许可协议类型: Strong copyleft"
+                  - 'generic "司法管辖区: Not specified" [ref=e390]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e391]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e392]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: Yes" [ref=e393]': "5. 指定“增强型归属”: Yes"
+                  - 'generic "解决“隐私漏洞”: Yes" [ref=e394]': "6. 解决“隐私漏洞”: Yes"
+                  - 'generic "流行并广泛使用: Yes" [ref=e395]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e396] [cursor=pointer]:
+                - generic [ref=e397]:
+                  - text: Apache-2.0
+                  - generic [ref=e398]: 评分 100
+                - generic [ref=e400]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e401]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Permissive" [ref=e402]': "2. 许可协议类型: Permissive"
+                  - 'generic "司法管辖区: Not specified" [ref=e403]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e404]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e405]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: No" [ref=e406]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e407]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e408]': "7. 指定“不推广”功能: Yes"
+            - generic [ref=e409]:
+              - generic [ref=e410] [cursor=pointer]:
+                - generic [ref=e411]:
+                  - text: Artistic-2.0
+                  - generic [ref=e412]: 评分 100
+                - generic [ref=e414]:
+                  - 'generic "流行并广泛使用: No" [ref=e415]': "1. 流行并广泛使用: No"
+                  - 'generic "许可协议类型: Permissive" [ref=e416]': "2. 许可协议类型: Permissive"
+                  - 'generic "司法管辖区: Not specified" [ref=e417]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e418]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e419]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: No" [ref=e420]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e421]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e422]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e423] [cursor=pointer]:
+                - generic [ref=e424]:
+                  - text: BSD-3-Clause
+                  - generic [ref=e425]: 评分 100
+                - generic [ref=e427]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e428]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Permissive" [ref=e429]': "2. 许可协议类型: Permissive"
+                  - 'generic "司法管辖区: Not specified" [ref=e430]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: No" [ref=e431]': "4.a 授予专利权: No"
+                  - 'generic "专利报复条款: No" [ref=e432]': "4.b 专利报复条款: No"
+                  - 'generic "指定“增强型归属”: No" [ref=e433]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e434]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e435]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e436] [cursor=pointer]:
+                - generic [ref=e437]:
+                  - text: EPL-1.0
+                  - generic [ref=e438]: 评分 100
+                - generic [ref=e440]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e441]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Weak copyleft" [ref=e442]': "2. 许可协议类型: Weak copyleft"
+                  - 'generic "司法管辖区: Specified: State of New York, US" [ref=e443]': "3. 司法管辖区: Specified: State of New York, US"
+                  - 'generic "授予专利权: Yes" [ref=e444]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e445]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: No" [ref=e446]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e447]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e448]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e449] [cursor=pointer]:
+                - generic [ref=e450]:
+                  - text: GPL-2.0
+                  - generic [ref=e451]: 评分 100
+                - generic [ref=e453]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e454]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Strong copyleft" [ref=e455]': "2. 许可协议类型: Strong copyleft"
+                  - 'generic "司法管辖区: Not specified" [ref=e456]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: No" [ref=e457]': "4.a 授予专利权: No"
+                  - 'generic "专利报复条款: No" [ref=e458]': "4.b 专利报复条款: No"
+                  - 'generic "指定“增强型归属”: No" [ref=e459]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e460]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e461]': "7. 指定“不推广”功能: Yes"
+            - generic [ref=e462]:
+              - generic [ref=e463] [cursor=pointer]:
+                - generic [ref=e464]:
+                  - text: GPL-3.0
+                  - generic [ref=e465]: 评分 100
+                - generic [ref=e467]:
+                  - 'generic "流行并广泛使用: No" [ref=e468]': "1. 流行并广泛使用: No"
+                  - 'generic "许可协议类型: Strong copyleft" [ref=e469]': "2. 许可协议类型: Strong copyleft"
+                  - 'generic "司法管辖区: Not specified" [ref=e470]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e471]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e472]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: No" [ref=e473]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e474]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e475]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e476] [cursor=pointer]:
+                - generic [ref=e477]:
+                  - text: ISC
+                  - generic [ref=e478]: 评分 100
+                - generic [ref=e480]:
+                  - 'generic "流行并广泛使用: No" [ref=e481]': "1. 流行并广泛使用: No"
+                  - 'generic "许可协议类型: Permissive" [ref=e482]': "2. 许可协议类型: Permissive"
+                  - 'generic "司法管辖区: Not specified" [ref=e483]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: No" [ref=e484]': "4.a 授予专利权: No"
+                  - 'generic "专利报复条款: No" [ref=e485]': "4.b 专利报复条款: No"
+                  - 'generic "指定“增强型归属”: No" [ref=e486]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e487]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e488]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e489] [cursor=pointer]:
+                - generic [ref=e490]:
+                  - text: LGPL-2.1
+                  - generic [ref=e491]: 评分 100
+                - generic [ref=e493]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e494]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Weak copyleft" [ref=e495]': "2. 许可协议类型: Weak copyleft"
+                  - 'generic "司法管辖区: Not specified" [ref=e496]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: No" [ref=e497]': "4.a 授予专利权: No"
+                  - 'generic "专利报复条款: No" [ref=e498]': "4.b 专利报复条款: No"
+                  - 'generic "指定“增强型归属”: No" [ref=e499]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e500]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e501]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e502] [cursor=pointer]:
+                - generic [ref=e503]:
+                  - text: LGPL-3.0
+                  - generic [ref=e504]: 评分 100
+                - generic [ref=e506]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e507]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Weak copyleft" [ref=e508]': "2. 许可协议类型: Weak copyleft"
+                  - 'generic "司法管辖区: Not specified" [ref=e509]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e510]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e511]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: No" [ref=e512]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e513]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e514]': "7. 指定“不推广”功能: Yes"
+            - generic [ref=e515]:
+              - generic [ref=e516] [cursor=pointer]:
+                - generic [ref=e517]:
+                  - text: MIT
+                  - generic [ref=e518]: 评分 100
+                - generic [ref=e520]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e521]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Permissive" [ref=e522]': "2. 许可协议类型: Permissive"
+                  - 'generic "司法管辖区: Not specified" [ref=e523]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: No" [ref=e524]': "4.a 授予专利权: No"
+                  - 'generic "专利报复条款: No" [ref=e525]': "4.b 专利报复条款: No"
+                  - 'generic "指定“增强型归属”: No" [ref=e526]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e527]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e528]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e529] [cursor=pointer]:
+                - generic [ref=e530]:
+                  - text: MPL-2.0
+                  - generic [ref=e531]: 评分 100
+                - generic [ref=e533]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e534]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Weak copyleft" [ref=e535]': "2. 许可协议类型: Weak copyleft"
+                  - 'generic "司法管辖区: Not specified" [ref=e536]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e537]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e538]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: Yes" [ref=e539]': "5. 指定“增强型归属”: Yes"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e540]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e541]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e542] [cursor=pointer]:
+                - generic [ref=e543]:
+                  - text: MulanPSL-1.0
+                  - generic [ref=e544]: 评分 100
+                - generic [ref=e546]:
+                  - 'generic "流行并广泛使用: No" [ref=e547]': "1. 流行并广泛使用: No"
+                  - 'generic "许可协议类型: Permissive" [ref=e548]': "2. 许可协议类型: Permissive"
+                  - 'generic "司法管辖区: Not specified" [ref=e549]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e550]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e551]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: No" [ref=e552]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e553]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e554]': "7. 指定“不推广”功能: Yes"
+              - generic [ref=e555] [cursor=pointer]:
+                - generic [ref=e556]:
+                  - text: OSL-3.0
+                  - generic [ref=e557]: 评分 100
+                - generic [ref=e559]:
+                  - 'generic "流行并广泛使用: No" [ref=e560]': "1. 流行并广泛使用: No"
+                  - 'generic "许可协议类型: Strong copyleft" [ref=e561]': "2. 许可协议类型: Strong copyleft"
+                  - 'generic "司法管辖区: Not specified" [ref=e562]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e563]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e564]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: No" [ref=e565]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: Yes" [ref=e566]': "6. 解决“隐私漏洞”: Yes"
+                  - 'generic "流行并广泛使用: Yes" [ref=e567]': "7. 指定“不推广”功能: Yes"
+            - generic [ref=e568]:
+              - generic [ref=e569] [cursor=pointer]:
+                - generic [ref=e570]:
+                  - text: Unlicense
+                  - generic [ref=e571]: 评分 100
+                - generic [ref=e573]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e574]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Weak copyleft" [ref=e575]': "2. 许可协议类型: Weak copyleft"
+                  - 'generic "司法管辖区: Not specified" [ref=e576]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e577]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: No" [ref=e578]': "4.b 专利报复条款: No"
+                  - 'generic "指定“增强型归属”: No" [ref=e579]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: Yes" [ref=e580]': "6. 解决“隐私漏洞”: Yes"
+                  - 'generic "流行并广泛使用: No" [ref=e581]': "7. 指定“不推广”功能: No"
+              - generic [ref=e582] [cursor=pointer]:
+                - generic [ref=e583]:
+                  - text: WTFPL
+                  - generic [ref=e584]: 评分 100
+                - generic [ref=e586]:
+                  - 'generic "流行并广泛使用: Yes" [ref=e587]': "1. 流行并广泛使用: Yes"
+                  - 'generic "许可协议类型: Permissive" [ref=e588]': "2. 许可协议类型: Permissive"
+                  - 'generic "司法管辖区: Not specified" [ref=e589]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: Yes" [ref=e590]': "4.a 授予专利权: Yes"
+                  - 'generic "专利报复条款: Yes" [ref=e591]': "4.b 专利报复条款: Yes"
+                  - 'generic "指定“增强型归属”: No" [ref=e592]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e593]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: No" [ref=e594]': "7. 指定“不推广”功能: No"
+              - generic [ref=e595] [cursor=pointer]:
+                - generic [ref=e596]:
+                  - text: Zlib
+                  - generic [ref=e597]: 评分 100
+                - generic [ref=e599]:
+                  - 'generic "流行并广泛使用: No" [ref=e600]': "1. 流行并广泛使用: No"
+                  - 'generic "许可协议类型: Permissive" [ref=e601]': "2. 许可协议类型: Permissive"
+                  - 'generic "司法管辖区: Not specified" [ref=e602]': "3. 司法管辖区: Not specified"
+                  - 'generic "授予专利权: No" [ref=e603]': "4.a 授予专利权: No"
+                  - 'generic "专利报复条款: No" [ref=e604]': "4.b 专利报复条款: No"
+                  - 'generic "指定“增强型归属”: No" [ref=e605]': "5. 指定“增强型归属”: No"
+                  - 'generic "解决“隐私漏洞”: No" [ref=e606]': "6. 解决“隐私漏洞”: No"
+                  - 'generic "流行并广泛使用: Yes" [ref=e607]': "7. 指定“不推广”功能: Yes"
+        - generic [ref=e608]:
+          - generic [ref=e609]: 创建自定义许可证
+          - generic [ref=e610]:
+            - button "下一页"
+            - button "使用该许可证"
