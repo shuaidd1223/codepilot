@@ -1,3 +1,7 @@
+# CodePilot
+# Author: 帅呆呆 <2264505396@qq.com>
+# Repository: https://gitee.com/shuai_dd/workflow
+# License: MIT
 """MCP launch-plan builders for chat agent CLIs."""
 
 from __future__ import annotations

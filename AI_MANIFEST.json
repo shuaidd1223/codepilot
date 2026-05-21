@@ -1,6 +1,12 @@
 {
   "name": "CodePilot",
   "version": "0.7.4",
+  "author": {
+    "name": "帅呆呆",
+    "email": "2264505396@qq.com"
+  },
+  "repository": "https://gitee.com/shuai_dd/workflow",
+  "license": "MIT",
   "command_name": "codepilot",
   "language": "en",
   "description": "Local engineering workflow CLI that turns natural-language requirements into tasks and coordinates planning, execution, review, operations, and release.",

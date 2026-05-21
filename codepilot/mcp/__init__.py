@@ -1,3 +1,7 @@
+# CodePilot
+# Author: 帅呆呆 <2264505396@qq.com>
+# Repository: https://gitee.com/shuai_dd/workflow
+# License: MIT
 """MCP integration primitives for CodePilot tools."""
 
 from codepilot.mcp.protocol import CodePilotToolError, ProgressEvent, normalize_progress_event

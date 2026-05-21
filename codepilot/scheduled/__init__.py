@@ -1,3 +1,7 @@
+# CodePilot
+# Author: 帅呆呆 <2264505396@qq.com>
+# Repository: https://gitee.com/shuai_dd/workflow
+# License: MIT
 """Scheduled and event-triggered agent job helpers."""
 
 from codepilot.scheduled.templates import render_prompt_template

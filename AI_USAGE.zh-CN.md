@@ -2,6 +2,8 @@
 
 语言版本：中文 | [English](AI_USAGE.en-US.md)
 
+**作者：** 帅呆呆 <2264505396@qq.com> | **仓库：** https://gitee.com/shuai_dd/workflow | **许可：** MIT
+
 这份手册是写给其他 AI / Agent 的静态入口。最新机器可读清单以 `codepilot ai manifest` 为准，最新 Markdown 手册以 `codepilot ai guide` 为准。
 
 ## 最重要的调用原则

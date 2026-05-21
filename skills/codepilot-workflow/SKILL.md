@@ -1,9 +1,14 @@
 ---
 name: codepilot-workflow
 description: "Use this skill when an AI agent needs to run CodePilot as a local engineering workflow orchestrator: answer project/task/service questions from local data, clarify requirements, create plans, convert explicit requirements into tasks, inspect status and logs, operate daemon/inspect/ui/feishu/webhook/event/hook/provider services, manage local skill catalog entries, and prepare binary releases. Trigger for requirement intake, project status questions, task retry/stop/show/logs, queue execution, read-only exploration, wiki/note/trace use, Feishu or webhook integration, AI manifest/template usage, and release packaging/verification."
+author: "帅呆呆 <2264505396@qq.com>"
+repository: "https://gitee.com/shuai_dd/workflow"
+license: "MIT"
 ---
 
 # CodePilot Workflow
+
+**Author:** 帅呆呆 <2264505396@qq.com> | **Repository:** https://gitee.com/shuai_dd/workflow | **License:** MIT
 
 ## Quick Start
 

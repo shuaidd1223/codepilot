@@ -13,6 +13,10 @@ reviewed, diffed, and even A/B'd without touching code. The loader uses
 stat the disk on every planner call.
 """
 
+# Author: 帅呆呆 <2264505396@qq.com>
+# Repository: https://gitee.com/shuai_dd/workflow
+# License: MIT
+
 from __future__ import annotations
 
 from functools import lru_cache

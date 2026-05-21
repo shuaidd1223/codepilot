@@ -4,7 +4,7 @@ Language: 中文 | [English](README.en-US.md)
 
 CodePilot 是一个本地工程工作流 CLI，用来把自然语言需求转成可执行任务，并串起规划、执行、审查、巡检、服务运维和发布流程。
 
-当前版本：`0.7.4`
+当前版本：`0.7.4` | 作者：[帅呆呆](https://gitee.com/shuai_dd) | Gitee：[shuai_dd/workflow](https://gitee.com/shuai_dd/workflow)
 
 ## 快速开始
 

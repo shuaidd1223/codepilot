@@ -4,7 +4,7 @@ Language: [中文](README.md) | English
 
 CodePilot is a local engineering workflow CLI that turns natural-language requirements into executable tasks and connects planning, execution, review, inspection, service operations, and release workflows.
 
-Current version: `0.7.4`
+Current version: `0.7.4` | Author: [帅呆呆](https://gitee.com/shuai_dd) | Gitee: [shuai_dd/workflow](https://gitee.com/shuai_dd/workflow)
 
 ## Quick Start
 
