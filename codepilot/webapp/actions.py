@@ -5,6 +5,8 @@ tests. The heavy implementations now live in companion modules split by
 responsibility:
 
 - :mod:`codepilot.webapp.action_requirements`
+- :mod:`codepilot.webapp.action_session_history`
+- :mod:`codepilot.webapp.action_session_records`
 - :mod:`codepilot.webapp.action_sessions`
 - :mod:`codepilot.webapp.action_task_ops`
 """

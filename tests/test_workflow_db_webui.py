@@ -1074,3 +1074,37 @@ def test_webui_session_list_searches_titles_messages_and_task_ids(tmp_path, monk
     assert "任务列表" in title_payload["sessions"][0]["snippet"]
     assert [item["id"] for item in task_payload["sessions"]] == [second["id"]]
     assert task_payload["sessions"][0]["matched_message_count"] == 1
+
+
+def test_webui_session_records_module_handles_crud_and_search(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    from codepilot.webapp.action_session_records import (
+        create_session_action,
+        delete_session_action,
+        get_session_action,
+        list_sessions_action,
+    )
+
+    created = create_session_action("demo", title="记录模块会话")
+    session_id = created["session"]["id"]
+    db.create_session_message(
+        session_id,
+        "assistant",
+        "已创建任务 #326",
+        intent="requirement",
+        task_ids=[326],
+        metadata={"status": "done"},
+    )
+
+    detail = get_session_action(session_id)
+    search = list_sessions_action("demo", query="#326")
+
+    assert detail["messages"][0]["task_ids"] == [326]
+    assert detail["messages"][0]["metadata"] == {"status": "done"}
+    assert [item["id"] for item in search["sessions"]] == [session_id]
+    assert delete_session_action(session_id)["ok"] is True
+    assert db.get_session(session_id) is None
