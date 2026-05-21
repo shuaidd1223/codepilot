@@ -13,7 +13,13 @@ import click
 from codepilot.commands.explore import explore_project
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.output import echo
-from codepilot.core.workflow_state import complete_workflow, start_workflow, update_workflow_state, workflow_dirs
+from codepilot.core.workflow_state import (
+    advance_or_update_agent_phase,
+    complete_workflow,
+    start_workflow,
+    update_workflow_state,
+    workflow_dirs,
+)
 from codepilot.storage import database as db
 
 
@@ -262,7 +268,20 @@ def write_clarify_artifact(
         newline="\n",
     )
     complete_workflow(project_path, "clarify")
-    update_workflow_state(project_path, "clarify", next_actions=next_actions)
+    final_state = update_workflow_state(project_path, "clarify", next_actions=next_actions)
+    advance_or_update_agent_phase(
+        project_path,
+        "clarify",
+        goal=requirement,
+        artifact_paths={
+            "context": context_path,
+            "clarify_context": context_path,
+            "spec": spec_path,
+        },
+        next_actions=next_actions,
+        next_action_details=next_actions,
+        mode_state=final_state,
+    )
     return {
         "project": {"name": project_info["name"], "path": str(project_path)},
         "artifact_path": str(spec_path),

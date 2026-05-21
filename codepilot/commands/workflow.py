@@ -116,6 +116,18 @@ def _normalize_next_actions(raw_actions: Any) -> list[dict[str, Any]]:
     return actions
 
 
+def _format_next_actions(raw_actions: Any) -> list[str]:
+    labels: list[str] = []
+    for action in _normalize_next_actions(raw_actions):
+        action_id = str(action.get("id") or "").strip()
+        label = str(action.get("label") or "").strip()
+        if label and label != action_id:
+            labels.append(f"{action_id} ({label})")
+        elif action_id:
+            labels.append(action_id)
+    return labels
+
+
 def _load_next_context(project_info: dict, *, mode: str | None = None) -> dict[str, Any]:
     project_path = Path(project_info["path"]).resolve()
     state = read_workflow_state(project_path, mode=mode) if mode else _latest_workflow_state(project_path)
@@ -136,7 +148,12 @@ def _load_next_context(project_info: dict, *, mode: str | None = None) -> dict[s
     if agent_session:
         artifacts = agent_session.get("artifact_paths") or {}
         context_path, context = _read_context(project_path, artifacts.get("context"))
-        next_actions = _normalize_next_actions(context.get("next_actions") or agent_session.get("next_actions") or [])
+        next_actions = _normalize_next_actions(
+            context.get("next_actions")
+            or agent_session.get("next_action_details")
+            or agent_session.get("next_actions")
+            or []
+        )
         return {
             "type": "agent_session",
             "state": agent_session,
@@ -281,7 +298,7 @@ def status_cmd(ctx: click.Context, project: str | None, mode: str | None, json_m
         blocked = agent_session.get("blocked_reason")
         if blocked:
             click.echo(f"阻塞原因: {blocked}")
-        actions = agent_session.get("next_actions") or []
+        actions = _format_next_actions(agent_session.get("next_action_details") or agent_session.get("next_actions"))
         if actions:
             click.echo(f"下一步: {', '.join(actions)}")
         click.echo()

@@ -162,6 +162,7 @@ def create_agent_session(
         "phase_history": [{"phase": "intake", "entered_at": now, "exited_at": None}],
         "blocked_reason": None,
         "next_actions": [],
+        "next_action_details": [],
         "linked_task_ids": [],
         "artifact_paths": artifacts,
         "started_at": now,
@@ -172,9 +173,53 @@ def create_agent_session(
     return session
 
 
+def _next_action_ids(raw_actions: Any) -> list[str]:
+    if not isinstance(raw_actions, list):
+        return []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in raw_actions:
+        if isinstance(item, dict):
+            action_id = str(item.get("id") or "").strip()
+        else:
+            action_id = str(item or "").strip()
+        if not action_id or action_id in seen:
+            continue
+        seen.add(action_id)
+        ids.append(action_id)
+    return ids
+
+
+def _coerce_artifact_paths(raw_paths: dict[str, str | Path] | None) -> dict[str, str]:
+    if not raw_paths:
+        return {}
+    paths: dict[str, str] = {}
+    for key, value in raw_paths.items():
+        text = str(value or "").strip()
+        if text:
+            paths[str(key)] = text
+    return paths
+
+
 def get_agent_session(project_path: str | Path) -> dict[str, Any] | None:
     """Read the current agent session; corrupt or missing returns None."""
     return _read_json(_agent_session_path(project_path))
+
+
+def ensure_agent_session(
+    project_path: str | Path,
+    *,
+    goal: str,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Return the active project-local agent session, creating one if needed."""
+    session = get_agent_session(project_path)
+    if session is None or session.get("completed_at"):
+        return create_agent_session(project_path, goal=goal, session_id=session_id)
+    if goal and not str(session.get("goal") or "").strip():
+        updated = update_agent_session(project_path, goal=goal)
+        return updated or session
+    return session
 
 
 def update_agent_session(project_path: str | Path, **changes: Any) -> dict[str, Any] | None:
@@ -189,6 +234,36 @@ def update_agent_session(project_path: str | Path, **changes: Any) -> dict[str, 
         session["phase_history"][-1]["exited_at"] = now
     _atomic_write_json(_agent_session_path(project_path), session)
     return session
+
+
+def advance_or_update_agent_phase(
+    project_path: str | Path,
+    phase: str,
+    *,
+    goal: str,
+    artifact_paths: dict[str, str | Path] | None = None,
+    next_actions: list[Any] | None = None,
+    next_action_details: list[dict[str, Any]] | None = None,
+    mode_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Create/reuse the agent session and sync a workflow phase into it."""
+    session = ensure_agent_session(project_path, goal=goal)
+    paths = dict(session.get("artifact_paths") or {})
+    paths.update(_coerce_artifact_paths(artifact_paths))
+
+    changes: dict[str, Any] = {"artifact_paths": paths}
+    if next_actions is not None:
+        changes["next_actions"] = _next_action_ids(next_actions)
+    if next_action_details is not None:
+        changes["next_action_details"] = list(next_action_details)
+    elif next_actions is not None and any(isinstance(item, dict) for item in next_actions):
+        changes["next_action_details"] = [dict(item) for item in next_actions if isinstance(item, dict)]
+
+    if session.get("current_phase") == phase:
+        return update_agent_session(project_path, **changes)
+    if mode_state is not None:
+        changes["mode_state"] = mode_state
+    return advance_agent_phase(project_path, phase, **changes)
 
 
 def advance_agent_phase(project_path: str | Path, phase: str, **extra_fields: Any) -> dict[str, Any] | None:

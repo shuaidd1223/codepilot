@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from codepilot.cli import main
 from codepilot.ai_support.agent_support import command_manifest
-from codepilot.core.workflow_state import read_workflow_state
+from codepilot.core.workflow_state import get_agent_session, read_workflow_state
 from codepilot.storage import database as db
 from tests.workflow_testkit import init_test_db
 
@@ -70,6 +70,24 @@ def test_clarify_marks_workflow_state_complete(tmp_path, monkeypatch):
     assert state["active"] is False
     assert state["current_phase"] == "completed"
     assert state["artifact_paths"]["spec"] == json.loads(result.output)["data"]["artifact_path"]
+
+
+def test_clarify_updates_agent_session_lifecycle(tmp_path, monkeypatch):
+    project = _register_demo(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(main, ["clarify", "-p", "demo", "梳理构建命令", "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    session = get_agent_session(project["path"])
+    assert session is not None
+    assert session["goal"] == "梳理构建命令"
+    assert session["current_phase"] == "clarify"
+    assert session["artifact_paths"]["spec"] == data["artifact_path"]
+    assert session["artifact_paths"]["context"] == data["context_path"]
+    assert session["next_actions"] == [action["id"] for action in data["next_actions"]]
+    assert session["next_action_details"] == data["next_actions"]
+    assert any(item["phase"] == "clarify" for item in session["phase_history"])
 
 
 def test_clarify_skips_ai_and_generates_spec_directly(tmp_path, monkeypatch):

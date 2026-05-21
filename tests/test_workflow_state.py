@@ -290,6 +290,31 @@ def test_workflow_status_human_output_shows_agent_session(tmp_path, monkeypatch)
     assert "intake" in result.output
 
 
+def test_workflow_status_human_output_renders_structured_agent_actions(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    create_agent_session(project_path, goal="结构化 action")
+    update_agent_session(
+        project_path,
+        next_actions=[
+            {
+                "id": "import_tasks",
+                "label": "导入任务",
+                "risk": "medium",
+                "suggested_command": "codepilot add -p demo -f tasks.json",
+            }
+        ],
+    )
+
+    result = CliRunner().invoke(main, ["workflow", "status", "-p", "demo"])
+
+    assert result.exit_code == 0, result.output
+    assert "导入任务" in result.output
+    assert "import_tasks" in result.output
+
+
 def test_workflow_next_list_returns_latest_next_actions_json(tmp_path, monkeypatch):
     project = _register_demo_project(tmp_path, monkeypatch)
 

@@ -14,7 +14,13 @@ from codepilot.ai_support.service import build_task_markdown_from_plan
 from codepilot.commands.clarify import _resolve_project, _slugify, _summary
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.output import echo
-from codepilot.core.workflow_state import complete_workflow, start_workflow, update_workflow_state, workflow_dirs
+from codepilot.core.workflow_state import (
+    advance_or_update_agent_phase,
+    complete_workflow,
+    start_workflow,
+    update_workflow_state,
+    workflow_dirs,
+)
 
 
 def _now_slug() -> str:
@@ -421,7 +427,24 @@ def write_plan_artifact(
         newline="\n",
     )
     complete_workflow(project_path, "plan")
-    update_workflow_state(project_path, "plan", next_actions=next_actions)
+    final_state = update_workflow_state(project_path, "plan", next_actions=next_actions)
+    agent_artifacts: dict[str, str | Path] = {
+        "context": context_path,
+        "plan_context": context_path,
+        "plan": plan_path,
+        "task_batch": task_batch_path,
+    }
+    if source_path:
+        agent_artifacts["spec"] = source_path
+    advance_or_update_agent_phase(
+        project_path,
+        "plan",
+        goal=requirement,
+        artifact_paths=agent_artifacts,
+        next_actions=next_actions,
+        next_action_details=next_actions,
+        mode_state=final_state,
+    )
     return {
         "project": {"name": project_info["name"], "path": str(project_path)},
         "plan_path": str(plan_path),
