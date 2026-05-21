@@ -35,6 +35,7 @@ from codepilot.ai_support.interaction_controller import build_workflow_session_r
 from codepilot.commands import auto_project_resolution as _project_resolution
 from codepilot.commands import auto_workflow_planning as _planning_flow
 from codepilot.core.config import (
+    find_global_config,
     load_project_config,
     resolve_project_config_reference,
 )
@@ -613,6 +614,21 @@ def _resolve_planning_mode(project_info: dict) -> bool:
 
 def _agent_language_for_project(project_path: str) -> str:
     cfg = load_project_config(project_path)
+    if cfg and getattr(cfg, "automation", None):
+        cfg_path_text = getattr(cfg, "config_file_path", "") or ""
+        cfg_path = Path(cfg_path_text) if cfg_path_text else None
+        global_path = find_global_config()
+        if cfg_path and not (global_path and cfg_path.resolve() == global_path.resolve()):
+            return str(getattr(cfg.automation, "agent_language", "en") or "en")
+
+    cwd_cfg = load_project_config(Path.cwd())
+    if cwd_cfg and getattr(cwd_cfg, "automation", None):
+        cwd_cfg_path_text = getattr(cwd_cfg, "config_file_path", "") or ""
+        cwd_cfg_path = Path(cwd_cfg_path_text) if cwd_cfg_path_text else None
+        global_path = find_global_config()
+        if cwd_cfg_path and not (global_path and cwd_cfg_path.resolve() == global_path.resolve()):
+            return str(getattr(cwd_cfg.automation, "agent_language", "en") or "en")
+
     if cfg and getattr(cfg, "automation", None):
         return str(getattr(cfg.automation, "agent_language", "en") or "en")
     return "en"

@@ -493,8 +493,10 @@ def _run_opencode_schema_prompt(
     )
 
 
-def build_task_markdown_from_plan(task: dict, *, language: str = "en") -> str:
+def build_task_markdown_from_plan(task: dict, *, language: str | None = None) -> str:
     """Convert a structured plan item into task markdown using task templates."""
+    if language is None:
+        language = agent_language_for_config_ref(Path.cwd())
     template_name = "task-template.zh-CN.md" if str(language).lower().startswith("zh") else "task-template.md"
     return _task_planning.build_task_markdown_from_plan(
         task,
