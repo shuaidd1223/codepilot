@@ -97,6 +97,7 @@ planner = "claude"
     assert result["status"] == "ready"
     assert result["source"] == "passthrough"
     assert result["refined_title"] == "优化一下"
+    assert result["skip_reason"] == "delegated_to_ai_agent"  # 默认配置下=AI 接管
 
 
 def test_assess_requirement_for_planning_uses_shared_input_builder(tmp_path, monkeypatch):

@@ -134,3 +134,40 @@ def test_go_question_intent_answers_directly_without_planning(tmp_path, monkeypa
     assert result.exit_code == 0
     assert "这是回答" in result.output
     assert not ran
+
+
+def test_assess_requirement_returns_workflow_session(tmp_path, monkeypatch):
+    """assess_requirement_for_planning 返回 workflow_session 记录。"""
+    from codepilot.commands.auto_workflow import assess_requirement_for_planning
+    from tests.workflow_testkit import init_test_db as _init_test_db
+    from codepilot.storage import database as db
+
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    project_info = db.register_project("demo", str(project_path))
+
+    seen: dict[str, object] = {}
+
+    def _fake_clarify(title, *, qa_history=None, **kwargs):
+        seen["title"] = title
+        seen["qa_history"] = qa_history
+        return {"status": "ready", "refined_title": title, "qa_history": qa_history, "source": "passthrough", "skip_reason": "delegated_to_ai_agent"}
+
+    monkeypatch.setattr(auto_mod, "clarify_requirement", _fake_clarify)
+
+    result = assess_requirement_for_planning(
+        "做一个智能体",
+        project_info=project_info,
+        planner="codex",
+    )
+
+    assert result["status"] == "ready"
+    ws = result.get("workflow_session")
+    assert ws is not None, "workflow_session should be present in ready result"
+    assert ws["phase"] == "plan"
+    assert ws["intent"] == "requirement"
+    assert ws["next_action"] == "plan"
+    assert ws["clarify_status"]["status"] == "ready"
+    assert ws["clarify_status"]["source"] == "passthrough"
+    assert ws["clarify_status"]["skip_reason"] == "delegated_to_ai_agent"

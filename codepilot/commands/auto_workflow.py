@@ -31,6 +31,7 @@ from codepilot.ai_support.clarification_protocol import (
     render_clarification_questions,
 )
 from codepilot.ai_support.intent_rules import _heuristic_intent
+from codepilot.ai_support.interaction_controller import build_workflow_session_record
 from codepilot.commands import auto_project_resolution as _project_resolution
 from codepilot.commands import auto_workflow_planning as _planning_flow
 from codepilot.core.config import (
@@ -87,10 +88,19 @@ def clarify_requirement(
     旧的 clarify 模式（启发式 + AI 提示词 + 多轮交互）已被移除。
     """
     qa_history = normalize_clarification_history(qa_history)
+    clarify_enabled = True
+    try:
+        cfg = _project_config(project_info)
+        if cfg is not None:
+            clarify_enabled = bool(cfg.automation.clarify_vague_requirements)
+    except Exception:
+        pass
+    skip_reason = "disabled_by_config" if not clarify_enabled else "delegated_to_ai_agent"
     return {
         "status": "ready",
         "refined_title": title.strip(),
         "source": "passthrough",
+        "skip_reason": skip_reason,
         "qa_history": qa_history,
     }
 
@@ -353,6 +363,17 @@ def assess_requirement_for_planning(
     if result.get("status") == "ready":
         result["refined_title"] = normalize_requirement_text(
             result.get("refined_title") or seed_title
+        )
+        skip_reason = result.get("skip_reason", "")
+        result["workflow_session"] = build_workflow_session_record(
+            phase="plan",
+            intent="requirement",
+            clarify_status={
+                "status": "ready",
+                "source": result.get("source", "passthrough"),
+                "skip_reason": skip_reason,
+            },
+            next_action="plan",
         )
     return result
 
@@ -685,6 +706,11 @@ def _build_requirement_payload(
         "task_agent": task_agent,
         "tasks": created_tasks,
         "will_execute": will_execute,
+        "workflow_session": build_workflow_session_record(
+            phase="plan",
+            intent="requirement",
+            next_action="execute" if will_execute else "confirm",
+        ),
     }
 
 

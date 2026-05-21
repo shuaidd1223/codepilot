@@ -104,3 +104,46 @@ def test_webui_session_rejects_empty_text_before_opencode(tmp_path, monkeypatch)
     else:
         raise AssertionError("empty message should fail")
     assert calls == []
+
+
+def test_webui_session_goal_records_workflow_phase(tmp_path, monkeypatch):
+    """submit_goal_action 返回的 payload 包含 workflow_phase 和 next_action。"""
+    from codepilot.webapp import server as webui_mod
+    from codepilot.webapp.action_requirements import submit_goal_action
+
+    register_project(tmp_path, monkeypatch)
+    monkeypatch.setattr("codepilot.webapp.actions.classify_entry_intent", lambda text, **kw: "question")
+    monkeypatch.setattr("codepilot.ai_support.service.answer_question_via_api", lambda **kw: "项目进展良好。")
+
+    out = submit_goal_action("demo", "当前项目进展如何")
+
+    assert out["ok"] is True
+    assert out["intent"] == "question"
+    ws = out.get("workflow_session")
+    assert ws is not None
+    assert ws["phase"] == "question"
+    assert ws["next_action"] == "answer"
+
+
+def test_webui_session_message_contains_workflow_phase_metadata(tmp_path, monkeypatch):
+    """send_session_message_action 的 user message metadata 包含 workflow_phase。"""
+    register_project(tmp_path, monkeypatch)
+    session = webui_mod.create_session_action("demo", title="chat")
+    session_id = session["session"]["id"]
+
+    monkeypatch.setattr(
+        "codepilot.opencode.session.run_opencode_message",
+        lambda project, text, *, source, external_session_id, agent=None: {
+            "ok": True,
+            "message": "已处理。",
+            "opencode_session_id": "ses-phase",
+        },
+    )
+
+    out = webui_mod.send_session_message_action(session_id, "检查状态", category="auto")
+    detail = webui_mod.get_session_action(session_id)
+
+    assert out["ok"] is True
+    user_msg = detail["messages"][0]
+    assert user_msg["role"] == "user"
+    assert user_msg["metadata"].get("workflow_phase") == "intake"

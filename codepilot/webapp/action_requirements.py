@@ -20,6 +20,7 @@ from codepilot.ai_support.clarification_protocol import (
 from codepilot.commands.auto import normalize_requirement_text
 from codepilot.ai_support.interaction_controller import (
     ClarificationTransition,
+    build_workflow_session_record,
     interpret_clarification_outcome,
     parse_intent_prefix,
     resolve_turn_intent,
@@ -300,6 +301,9 @@ def _goal_clarify_payload(*, seed_title: str, questions: list[dict], qa_history:
         "original_title": seed_title,
         "qa_history": qa_history or [],
         "message": "为了更好地规划，请先回答几个问题。",
+        "workflow_session": build_workflow_session_record(
+            phase="clarify", intent="requirement", next_action="clarify",
+        ),
     }
 
 
@@ -845,6 +849,9 @@ def _dispatch_goal_command(ctx: _GoalDispatchContext) -> dict:
         "ok": True,
         "intent": "command",
         "message": _actions().command_intent_guidance(),
+        "workflow_session": build_workflow_session_record(
+            phase="command", intent="command", next_action="guidance",
+        ),
     }
 
 
@@ -855,7 +862,14 @@ def _dispatch_goal_question(ctx: _GoalDispatchContext) -> dict:
         gateway_options=ctx.gateway_options,
     )
     _append_event(f"回答问题：{ctx.text[:60]}", project=ctx.project)
-    return {"ok": True, "intent": "question", "message": answer}
+    return {
+        "ok": True,
+        "intent": "question",
+        "message": answer,
+        "workflow_session": build_workflow_session_record(
+            phase="question", intent="question", next_action="answer",
+        ),
+    }
 
 
 def _dispatch_goal_requirement(ctx: _GoalDispatchContext, *, intent: str) -> dict:
@@ -888,6 +902,9 @@ def _dispatch_goal_requirement(ctx: _GoalDispatchContext, *, intent: str) -> dic
     )
     result["intent"] = intent
     result["refined_title"] = refined
+    result["workflow_session"] = build_workflow_session_record(
+        phase="plan", intent=intent, next_action="execute",
+    )
     return result
 
 
@@ -901,6 +918,9 @@ def _requirement_confirmation_payload(intent: str) -> dict:
         "message": (
             f"这条消息更像要创建{label}，但当前不会直接执行。"
             f"如果你确认要创建，请明确发送 `{prefix} <内容>` 或 `{symbol} <内容>`。"
+        ),
+        "workflow_session": build_workflow_session_record(
+            phase="intake", intent=intent, next_action="confirm",
         ),
     }
 

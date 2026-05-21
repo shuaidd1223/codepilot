@@ -18,6 +18,7 @@ from codepilot.ai_support.clarification_protocol import (
     normalize_text,
 )
 from codepilot.ai_support.interaction_controller import (
+    build_workflow_session_record,
     interpret_clarification_outcome,
     parse_intent_prefix,
     resolve_turn_intent,
@@ -91,6 +92,7 @@ def _session_payload(
     task_ids: Optional[list[int]] = None,
     questions: Optional[list[dict]] = None,
     refined_title: str = "",
+    workflow_session: Optional[dict] = None,
 ) -> dict:
     payload: dict = {
         "ok": True,
@@ -102,6 +104,8 @@ def _session_payload(
         payload["questions"] = questions
     if refined_title:
         payload["refined_title"] = refined_title
+    if workflow_session is not None:
+        payload["workflow_session"] = dict(workflow_session)
     return payload
 
 
@@ -487,7 +491,7 @@ def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pendin
         ctx.session_id,
         "user",
         user_content,
-        metadata={"answers": user_answers} if user_answers else None,
+        metadata={"answers": user_answers, "workflow_phase": "clarify"} if user_answers else {"workflow_phase": "clarify"},
     )
     actions = _actions()
     outcome = actions.continue_pending_clarification(
@@ -520,9 +524,15 @@ def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pendin
                 "questions": questions,
                 "original_title": next_state.get("original_title") or pending.get("original_title") or ctx.text,
                 "session_context": next_state.get("session_context") or pending.get("session_context") or "",
+                "workflow_phase": "clarify",
             },
         )
-        return _session_payload("clarify", reply, questions=questions)
+        return _session_payload(
+            "clarify", reply, questions=questions,
+            workflow_session=build_workflow_session_record(
+                phase="clarify", intent="requirement", next_action="clarify",
+            ),
+        )
 
     refined = actions.normalize_requirement_text(pending.get("original_title") or "")
     refined = transition.refined_title or refined
@@ -543,13 +553,23 @@ def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pendin
         intent="requirement",
         task_ids=task_ids,
     )
-    return _session_payload("requirement", reply, refined_title=refined, task_ids=task_ids)
+    return _session_payload(
+        "requirement", reply, refined_title=refined, task_ids=task_ids,
+        workflow_session=build_workflow_session_record(
+            phase="plan", intent="requirement", next_action="execute",
+        ),
+    )
 
 
 def _dispatch_session_command(ctx: _SessionDispatchContext) -> dict:
     reply = _actions().command_intent_guidance()
     db.create_session_message(ctx.session_id, "assistant", reply, intent="command")
-    return _session_payload("command", reply)
+    return _session_payload(
+        "command", reply,
+        workflow_session=build_workflow_session_record(
+            phase="command", intent="command", next_action="guidance",
+        ),
+    )
 
 
 def _dispatch_session_question(ctx: _SessionDispatchContext) -> dict:
@@ -560,7 +580,12 @@ def _dispatch_session_question(ctx: _SessionDispatchContext) -> dict:
         history=ctx.session_history,
     )
     db.create_session_message(ctx.session_id, "assistant", reply, intent="question")
-    return _session_payload("question", reply)
+    return _session_payload(
+        "question", reply,
+        workflow_session=build_workflow_session_record(
+            phase="question", intent="question", next_action="answer",
+        ),
+    )
 
 
 def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) -> dict:
@@ -588,9 +613,15 @@ def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) 
                 "questions": questions,
                 "original_title": assessment.get("seed_title") or contextual_text,
                 "session_context": ctx.session_context,
+                "workflow_phase": "clarify",
             },
         )
-        return _session_payload("clarify", reply, questions=questions)
+        return _session_payload(
+            "clarify", reply, questions=questions,
+            workflow_session=build_workflow_session_record(
+                phase="clarify", intent=intent, next_action="clarify",
+            ),
+        )
 
     refined = assessment.get("refined_title") or ctx.text
     planning_text = _augment_text_with_session_context(refined, ctx.session_context)
@@ -602,7 +633,12 @@ def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) 
         max_tasks=max_tasks,
     )
     db.create_session_message(ctx.session_id, "assistant", reply, intent=intent, task_ids=task_ids)
-    return _session_payload(intent, reply, refined_title=refined, task_ids=task_ids)
+    return _session_payload(
+        intent, reply, refined_title=refined, task_ids=task_ids,
+        workflow_session=build_workflow_session_record(
+            phase="plan", intent=intent, next_action="execute",
+        ),
+    )
 
 
 def _resolve_session_dispatch_decision(
@@ -639,6 +675,9 @@ def _session_requirement_confirmation_payload(intent: str) -> dict:
     return _session_payload(
         "confirm",
         f"这条消息更像要创建{label}，但当前不会直接执行。请明确发送 `{prefix} <内容>` 或 `{symbol} <内容>` 再继续。",
+        workflow_session=build_workflow_session_record(
+            phase="intake", intent=intent, next_action="confirm",
+        ),
     )
 
 
@@ -999,7 +1038,10 @@ def send_session_message_action(
     if not existing_messages:
         short_title = text[:40] + ("…" if len(text) > 40 else "")
         db.update_session(session_id, title=short_title)
-    user_message = db.create_session_message(session_id, "user", text)
+    user_message = db.create_session_message(
+        session_id, "user", text,
+        metadata={"workflow_phase": "intake"},
+    )
     if run_async:
         assistant_message = db.create_session_message(
             session_id,

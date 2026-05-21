@@ -109,6 +109,27 @@ class ClarificationTransition:
     refined_title: str = ""
 
 
+WORKFLOW_PHASES = ("intake", "clarify", "plan", "question", "command", "done", "error")
+
+
+def build_workflow_session_record(
+    *,
+    phase: str,
+    intent: str = "",
+    clarify_status: Optional[dict] = None,
+    next_action: str = "none",
+) -> dict:
+    """Build a standardized workflow-session record shared by CLI/WebUI entry points."""
+    record: dict = {
+        "phase": phase,
+        "intent": intent or "",
+        "next_action": next_action or "none",
+    }
+    if clarify_status:
+        record["clarify_status"] = dict(clarify_status)
+    return record
+
+
 def interpret_clarification_outcome(
     outcome: Optional[dict],
     *,
