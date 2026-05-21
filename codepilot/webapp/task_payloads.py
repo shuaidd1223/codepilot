@@ -172,7 +172,13 @@ def _derive_recovery_hints(task: dict) -> list[str]:
     error = task.get("error_message") or ""
     task_id = int(task.get("id") or 0)
     hints: list[str] = []
-    if "超时" in error or "timeout" in error.lower():
+    is_builder_timeout = "Builder 已完成" in error and ("超时" in error or "timeout" in error.lower())
+    if is_builder_timeout:
+        hints.append(f"重试 review: codepilot task retry #{task_id}")
+        hints.append(f"接受 builder 结果: codepilot task done #{task_id} -m \"review accepted\"")
+        hints.append("切换 reviewer: 编辑任务的 agent 字段为 claude / codex")
+        hints.append("等待人工处理: 保留当前状态，由人工介入判断")
+    elif "超时" in error or "timeout" in error.lower():
         hints.append(f"重试 review: codepilot task retry #{task_id}")
         hints.append(f"接受 builder 结果: codepilot task done #{task_id} -m \"review accepted\"")
         hints.append("切换 reviewer: 编辑任务的 agent 字段为 claude / codex")

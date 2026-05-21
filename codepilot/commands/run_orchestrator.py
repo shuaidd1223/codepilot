@@ -816,7 +816,14 @@ def _handle_execution_result(
     else:
         error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
         runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
-        if result.deterministic_failure and not result.review_output:
+        _is_builder_timeout = (
+            "Builder 已完成" in (result.summary or "")
+            and ("超时" in (result.summary or "") or "timeout" in (result.summary or "").lower())
+        )
+        if _is_builder_timeout:
+            updated = runner._mark_task_failed(task, error_message)
+            should_stop = False
+        elif result.deterministic_failure and not result.review_output:
             # Deterministic failures (compile errors, AC obviously broken,
             # duplicate-of-existing-bug 等) 的语义和 review-fail 不同：不允许
             # 重试也不需要 replan，只能 merge 到已有任务或 discard。继续走

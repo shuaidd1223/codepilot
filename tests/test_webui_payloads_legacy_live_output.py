@@ -145,3 +145,16 @@ def test_task_payload_includes_recovery_hints_on_timeout(tmp_path, monkeypatch):
         assert len(payload["recovery_hints"]) > 0
         assert any("重试" in h or "review" in h.lower() for h in payload["recovery_hints"])
 
+
+def test_recovery_hints_for_builder_done_review_timeout():
+    """_derive_recovery_hints returns builder-specific hints for builder_done_review_timeout."""
+    hints = task_payloads._derive_recovery_hints({
+        "id": 99,
+        "status": "failed",
+        "error_message": "✅ Builder 已完成但 ❌ Reviewer 超时",
+    })
+    assert "Builder 已完成" in hints[0] or any("重试 review" in h for h in hints)
+    assert any("接受 builder 结果" in h for h in hints)
+    assert any("切换 reviewer" in h for h in hints)
+    assert any("等待人工处理" in h for h in hints)
+

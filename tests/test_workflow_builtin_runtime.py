@@ -480,5 +480,7 @@ def test_builder_done_review_timeout_preserves_builder_evidence(tmp_path, monkey
     # Builder evidence is preserved in result.output; the orchestrator emits it
     # via _emit_phase_summaries so it appears in console / task logs. The
     # error_message must clearly distinguish timeout from regular failure.
-    assert current["status"] in {"backlog", "failed"}
+    assert current["status"] == "failed", "Task must be marked as failed (not backlog) to prevent auto-retry"
+    assert stats.get("failed") == 1, "Stats must report 1 failed task"
+    assert stats.get("requeued", 0) == 0, "Timeout must not requeue task"
 
