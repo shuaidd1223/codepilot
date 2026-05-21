@@ -65,6 +65,14 @@ def test_repo_ai_manifest_file_stays_in_sync():
     assert payload == command_manifest()
 
 
+def test_ai_manifest_includes_project_metadata():
+    payload = command_manifest()
+
+    assert payload["author"] == {"name": "帅呆呆", "email": "2264505396@qq.com"}
+    assert payload["repository"] == "https://gitee.com/shuai_dd/CodePilot"
+    assert payload["license"] == "MIT"
+
+
 def test_repo_ai_usage_file_stays_in_sync():
     guide_path = Path(__file__).resolve().parents[1] / "AI_USAGE.zh-CN.md"
 
@@ -75,6 +83,17 @@ def test_repo_ai_usage_english_file_stays_in_sync():
     guide_path = Path(__file__).resolve().parents[1] / "AI_USAGE.en-US.md"
 
     assert guide_path.read_text(encoding="utf-8") == ai_guide_markdown(language="en")
+
+
+def test_ai_usage_guides_include_project_metadata_and_next_actions_contract():
+    zh_guide = ai_guide_markdown(language="zh-CN")
+    en_guide = ai_guide_markdown(language="en")
+
+    assert "**作者：** 帅呆呆 <2264505396@qq.com>" in zh_guide
+    assert "**Author:** 帅呆呆 <2264505396@qq.com>" in en_guide
+    assert "next_actions" in zh_guide
+    assert "suggested_command" in zh_guide
+    assert "这些是建议，不会自动执行" in zh_guide
 
 
 def test_active_explanation_docs_are_bilingual_and_linked():

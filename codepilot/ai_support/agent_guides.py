@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from codepilot.ai_support.agent_commands import _cmd, normalize_command_name
+from codepilot.ai_support.project_metadata import project_metadata_markdown
 from codepilot.core.config import normalize_agent_language
 
 def ai_guide_markdown(*, command_name: str = "codepilot", language: str = "en") -> str:
@@ -12,6 +13,8 @@ def ai_guide_markdown(*, command_name: str = "codepilot", language: str = "en") 
         return f"""# CodePilot AI Usage Guide
 
 Language: [简体中文](AI_USAGE.zh-CN.md) | English
+
+{project_metadata_markdown(language="en")}
 
 This guide is for other AI agents. For the latest machine-readable command list, use `{_cmd(command, "ai manifest")}`. For this Markdown guide, use `{_cmd(command, "ai guide")}`.
 
@@ -75,6 +78,8 @@ Required rules:
 
 语言版本：中文 | [English](AI_USAGE.en-US.md)
 
+{project_metadata_markdown(language="zh-CN")}
+
 这份手册是写给其他 AI / Agent 的静态入口。最新机器可读清单以 `{_cmd(command, "ai manifest")}` 为准，最新 Markdown 手册以 `{_cmd(command, "ai guide")}` 为准。
 
 ## 最重要的调用原则
@@ -115,6 +120,8 @@ Required rules:
 ```
 
 `clarify` 和 `plan` 不创建 backlog、不启动执行器。
+
+`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`，供调用方或 Web UI 展示。**这些是建议，不会自动执行。**
 
 ### 4. 状态与证据
 

@@ -7,6 +7,7 @@ from typing import Any
 
 from codepilot import __version__
 from codepilot.ai_support.agent_commands import _cmd, normalize_command_name
+from codepilot.ai_support.project_metadata import project_metadata
 from codepilot.core.config import normalize_agent_language
 
 def command_manifest(
@@ -26,6 +27,7 @@ def command_manifest(
     return {
         "name": "CodePilot",
         "version": manifest_version,
+        **project_metadata(),
         "command_name": command,
         "language": lang,
         "description": (
@@ -580,6 +582,7 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
     return {
         "name": "CodePilot",
         "version": version,
+        **project_metadata(),
         "command_name": command,
         "language": "en",
         "description": "Local engineering workflow CLI that turns natural-language requirements into tasks and coordinates planning, execution, review, operations, and release.",
