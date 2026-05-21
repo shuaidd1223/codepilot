@@ -8,8 +8,10 @@ DB and compose JSON-shaped dicts.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from codepilot.storage import database as db
 from codepilot.webapp.display_sort import TASK_STATUS_ORDER, sort_tasks_for_display
@@ -316,4 +318,28 @@ def dashboard_payload(selected_project: str | None = None) -> dict:
         "tasks": tasks_by_project.get(resolved, []) if resolved else [],
         "jobs": jobs_by_project.get(resolved, []) if resolved else [],
         "events": shell.list_ui_events(resolved),
+    }
+
+
+def artifact_context_payload(context_path: str) -> dict:
+    """Read an artifact's context JSON and return its content with next_actions.
+
+    Used by the Web UI to display artifact metadata and available next actions.
+    Returns an error dict if the context file cannot be read.
+    """
+    path = Path(context_path)
+    if not path.exists():
+        return {"ok": False, "error": "artifact context not found"}
+    try:
+        raw = path.read_text(encoding="utf-8")
+        ctx = json.loads(raw)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {"ok": False, "error": "artifact context is corrupt or unreadable"}
+    if not isinstance(ctx, dict):
+        return {"ok": False, "error": "artifact context is not a JSON object"}
+    return {
+        "ok": True,
+        "summary": str(ctx.get("summary") or ""),
+        "next_actions": list(ctx.get("next_actions") or []),
+        "artifact_type": str(ctx.get("state", {}).get("mode") or ""),
     }

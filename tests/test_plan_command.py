@@ -84,6 +84,24 @@ def test_plan_marks_workflow_state_complete(tmp_path, monkeypatch):
     assert state["artifact_paths"]["plan"] == json.loads(result.output)["data"]["plan_path"]
 
 
+def test_plan_json_includes_next_actions(tmp_path, monkeypatch):
+    _register_demo(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(main, ["plan", "-p", "demo", "新增 explore", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    data = payload["data"]
+    assert "next_actions" in data
+    assert isinstance(data["next_actions"], list)
+    assert len(data["next_actions"]) > 0
+    for action in data["next_actions"]:
+        assert "id" in action
+        assert "label" in action
+        assert "risk" in action
+        assert "suggested_command" in action
+
+
 def test_ai_manifest_includes_plan_command():
     manifest = command_manifest(command_name="codepilot")
 

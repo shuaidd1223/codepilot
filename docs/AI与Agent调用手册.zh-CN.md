@@ -38,6 +38,8 @@ codepilot plan -p <项目名> --from-spec .codepilot/specs/example.md --json
 
 `clarify` 和 `plan` 都不创建 backlog、不启动执行器，适合执行前审查。
 
+`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等），供调用方或 Web UI 展示。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。**这些 next actions 仅作为建议，不会自动执行。**
+
 ### 2.3 状态、证据和记忆
 
 ```bash
@@ -171,8 +173,39 @@ codepilot add -p <项目名> -f tasks.txt
 ### 4.2 先澄清再计划
 
 1. `codepilot clarify -p <项目名> "模糊需求" --json`
+   - 输出包含 `next_actions`，推荐下一步动作。
 2. `codepilot plan -p <项目名> --from-spec <spec_path> --json`
+   - 输出包含 `next_actions`（导入任务、继续澄清、直接执行、放弃）。
 3. 人工确认后再提交需求或通过模板投递任务。
+
+### 4.6 Artifact 后续动作说明
+
+当 `clarify` 或 `plan` 生成 artifact 后，其 `--json` 输出和对应的 workflow state 都会记录 `next_actions`，字段结构如下：
+
+```json
+{
+  "id": "plan_from_spec",
+  "label": "根据当前 clarify spec 生成执行计划",
+  "risk": "low",
+  "suggested_command": "codepilot plan -p demo --from-spec <spec_path> --json"
+}
+```
+
+| 字段 | 说明 |
+| :--- | :--- |
+| `id` | 动作标识，用于程序化引用 |
+| `label` | 人类可读的说明文字 |
+| `risk` | 风险等级：`low` / `medium` / `high` |
+| `suggested_command` | 建议执行的终端命令，调用方替换 `<...>` 占位符后使用 |
+
+推荐路径：
+
+- **Clarify → Plan**：检查 clarify spec 后，用 `plan --from-spec` 生成执行计划。
+- **Plan → Task**：人工审查 plan 后，通过 `codepilot add` 将候选任务导入 backlog 供 daemon 执行。
+- **Plan → Execute**：直接执行（高风险），跳过 backlog 排队阶段。
+- **放弃**：删除 artifact 文件，流程终止。
+
+`next_actions` 默认不执行任何自动化操作，所有后续动作都需要人工确认或显式调用。
 
 ### 4.3 回答项目问题
 

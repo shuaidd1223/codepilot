@@ -13,7 +13,7 @@ import click
 from codepilot.commands.clarify import _resolve_project, _slugify, _summary
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.output import echo
-from codepilot.core.workflow_state import complete_workflow, start_workflow, workflow_dirs
+from codepilot.core.workflow_state import complete_workflow, start_workflow, update_workflow_state, workflow_dirs
 
 
 def _now_slug() -> str:
@@ -159,6 +159,36 @@ def _build_verification_plan(summary: str, files: list[str]) -> list[dict[str, s
     ]
 
 
+def _plan_next_actions(summary: str, project_info: dict, plan_path: str | None = None) -> list[dict[str, str]]:
+    project_name = project_info.get("name", "<project>")
+    return [
+        {
+            "id": "import_tasks",
+            "label": "将候选任务导入 backlog",
+            "risk": "medium",
+            "suggested_command": f"codepilot add -p {project_name} -f <plan_context_path> --json",
+        },
+        {
+            "id": "continue_clarify",
+            "label": "对计划中不清晰的部分进一步澄清",
+            "risk": "low",
+            "suggested_command": f"codepilot clarify -p {project_name} \"{summary}\" --json",
+        },
+        {
+            "id": "execute_directly",
+            "label": "直接执行计划",
+            "risk": "high",
+            "suggested_command": f"codepilot run -p {project_name} --once --json",
+        },
+        {
+            "id": "abandon_plan",
+            "label": "放弃该计划，删除 plan artifact",
+            "risk": "low",
+            "suggested_command": f"rm {plan_path}" if plan_path else "rm <plan_path>",
+        },
+    ]
+
+
 def _render_list(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items) if items else "- 待确认"
 
@@ -272,6 +302,7 @@ def write_plan_artifact(
 
     wiki = collect_wiki_context(project_info, requirement, enabled=use_wiki, limit=5)
     payload = build_execution_plan(requirement, source=source, source_path=source_path, wiki_context=wiki)
+    next_actions = _plan_next_actions(payload["summary"], project_info, plan_path=str(plan_path))
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     context_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(payload["plan"], encoding="utf-8", newline="\n")
@@ -287,6 +318,7 @@ def write_plan_artifact(
                 "risks": payload["risks"],
                 "verification_plan": payload["verification_plan"],
                 "wiki_context": payload["wiki_context"],
+                "next_actions": next_actions,
                 "state": state,
             },
             ensure_ascii=False,
@@ -297,6 +329,7 @@ def write_plan_artifact(
         newline="\n",
     )
     complete_workflow(project_path, "plan")
+    update_workflow_state(project_path, "plan", next_actions=next_actions)
     return {
         "project": {"name": project_info["name"], "path": str(project_path)},
         "plan_path": str(plan_path),
@@ -308,6 +341,7 @@ def write_plan_artifact(
         "risks": payload["risks"],
         "verification_plan": payload["verification_plan"],
         "wiki_context": payload["wiki_context"],
+        "next_actions": next_actions,
     }
 
 

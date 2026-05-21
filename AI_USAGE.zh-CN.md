@@ -45,6 +45,8 @@ codepilot plan -p <项目名> --from-spec .codepilot/specs/example.md --json
 
 `clarify` 和 `plan` 不创建 backlog、不启动执行器。
 
+`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`，供调用方或 Web UI 展示。**这些是建议，不会自动执行。**
+
 ### 4. 状态与证据
 
 ```bash

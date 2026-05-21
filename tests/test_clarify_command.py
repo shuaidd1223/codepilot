@@ -83,6 +83,24 @@ def test_clarify_skips_ai_and_generates_spec_directly(tmp_path, monkeypatch):
     assert "已生成 clarify spec" in result.output
 
 
+def test_clarify_json_includes_next_actions(tmp_path, monkeypatch):
+    _register_demo(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(main, ["clarify", "-p", "demo", "改进 doctor", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    data = payload["data"]
+    assert "next_actions" in data
+    assert isinstance(data["next_actions"], list)
+    assert len(data["next_actions"]) > 0
+    for action in data["next_actions"]:
+        assert "id" in action
+        assert "label" in action
+        assert "risk" in action
+        assert "suggested_command" in action
+
+
 def test_ai_manifest_includes_clarify_command():
     manifest = command_manifest(command_name="codepilot")
 

@@ -955,6 +955,64 @@ def _dispatch_goal_by_intent(ctx: _GoalDispatchContext) -> dict:
     )
 
 
+def artifact_next_actions_for_type(artifact_type: str) -> list[dict]:
+    """Return the predefined next actions available for a given artifact type.
+
+    These describe the recommended follow-up steps after a clarify or plan
+    artifact has been created.  The actual ``suggested_command`` templates
+    should be resolved against the real artifact path before use.
+    """
+    _defs: dict[str, list[dict]] = {
+        "clarify": [
+            {
+                "id": "plan_from_spec",
+                "label": "根据当前 clarify spec 生成执行计划",
+                "risk": "low",
+                "suggested_command": "codepilot plan -p {project} --from-spec {artifact_path} --json",
+            },
+            {
+                "id": "submit_requirement",
+                "label": "提交为需求并创建 backlog 任务",
+                "risk": "medium",
+                "suggested_command": 'codepilot go "{summary}" -p {project} --json',
+            },
+            {
+                "id": "continue_clarify",
+                "label": "继续澄清，补充更多细节",
+                "risk": "low",
+                "suggested_command": 'codepilot clarify -p {project} "补充：..." --json',
+            },
+        ],
+        "plan": [
+            {
+                "id": "import_tasks",
+                "label": "将候选任务导入 backlog",
+                "risk": "medium",
+                "suggested_command": "codepilot add -p {project} -f {context_path} --json",
+            },
+            {
+                "id": "continue_clarify",
+                "label": "对计划中不清晰的部分进一步澄清",
+                "risk": "low",
+                "suggested_command": 'codepilot clarify -p {project} "{summary}" --json',
+            },
+            {
+                "id": "execute_directly",
+                "label": "直接执行计划",
+                "risk": "high",
+                "suggested_command": "codepilot run -p {project} --once --json",
+            },
+            {
+                "id": "abandon_plan",
+                "label": "放弃该计划，删除 plan artifact",
+                "risk": "low",
+                "suggested_command": "rm {plan_path}",
+            },
+        ],
+    }
+    return list(_defs.get(artifact_type, []))
+
+
 def submit_goal_action(
     project: str,
     text: str,

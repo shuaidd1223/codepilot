@@ -13,7 +13,7 @@ import click
 from codepilot.commands.explore import explore_project
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.output import echo
-from codepilot.core.workflow_state import complete_workflow, start_workflow, workflow_dirs
+from codepilot.core.workflow_state import complete_workflow, start_workflow, update_workflow_state, workflow_dirs
 from codepilot.storage import database as db
 
 
@@ -110,6 +110,30 @@ def _collect_evidence(project_info: dict, requirement: str) -> tuple[list[dict[s
     evidence = list(payload.get("evidence") or [])[:6]
     limitations.extend(str(item) for item in payload.get("limitations") or [])
     return evidence, limitations
+
+
+def _clarify_next_actions(summary: str, project_info: dict) -> list[dict[str, str]]:
+    project_name = project_info.get("name", "<project>")
+    return [
+        {
+            "id": "plan_from_spec",
+            "label": "根据当前 clarify spec 生成执行计划",
+            "risk": "low",
+            "suggested_command": f"codepilot plan -p {project_name} --from-spec <spec_path> --json",
+        },
+        {
+            "id": "submit_requirement",
+            "label": "提交为需求并创建 backlog 任务",
+            "risk": "medium",
+            "suggested_command": f"codepilot go \"{summary}\" -p {project_name} --json",
+        },
+        {
+            "id": "continue_clarify",
+            "label": "继续澄清，补充更多细节",
+            "risk": "low",
+            "suggested_command": f"codepilot clarify -p {project_name} \"补充：...\" --json",
+        },
+    ]
 
 
 def _render_evidence(evidence: list[dict[str, Any]], limitations: list[str]) -> str:
@@ -214,6 +238,7 @@ def write_clarify_artifact(
         quick=quick,
         stream_callback=stream_callback,
     )
+    next_actions = _clarify_next_actions(payload["summary"], project_info)
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     context_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text(payload["spec"], encoding="utf-8", newline="\n")
@@ -226,6 +251,7 @@ def write_clarify_artifact(
                 "acceptance_criteria": payload["acceptance_criteria"],
                 "evidence": payload["evidence"],
                 "limitations": payload["limitations"],
+                "next_actions": next_actions,
                 "state": state,
             },
             ensure_ascii=False,
@@ -236,6 +262,7 @@ def write_clarify_artifact(
         newline="\n",
     )
     complete_workflow(project_path, "clarify")
+    update_workflow_state(project_path, "clarify", next_actions=next_actions)
     return {
         "project": {"name": project_info["name"], "path": str(project_path)},
         "artifact_path": str(spec_path),
@@ -244,6 +271,7 @@ def write_clarify_artifact(
         "open_questions": payload["open_questions"],
         "evidence_count": len(payload["evidence"]),
         "mode": "quick" if quick else "standard",
+        "next_actions": next_actions,
     }
 
 
