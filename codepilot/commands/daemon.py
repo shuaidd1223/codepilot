@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -42,6 +43,7 @@ def _resolve_project(ctx, param, value):
 
 
 DAEMON_STATE_DIR = global_storage_root() / "daemon"
+DEFAULT_DAEMON_STALE_AFTER_SECONDS = 120
 
 
 def _service_dir(project: str | None) -> Path:
@@ -59,9 +61,24 @@ def _service_scope(project: str | None) -> str:
 
 
 def _now_iso() -> str:
-    from datetime import datetime
-
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _state_heartbeat_stale(
+    state: dict | None,
+    *,
+    stale_after_seconds: int = DEFAULT_DAEMON_STALE_AFTER_SECONDS,
+) -> bool:
+    if not state:
+        return False
+    heartbeat = str(state.get("heartbeat_at") or "").strip()
+    if not heartbeat:
+        return False
+    try:
+        delta = (datetime.now() - datetime.fromisoformat(heartbeat)).total_seconds()
+    except ValueError:
+        return False
+    return delta > max(0, int(stale_after_seconds))
 
 
 def _service_targets(project: str | None = None) -> list[int]:
@@ -72,12 +89,16 @@ def _service_targets(project: str | None = None) -> list[int]:
         pid = int(state.get("pid") or 0)
     except Exception:
         pid = 0
-    if pid and is_process_alive(pid):
+    if pid and is_process_alive(pid) and not _state_heartbeat_stale(state):
         return [pid]
     return []
 
 
-def daemon_service_status(project: str | None = None) -> dict:
+def daemon_service_status(
+    project: str | None = None,
+    *,
+    stale_after_seconds: int = DEFAULT_DAEMON_STALE_AFTER_SECONDS,
+) -> dict:
     log_file = _service_log_path(project)
     state = db.get_service_state("daemon", _service_scope(project))
     meta = state.get("meta") if state and isinstance(state.get("meta"), dict) else {}
@@ -88,6 +109,11 @@ def daemon_service_status(project: str | None = None) -> dict:
     running = bool(pid and is_process_alive(pid))
     live_log = str(state.get("log_path") or "") if state else ""
     stopping = bool(state and str(state.get("status") or "").strip().lower() == "stopping")
+    stale = bool(running and _state_heartbeat_stale(state, stale_after_seconds=stale_after_seconds))
+    if stale:
+        _cleanup_service_files(project)
+        running = False
+        stopping = False
     return {
         "running": running,
         "stopping": bool(running and stopping),
@@ -95,6 +121,7 @@ def daemon_service_status(project: str | None = None) -> dict:
         "project": meta.get("project") or "",
         "started_at": meta.get("started_at") or "",
         "log": live_log or str(log_file),
+        "stale": stale,
     }
 
 
@@ -200,24 +227,30 @@ def start_daemon_service(
         executor=executor,
         auto_commit=auto_commit,
     )
-    time.sleep(0.8)
-    if proc.poll() is not None:
-        tail = ""
-        log_file = _service_log_path(project)
-        try:
-            tail = log_file.read_text(encoding="utf-8", errors="replace")[-1500:]
-        except Exception:
-            pass
-        raise RuntimeError(f"daemon 启动后立即退出（exit={proc.returncode}）\n{tail}")
-    _write_meta(proc.pid, project=project, interval=interval, executor=executor)
-    return {
-        "running": True,
-        "started": True,
-        "pid": proc.pid,
-        "project": project or "",
-        "started_at": _now_iso(),
-        "log": str(_service_log_path(project)),
-    }
+    deadline = time.monotonic() + 15.0
+    last_status = daemon_service_status(project)
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            tail = ""
+            log_file = _service_log_path(project)
+            try:
+                tail = log_file.read_text(encoding="utf-8", errors="replace")[-1500:]
+            except Exception:
+                pass
+            raise RuntimeError(f"daemon 启动后立即退出（exit={proc.returncode}）\n{tail}")
+        last_status = daemon_service_status(project)
+        if last_status["running"]:
+            last_status["started"] = True
+            return last_status
+        time.sleep(0.2)
+
+    tail = ""
+    log_file = _service_log_path(project)
+    try:
+        tail = log_file.read_text(encoding="utf-8", errors="replace")[-1500:]
+    except Exception:
+        pass
+    raise RuntimeError(f"daemon 启动请求已发出，但 15s 内未进入运行状态。\n{tail}")
 
 
 def request_daemon_service_start(
@@ -378,17 +411,18 @@ def _ensure_ui_service_process(port: int = 8766) -> bool:
 def _acquire_lock(project: str | None = None) -> bool:
     scope = _service_scope(project)
     state = db.get_service_state("daemon", scope)
+    current_pid = os.getpid()
     if state:
         try:
             pid = int(state.get("pid") or 0)
         except Exception:
             pid = 0
-        if pid and is_process_alive(pid):
+        if pid and pid != current_pid and is_process_alive(pid) and not _state_heartbeat_stale(state):
             return False
     db.upsert_service_state(
         "daemon",
         scope,
-        pid=os.getpid(),
+        pid=current_pid,
         status="running",
         log_path=str(_service_log_path(project)),
         heartbeat_at=_now_iso(),

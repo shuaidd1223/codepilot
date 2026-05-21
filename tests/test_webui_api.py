@@ -244,6 +244,29 @@ def test_daemon_health_without_project_aggregates_project_scoped_service_states(
     assert payload["reason"] == ""
 
 
+def test_daemon_health_clears_stale_running_pid(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    monkeypatch.setattr(runtime_mod, "is_process_alive", lambda pid: int(pid) == 2222)
+
+    db.upsert_service_state(
+        "daemon",
+        "demo",
+        pid=2222,
+        status="running",
+        log_path="D:/tmp/demo-daemon.log",
+        heartbeat_at="2026-01-01T00:00:00",
+        meta={"project": "demo", "started_at": "2026-01-01T00:00:00"},
+    )
+
+    payload = daemon_health_payload("demo", stale_after_seconds=120)
+
+    assert payload["alive"] is False
+    assert payload["running"] is False
+    assert payload["reason"] == "daemon 未运行"
+    assert db.get_service_state("daemon", "demo") is None
+
+
 def test_internal_event_endpoint_publishes_task_state_event(ui_server):
     progress_bus.clear_subscribers_for_tests()
     events: list[dict] = []
@@ -991,4 +1014,3 @@ def test_root_serves_html(ui_server):
         html = resp.read().decode("utf-8")
     assert "CodePilot" in html
     assert "<html" in html
-

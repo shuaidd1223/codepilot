@@ -278,6 +278,27 @@ def test_batch_add_json_rejects_title_only_items(tmp_path, monkeypatch):
     assert db.list_tasks(project="demo") == []
 
 
+def test_batch_add_json_rejects_non_array_payload_without_traceback(tmp_path, monkeypatch):
+    """JSON 批量根节点必须是任务数组；单个对象要给可读错误而不是崩溃。"""
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    tasks_file = tmp_path / "tasks.json"
+    tasks_file.write_text(
+        json.dumps({"title": "单个对象不是数组"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(main, ["add", "-p", "demo", "-f", str(tasks_file)])
+
+    assert result.exit_code != 0
+    assert "JSON 批量导入必须是任务数组" in result.output
+    assert "Traceback" not in result.output
+    assert "AttributeError" not in result.output
+    assert db.list_tasks(project="demo") == []
+
+
 def test_batch_add_plain_text_generation_failure_does_not_create_empty_tasks(tmp_path, monkeypatch):
     """纯文本批量遇到 AI 生成失败时必须 fail-fast，绝不静默写入空任务。
 
@@ -674,4 +695,3 @@ def test_run_command_renders_plain_text_without_markup():
     assert result.exit_code == 0
     assert "错误: 必须指定 --project" in result.output
     assert "[red]" not in result.output
-

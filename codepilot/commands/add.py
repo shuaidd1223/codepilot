@@ -104,6 +104,17 @@ def _parse_batch_file(file_path: Path) -> list[dict]:
     suffix = file_path.suffix.lower()
     if suffix == ".json":
         items = json.loads(content)
+        if not isinstance(items, list):
+            raise click.ClickException(
+                "JSON 批量导入必须是任务数组，例如 "
+                "`[{\"title\":\"...\",\"content\":\"...\"}]`。"
+            )
+        for index, item in enumerate(items, 1):
+            if not isinstance(item, dict):
+                raise click.ClickException(
+                    f"JSON 批量导入第 {index} 项无效：每项必须是对象，"
+                    "例如 `{\"title\":\"...\",\"content\":\"...\"}`。"
+                )
         return items
     if suffix in MARKDOWN_BATCH_SUFFIXES:
         return _parse_markdown_batch(content)
@@ -554,4 +565,3 @@ def _batch_add(
 
     echo()
     echo(f"[green][OK] 成功导入 {len(results)} 个任务[/green]")
-

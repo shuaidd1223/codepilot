@@ -16,7 +16,7 @@ def _isolate_state(tmp_path, monkeypatch):
 
 
 def test_daemon_command_starts_detached_by_default(tmp_path, monkeypatch):
-    _isolate_state(tmp_path, monkeypatch)
+    state_dir = _isolate_state(tmp_path, monkeypatch)
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     db.init_db()
     db.register_project("demo", str(tmp_path))
@@ -29,11 +29,25 @@ def test_daemon_command_starts_detached_by_default(tmp_path, monkeypatch):
             return None
 
     calls = []
+
+    def fake_spawn(**kwargs):
+        calls.append(kwargs)
+        db.upsert_service_state(
+            "daemon",
+            "demo",
+            pid=7654,
+            status="running",
+            log_path=str(state_dir / "demo" / "daemon.log"),
+            meta={"project": "demo", "started_at": "2026-01-01T00:00:00"},
+        )
+        return _FakeProc()
+
     monkeypatch.setattr(
         daemon_cmd,
         "_spawn_detached_daemon",
-        lambda **kwargs: calls.append(kwargs) or _FakeProc(),
+        fake_spawn,
     )
+    monkeypatch.setattr(daemon_cmd, "is_process_alive", lambda pid: int(pid) == 7654)
     monkeypatch.setattr(daemon_cmd.time, "sleep", lambda _: None)
 
     result = CliRunner().invoke(daemon_cmd.daemon, ["--project", "demo"])
@@ -46,6 +60,52 @@ def test_daemon_command_starts_detached_by_default(tmp_path, monkeypatch):
     state = db.get_service_state("daemon", "demo")
     assert state is not None
     assert state["pid"] == 7654
+
+
+def test_start_daemon_service_waits_for_foreground_child_state(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    db.register_project("demo", str(tmp_path))
+
+    class _FakeProc:
+        pid = 7654
+        returncode = None
+
+        def poll(self):
+            return None
+
+    statuses = [
+        {"running": False, "pid": 0, "project": "", "started_at": "", "log": str(tmp_path / "daemon.log")},
+        {"running": False, "pid": 0, "project": "", "started_at": "", "log": str(tmp_path / "daemon.log")},
+        {
+            "running": True,
+            "pid": 8765,
+            "project": "demo",
+            "started_at": "2026-01-01T00:00:00",
+            "log": str(tmp_path / "daemon.log"),
+        },
+    ]
+
+    def fake_status(project):
+        return statuses.pop(0) if statuses else {
+            "running": True,
+            "pid": 8765,
+            "project": project or "",
+            "started_at": "2026-01-01T00:00:00",
+            "log": str(tmp_path / "daemon.log"),
+        }
+
+    monkeypatch.setattr(daemon_cmd, "_spawn_detached_daemon", lambda **kwargs: _FakeProc())
+    monkeypatch.setattr(daemon_cmd, "daemon_service_status", fake_status)
+    monkeypatch.setattr(daemon_cmd, "_write_meta", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("parent must not write daemon state")))
+    monkeypatch.setattr(daemon_cmd.time, "sleep", lambda _: None)
+
+    result = daemon_cmd.start_daemon_service(project="demo")
+
+    assert result["running"] is True
+    assert result["started"] is True
+    assert result["pid"] == 8765
 
 
 def test_daemon_status_reads_existing_service(tmp_path, monkeypatch):
@@ -68,6 +128,54 @@ def test_daemon_status_reads_existing_service(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "Daemon 运行中" in result.output
     assert "PID=7654" in result.output
+
+
+def test_daemon_status_clears_stale_heartbeat_even_when_pid_exists(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    db.register_project("demo", str(tmp_path))
+    db.upsert_service_state(
+        "daemon",
+        "demo",
+        pid=7654,
+        status="running",
+        log_path="D:/tmp/daemon.log",
+        heartbeat_at="2026-01-01T00:00:00",
+        meta={"project": "demo", "started_at": "2026-01-01T00:00:00"},
+    )
+    monkeypatch.setattr(daemon_cmd, "is_process_alive", lambda pid: int(pid) == 7654)
+
+    status = daemon_cmd.daemon_service_status("demo", stale_after_seconds=120)
+
+    assert status["running"] is False
+    assert status["pid"] == 0
+    assert status["stale"] is True
+    assert db.get_service_state("daemon", "demo") is None
+
+
+def test_daemon_foreground_lock_allows_parent_published_same_pid(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    db.register_project("demo", str(tmp_path))
+    db.upsert_service_state(
+        "daemon",
+        "demo",
+        pid=7654,
+        status="running",
+        log_path="D:/tmp/daemon.log",
+        meta={"project": "demo", "started_at": "2026-01-01T00:00:00"},
+    )
+    monkeypatch.setattr(daemon_cmd.os, "getpid", lambda: 7654)
+    monkeypatch.setattr(daemon_cmd, "is_process_alive", lambda pid: int(pid) == 7654)
+
+    assert daemon_cmd._acquire_lock("demo") is True
+
+    state = db.get_service_state("daemon", "demo")
+    assert state is not None
+    assert state["pid"] == 7654
+    assert state["meta"]["executor"] == "foreground"
 
 
 def test_daemon_stop_requests_graceful_polling_stop(tmp_path, monkeypatch):

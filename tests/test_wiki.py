@@ -97,5 +97,8 @@ def test_wiki_lint_reports_missing_metadata(tmp_path, monkeypatch):
 def test_ai_manifest_includes_wiki_commands():
     manifest = command_manifest(command_name="codepilot")
 
-    assert any(item["command"] == "codepilot wiki list -p <项目名> --json" for item in manifest["structured_outputs"])
+    assert any(
+        item["command"] == "codepilot wiki query <keyword> -p <project-name> --json"
+        for item in manifest["structured_outputs"]
+    )
     assert any(cmd["name"] == "wiki" for cmd in manifest["commands"])

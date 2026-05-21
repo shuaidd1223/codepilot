@@ -105,5 +105,5 @@ def test_note_rejects_conflicting_sections(tmp_path, monkeypatch):
 def test_ai_manifest_includes_note_commands():
     manifest = command_manifest(command_name="codepilot")
 
-    assert any(item["command"] == "codepilot note show -p <项目名> --json" for item in manifest["structured_outputs"])
+    assert any(item["command"] == "codepilot note show -p <project-name> --json" for item in manifest["structured_outputs"])
     assert any(cmd["name"] == "note" for cmd in manifest["commands"])

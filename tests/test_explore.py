@@ -90,7 +90,7 @@ def test_explore_file_search_falls_back_when_rg_is_unavailable(tmp_path, monkeyp
 def test_ai_manifest_includes_explore_command():
     manifest = command_manifest(command_name="codepilot")
 
-    assert any(item["command"] == "codepilot explore --prompt <问题> --json" for item in manifest["structured_outputs"])
+    assert any(item["command"] == "codepilot explore --prompt <question> --json" for item in manifest["structured_outputs"])
     assert any(cmd["name"] == "explore" for cmd in manifest["commands"])
 
 

@@ -144,8 +144,8 @@ def daemon_health_payload(project: str | None = None, *, stale_after_seconds: in
 
     Returns ``{alive, running, pid, last_heartbeat, stale_seconds, reason}``:
     ``alive`` is True iff the daemon process is running AND its heartbeat
-    is fresh. ``running`` means only the PID check, so we can distinguish
-    "stopped" from "frozen".
+    is fresh. A stale heartbeat with a live PID is treated as stale metadata
+    and cleared, which handles PID reuse after an older daemon died.
     """
     from codepilot.core.runtime import is_process_alive
 
@@ -187,8 +187,11 @@ def daemon_health_payload(project: str | None = None, *, stale_after_seconds: in
                     out["alive"] = True
                     out["reason"] = ""
                     return out
-                out["reason"] = f"daemon 心跳 {int(delta)}s 未更新（>{stale_after_seconds}s 阈值），可能已假死"
-                return out
+                try:
+                    db.clear_service_state("daemon", str(state.get("scope") or out["project"] or ""))
+                except Exception:  # noqa: BLE001
+                    pass
+                return _base_payload()
         return out
 
     out = _base_payload()
