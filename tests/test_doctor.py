@@ -556,6 +556,48 @@ planner = "codex"
     assert any(item["name"] == "project_config" for item in event["payload"]["checks"])
 
 
+def test_doctor_preflight_dirty_worktree_stop_warns_with_actions(_isolate_sources, monkeypatch):
+    import subprocess
+    project = _project(
+        _isolate_sources,
+        monkeypatch,
+        """
+[project]
+name = "demo"
+base_branch = "dev"
+
+[agents.commands]
+codex = "codex"
+claude = "claude"
+
+[automation]
+preflight_dirty_worktree = "stop"
+task_workspace = "direct"
+""".strip(),
+    )
+    subprocess.run(["git", "init"], cwd=project, capture_output=True, check=True)
+    (project / "dirty.txt").write_text("dirty", encoding="utf-8")
+
+    db.init_db()
+    db.register_project("demo", str(project), config_file=str(project / "AGENTS.toml"))
+
+    result = CliRunner().invoke(main, ["doctor", "--project", "demo", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    checks = {item["name"]: item for item in payload["data"]["checks"]}
+
+    assert "preflight_dirty_worktree" in checks, (
+        "Doctor should emit a preflight_dirty_worktree check when "
+        "policy=stop and workspace is dirty"
+    )
+    preflight = checks["preflight_dirty_worktree"]
+    assert preflight["severity"] == "warning"
+    assert preflight.get("dirty_changes") is not None, (
+        "JSON should include dirty_changes count"
+    )
+    assert preflight.get("fix", ""), "Should include suggested fix actions"
+
+
 def test_doctor_project_json_does_not_write_disabled_default_sink(_isolate_sources, monkeypatch):
     project = _project(
         _isolate_sources,

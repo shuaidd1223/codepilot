@@ -180,6 +180,49 @@ def test_pick_untracked_task_file_uses_project_name(tmp_path, monkeypatch):
     assert task_file == tmp_path / "home" / ".codepilot" / "data" / "demo" / "task-files" / "007-task.md"
 
 
+def test_task_payload_includes_blocked_reason_for_dirty_worktree():
+    from codepilot.webapp.task_payloads import _task_payload
+
+    task = {
+        "id": 1,
+        "project": "demo",
+        "title": "test",
+        "status": "backlog",
+        "priority": "P2",
+        "agent": "dual",
+        "source": "user",
+        "error_message": (
+            "内置执行器检测到主工作区已有未提交改动。"
+            "当前预检策略为 stop，本次跳过执行且不消耗重试次数。"
+        ),
+    }
+    payload = _task_payload(task)
+    assert payload.get("blocked_reason") is not None
+    assert "stop" in payload["blocked_reason"]
+    assert len(payload.get("suggested_actions") or []) >= 2
+
+
+def test_preflight_blocked_detail_parses_dirty_worktree_error():
+    from codepilot.commands.run_builtin_core import _preflight_blocked_detail
+
+    dirty = (
+        "内置执行器检测到主工作区已有未提交改动。"
+        "当前预检策略为 stop，本次跳过执行且不消耗重试次数。"
+    )
+    result = _preflight_blocked_detail(dirty)
+    assert result is not None
+    assert result["blocked"] is True
+    assert "stop" in result["reason"]
+    assert len(result["suggested_actions"]) >= 2
+    assert any("commit" in a for a in result["suggested_actions"])
+    assert any("stash" in a for a in result["suggested_actions"])
+    assert any("preflight_dirty_worktree" in a for a in result["suggested_actions"])
+
+    assert _preflight_blocked_detail("正常执行失败") is None
+    assert _preflight_blocked_detail("") is None
+    assert _preflight_blocked_detail(None) is None
+
+
 def test_run_backlog_builtin_dirty_workspace_requeues_without_retry(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

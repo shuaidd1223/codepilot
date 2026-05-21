@@ -48,6 +48,39 @@ def _builtin_runtime_dir(project: dict) -> Path:
     return output_dir
 
 
+def _preflight_blocked_detail(error_message: str | None) -> dict | None:
+    """If ``error_message`` is a known preflight blockage, return structured info.
+
+    Returns ``{"blocked": True, "reason": str, "suggested_actions": [str]}``
+    when the error originates from a dirty-worktree / non-git preflight stop,
+    or ``None`` for non-blocking / unknown errors.
+    """
+    if not error_message:
+        return None
+    if "未提交改动" in error_message and "stop" in error_message:
+        return {
+            "blocked": True,
+            "reason": "工作区有未提交改动，且预检策略为 stop",
+            "suggested_actions": [
+                "提交改动并继续: git add -A && git commit -m 'wip'",
+                "暂存改动并继续: git stash push --include-untracked -m '工作区暂存'",
+                "允许自动提交: 在 AGENTS.toml [automation] 中设置 preflight_dirty_worktree = 'commit'",
+                "允许自动暂存: 在 AGENTS.toml [automation] 中设置 preflight_dirty_worktree = 'stash'",
+                "使用独立 worktree: 在 AGENTS.toml [automation] 中设置 task_workspace = 'branch' 或 'worktree'",
+            ],
+        }
+    if "Git 仓库" in error_message:
+        return {
+            "blocked": True,
+            "reason": "项目还不是 Git 仓库",
+            "suggested_actions": [
+                "初始化仓库: git init && git add -A && git commit -m 'init'",
+                "改用非 codex reviewer: 在 AGENTS.toml [agents] 中设置 reviewer = 'claude'",
+            ],
+        }
+    return None
+
+
 def _builtin_preflight_error(
     project_path: Path,
     auto_commit: bool,

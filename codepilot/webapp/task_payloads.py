@@ -212,6 +212,15 @@ def _task_payload(task: dict) -> dict:
     else:
         error_message = raw_error
 
+    blocked_reason: str | None = None
+    suggested_actions: list[str] | None = None
+    if status == "backlog" and raw_error:
+        from codepilot.commands.run_builtin_core import _preflight_blocked_detail
+        detail = _preflight_blocked_detail(raw_error)
+        if detail:
+            blocked_reason = detail["reason"]
+            suggested_actions = detail["suggested_actions"]
+
     return {
         "id": task["id"],
         "project": task["project"],
@@ -226,6 +235,8 @@ def _task_payload(task: dict) -> dict:
         "latest": task.get("last_output") or skip_reason or error_message or task.get("delivery_record") or "",
         "error_message": error_message,
         "skip_reason": skip_reason,
+        "blocked_reason": blocked_reason,
+        "suggested_actions": suggested_actions,
         "delivery_record": task.get("delivery_record") or "",
         "created_at": task.get("created_at") or "",
         "started_at": task.get("started_at") or "",

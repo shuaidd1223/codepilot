@@ -699,6 +699,67 @@ def _check_db_path() -> CheckResult:
         )
 
 
+def _check_preflight_dirty_worktree(project_info: dict) -> CheckResult | None:
+    """Warn when ``preflight_dirty_worktree = "stop"`` and the workspace is dirty."""
+    from codepilot.core.config import load_project_config, normalize_preflight_dirty_worktree
+
+    cfg = load_project_config(project_info)
+    if not cfg:
+        return None
+    policy = normalize_preflight_dirty_worktree(
+        str(getattr(getattr(cfg, "automation", None), "preflight_dirty_worktree", "stop") or "stop")
+    )
+    if policy != "stop":
+        return None
+
+    project_path = Path(project_info["path"])
+    try:
+        subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, cwd=str(project_path), check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+    cp = subprocess.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True, text=True, cwd=str(project_path),
+    )
+    dirty = cp.stdout.strip()
+    if not dirty:
+        return None
+
+    n_changes = len(dirty.splitlines())
+    task_workspace = str(
+        getattr(getattr(cfg, "automation", None), "task_workspace", "branch") or "branch"
+    ).strip().lower()
+
+    detail = (
+        f"工作区有 {n_changes} 个未提交变更，"
+        f"且 [automation] 中 preflight_dirty_worktree = \"stop\""
+    )
+    fix = (
+        "选择以下一种方式解除阻塞:\n"
+        "  1. 提交改动: git add -A && git commit -m 'wip'\n"
+        "  2. 暂存改动: git stash push --include-untracked -m '工作区暂存'\n"
+        "  3. 允许自动提交: 在 AGENTS.toml [automation] 中设置 preflight_dirty_worktree = 'commit'\n"
+        "  4. 允许自动暂存: 在 AGENTS.toml [automation] 中设置 preflight_dirty_worktree = 'stash'\n"
+        "  5. 使用独立 worktree: 在 AGENTS.toml [automation] 中设置 task_workspace = 'branch' 或 'worktree'"
+    )
+    return CheckResult(
+        "preflight_dirty_worktree",
+        True,
+        detail,
+        fix=fix,
+        severity="warning",
+        extra={
+            "dirty_changes": n_changes,
+            "policy": "stop",
+            "task_workspace": task_workspace,
+        },
+    )
+
+
 def _check_console_encoding() -> CheckResult:
     """Console encoding is UTF-8."""
     stdout_enc = getattr(sys.stdout, "encoding", None) or ""
@@ -827,6 +888,9 @@ def run_project_checks(project_info: dict | None, *, include_services: bool = Fa
     results: list[CheckResult] = []
     if project_info:
         results.append(_project_config_check(project_info))
+        preflight_check = _check_preflight_dirty_worktree(project_info)
+        if preflight_check:
+            results.append(preflight_check)
     results.append(_feishu_config_check(project_info))
     if not include_services:
         return results

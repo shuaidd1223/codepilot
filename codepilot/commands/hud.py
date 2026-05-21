@@ -96,6 +96,16 @@ def _filter_services(project: str | None) -> list[dict]:
     ]
 
 
+def _check_blocked_reason_for_project(tasks: list[dict]) -> str | None:
+    from codepilot.commands.run_builtin_core import _preflight_blocked_detail
+    for task in tasks:
+        if task.get("status") == "backlog":
+            detail = _preflight_blocked_detail(task.get("error_message") or "")
+            if detail:
+                return detail["reason"]
+    return None
+
+
 def collect_hud_snapshot(
     *,
     project: str | None = None,
@@ -127,6 +137,7 @@ def collect_hud_snapshot(
         tasks = sort_tasks_for_display(db.list_tasks(project=proj["name"]))
         for key in totals:
             totals[key] += int(stats.get(key) or 0)
+        blocked_reason = _check_blocked_reason_for_project(tasks)
         project_rows.append(
             {
                 "name": proj["name"],
@@ -142,6 +153,7 @@ def collect_hud_snapshot(
                     )
                 ],
                 "recent_tasks": _recent_tasks(tasks, limit=recent_limit),
+                "blocked_reason": blocked_reason,
             }
         )
 
@@ -283,6 +295,16 @@ def render_hud(snapshot: dict[str, Any], *, preset: str = "focused", console: Co
         return
 
     renderables: list[Any] = [_project_table(snapshot["projects"])]
+    for proj in snapshot["projects"]:
+        if proj.get("blocked_reason"):
+            renderables.append(
+                Panel(
+                    Text(f"  {proj['blocked_reason']}", style="yellow"),
+                    title=f"[yellow]⛔ {proj['name']} 阻塞 — 需先处理工作区[/yellow]",
+                    border_style="yellow",
+                    padding=(0, 1),
+                )
+            )
     for proj in snapshot["projects"]:
         if proj["active_tasks"]:
             renderables.append(

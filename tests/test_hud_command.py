@@ -76,6 +76,30 @@ def test_collect_hud_snapshot_summarizes_project_and_services(tmp_path, monkeypa
     assert snapshot["services"][0]["label"] == "webui:demo"
 
 
+def test_hud_snapshot_shows_dirty_worktree_blocked_reason(tmp_path, monkeypatch):
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "demo"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    task = db.create_task("demo", "blocked task", agent="dual")
+    db.update_task(
+        task["id"],
+        status="backlog",
+        error_message=(
+            "内置执行器检测到主工作区已有未提交改动。"
+            "当前预检策略为 stop，本次跳过执行且不消耗重试次数。"
+        ),
+    )
+
+    snapshot = collect_hud_snapshot(project="demo", preset="full")
+
+    assert snapshot["projects"][0].get("blocked_reason") is not None, (
+        "HUD project snapshot should include blocked_reason when "
+        "a backlog task has a dirty-worktree error"
+    )
+
+
 def test_hud_command_emits_json_payload(tmp_path, monkeypatch):
     _seed_project(tmp_path, monkeypatch)
 
