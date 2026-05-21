@@ -57,6 +57,42 @@
 - `complete_workflow(project_path, mode)`：将状态标记为 inactive/completed，并清除对应 active 指针。
 - `cleanup_workflow_states(project_path, completed=True)`：删除 inactive 且已完成的 mode 状态文件。
 
+## Agent Kernel 会话状态
+
+从第一阶段（v0.7.x）开始，CodePilot 引入了 Agent Kernel 会话状态层，用于追踪完整的 Agent 工作流生命周期。一个会话跨越 `intake → clarify → explore → plan → approve → execute → review → recover → deliver` 九个阶段。
+
+### 会话字段
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `session_id` | string | 会话唯一标识，格式 `sess_<hex>`。 |
+| `goal` | string | 用户的原始目标描述。 |
+| `current_phase` | string | 当前阶段名称，初始为 `intake`。 |
+| `phase_history` | array | 阶段历史记录列表，每项包含 `phase`、`entered_at`、`exited_at`。 |
+| `blocked_reason` | string/null | 阻塞原因；未阻塞时为 `null`。 |
+| `next_actions` | array | 建议的下一步行动列表。 |
+| `linked_task_ids` | array | 关联的任务 ID 列表。 |
+| `artifact_paths` | object | 机器可读 artifact 路径集合。 |
+| `started_at` | string | ISO 时间戳，会话开始时间。 |
+| `updated_at` | string | ISO 时间戳，最近更新时间。 |
+| `completed_at` | string/null | 完成时间；未完成时为 `null`。 |
+
+### 内部 API
+
+新增 API 位于 `codepilot/core/workflow_state.py`：
+
+- `create_agent_session(project_path, *, goal, session_id=None)`：创建 Agent 会话，初始阶段为 `intake`。
+- `get_agent_session(project_path)`：读取当前 Agent 会话；文件不存在或损坏返回 `None`。
+- `update_agent_session(project_path, **changes)`：更新会话字段，自动刷新 `updated_at`。
+- `advance_agent_phase(project_path, phase, **extra_fields)`：推进到下一阶段，自动关闭前一阶段时间戳。
+- `fail_agent_session(project_path, *, blocked_reason, next_actions=None)`：将会话标记为阻塞状态。
+- `complete_agent_session(project_path)`：将会话标记为完成，关闭最终阶段。
+- `cleanup_agent_session(project_path)`：删除会话状态文件。
+
+### 存储位置
+
+会话状态文件位于 `.codepilot/state/agent-session.json`。
+
 ## CLI 查看
 
 最小查看命令：
@@ -67,7 +103,7 @@ codepilot workflow status -p <项目名> --json
 codepilot workflow status -p <项目名> --mode clarify --json
 ```
 
-JSON 输出沿用命令 envelope：
+JSON 输出沿用命令 envelope，新增 `agent_session` 字段：
 
 ```json
 {
@@ -80,6 +116,26 @@ JSON 输出沿用命令 envelope：
     "state": {
       "mode": "clarify",
       "active": true
+    },
+    "agent_session": {
+      "session_id": "sess_abc123def456",
+      "goal": "添加用户登录功能",
+      "current_phase": "clarify",
+      "phase_history": [
+        {"phase": "intake", "entered_at": "...", "exited_at": "..."},
+        {"phase": "clarify", "entered_at": "...", "exited_at": null}
+      ],
+      "blocked_reason": null,
+      "next_actions": [],
+      "linked_task_ids": [],
+      "artifact_paths": {
+        "context": ".codepilot/context/sess_abc123def456.json",
+        "spec": ".codepilot/specs/sess_abc123def456.md",
+        "plan": ".codepilot/plans/sess_abc123def456.md"
+      },
+      "started_at": "...",
+      "updated_at": "...",
+      "completed_at": null
     }
   }
 }

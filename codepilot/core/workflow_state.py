@@ -12,6 +12,7 @@ from typing import Any
 
 
 _ACTIVE_STATE_FILE = "active-workflow.json"
+_AGENT_SESSION_FILE = "agent-session.json"
 
 
 def _now_iso() -> str:
@@ -137,6 +138,114 @@ def _publish_workflow_changed_event(project_path: str | Path, state: dict[str, A
         dispatch_event_to_sinks(root, event)
     except Exception:
         return
+
+
+def _agent_session_path(project_path: str | Path) -> Path:
+    return workflow_dirs(project_path)["state"] / _AGENT_SESSION_FILE
+
+
+def create_agent_session(
+    project_path: str | Path,
+    *,
+    goal: str,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a new agent workflow session starting at the intake phase."""
+    dirs = ensure_workflow_dirs(project_path)
+    now = _now_iso()
+    sid = session_id or f"sess_{uuid.uuid4().hex[:12]}"
+    artifacts = _default_artifact_paths(dirs, sid)
+    session: dict[str, Any] = {
+        "session_id": sid,
+        "goal": goal,
+        "current_phase": "intake",
+        "phase_history": [{"phase": "intake", "entered_at": now, "exited_at": None}],
+        "blocked_reason": None,
+        "next_actions": [],
+        "linked_task_ids": [],
+        "artifact_paths": artifacts,
+        "started_at": now,
+        "updated_at": now,
+        "completed_at": None,
+    }
+    _atomic_write_json(_agent_session_path(project_path), session)
+    return session
+
+
+def get_agent_session(project_path: str | Path) -> dict[str, Any] | None:
+    """Read the current agent session; corrupt or missing returns None."""
+    return _read_json(_agent_session_path(project_path))
+
+
+def update_agent_session(project_path: str | Path, **changes: Any) -> dict[str, Any] | None:
+    """Update agent session fields in-place; returns None if no session exists."""
+    session = get_agent_session(project_path)
+    if session is None:
+        return None
+    now = _now_iso()
+    session.update(changes)
+    session["updated_at"] = now
+    if changes.get("completed_at"):
+        session["phase_history"][-1]["exited_at"] = now
+    _atomic_write_json(_agent_session_path(project_path), session)
+    return session
+
+
+def advance_agent_phase(project_path: str | Path, phase: str, **extra_fields: Any) -> dict[str, Any] | None:
+    """Advance to a new phase, closing the previous one in phase_history."""
+    session = get_agent_session(project_path)
+    if session is None:
+        return None
+    now = _now_iso()
+    if session["phase_history"]:
+        session["phase_history"][-1]["exited_at"] = now
+    entry: dict[str, Any] = {"phase": phase, "entered_at": now, "exited_at": None}
+    if "mode_state" in extra_fields:
+        entry["mode_state"] = extra_fields.pop("mode_state")
+    session["phase_history"].append(entry)
+    session["current_phase"] = phase
+    session["updated_at"] = now
+    session.update(extra_fields)
+    _atomic_write_json(_agent_session_path(project_path), session)
+    return session
+
+
+def fail_agent_session(
+    project_path: str | Path,
+    *,
+    blocked_reason: str,
+    next_actions: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Mark session as blocked with a reason and suggested next actions."""
+    return update_agent_session(
+        project_path,
+        blocked_reason=blocked_reason,
+        next_actions=next_actions or [],
+    )
+
+
+def complete_agent_session(project_path: str | Path) -> dict[str, Any] | None:
+    """Mark session as completed and close the final phase."""
+    session = get_agent_session(project_path)
+    if session is None:
+        return None
+    now = _now_iso()
+    session["completed_at"] = now
+    session["current_phase"] = "completed"
+    session["updated_at"] = now
+    if session["phase_history"]:
+        session["phase_history"][-1]["exited_at"] = now
+    _atomic_write_json(_agent_session_path(project_path), session)
+    return session
+
+
+def cleanup_agent_session(project_path: str | Path) -> bool:
+    """Remove the agent session state file. Returns True if removed."""
+    path = _agent_session_path(project_path)
+    if path.exists():
+        path.unlink(missing_ok=True)
+        return True
+    return False
 
 
 def start_workflow(
