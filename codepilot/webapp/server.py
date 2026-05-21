@@ -55,6 +55,7 @@ from codepilot.webapp.actions import (  # noqa: F401 (re-export)
     delete_task_action,
     delete_project_action,
     delete_session_action,
+    execute_artifact_next_action,
     get_session_action,
     list_sessions_action,
     get_task_template_schema_action,
@@ -85,6 +86,7 @@ from codepilot.webapp.payloads import (  # noqa: F401 (re-export)
     _tail_text,
     _task_payload,
     ai_status_payload,
+    artifact_context_payload,
     daemon_health_payload,
     dashboard_payload,
     project_summary,
@@ -646,6 +648,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _handle_get_task_template(self, _parsed: ParseResult) -> None:
         self._send_json(get_task_template_schema_action())
 
+    def _handle_get_artifact_context(self, parsed: ParseResult) -> None:
+        qs = parse_qs(parsed.query)
+        context_path = qs.get("context_path", [""])[0]
+        payload = artifact_context_payload(context_path)
+        self._send_json(payload, status=200 if payload.get("ok") else 400)
+
     def _handle_get_sessions(self, parsed: ParseResult) -> None:
         qs = parse_qs(parsed.query)
         proj = qs.get("project", [""])[0]
@@ -682,6 +690,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/events/stream": self._handle_get_event_stream,
             "/api/projects": self._handle_get_projects,
             "/api/task-template": self._handle_get_task_template,
+            "/api/artifacts/context": self._handle_get_artifact_context,
             "/api/sessions": self._handle_get_sessions,
         }
         handler = handlers.get(path)
@@ -832,6 +841,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             body.get("items") if isinstance(body.get("items"), list) else [],
         )
 
+    def _handle_post_artifact_action(self, body: dict) -> dict:
+        return execute_artifact_next_action(
+            body.get("project") or "",
+            body.get("context_path") or "",
+            body.get("action_id") or body.get("id") or "",
+            allow_high_risk=bool(body.get("allow_high_risk", False)),
+        )
+
     def _handle_post_requirements(self, body: dict) -> dict:
         return submit_requirement_action(
             body.get("project") or "",
@@ -880,6 +897,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/tasks": self._handle_post_tasks,
             "/api/tasks/batch": self._handle_post_tasks_batch,
             "/api/tasks/import": self._handle_post_tasks_import,
+            "/api/artifacts/actions": self._handle_post_artifact_action,
             "/api/requirements": self._handle_post_requirements,
             "/api/sessions": self._handle_post_sessions,
             "/api/files/upload": self._handle_post_file_upload,

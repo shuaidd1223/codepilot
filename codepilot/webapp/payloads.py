@@ -12,6 +12,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from codepilot.storage import database as db
 from codepilot.webapp.display_sort import TASK_STATUS_ORDER, sort_tasks_for_display
@@ -321,6 +322,139 @@ def dashboard_payload(selected_project: str | None = None) -> dict:
     }
 
 
+def _artifact_type_from_context(ctx: dict[str, Any]) -> str:
+    state = ctx.get("state") if isinstance(ctx.get("state"), dict) else {}
+    return str(state.get("mode") or ctx.get("artifact_type") or "").strip().lower()
+
+
+def _artifact_paths_from_context(ctx: dict[str, Any]) -> dict[str, str]:
+    paths: dict[str, str] = {}
+    state = ctx.get("state") if isinstance(ctx.get("state"), dict) else {}
+    for payload in (state, ctx):
+        artifacts = payload.get("artifact_paths") if isinstance(payload, dict) else None
+        if isinstance(artifacts, dict):
+            for key, value in artifacts.items():
+                text = str(value or "").strip()
+                if text:
+                    paths[str(key)] = text
+    return paths
+
+
+def _artifact_value(ctx: dict[str, Any], key: str) -> str:
+    for payload in (ctx, ctx.get("state") if isinstance(ctx.get("state"), dict) else {}):
+        if key == "spec" and isinstance(payload, dict) and payload.get("artifact_path"):
+            return str(payload.get("artifact_path") or "")
+        if key == "task_batch" and isinstance(payload, dict) and payload.get("task_batch_path"):
+            return str(payload.get("task_batch_path") or "")
+        artifacts = payload.get("artifact_paths") if isinstance(payload, dict) else None
+        if isinstance(artifacts, dict) and artifacts.get(key):
+            return str(artifacts.get(key) or "")
+    return ""
+
+
+def _command_arg(raw_path: str, placeholder: str) -> str:
+    text = str(raw_path or "").strip() or placeholder
+    if any(ch.isspace() for ch in text):
+        return '"' + text.replace('"', '\\"') + '"'
+    return text
+
+
+def _artifact_project_info(context_path: Path) -> dict | None:
+    try:
+        return db.find_project_by_path(context_path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _artifact_web_action(project: str, context_path: str, action_id: str) -> dict:
+    return {
+        "type": "artifact_next_action",
+        "method": "POST",
+        "endpoint": "/api/artifacts/actions",
+        "payload": {
+            "project": project,
+            "context_path": context_path,
+            "action_id": action_id,
+        },
+    }
+
+
+def _raw_artifact_next_actions(ctx: dict[str, Any], artifact_type: str) -> list:
+    raw_actions = ctx.get("next_actions")
+    if isinstance(raw_actions, list) and raw_actions:
+        return raw_actions
+    try:
+        from codepilot.webapp.action_requirements import artifact_next_actions_for_type
+
+        return artifact_next_actions_for_type(artifact_type)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _materialize_artifact_next_actions(
+    ctx: dict[str, Any],
+    *,
+    context_path: Path,
+    artifact_type: str,
+    project_info: dict | None,
+) -> list[dict]:
+    project_name = str((project_info or {}).get("name") or "").strip()
+    context_path_text = str(context_path)
+    spec_path = _artifact_value(ctx, "spec")
+    plan_path = _artifact_value(ctx, "plan")
+    task_batch_path = _artifact_value(ctx, "task_batch")
+    summary = str(ctx.get("summary") or "")
+
+    actions: list[dict] = []
+    for item in _raw_artifact_next_actions(ctx, artifact_type):
+        if isinstance(item, dict):
+            action = dict(item)
+            action_id = str(action.get("id") or "").strip()
+        elif isinstance(item, str):
+            action_id = item.strip()
+            action = {"id": action_id, "label": action_id, "risk": "unknown", "suggested_command": ""}
+        else:
+            continue
+        if not action_id:
+            continue
+        action["id"] = action_id
+        action["label"] = str(action.get("label") or action_id)
+        action["risk"] = str(action.get("risk") or "unknown").lower()
+        action.setdefault("suggested_command", "")
+        action["executable"] = False
+        action["params"] = {
+            "project": project_name,
+            "context_path": context_path_text,
+            "artifact_type": artifact_type,
+        }
+
+        if action_id == "plan_from_spec" and spec_path:
+            action["suggested_command"] = (
+                f"codepilot plan -p {project_name or '<project>'} "
+                f"--from-spec {_command_arg(spec_path, '<spec_path>')} --json"
+            )
+            action["artifact_path"] = spec_path
+            action["params"]["artifact_path"] = spec_path
+            action["executable"] = bool(project_name)
+        elif action_id == "import_tasks" and task_batch_path:
+            action["suggested_command"] = (
+                f"codepilot add -p {project_name or '<project>'} "
+                f"-f {_command_arg(task_batch_path, '<task_batch_path>')}"
+            )
+            action["task_batch_path"] = task_batch_path
+            action["params"]["task_batch_path"] = task_batch_path
+            action["executable"] = bool(project_name)
+        elif action_id == "continue_clarify":
+            action["params"]["summary"] = summary
+        elif action_id == "abandon_plan" and plan_path:
+            action["params"]["plan_path"] = plan_path
+
+        if action["executable"]:
+            action["action"] = _artifact_web_action(project_name, context_path_text, action_id)
+        actions.append(action)
+    return actions
+
+
 def artifact_context_payload(context_path: str) -> dict:
     """Read an artifact's context JSON and return its content with next_actions.
 
@@ -337,9 +471,26 @@ def artifact_context_payload(context_path: str) -> dict:
         return {"ok": False, "error": "artifact context is corrupt or unreadable"}
     if not isinstance(ctx, dict):
         return {"ok": False, "error": "artifact context is not a JSON object"}
+    artifact_type = _artifact_type_from_context(ctx)
+    project_info = _artifact_project_info(path.resolve())
+    artifact_paths = _artifact_paths_from_context(ctx)
+    spec_path = _artifact_value(ctx, "spec")
+    plan_path = _artifact_value(ctx, "plan")
+    task_batch_path = _artifact_value(ctx, "task_batch")
+    artifact_path = spec_path if artifact_type == "clarify" else plan_path
     return {
         "ok": True,
         "summary": str(ctx.get("summary") or ""),
-        "next_actions": list(ctx.get("next_actions") or []),
-        "artifact_type": str(ctx.get("state", {}).get("mode") or ""),
+        "next_actions": _materialize_artifact_next_actions(
+            ctx,
+            context_path=path.resolve(),
+            artifact_type=artifact_type,
+            project_info=project_info,
+        ),
+        "artifact_type": artifact_type,
+        "context_path": str(path.resolve()),
+        "artifact_path": artifact_path,
+        "plan_path": plan_path,
+        "task_batch_path": task_batch_path,
+        "artifact_paths": artifact_paths,
     }

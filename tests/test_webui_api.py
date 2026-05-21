@@ -13,6 +13,7 @@ from typing import BinaryIO
 
 import pytest
 
+from codepilot.commands.plan import write_plan_artifact
 from codepilot.storage import database as db
 from codepilot.commands import daemon as daemon_cmd
 from codepilot.commands import inspect as inspect_cmd
@@ -1004,6 +1005,49 @@ def test_import_tasks_via_api_rejects_missing_content_field(ui_server):
     assert status == 400
     err = str(body.get("error") or "")
     assert "缺少 content" in err
+
+
+def test_artifact_import_next_action_via_api_uses_task_batch_file(ui_server):
+    project = db.get_project("demo")
+    plan = write_plan_artifact(project, "新增 explore", use_wiki=False)
+
+    status, body = _post(
+        f"{ui_server}/api/artifacts/actions",
+        {
+            "project": "demo",
+            "context_path": plan["context_path"],
+            "action_id": "import_tasks",
+        },
+    )
+
+    assert status == 200
+    assert body["ok"] is True
+    assert body["action_id"] == "import_tasks"
+    assert body["task_batch_path"] == plan["task_batch_path"]
+    assert body["result"]["count"] == len(plan["task_candidates"])
+    tasks = db.list_tasks(project="demo")
+    assert len(tasks) == len(plan["task_candidates"])
+
+
+def test_artifact_import_next_action_via_api_rejects_invalid_task_batch(ui_server):
+    project = db.get_project("demo")
+    plan = write_plan_artifact(project, "新增 explore", use_wiki=False)
+    before = len(db.list_tasks(project="demo"))
+    with open(plan["task_batch_path"], "w", encoding="utf-8", newline="\n") as handle:
+        json.dump([{"title": "缺章节任务", "content": "# 缺章节任务\n\n只有标题。"}], handle, ensure_ascii=False)
+
+    status, body = _post(
+        f"{ui_server}/api/artifacts/actions",
+        {
+            "project": "demo",
+            "context_path": plan["context_path"],
+            "action_id": "import_tasks",
+        },
+    )
+
+    assert status == 400
+    assert "缺少关键章节" in body["error"]
+    assert len(db.list_tasks(project="demo")) == before
 
 
 # ─── HTML page ──────────────────────────────────────────────────────────────

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import sys
+import json
 import re
+import sys
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from codepilot.storage import database as db
 from codepilot.ai_support.clarification_protocol import (
@@ -988,7 +989,7 @@ def artifact_next_actions_for_type(artifact_type: str) -> list[dict]:
                 "id": "import_tasks",
                 "label": "将候选任务导入 backlog",
                 "risk": "medium",
-                "suggested_command": "codepilot add -p {project} -f {context_path} --json",
+                "suggested_command": "codepilot add -p {project} -f {task_batch_path}",
             },
             {
                 "id": "continue_clarify",
@@ -1011,6 +1012,164 @@ def artifact_next_actions_for_type(artifact_type: str) -> list[dict]:
         ],
     }
     return list(_defs.get(artifact_type, []))
+
+
+def _artifact_type_from_context(context: dict[str, Any]) -> str:
+    state = context.get("state") if isinstance(context.get("state"), dict) else {}
+    return str(state.get("mode") or context.get("artifact_type") or "").strip().lower()
+
+
+def _artifact_context_value(context: dict[str, Any], key: str) -> str | None:
+    payloads: list[dict[str, Any]] = [context]
+    state = context.get("state")
+    if isinstance(state, dict):
+        payloads.append(state)
+
+    for payload in payloads:
+        if key == "spec" and payload.get("artifact_path"):
+            return str(payload.get("artifact_path"))
+        if key == "task_batch" and payload.get("task_batch_path"):
+            return str(payload.get("task_batch_path"))
+        artifacts = payload.get("artifact_paths")
+        if isinstance(artifacts, dict) and artifacts.get(key):
+            return str(artifacts.get(key))
+    return None
+
+
+def _resolve_project_file(project_path: Path, raw_path: str | Path | None, *, label: str) -> Path:
+    if raw_path is None or str(raw_path).strip() == "":
+        raise RuntimeError(f"artifact context 缺少 {label}。")
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = project_path / candidate
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(project_path):
+        raise RuntimeError(f"{label} 必须指向项目目录内的文件：{resolved}")
+    return resolved
+
+
+def _read_artifact_context(project_info: dict, context_path: str | Path) -> tuple[Path, dict[str, Any]]:
+    project_path = Path(project_info["path"]).resolve()
+    resolved_context = _resolve_project_file(project_path, context_path, label="artifact context")
+    if not resolved_context.is_file():
+        raise RuntimeError(f"artifact context 不存在：{resolved_context}")
+    try:
+        payload = json.loads(resolved_context.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"artifact context 无法读取：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("artifact context 必须是 JSON object。")
+    return resolved_context, payload
+
+
+def _context_next_action(context: dict[str, Any], action_id: str) -> dict[str, Any]:
+    wanted = str(action_id or "").strip()
+    raw_actions = context.get("next_actions")
+    if not isinstance(raw_actions, list) or not raw_actions:
+        raw_actions = artifact_next_actions_for_type(_artifact_type_from_context(context))
+    for item in raw_actions:
+        if isinstance(item, dict):
+            found = str(item.get("id") or "").strip()
+            if found == wanted:
+                return dict(item)
+        elif isinstance(item, str) and item.strip() == wanted:
+            return {"id": wanted, "label": wanted, "risk": "unknown"}
+    raise RuntimeError(f"未找到 artifact next_action：{wanted}")
+
+
+def _execute_artifact_plan_from_spec(project_info: dict, context: dict[str, Any]) -> dict:
+    from codepilot.commands.plan import _read_spec, _summary_from_spec, write_plan_artifact
+
+    project_path = Path(project_info["path"]).resolve()
+    spec_path = _resolve_project_file(
+        project_path,
+        _artifact_context_value(context, "spec"),
+        label="clarify spec",
+    )
+    if not spec_path.is_file():
+        raise RuntimeError(f"clarify spec 不存在：{spec_path}")
+    try:
+        resolved_spec, spec_text = _read_spec(project_path, str(spec_path))
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+    return write_plan_artifact(
+        project_info,
+        _summary_from_spec(spec_text),
+        source="spec",
+        source_path=str(resolved_spec),
+        use_wiki=True,
+    )
+
+
+def _execute_artifact_import_tasks(project_info: dict, context: dict[str, Any]) -> dict:
+    from codepilot.webapp.action_task_ops import import_tasks_action
+
+    project_path = Path(project_info["path"]).resolve()
+    task_batch_path = _resolve_project_file(
+        project_path,
+        _artifact_context_value(context, "task_batch"),
+        label="task batch",
+    )
+    if not task_batch_path.is_file():
+        raise RuntimeError(f"任务批次文件不存在：{task_batch_path}")
+    try:
+        items = json.loads(task_batch_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"任务批次文件无法读取：{exc}") from exc
+    if not isinstance(items, list):
+        raise RuntimeError("任务批次文件必须是 JSON array。")
+    result = import_tasks_action(str(project_info["name"]), items)
+    return {
+        **result,
+        "task_batch_path": str(task_batch_path),
+    }
+
+
+_ARTIFACT_ACTION_HANDLERS: dict[str, Callable[[dict, dict[str, Any]], dict]] = {
+    "plan_from_spec": _execute_artifact_plan_from_spec,
+    "import_tasks": _execute_artifact_import_tasks,
+}
+
+
+def execute_artifact_next_action(
+    project: str,
+    context_path: str,
+    action_id: str,
+    *,
+    allow_high_risk: bool = False,
+) -> dict:
+    """Execute a Web UI artifact next action through a fixed backend allowlist."""
+    db.init_db()
+    project_info = db.get_project(project)
+    if not project_info:
+        raise RuntimeError(f"项目 '{project}' 不存在。")
+
+    resolved_context, context = _read_artifact_context(project_info, context_path)
+    action = _context_next_action(context, action_id)
+    normalized_action_id = str(action.get("id") or "").strip()
+    risk = str(action.get("risk") or "").strip().lower()
+    if risk == "high" and not allow_high_risk:
+        raise RuntimeError(f"next_action `{normalized_action_id}` 是高风险动作，默认拒绝执行。")
+    handler = _ARTIFACT_ACTION_HANDLERS.get(normalized_action_id)
+    if handler is None:
+        allowed = ", ".join(sorted(_ARTIFACT_ACTION_HANDLERS))
+        raise RuntimeError(f"不支持的 artifact next_action：{normalized_action_id}。当前 allowlist：{allowed}。")
+
+    result = handler(project_info, context)
+    payload = {
+        "ok": True,
+        "project": project_info["name"],
+        "artifact_type": _artifact_type_from_context(context),
+        "context_path": str(resolved_context),
+        "action_id": normalized_action_id,
+        "action": action,
+        "result": result,
+    }
+    if result.get("task_batch_path"):
+        payload["task_batch_path"] = result["task_batch_path"]
+    if result.get("plan_path"):
+        payload["plan_path"] = result["plan_path"]
+    return payload
 
 
 def submit_goal_action(
