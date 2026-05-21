@@ -17,6 +17,11 @@
 *.cmd text eol=lf
 *.ps1 text eol=lf
 
+# 近期曾出现 CRLF 工作区漂移的根级 AI/配置文件显式固定为 LF。
+AI_MANIFEST.json text eol=lf
+AI_USAGE*.md text eol=lf
+pyproject.toml text eol=lf
+
 # 二进制文件不转换
 *.png binary
 *.jpg binary

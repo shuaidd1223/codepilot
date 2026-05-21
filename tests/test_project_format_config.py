@@ -20,6 +20,9 @@ def test_gitattributes_requires_lf_for_text_files():
     assert "* text=auto eol=lf" in content
     assert "*.py text eol=lf" in content
     assert "*.md text eol=lf" in content
+    assert "AI_MANIFEST.json text eol=lf" in content
+    assert "AI_USAGE*.md text eol=lf" in content
+    assert "pyproject.toml text eol=lf" in content
 
 
 def test_tracked_text_files_use_lf_line_endings():
