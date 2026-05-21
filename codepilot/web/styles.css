@@ -127,12 +127,19 @@ p { margin: 0; }
 }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-logo {
-  width: 32px; height: 32px;
+  width: 34px; height: 34px;
   border-radius: var(--radius-sm);
-  background: hsl(var(--primary));
-  color: hsl(var(--primary-foreground));
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
   display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 15px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.brand-logo-img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 .brand-name { font-size: 14px; font-weight: 600; }
 .brand-sub { font-size: 11px; color: hsl(var(--muted-foreground)); }

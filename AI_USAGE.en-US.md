@@ -2,7 +2,7 @@
 
 Language: [简体中文](AI_USAGE.zh-CN.md) | English
 
-**Author:** 帅呆呆 <2264505396@qq.com> | **Repository:** https://gitee.com/shuai_dd/workflow | **License:** MIT
+**Author:** 帅呆呆 <2264505396@qq.com> | **Repository:** https://gitee.com/shuai_dd/CodePilot | **License:** MIT
 
 This guide is for other AI agents. For the latest machine-readable command list, use `codepilot ai manifest`. For this Markdown guide, use `codepilot ai guide`.
 

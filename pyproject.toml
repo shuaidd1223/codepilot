@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "帅呆呆", email = "2264505396@qq.com" }]
-repository = "https://gitee.com/shuai_dd/workflow"
 keywords = ["automation", "workflow", "claude", "codex", "ai"]
 
 dependencies = [
@@ -34,6 +33,9 @@ ai = [
 [project.scripts]
 codepilot = "codepilot.cli:main"
 
+[project.urls]
+Repository = "https://gitee.com/shuai_dd/CodePilot"
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -46,7 +48,7 @@ include = ["codepilot*"]
 "" = "."
 
 [tool.setuptools.package-data]
-"codepilot" = ["templates/*.md", "prompts/*.md", "web/*.html", "web/*.css", "web/*.js", "web/components/*.js", "web/boundaries/*.js", "*.mjs"]
+"codepilot" = ["templates/*.md", "prompts/*.md", "web/*.html", "web/*.css", "web/*.js", "web/*.png", "web/*.ico", "web/components/*.js", "web/boundaries/*.js", "*.mjs"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

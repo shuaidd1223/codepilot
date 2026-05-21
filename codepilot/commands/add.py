@@ -383,12 +383,22 @@ def _single_add(
         echo(f"[yellow]⚠ {fallback_reason}[/yellow]")
 
     echo(f"[cyan]调用 {agent} 生成任务内容...[/cyan]")
-    content = generate_task_content(
-        title,
-        project_path=proj_path,
-        agent=agent,
-        config_ref=config_ref,
-    )
+    try:
+        content = generate_task_content(
+            title,
+            project_path=proj_path,
+            agent=agent,
+            config_ref=config_ref,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(
+            f"AI 生成任务《{title}》失败：{exc}\n"
+            f"请检查对应 CLI 工具是否已安装并配置好 API Key。\n"
+            f"如果当前 agent 不可用，可以尝试：\n"
+            f"  1. 换一个 agent：codepilot add -p <项目> -t \"{title}\" --agent claude\n"
+            f"  2. 走自然语言入口：codepilot \"{title}\" -p <项目>\n"
+            f"  3. 查看可用 provider：codepilot providers"
+        ) from exc
     missing = missing_task_template_sections(content)
     if missing:
         raise click.ClickException(

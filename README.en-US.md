@@ -1,10 +1,51 @@
 # CodePilot
 
+<p align="center">
+  <img src="docs/codepilot-logo.png" alt="CodePilot Logo" width="180">
+</p>
+
+<p align="center">
+  <strong>Local Engineering Workflow CLI — Natural Language Driven Development</strong>
+</p>
+
+<p align="center">
+  <img src="docs/demo.gif" alt="CodePilot Demo" width="720">
+</p>
+
+<p align="center">
+  <a href="https://gitee.com/shuai_dd/CodePilot"><img src="https://img.shields.io/badge/Gitee-Repo-red" alt="Gitee"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
+  <a href="#"><img src="https://img.shields.io/badge/version-0.7.4-green" alt="version"></a>
+  <a href="#"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey" alt="platform"></a>
+  <a href="#"><img src="https://img.shields.io/badge/macOS-untested-orange" alt="macOS"></a>
+</p>
+
+> **Platform Support**: Tested on Windows and Linux only. macOS has not been thoroughly tested and may have significant bugs. Community contributions for macOS support are welcome.
+
 Language: [中文](README.md) | English
 
 CodePilot is a local engineering workflow CLI that turns natural-language requirements into executable tasks and connects planning, execution, review, inspection, service operations, and release workflows.
 
-Current version: `0.7.4` | Author: [帅呆呆](https://gitee.com/shuai_dd) | Gitee: [shuai_dd/workflow](https://gitee.com/shuai_dd/workflow)
+Current version: `0.7.4` | Author: [帅呆呆](https://gitee.com/shuai_dd) | Gitee: [shuai_dd/CodePilot](https://gitee.com/shuai_dd/CodePilot)
+
+## Demo
+
+### Screen Recording
+
+<!-- Recording guide: Use ScreenToGif or LICEcap to capture terminal operations, export as docs/demo.gif -->
+
+![demo](docs/demo.gif)
+
+*Demo: Complete workflow from natural language requirement to automated execution.*
+
+### Screenshots
+
+<p align="center">
+  <img src="docs/screenshot-webui.png" alt="Web UI" width="400">
+  <img src="docs/screenshot-task.png" alt="Task Management" width="400">
+</p>
+
+*Left: Web UI Dashboard | Right: Task Status and Operations Panel*
 
 ## Quick Start
 
@@ -31,6 +72,49 @@ codepilot hud -p <project-name> --preset full
 ```
 
 `chat`, Web UI sessions, and Feishu free text all route through OpenCode + CodePilot MCP. Use natural language for questions, requirements, or task operations. Use `clarify` / `plan` / Web UI panels when a deterministic spec or plan artifact is needed.
+
+## Typical Workflows
+
+### Requirement → Task → Execution
+
+```bash
+# 1. Clarify vague requirements
+codepilot clarify -p myproject "support phone OTP login" --json
+
+# 2. Generate execution plan
+codepilot plan -p myproject "implement phone OTP login" --json
+
+# 3. Auto-execute (code + test + review)
+codepilot auto -p myproject -t "implement phone OTP login"
+
+# 4. Check execution results
+codepilot task show <task_id>
+codepilot task logs <task_id> --tail 50
+```
+
+### Code Review & Auto-Fix
+
+```bash
+# Submit code review
+codepilot "review the latest commits" -p myproject
+
+# Auto-fix build errors
+codepilot build-fix -p myproject --task-id <task_id> --json
+```
+
+### Project Inspection
+
+```bash
+# Start background inspection service
+codepilot inspect -p myproject
+
+# Check inspection status
+codepilot inspect -p myproject --status
+
+# One-shot full check
+codepilot inspect -p myproject --once
+codepilot doctor --project myproject --services --json
+```
 
 ## Common Commands
 
@@ -85,6 +169,35 @@ codepilot daemon -p <project-name>
 codepilot inspect -p <project-name> --once
 codepilot build-fix -p <project-name> --task-id <task_id> --json
 codepilot doctor --project <project-name> --services --json
+```
+
+### Scheduled / Event Agents
+
+```bash
+codepilot scheduled list -p <project-name>
+codepilot scheduled show task_health -p <project-name> --json
+codepilot scheduled run-once task_health --dry-run
+codepilot scheduled disable task_health -p <project-name>
+```
+
+Minimal configuration:
+
+```toml
+[automation.scheduled_agents.task_health]
+enabled = true
+agent = "codex"
+interval = "10m"
+prompt = "Review local CodePilot task status and summarize risks."
+max_cost_usd = 0.10
+max_daily_cost_usd = 0.50
+
+[automation.event_agents.failed_task_triage]
+enabled = false
+trigger = "task.failed"
+agent = "codex"
+prompt = "Task {{ task_id }} failed with {{ error_message }}. Suggest the smallest repair."
+max_cost_usd = 0.10
+max_daily_cost_usd = 0.50
 ```
 
 ### Web UI, Feishu, Webhook
@@ -176,6 +289,7 @@ Use these replacements:
 
 ## Documentation
 
+- **Quickstart: [中文](docs/快速上手指南.zh-CN.md) / [English](docs/quickstart-guide.en-US.md)**
 - Overview: [中文](docs/说明文档.zh-CN.md) / [English](docs/说明文档.en-US.md)
 - Operation guide: [中文](docs/操作文档.zh-CN.md) / [English](docs/操作文档.en-US.md)
 - AI / Agent guide: [中文](docs/AI与Agent调用手册.zh-CN.md) / [English](docs/AI与Agent调用手册.en-US.md)
@@ -217,3 +331,7 @@ This repository includes a reusable Skill:
 - `skills/codepilot-workflow/SKILL.md`
 
 The Skill itself is written in English for other Codex / Agent runtimes. Installation and maintenance notes are in the Skill integration guide: [中文](docs/Skill化集成指南.zh-CN.md) / [English](docs/Skill化集成指南.en-US.md).
+
+## License
+
+This project is open sourced under the [MIT License](LICENSE).

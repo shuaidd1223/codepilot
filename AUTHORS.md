@@ -6,4 +6,4 @@
 
 ## Repository
 
-- Gitee: [https://gitee.com/shuai_dd/workflow](https://gitee.com/shuai_dd/workflow)
+- Gitee: [https://gitee.com/shuai_dd/CodePilot](https://gitee.com/shuai_dd/CodePilot)

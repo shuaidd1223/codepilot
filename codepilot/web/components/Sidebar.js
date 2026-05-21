@@ -126,7 +126,9 @@ CP.Components.Sidebar = Vue.defineComponent({
     <aside class="sidebar">
       <div class="brand-bar">
         <div class="brand">
-          <div class="brand-logo">C</div>
+          <div class="brand-logo">
+            <img class="brand-logo-img" src="/static/codepilot-logo.png" alt="">
+          </div>
           <div>
             <div class="brand-name">CodePilot</div>
             <div class="brand-sub">控制台</div>
@@ -322,4 +324,3 @@ CP.Components.Sidebar = Vue.defineComponent({
     </aside>
   `,
 });
-

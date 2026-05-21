@@ -667,7 +667,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "未找到文件。"}, status=404)
             return True
         if path == "/favicon.ico":
-            self._send_bytes(b"", "image/x-icon", HTTPStatus.NO_CONTENT)
+            try:
+                self._send_bytes(_load_web_file("favicon.ico"), "image/x-icon")
+            except FileNotFoundError:
+                self._send_bytes(b"", "image/x-icon", HTTPStatus.NO_CONTENT)
             return True
         return False
 

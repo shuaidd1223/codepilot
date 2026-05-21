@@ -31,3 +31,4 @@ package-lock.json
 .coverage
 .coverage.*
 htmlcov/
+.playwright-mcp/

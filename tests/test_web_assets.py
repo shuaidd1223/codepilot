@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from http import HTTPStatus
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,47 @@ def test_web_ui_loads_index_from_installed_binary_sidecar_web_dir(tmp_path, monk
     body = webui_mod._load_web_file("index.html")
 
     assert b"/static/app.js" in body
+
+
+def test_web_ui_uses_codepilot_logo_assets():
+    index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
+    sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+    readme_en = Path("README.en-US.md").read_text(encoding="utf-8")
+    overview_zh = Path("docs/说明文档.zh-CN.md").read_text(encoding="utf-8")
+    overview_en = Path("docs/说明文档.en-US.md").read_text(encoding="utf-8")
+
+    assert Path("codepilot/web/codepilot-logo.png").is_file()
+    assert Path("codepilot/web/favicon.ico").is_file()
+    assert Path("docs/codepilot-logo.png").is_file()
+    assert '<link rel="icon" href="/favicon.ico" sizes="any">' in index_html
+    assert '<link rel="apple-touch-icon" href="/static/codepilot-logo.png">' in index_html
+    assert '<img class="brand-logo-img" src="/static/codepilot-logo.png" alt="">' in sidebar
+    assert ".brand-logo-img" in styles
+    assert "web/*.png" in pyproject
+    assert "web/*.ico" in pyproject
+    assert "docs/codepilot-logo.png" in readme
+    assert "docs/codepilot-logo.png" in readme_en
+    assert "codepilot-logo.png" in overview_zh
+    assert "codepilot-logo.png" in overview_en
+
+
+def test_web_ui_favicon_route_serves_packaged_icon():
+    class _FaviconProbe:
+        sent: tuple[bytes, str, int] | None = None
+
+        def _send_bytes(self, body: bytes, content_type: str, status=HTTPStatus.OK) -> None:
+            self.sent = (body, content_type, status)
+
+    probe = _FaviconProbe()
+
+    assert webui_mod.DashboardHandler._dispatch_get_asset(probe, "/favicon.ico") is True
+    assert probe.sent is not None
+    assert probe.sent[0] == webui_mod._load_web_file("favicon.ico")
+    assert probe.sent[1] == "image/x-icon"
+    assert probe.sent[2] == HTTPStatus.OK
 
 
 def test_web_ui_resource_loader_rejects_static_path_traversal():

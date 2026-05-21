@@ -1,10 +1,51 @@
 # CodePilot
 
+<p align="center">
+  <img src="docs/codepilot-logo.png" alt="CodePilot Logo" width="180">
+</p>
+
+<p align="center">
+  <strong>本地工程工作流 CLI — 自然语言驱动开发全流程</strong>
+</p>
+
+<p align="center">
+  <img src="docs/demo.gif" alt="CodePilot Demo" width="720">
+</p>
+
+<p align="center">
+  <a href="https://gitee.com/shuai_dd/CodePilot"><img src="https://img.shields.io/badge/Gitee-仓库-red" alt="Gitee"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
+  <a href="#"><img src="https://img.shields.io/badge/version-0.7.4-green" alt="version"></a>
+  <a href="#"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey" alt="platform"></a>
+  <a href="#"><img src="https://img.shields.io/badge/macOS-未测试-orange" alt="macOS"></a>
+</p>
+
+> **平台支持**：仅在 Windows 和 Linux 上测试通过。macOS 未经过充分测试，实际使用可能存在较多 bug。欢迎社区贡献 macOS 适配。
+
 Language: 中文 | [English](README.en-US.md)
 
 CodePilot 是一个本地工程工作流 CLI，用来把自然语言需求转成可执行任务，并串起规划、执行、审查、巡检、服务运维和发布流程。
 
-当前版本：`0.7.4` | 作者：[帅呆呆](https://gitee.com/shuai_dd) | Gitee：[shuai_dd/workflow](https://gitee.com/shuai_dd/workflow)
+当前版本：`0.7.4` | 作者：[帅呆呆](https://gitee.com/shuai_dd) | Gitee：[shuai_dd/CodePilot](https://gitee.com/shuai_dd/CodePilot)
+
+## 演示
+
+### 录屏演示
+
+<!-- 录制方法：使用 ScreenToGif 或 LICEcap 录制终端操作，导出为 docs/demo.gif -->
+
+![demo](docs/demo.gif)
+
+*演示：从自然语言需求到自动执行完成的完整工作流。*
+
+### 截图展示
+
+<p align="center">
+  <img src="docs/screenshot-webui.png" alt="Web UI" width="400">
+  <img src="docs/screenshot-task.png" alt="Task Management" width="400">
+</p>
+
+*左：Web UI 管理面板 | 右：任务状态与运维面板*
 
 ## 快速开始
 
@@ -31,6 +72,49 @@ codepilot hud -p <项目名> --preset full
 ```
 
 `chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP。可以像使用 OpenCode 一样直接输入问题、需求或操作意图；需要严格产出规格或计划 artifact 时，再显式调用 `clarify` / `plan` / Web UI 面板入口。
+
+## 典型工作流
+
+### 需求 → 任务 → 执行
+
+```bash
+# 1. 澄清模糊需求
+codepilot clarify -p myproject "用户登录支持手机验证码" --json
+
+# 2. 生成执行计划
+codepilot plan -p myproject "实现手机验证码登录" --json
+
+# 3. 自动执行（含代码编写 + 测试 + 审查）
+codepilot auto -p myproject -t "实现手机验证码登录"
+
+# 4. 查看执行结果
+codepilot task show <task_id>
+codepilot task logs <task_id> --tail 50
+```
+
+### 代码审查与修复
+
+```bash
+# 提交代码审查
+codepilot "审查最近的提交" -p myproject
+
+# 自动修复构建错误
+codepilot build-fix -p myproject --task-id <task_id> --json
+```
+
+### 项目巡检
+
+```bash
+# 启动后台巡检服务
+codepilot inspect -p myproject
+
+# 查看巡检状态
+codepilot inspect -p myproject --status
+
+# 单次全量检查
+codepilot inspect -p myproject --once
+codepilot doctor --project myproject --services --json
+```
 
 ## 常用命令
 
@@ -270,6 +354,7 @@ simple_model = "deepseek-v4-flash"
 
 ## 文档导航
 
+- **快速上手：[中文](docs/快速上手指南.zh-CN.md) / [English](docs/quickstart-guide.en-US.md)**
 - 说明文档：[中文](docs/说明文档.zh-CN.md) / [English](docs/说明文档.en-US.md)
 - 操作文档：[中文](docs/操作文档.zh-CN.md) / [English](docs/操作文档.en-US.md)
 - AI / Agent 调用手册：[中文](docs/AI与Agent调用手册.zh-CN.md) / [English](docs/AI与Agent调用手册.en-US.md)
@@ -393,3 +478,7 @@ codepilot ai prompt
 - `skills/codepilot-workflow/SKILL.md`
 
 该 Skill 用英文编写，供其他 Codex / Agent 固化 CodePilot 的调用策略、命令顺序和排障流程。安装和维护方式见：[docs/Skill化集成指南.zh-CN.md](docs/Skill化集成指南.zh-CN.md)
+
+## 开源协议
+
+本项目基于 [MIT License](LICENSE) 开源。
