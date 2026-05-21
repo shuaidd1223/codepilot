@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
 from collections.abc import Mapping
 from copy import deepcopy
@@ -16,8 +15,14 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
-from codepilot.errors import CodePilotError
-
+from codepilot.core.config_parse import (
+    DEFAULT_AGENT_COMMANDS,
+    DEFAULT_FALLBACK_CLI_ORDER,
+    ConfigError,
+    _normalize_optional_agent_name,
+    normalize_agent_language,
+    normalize_preflight_dirty_worktree,
+)
 
 CONFIG_FILENAME = "AGENTS.toml"
 SECRETS_FILENAME = ".codepilot.secrets.toml"  # sibling file; never commit
@@ -28,283 +33,40 @@ SECRETS_FILENAME = ".codepilot.secrets.toml"  # sibling file; never commit
 SECRETS_PATH_ENV = "CODEPILOT_SECRETS_PATH"
 GLOBAL_CONFIG_PATH_ENV = "CODEPILOT_GLOBAL_CONFIG_PATH"
 
-
-class ConfigError(CodePilotError, ValueError):
-    """AGENTS.toml 配置解析错误。同时兼容 ``except ValueError`` 和 ``except CodePilotError``。"""
-
-
-DEFAULT_AGENT_COMMANDS: dict[str, str] = {
-    "claude": "claude",
-    "codex": "codex",
-    "opencode": "cp-opencode",
-}
-DEFAULT_FALLBACK_CLI_ORDER: list[str] = ["claude", "codex", "opencode"]
-PREFLIGHT_DIRTY_WORKTREE_POLICIES: tuple[str, ...] = ("stop", "commit", "stash")
-SUPPORTED_AGENT_LANGUAGES: tuple[str, ...] = ("en", "zh-CN")
-LEGACY_AGENT_COMMAND_KEYS: tuple[str, ...] = ("codex_cmd", "claude_cmd")
-INTERVAL_PATTERN = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
-INTERVAL_MULTIPLIERS: dict[str, int] = {
-    "s": 1,
-    "m": 60,
-    "h": 3600,
-    "d": 86400,
-}
-AGENT_COMMANDS_MIGRATION_HINT = (
-    "[agents] codex_cmd / claude_cmd 已被移除，改用 [agents.commands] 映射。"
-    "示例：\n\n"
-    "[agents.commands]\n"
-    'claude = "claude"\n'
-    'codex = "codex"\n'
-    'opencode = "opencode"\n\n'
-    "[automation]\n"
-    'fallback_cli_order = ["claude", "codex", "opencode"]\n'
-)
-
-
-def _check_legacy_agent_command_keys(agents_section: Mapping[str, object]) -> None:
-    """Raise ConfigError when the loaded config still uses the old scalar keys."""
-    legacy_present = [k for k in LEGACY_AGENT_COMMAND_KEYS if k in agents_section]
-    if not legacy_present:
-        return
-    raise ConfigError(
-        "AGENTS.toml 含已废弃字段：" + ", ".join(legacy_present) + "。\n"
-        + AGENT_COMMANDS_MIGRATION_HINT
-    )
-
-
-def _parse_agent_commands(raw: object) -> dict[str, str]:
-    """Parse the `[agents.commands]` table into a dict, applying defaults."""
-    merged = dict(DEFAULT_AGENT_COMMANDS)
-    if raw is None:
-        return merged
-    if not isinstance(raw, Mapping):
-        raise ConfigError(
-            "[agents.commands] 必须是表/字典；请使用 `[agents.commands]` 子表格式。"
-        )
-    for family, value in raw.items():
-        family_name = str(family).strip()
-        if not family_name:
-            continue
-        cmd = str(value or "").strip()
-        if cmd:
-            merged[family_name] = cmd
-    return merged
-
-
-def _parse_fallback_cli_order(raw: object) -> list[str]:
-    """Parse `[automation].fallback_cli_order` with sane defaults."""
-    if raw is None:
-        return list(DEFAULT_FALLBACK_CLI_ORDER)
-    if isinstance(raw, str):
-        # Single string is allowed as a one-element order.
-        return [raw.strip()] if raw.strip() else list(DEFAULT_FALLBACK_CLI_ORDER)
-    if not isinstance(raw, (list, tuple)):
-        raise ConfigError(
-            "[automation].fallback_cli_order 必须是字符串列表，例如 "
-            '["claude", "codex", "opencode"]。'
-        )
-    cleaned = [str(item).strip() for item in raw if str(item or "").strip()]
-    return cleaned or list(DEFAULT_FALLBACK_CLI_ORDER)
-
-
-def _parse_optional_string_list(raw: object, path: str) -> tuple[str, ...] | None:
-    """Parse optional string-or-list config values without applying defaults."""
-    if raw is None:
-        return None
-    if isinstance(raw, str):
-        text = raw.strip()
-        return (text,) if text else tuple()
-    if not isinstance(raw, (list, tuple)):
-        raise ConfigError(f"{path} 必须是字符串或字符串列表。")
-    return tuple(str(item).strip() for item in raw if str(item or "").strip())
-
-
-def normalize_agent_language(raw: object = None) -> str:
-    """Normalize the project-level agent prompt/output language."""
-    text = str(raw or "").strip()
-    if not text:
-        return "en"
-    lowered = text.lower().replace("_", "-")
-    if lowered in {"en", "en-us", "english"}:
-        return "en"
-    if lowered in {"zh", "zh-cn", "zh-hans", "chinese", "cn"} or text in {"中文", "简体中文"}:
-        return "zh-CN"
-    raise ConfigError(
-        "automation.agent_language 只支持 en 或 zh-CN；"
-        "可用别名包括 en-US/english、zh/zh-CN/中文。"
-    )
-
-
-def normalize_preflight_dirty_worktree(raw: object = None) -> str:
-    """Normalize how builtin preflight handles an already-dirty worktree."""
-    text = str(raw or "").strip()
-    if not text:
-        return "stop"
-    lowered = text.lower().replace("-", "_").replace(" ", "_")
-    aliases = {
-        "stop": "stop",
-        "block": "stop",
-        "halt": "stop",
-        "fail": "stop",
-        "停止执行": "stop",
-        "commit": "commit",
-        "auto_commit": "commit",
-        "analyze_commit": "commit",
-        "analyze_then_commit": "commit",
-        "分析后提交": "commit",
-        "stash": "stash",
-        "stash_and_log": "stash",
-        "stash_then_log": "stash",
-        "暂存": "stash",
-        "暂存并记录": "stash",
-        "暂存并写文档": "stash",
-        "暂存并写日志": "stash",
-        "暂存并写日志记录": "stash",
-        "暂存并写文档/日志记录": "stash",
-    }
-    normalized = aliases.get(lowered) or aliases.get(text)
-    if normalized:
-        return normalized
-    raise ConfigError(
-        "automation.preflight_dirty_worktree 只支持 stop、commit、stash；"
-        "分别表示停止执行、分析后提交、stash 并记录。"
-    )
-
-
-def _required_config_text(raw: object, path: str) -> str:
-    text = str(raw or "").strip()
-    if not text:
-        raise ConfigError(f"{path} 必须配置非空字符串。")
-    return text
-
-
-def _optional_config_text(raw: object) -> Optional[str]:
-    if raw is None:
-        return None
-    text = str(raw).strip()
-    return text or None
-
-
-def _parse_interval_seconds(raw: object, path: str) -> int:
-    text = _required_config_text(raw, path)
-    match = INTERVAL_PATTERN.match(text)
-    if not match:
-        raise ConfigError(
-            f"{path} 必须使用 10m、1h、1d 这类 interval 格式。"
-        )
-    value = int(match.group(1))
-    if value <= 0:
-        raise ConfigError(f"{path} 必须大于 0。")
-    unit = match.group(2).lower()
-    return value * INTERVAL_MULTIPLIERS[unit]
-
-
-def _parse_optional_cost(raw: object, path: str) -> Optional[float]:
-    if raw is None or raw == "":
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{path} 必须是非负数字。") from exc
-    if value < 0:
-        raise ConfigError(f"{path} 必须是非负数字。")
-    return value
-
-
-def _parse_named_config_table(raw: object, path: str) -> dict[str, Mapping[str, object]]:
-    if raw is None:
-        return {}
-    if not isinstance(raw, Mapping):
-        raise ConfigError(f"[{path}] 必须是 TOML table。")
-
-    parsed: dict[str, Mapping[str, object]] = {}
-    for raw_name, raw_cfg in raw.items():
-        name = str(raw_name).strip()
-        if not name:
-            raise ConfigError(f"[{path}] 包含空名称。")
-        if not isinstance(raw_cfg, Mapping):
-            raise ConfigError(f"[{path}.{name}] 必须是 TOML table。")
-        parsed[name] = raw_cfg
-    return parsed
-
-
-def _parse_scheduled_agents(raw: object) -> dict[str, "ScheduledAgentConfig"]:
-    parsed: dict[str, ScheduledAgentConfig] = {}
-    for name, cfg in _parse_named_config_table(raw, "automation.scheduled_agents").items():
-        path = f"automation.scheduled_agents.{name}"
-        agent = _required_config_text(cfg.get("agent"), f"{path}.agent")
-        prompt = _required_config_text(cfg.get("prompt"), f"{path}.prompt")
-        interval = _optional_config_text(cfg.get("interval"))
-        schedule = _optional_config_text(cfg.get("schedule"))
-        if not interval and not schedule:
-            raise ConfigError(f"{path} 必须配置 interval 或 schedule。")
-        parsed[name] = ScheduledAgentConfig(
-            enabled=bool(cfg.get("enabled", True)),
-            agent=agent,
-            prompt=prompt,
-            interval=interval,
-            interval_seconds=(
-                _parse_interval_seconds(interval, f"{path}.interval")
-                if interval is not None
-                else None
-            ),
-            schedule=schedule,
-            max_cost_usd=_parse_optional_cost(cfg.get("max_cost_usd"), f"{path}.max_cost_usd"),
-            max_daily_cost_usd=_parse_optional_cost(
-                cfg.get("max_daily_cost_usd"),
-                f"{path}.max_daily_cost_usd",
-            ),
-        )
-    return parsed
-
-
-def _parse_event_agents(raw: object) -> dict[str, "EventAgentConfig"]:
-    parsed: dict[str, EventAgentConfig] = {}
-    for name, cfg in _parse_named_config_table(raw, "automation.event_agents").items():
-        path = f"automation.event_agents.{name}"
-        parsed[name] = EventAgentConfig(
-            enabled=bool(cfg.get("enabled", True)),
-            trigger=_required_config_text(cfg.get("trigger"), f"{path}.trigger"),
-            agent=_required_config_text(cfg.get("agent"), f"{path}.agent"),
-            prompt=_required_config_text(cfg.get("prompt"), f"{path}.prompt"),
-            max_cost_usd=_parse_optional_cost(cfg.get("max_cost_usd"), f"{path}.max_cost_usd"),
-            max_daily_cost_usd=_parse_optional_cost(
-                cfg.get("max_daily_cost_usd"),
-                f"{path}.max_daily_cost_usd",
-            ),
-        )
-    return parsed
-
-
-def _parse_opencode_permission(raw_opencode: object) -> dict[str, Any]:
-    """Parse the project-level `[opencode.permission]` table.
-
-    Other `[opencode]` subtables are intentionally ignored here because
-    CodePilot owns the tool-level OpenCode profile, branding, agents and TUI.
-    """
-    if raw_opencode is None:
-        return {}
-    if not isinstance(raw_opencode, Mapping):
-        raise ConfigError("[opencode] 必须是 TOML table。")
-    raw_permission = raw_opencode.get("permission")
-    if raw_permission is None:
-        return {}
-    if not isinstance(raw_permission, Mapping):
-        raise ConfigError("[opencode.permission] 必须是 TOML table。")
-    return deepcopy(dict(raw_permission))
-
-
-def _normalize_optional_agent_name(value: object) -> Optional[str]:
-    """Normalize an optional agent name from ``[agents]`` config values."""
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    from codepilot.ai_support.service import normalize_agent_name
-
-    normalized = normalize_agent_name(text).strip()
-    return normalized or None
+__all__ = [
+    "AgentsConfig",
+    "AutomationConfig",
+    "ClassifierConfig",
+    "ConfigError",
+    "DEFAULT_AGENT_COMMANDS",
+    "DEFAULT_FALLBACK_CLI_ORDER",
+    "DEFAULT_TEMPLATE",
+    "DispatchConfig",
+    "EventAgentConfig",
+    "GLOBAL_CONFIG_PATH_ENV",
+    "InspectConfig",
+    "ProjectConfig",
+    "ProviderAPIConfig",
+    "SECRETS_FILENAME",
+    "SECRETS_PATH_ENV",
+    "ScheduledAgentConfig",
+    "ShellConfig",
+    "build_provider_env_vars",
+    "find_config",
+    "find_global_config",
+    "find_project_root",
+    "load_config",
+    "load_project_config",
+    "normalize_agent_language",
+    "normalize_preflight_dirty_worktree",
+    "resolve_config_path",
+    "resolve_global_config_path",
+    "resolve_planner",
+    "resolve_project_config_inputs",
+    "resolve_project_config_reference",
+    "sanitize_config_for_display",
+    "tomllib",
+]
 
 
 def resolve_global_config_path() -> Path:
@@ -505,140 +267,12 @@ class AgentsConfig:
 
     @classmethod
     def from_dict(cls, data: dict, config_file_path: Optional[str] = None) -> "AgentsConfig":
-        """从字典加载配置."""
-        proj = data.get("project", {})
-        agents = data.get("agents", {}) or {}
-        _check_legacy_agent_command_keys(agents)
-        dispatch = data.get("dispatch", {})
-        automation = data.get("automation", {})
-        classifier = data.get("classifier", {})
-        inspect = data.get("inspect", {})
-        notifications = data.get("notifications", {})
-        feishu_bot = data.get("feishu_bot", {})
-        shell = data.get("shell", {})
-        providers = data.get("providers", {})
-        opencode = data.get("opencode", {})
-        commands_map = _parse_agent_commands(agents.get("commands"))
-        fallback_cli_order = _parse_fallback_cli_order(automation.get("fallback_cli_order"))
-        agent_language = normalize_agent_language(automation.get("agent_language"))
-        scheduled_agents = _parse_scheduled_agents(automation.get("scheduled_agents"))
-        event_agents = _parse_event_agents(automation.get("event_agents"))
-        opencode_permission = _parse_opencode_permission(opencode)
+        """从字典加载配置。"""
+        from codepilot.core.config_builder import build_agents_config_from_dict
 
-        # 解析 providers
-        providers_config = {}
-        for name, cfg in providers.items():
-            if isinstance(cfg, dict):
-                providers_config[name] = ProviderAPIConfig(
-                    enabled=cfg.get("enabled", True),
-                    api_key=cfg.get("api_key", ""),
-                    model=cfg.get("model", ""),
-                    base_url=cfg.get("base_url", ""),
-                    max_tokens=cfg.get("max_tokens", 4096),
-                    temperature=cfg.get("temperature", 0.7),
-                    auto_model_selection=(
-                        cfg.get("auto_model_selection")
-                        if isinstance(cfg.get("auto_model_selection"), bool)
-                        else None
-                    ),
-                    simple_model=str(cfg.get("simple_model", "") or ""),
-                    complex_model=str(cfg.get("complex_model", "") or ""),
-                    thinking=str(cfg.get("thinking", "") or ""),
-                    reasoning_effort=str(cfg.get("reasoning_effort", "") or ""),
-                )
-            else:
-                providers_config[name] = ProviderAPIConfig(enabled=bool(cfg))
-
-        return cls(
-            project=ProjectConfig(
-                name=proj.get("name", ""),
-                base_branch=proj.get("base_branch", "dev"),
-                default_mode=proj.get("default_mode", "dual"),
-                worktree_base=proj.get("worktree_base"),
-            ),
-            shell=ShellConfig(
-                preferred=shell.get("preferred", "auto"),
-                powershell_path=shell.get("powershell_path"),
-                bash_path=shell.get("bash_path"),
-            ),
-            dispatch=DispatchConfig(
-                dispatch_path=dispatch.get("dispatch_path", ""),
-                interval_seconds=dispatch.get("interval_seconds", 600),
-                stale_minutes=dispatch.get("stale_minutes", 30),
-            ),
-            automation=AutomationConfig(
-                planner=automation.get("planner", "codex"),
-                default_agent=automation.get("default_agent", ""),
-                task_agent=automation.get("task_agent", "dual"),
-                executor=automation.get("executor", "builtin"),
-                auto_execute=automation.get("auto_execute", True),
-                confirm_before_execute=automation.get("confirm_before_execute", False),
-                auto_commit=automation.get("auto_commit", True),
-                max_tasks=automation.get("max_tasks", 5),
-                max_retries=automation.get("max_retries", 3),
-                per_task_branch=automation.get("per_task_branch", True),
-                task_workspace=automation.get("task_workspace", "branch"),
-                worktree_context_patterns=_parse_optional_string_list(
-                    automation.get("worktree_context_patterns"),
-                    "automation.worktree_context_patterns",
-                ),
-                worktree_context_link_patterns=_parse_optional_string_list(
-                    automation.get("worktree_context_link_patterns"),
-                    "automation.worktree_context_link_patterns",
-                ),
-                preflight_dirty_worktree=normalize_preflight_dirty_worktree(
-                    automation.get("preflight_dirty_worktree")
-                ),
-                two_stage_planning=automation.get("two_stage_planning", True),
-                clarify_vague_requirements=automation.get("clarify_vague_requirements", True),
-                clarify_max_turns=automation.get("clarify_max_turns", 3),
-                max_review_rounds=automation.get("max_review_rounds", 2),
-                agent_silence_timeout_seconds=automation.get("agent_silence_timeout_seconds", 0),
-                fallback_cli_order=fallback_cli_order,
-                agent_language=agent_language,
-                scheduled_agents=scheduled_agents,
-                event_agents=event_agents,
-            ),
-            classifier=ClassifierConfig(
-                provider=classifier.get("provider", ""),
-                model=classifier.get("model", ""),
-                enabled=classifier.get("enabled", True),
-                timeout=classifier.get("timeout", 30),
-            ),
-            inspect=InspectConfig(
-                enabled=inspect.get("enabled", False),
-                interval_seconds=inspect.get("interval_seconds", 1800),
-                max_new_tasks_per_round=inspect.get("max_new_tasks_per_round", 3),
-                signals=tuple(inspect.get("signals", ["git_log", "failed_tasks", "todos"])),
-                auto_execute=inspect.get("auto_execute", False),
-                planner=_normalize_optional_agent_name(inspect.get("planner")),
-                priority=inspect.get("priority", "P3"),
-            ),
-            notifications=notifications,
-            feishu_bot=feishu_bot,
-            providers=providers_config,
-            opencode_permission=opencode_permission,
-            # 兼容字段
-            project_name=proj.get("name", ""),
-            base_branch=proj.get("base_branch", "dev"),
-            default_mode=proj.get("default_mode", "dual"),
-            worktree_base=proj.get("worktree_base"),
-            planner=_normalize_optional_agent_name(agents.get("planner")),
-            builder=_normalize_optional_agent_name(agents.get("builder")),
-            reviewer=_normalize_optional_agent_name(agents.get("reviewer")),
-            commands=commands_map,
-            interval_seconds=dispatch.get("interval_seconds", 600),
-            stale_minutes=dispatch.get("stale_minutes", 30),
-            webhook_url=notifications.get("webhook_url", ""),
-            webhook_provider=str(notifications.get("provider", "auto") or "auto"),
-            webhook_secret=notifications.get("webhook_secret", ""),
-            notifications_enabled=notifications.get("enabled", False),
-            feishu_bot_enabled=bool(feishu_bot.get("enabled", False)),
-            feishu_app_id=str(feishu_bot.get("app_id", "") or ""),
-            feishu_app_secret=str(feishu_bot.get("app_secret", "") or ""),
-            feishu_node_command=str(feishu_bot.get("node_command", "node") or "node"),
-            feishu_default_project=str(feishu_bot.get("default_project", "") or ""),
-            feishu_command_prefix=str(feishu_bot.get("command_prefix", "") or ""),
+        return build_agents_config_from_dict(
+            cls,
+            data,
             config_file_path=config_file_path,
         )
 
