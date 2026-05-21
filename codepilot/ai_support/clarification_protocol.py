@@ -204,7 +204,6 @@ def build_clarification_answer_entry(
         return None
     qtype = normalized_question["type"]
     free_text = normalize_text(free_text)
-    option_map = _option_map(normalized_question)
     ordered_labels: list[str] = []
     ordered_ids: list[str] = []
     for option in normalized_question.get("options") or []:

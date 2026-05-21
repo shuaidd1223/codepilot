@@ -9,68 +9,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from codepilot.ai_support.gateway_options import _resolve_gateway_options
 from codepilot.ai_support.intent_classifier import classify_intent_with_rules
 from codepilot.ai_support.intent_rules import (
-    INTENT_PROMPT,
-    INTENT_SCHEMA,
+    INTENT_SCHEMA,  # noqa: F401 (compat re-export)
     _heuristic_intent,
-    _is_tool_manifest_question,
-    _local_tool_question_answer,
     _looks_like_codepilot_command,
-    _looks_like_information_request,
-    _normalize_question_key,
-    _question_likely_needs_runtime_data,
-    _question_mentions_project_status,
-    _question_mentions_projects,
-    _question_mentions_task_totals,
-    _question_mentions_tool_usage,
 )
 from codepilot.ai_support.question_answering import answer_question_with_runtime
-from codepilot.ai_support.question_runtime import (
-    QUESTION_LOOKUP_PLAN_SCHEMA,
-    _add_question_lookup,
-    _empty_runtime_lookup_result,
-    _execute_question_runtime_lookups,
-    _execute_runtime_lookup_request,
-    _has_local_question_answer_agent,
-    _heuristic_question_runtime_plan,
-    _local_general_question_answer,
-    _local_project_status_answer,
-    _local_projects_answer,
-    _local_task_totals_answer,
-    _local_tool_usage_answer,
-    _lookup_entry_items,
-    _plan_question_runtime_lookups,
-    _project_identity,
-    _project_runtime_snapshot,
-    _provider_has_remote_answer_capability,
-    _question_lookup_plan_prompt,
-    _question_prompt_header,
-    _question_runtime_bundle,
-    _question_runtime_bundle_json,
-    _question_runtime_data_block,
-    _question_runtime_lookup_requests,
-    _render_project_list_fallback,
-    _render_runtime_lookup_answer,
-    _render_runtime_lookup_entry,
-    _render_service_status_lookup,
-    _render_status_task_lookup,
-    _render_task_list_lookup,
-    _render_task_refs,
-    _render_task_stats_lookup,
-    _resolve_question_project,
-    _resolve_question_runtime_plan,
-    _runtime_lookup_limit,
-    _runtime_lookup_target_projects,
-    _runtime_service_snapshot,
-    _service_status_lookup_items,
-    _status_task_lookup_items,
-    _task_list_lookup_items,
-    _task_lookup_item,
-    _task_lookup_items,
-    _task_stats_lookup_items,
-)
+from codepilot.ai_support.question_runtime import _has_local_question_answer_agent
 from codepilot.gateway.types import GatewayCallOptions
 
 
