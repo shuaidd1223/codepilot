@@ -117,3 +117,38 @@ def test_create_task_respects_caller_supplied_dedup_key(tmp_path, monkeypatch):
     assert first["id"] == second["id"]
     assert first["dedup_key"] == "custom-key-1234"
 
+
+def test_materialize_inspection_skips_duplicate_fingerprint(tmp_path, monkeypatch):
+    """Same fingerprint in existing open inspector task prevents re-creation."""
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    from codepilot.commands.inspect import _build_content, _materialize_inspection_output
+    from codepilot.commands.inspect_signals import lint_fingerprint
+
+    fp = lint_fingerprint("F401")
+    content = _build_content(
+        {"title": "fix F401", "goal": "\u6e05\u7406", "priority": "P3",
+         "kind": "refactor", "evidence": "foo.py F401", "effort": "small",
+         "rationale": ""},
+        fingerprint=fp,
+    )
+    first = db.create_task("demo", "fix F401", content=content,
+                           source="inspector", dedup_key="first-key", priority="P3",
+                           project_path=str(project_path))
+
+    created, skipped = _materialize_inspection_output(
+        [{"title": "fix F401 again", "goal": "\u6e05\u7406 F401", "priority": "P3",
+          "kind": "refactor", "evidence": "bar.py F401", "effort": "small"}],
+        max_new_tasks=5,
+        project_name="demo",
+        project_path=project_path,
+        priority="P3",
+        agent="codex",
+        dry_run=False,
+    )
+    assert len(created) == 0
+    assert any("duplicate_fingerprint" in s.get("reason", "") for s in skipped)
+

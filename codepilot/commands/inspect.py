@@ -24,6 +24,7 @@ from codepilot.ai_support.service import (
 )
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands import inspect_lifecycle, inspect_service, inspect_signals
+from codepilot.commands.inspect_signals import lint_fingerprint, lint_group_key
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.config import load_project_config, resolve_planner
 from codepilot.core.output import echo
@@ -654,6 +655,68 @@ def _filter_candidates(
     return kept, dropped
 
 
+def _group_lint_candidates(candidates: list[dict]) -> list[dict]:
+    """Merge same-category low-priority lint candidates into batch tasks.
+
+    P1/P2 candidates are never grouped — they represent actionable
+    blockers (test collect failures, unavailable executors, service
+    outages) and must remain individually visible.
+    """
+    groups: dict[str, list[dict]] = {}
+    standalone: list[dict] = []
+
+    for c in candidates:
+        priority = (c.get("priority") or "P3").strip()
+        evidence = (c.get("evidence") or "").strip()
+
+        if priority in ("P1", "P2"):
+            standalone.append(c)
+            continue
+
+        code = lint_group_key(evidence)
+        if code:
+            groups.setdefault(code, []).append(c)
+        else:
+            standalone.append(c)
+
+    result = list(standalone)
+    for code, group in groups.items():
+        if len(group) == 1:
+            result.append(group[0])
+        else:
+            result.append(_merge_lint_group(group, code))
+    return result
+
+
+def _merge_lint_group(group: list[dict], code: str) -> dict:
+    """Merge multiple same-code lint candidates into one batch candidate."""
+    titles = [c.get("title") or "" for c in group]
+    evidences = [c.get("evidence") or "" for c in group]
+    return {
+        "title": f"批量清理 {code} lint 警告",
+        "goal": f"统一处理本轮巡检发现的 {len(group)} 处 {code} lint 问题。",
+        "priority": "P3",
+        "rationale": f"合并 {len(group)} 条同类 lint 信号 ({', '.join(titles[:3])})",
+        "kind": "chore",
+        "evidence": "; ".join(evidences[:5]),
+        "effort": "small",
+    }
+
+
+def _any_task_has_fingerprint(tasks: list[dict], fingerprint: str) -> bool:
+    """Check if any existing open inspector task content contains the fingerprint."""
+    marker = f"源指纹: {fingerprint}"
+    for t in tasks:
+        if t.get("source") != "inspector":
+            continue
+        if t.get("status") not in {"backlog", "in_progress"}:
+            continue
+        content = t.get("content") or ""
+        if marker in content:
+            return True
+    return False
+
+
 def _materialize_inspection_output(
     candidates: list[dict],
     *,
@@ -667,6 +730,7 @@ def _materialize_inspection_output(
     """Write candidate output to the selected path (preview or DB)."""
     existing_keys = db.existing_dedup_keys(project_name)
     existing_inspector_titles = _existing_inspector_titles(project_name)
+    existing_tasks = db.list_tasks(project=project_name)
     created: list[dict] = []
     skipped: list[dict] = []
     for item in candidates[:max_new_tasks]:
@@ -681,7 +745,13 @@ def _materialize_inspection_output(
         if key in existing_keys:
             skipped.append({"title": title, "reason": "duplicate"})
             continue
-        content = _build_content(item, agent=agent, default_priority=priority)
+        evidence = (item.get("evidence") or "").strip()
+        code = lint_group_key(evidence)
+        fp = lint_fingerprint(code) if code else None
+        if fp and _any_task_has_fingerprint(existing_tasks, fp):
+            skipped.append({"title": title, "reason": "duplicate_fingerprint"})
+            continue
+        content = _build_content(item, agent=agent, default_priority=priority, fingerprint=fp)
         missing_sections = missing_task_template_sections(content)
         if missing_sections:
             skipped.append(
@@ -779,6 +849,7 @@ def run_inspection(
 
     raw_candidates = _extract_candidates(payload)
     kept_candidates, dropped = _filter_candidates(raw_candidates, signal_results=signal_results)
+    kept_candidates = _group_lint_candidates(kept_candidates)
     created, skipped = _materialize_inspection_output(
         kept_candidates,
         max_new_tasks=max_new_tasks,
@@ -799,12 +870,18 @@ def run_inspection(
     }
 
 
-def _build_content(item: dict, *, agent: str = "codex", default_priority: str = "P3") -> str:
+def _build_content(item: dict, *, agent: str = "codex", default_priority: str = "P3", fingerprint: str | None = None) -> str:
     kind = item.get("kind") or "chore"
     effort = (item.get("effort") or "small").strip() or "small"
     rationale = (item.get("rationale") or "").strip()
     goal = (item.get("goal") or "").strip()
     evidence = (item.get("evidence") or "").strip()
+    notes = [
+        f"由 `codepilot inspect` 自动建议（kind={kind}, effort={effort}）。",
+        "执行前请人工确认方向与优先级。",
+    ] + ([f"补充背景：{rationale}"] if rationale else [])
+    if fingerprint:
+        notes.append(f"源指纹: {fingerprint}")
     task_spec = {
         "title": (item.get("title") or "").strip(),
         "agent": agent,
@@ -823,10 +900,7 @@ def _build_content(item: dict, *, agent: str = "codex", default_priority: str = 
             "确认实现没有超出本次巡检建议的目标与边界。",
         ],
         "files": [],
-        "notes": [
-            f"由 `codepilot inspect` 自动建议（kind={kind}, effort={effort}）。",
-            "执行前请人工确认方向与优先级。",
-        ] + ([f"补充背景：{rationale}"] if rationale else []),
+        "notes": notes,
         "forbidden": [
             "不要因为巡检建议而顺手做无关重构或范围外修补。",
         ],

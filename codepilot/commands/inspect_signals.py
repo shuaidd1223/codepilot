@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +48,32 @@ class InspectSignalResult:
     order: int
     enabled: bool
     content: str
+
+
+# Lint codes considered low-value noise for grouping and dedup purposes.
+# These produce many repetitive inspect candidates that dilute truly actionable tasks.
+LINT_NOISE_CODES: tuple[str, ...] = ("F401", "F841", "F541", "E402")
+
+
+def lint_group_key(evidence: str) -> str | None:
+    """Extract the first lint-noise code from evidence, or None.
+
+    Used to determine whether a candidate falls into a low-value lint category
+    that should be grouped with peers of the same code.
+    """
+    if not evidence:
+        return None
+    m = re.search(r"(F401|F841|F541|E402)", evidence)
+    return m.group(1) if m else None
+
+
+def lint_fingerprint(lint_code: str) -> str:
+    """Stable fingerprint string for a lint code category.
+
+    Embedded in task content so that later inspect rounds can detect that
+    an open task already covers this category and skip re-creation.
+    """
+    return f"inspect:ruff:{lint_code}"
 
 
 def normalize_signal_tokens(signals: Iterable[str]) -> set[str]:
