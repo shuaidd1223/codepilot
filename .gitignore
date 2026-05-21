@@ -23,6 +23,7 @@ AGENTS.toml
 .codepilot.secrets.toml
 tasks.db
 .claude/
+.codebuddy/
 node_modules/
 package-lock.json
 
