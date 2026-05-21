@@ -6,6 +6,7 @@ import sys
 from datetime import datetime
 
 from codepilot.feishu_bot import (
+    build_batch_task_action_card,
     build_pending_confirm_card,
     build_task_event_card,
     handle_command_text,
@@ -263,6 +264,36 @@ def test_feishu_event_card_uses_structured_blocks():
     _assert_card_uses_markdown(card)
     assert {"detail 12", "logs 12", "tasks"}.issubset(set(_button_commands(card)))
     _assert_no_copy_command_panel(card)
+
+def test_feishu_card_builders_delegate_split_batch_and_event_modules():
+    from codepilot.feishu_bot.batch_action_cards import build_batch_task_action_card as split_batch_card
+    from codepilot.feishu_bot.notification_cards import build_task_event_card as split_event_card
+
+    batch_result = {
+        "total": 2,
+        "success_count": 1,
+        "failed_count": 1,
+        "message": "批量archive完成：成功 1，失败 1。",
+        "succeeded": [{"task_id": 21, "message": "任务 #21 已归档。", "task": {"id": 21}}],
+        "failed": [{"task_id": 22, "error": "任务 #22 正在执行中，不能归档。"}],
+    }
+    event_kwargs = {
+        "project_name": "demo",
+        "task_id": 21,
+        "task_title": "拆分飞书卡片构建",
+        "event": "phase_end",
+        "phase": "builder",
+        "level": "info",
+        "message": "builder 阶段完成。",
+        "status": "in_progress",
+    }
+
+    assert split_batch_card("archive", batch_result, prefix="/cp") == build_batch_task_action_card(
+        "archive",
+        batch_result,
+        prefix="/cp",
+    )
+    assert split_event_card(**event_kwargs) == build_task_event_card(**event_kwargs)
 
 def test_feishu_cards_use_professional_sectioned_layout(tmp_path, monkeypatch):
     project_path = _setup_project(tmp_path, monkeypatch)

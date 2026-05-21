@@ -2,30 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-import os
-import subprocess
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from typing import Any
 
-from codepilot.feishu_bot.constants import (
-    _MAX_BATCH_RESULT_LINES,
-    _NOTIFY_DEDUPE_SERVICE,
-    _PENDING_CONFIRM_TTL_SECONDS,
-)
+from codepilot.feishu_bot import notification_cards as _notification_cards
+from codepilot.feishu_bot.batch_action_cards import build_batch_task_action_card
+from codepilot.feishu_bot.constants import _PENDING_CONFIRM_TTL_SECONDS
 from codepilot.feishu_bot.helpers import (
     _card_commands,
     _clear_pending_confirm,
-    _confirm_scope,
-    _event_template,
-    _event_title,
-    _format_service_state,
     _load_pending_confirm,
-    _notification_chat_ids,
-    _now_iso,
     _parse_iso_datetime,
     _project_service_status,
     _project_status_blocks,
@@ -42,17 +29,12 @@ from codepilot.feishu_cards import (
     _TASK_PANEL_PAGE_SIZE,
     _card,
     _choice_action_blocks,
-    _code_block,
-    _column_panel,
     _column_panels,
     _command_action_blocks,
     _command_panel,
-    _count_fields,
     _count_panel,
     _field,
     _field_block,
-    _format_count_line,
-    _help_note,
     _hr,
     _md_block,
     _note,
@@ -66,11 +48,9 @@ from codepilot.feishu_cards import (
     _section,
     _section_note,
     _service_mark,
-    _status_label,
     _status_mark,
     _task_row_blocks,
 )
-from codepilot.feishu_config import load_feishu_bot_config
 from codepilot.storage import database as db
 from codepilot.webapp.action_task_ops import (
     archive_task_action,
@@ -85,98 +65,6 @@ from codepilot.webapp.action_task_ops import (
 from codepilot.webapp.action_requirements import retry_task_action
 from codepilot.webapp.display_sort import sort_tasks_for_display
 from codepilot.webapp.payloads import _compose_log_text, _task_payload, task_detail_payload
-
-
-# ---------------------------------------------------------------------------
-# Batch action helpers
-# ---------------------------------------------------------------------------
-
-
-def _batch_action_label(action: str) -> str:
-    return {
-        "cancel": "取消",
-        "archive": "归档",
-        "delete": "删除",
-    }.get(str(action or "").strip().lower(), str(action or "").strip())
-
-
-def _positive_batch_task_id(value: Any) -> int:
-    try:
-        task_id = int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-    return task_id if task_id > 0 else 0
-
-
-def _batch_success_task_id(item: Any) -> int:
-    if not isinstance(item, dict):
-        return 0
-    task = item.get("task") if isinstance(item.get("task"), dict) else {}
-    return _positive_batch_task_id(
-        (task or {}).get("id")
-        or item.get("deleted_task_id")
-        or item.get("task_id")
-    )
-
-
-def _first_batch_success_task_id(succeeded: list[Any]) -> int:
-    for item in succeeded:
-        task_id = _batch_success_task_id(item)
-        if task_id:
-            return task_id
-    return 0
-
-
-def _batch_action_summary_block(action_label: str, result: dict[str, Any]) -> dict[str, Any]:
-    return _field_block(
-        [
-            _field(f"**操作**\n`批量{action_label}`"),
-            _field(f"**总计**\n`{int(result.get('total') or 0)}`"),
-            _field(f"**成功**\n`{int(result.get('success_count') or 0)}`"),
-            _field(f"**失败**\n`{int(result.get('failed_count') or 0)}`"),
-        ]
-    )
-
-
-def _batch_success_blocks(succeeded: list[Any]) -> list[dict[str, Any]]:
-    success_lines: list[str] = []
-    for item in succeeded[:_MAX_BATCH_RESULT_LINES]:
-        if not isinstance(item, dict):
-            continue
-        task_id = _batch_success_task_id(item)
-        if task_id <= 0:
-            continue
-        success_lines.append(f"- `#{task_id}` {str(item.get('message') or '').strip()}")
-    if not success_lines:
-        return []
-    return [*_section_note("成功任务"), _md_block("\n".join(success_lines))]
-
-
-def _batch_failed_blocks(failed: list[Any]) -> list[dict[str, Any]]:
-    failed_lines: list[str] = []
-    for item in failed[:_MAX_BATCH_RESULT_LINES]:
-        if not isinstance(item, dict):
-            continue
-        task_id = _positive_batch_task_id(item.get("task_id"))
-        error = str(item.get("error") or "").strip()
-        if task_id <= 0:
-            continue
-        failed_lines.append(f"- `#{task_id}` {error}")
-    if not failed_lines:
-        return []
-    return [*_section_note("失败任务"), _md_block("\n".join(failed_lines))]
-
-
-def _batch_action_commands(action_key: str, first_task_id: int) -> list[tuple[str, str]]:
-    commands: list[tuple[str, str]] = [("tasks", "任务面板")]
-    if first_task_id and action_key != "delete":
-        commands.insert(0, (f"detail {first_task_id}", "查看首个成功任务"))
-        commands.insert(1, (f"logs {first_task_id}", "查看首个任务日志"))
-    return commands
-
-
-def _batch_action_template(result: dict[str, Any]) -> str:
-    return "green" if int(result.get("failed_count") or 0) == 0 else "orange"
 
 
 # ---------------------------------------------------------------------------
@@ -984,108 +872,11 @@ def build_services_card(project_name: str, *, prefix: str = "") -> dict[str, Any
 # ---------------------------------------------------------------------------
 
 
-def _feishu_notify_script() -> Path:
-    from codepilot.feishu_runtime import notify_script
-
-    return notify_script()
-
-
-def _truthy_env(name: str) -> bool:
-    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _external_notifications_allowed() -> bool:
-    if _truthy_env("CODEPILOT_SUPPRESS_EXTERNAL_NOTIFICATIONS"):
-        return False
-    if "PYTEST_CURRENT_TEST" in os.environ and not _truthy_env("CODEPILOT_ALLOW_TEST_NOTIFICATIONS"):
-        return False
-    return True
-
-
-def _notify_dedupe_scope(
-    *,
-    project_name: str,
-    project_path: str,
-    task_id: int,
-    event: str,
-    phase: str = "",
-    level: str = "info",
-    message: str = "",
-    status: str = "",
-    summary: str = "",
-) -> str:
-    detail = " ".join((message or summary or "").split())[:1000]
-    payload = {
-        "project": project_name or Path(project_path).name,
-        "task_id": int(task_id),
-        "event": str(event or ""),
-        "phase": str(phase or ""),
-        "level": str(level or ""),
-        "status": str(status or ""),
-        "detail": detail,
-    }
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return "event:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
-
-
-def _was_feishu_notification_sent(scope: str) -> bool:
-    state = db.get_service_state(_NOTIFY_DEDUPE_SERVICE, scope)
-    return bool(state and state.get("status") == "sent")
-
-
-def _mark_feishu_notification_sent(scope: str, *, event: str, task_id: int, project_name: str) -> None:
-    try:
-        db.upsert_service_state(
-            _NOTIFY_DEDUPE_SERVICE,
-            scope,
-            status="sent",
-            meta={
-                "event": event,
-                "task_id": int(task_id),
-                "project": project_name,
-                "sent_at": _now_iso(),
-            },
-        )
-    except Exception:
-        pass
+_feishu_notify_script = _notification_cards._feishu_notify_script
 
 
 def _send_bot_card(card: dict[str, Any], *, project_name: str = "", chat_ids: list[str] | None = None) -> bool:
-    if not _external_notifications_allowed():
-        return False
-    cfg = load_feishu_bot_config()
-    if not cfg.enabled or not cfg.app_id or not cfg.app_secret:
-        return False
-    targets = chat_ids or _notification_chat_ids(project_name)
-    if not targets:
-        return False
-    payload = json.dumps({"chat_ids": targets, "card": card}, ensure_ascii=False)
-    env = os.environ.copy()
-    env.update(
-        {
-            "CODEPILOT_FEISHU_APP_ID": cfg.app_id,
-            "CODEPILOT_FEISHU_APP_SECRET": cfg.app_secret,
-        }
-    )
-    try:
-        result = subprocess.run(
-            [cfg.node_command or "node", str(_feishu_notify_script())],
-            input=payload,
-            text=True,
-            encoding="utf-8",
-            capture_output=True,
-            timeout=20,
-            env=env,
-        )
-    except Exception:
-        return False
-    if result.returncode != 0:
-        return False
-    try:
-        parsed = json.loads(result.stdout or "{}")
-    except Exception:
-        return False
-    return int(parsed.get("sent") or 0) > 0
+    return _notification_cards._send_bot_card(card, project_name=project_name, chat_ids=chat_ids)
 
 
 def build_task_event_card(
@@ -1100,29 +891,16 @@ def build_task_event_card(
     status: str = "",
     summary: str = "",
 ) -> dict[str, Any]:
-    blocks: list[str | dict[str, Any]] = [
-        _section("事件摘要"),
-        *_column_panels(
-            [
-                f"**项目**\n`{project_name or '-'}`",
-                f"**任务**\n`#{task_id}`",
-                f"**事件**\n`{_event_title(event, phase)}`",
-                f"**状态**\n{_status_mark(status) if status else '-'}",
-                f"**阶段**\n`{_phase_label(phase)}`",
-            ]
-        ),
-        _section("标题"),
-        _plain_block(task_title),
-    ]
-    detail = (message or summary or "").strip()
-    if detail:
-        blocks.extend([_section("说明"), _plain_block(detail[:500])])
-    blocks.extend(_command_panel("", _card_commands("task", task_id=task_id)))
-    return _card(
-        f"CodePilot · {_event_title(event, phase)}",
-        blocks,
-        template=_event_template(level, event),
-        subtitle="任务执行阶段通知。",
+    return _notification_cards.build_task_event_card(
+        project_name=project_name,
+        task_id=task_id,
+        task_title=task_title,
+        event=event,
+        phase=phase,
+        level=level,
+        message=message,
+        status=status,
+        summary=summary,
     )
 
 
@@ -1140,25 +918,10 @@ def notify_feishu_task_event(
     summary: str = "",
     chat_ids: list[str] | None = None,
 ) -> bool:
-    """Send a proactive task notification to Feishu app chats."""
-    db.init_db()
-    resolved_project = project_name or Path(project_path).name
-    dedupe_scope = _notify_dedupe_scope(
-        project_name=resolved_project,
+    return _notification_cards.notify_feishu_task_event(
+        project_name=project_name,
         project_path=project_path,
-        task_id=int(task_id),
-        event=event,
-        phase=phase,
-        level=level,
-        message=message,
-        status=status,
-        summary=summary,
-    )
-    if _was_feishu_notification_sent(dedupe_scope):
-        return False
-    card = build_task_event_card(
-        project_name=resolved_project,
-        task_id=int(task_id),
+        task_id=task_id,
         task_title=task_title,
         event=event,
         phase=phase,
@@ -1166,43 +929,6 @@ def notify_feishu_task_event(
         message=message,
         status=status,
         summary=summary,
-    )
-    sent = _send_bot_card(card, project_name=resolved_project, chat_ids=chat_ids)
-    if sent:
-        _mark_feishu_notification_sent(
-            dedupe_scope,
-            event=event,
-            task_id=int(task_id),
-            project_name=resolved_project,
-        )
-    return sent
-
-
-# ---------------------------------------------------------------------------
-# Batch operation card builder
-# ---------------------------------------------------------------------------
-
-
-def build_batch_task_action_card(action: str, result: dict[str, Any], *, prefix: str = "") -> dict[str, Any]:
-    action_key = str(action or "").strip().lower()
-    action_label = _batch_action_label(action_key)
-    succeeded = result.get("succeeded") or []
-    failed = result.get("failed") or []
-    blocks: list[str | dict[str, Any]] = [
-        _batch_action_summary_block(action_label, result),
-        _note(str(result.get("message") or "").strip()),
-    ]
-    blocks.extend(_batch_success_blocks(succeeded))
-    blocks.extend(_batch_failed_blocks(failed))
-    blocks.extend(
-        _command_panel(
-            prefix,
-            _batch_action_commands(action_key, _first_batch_success_task_id(succeeded)),
-        )
-    )
-    return _card(
-        f"批量{action_label}完成",
-        blocks,
-        template=_batch_action_template(result),
-        subtitle="飞书已执行批量任务操作，并返回逐项结果。",
+        chat_ids=chat_ids,
+        _send_card=_send_bot_card,
     )
