@@ -90,7 +90,7 @@ codepilot inspect -p <项目名> --once --dry-run --write-workflow --json
   inspect.log
 ```
 
-`--write-workflow` 仅和 `--once --dry-run` 搭配使用。它会把巡检预览写入项目本地 `.codepilot/context/`，同步 Agent Session，并暴露 `workflow next` 可执行的安全动作；不会直接写 backlog。
+`--write-workflow` 仅和 `--once --dry-run` 搭配使用。它会把巡检预览写入项目本地 `.codepilot/context/`，同步 Agent Session，并暴露 `workflow next` 可执行的安全动作；默认不会直接写 backlog。`workflow next --auto` 也默认不创建 inspect 任务、不导入 plan 任务，除非项目在 `[automation] workflow_auto_*` 中显式放开。
 
 ### 4. Web UI 项目页增加项目服务控制
 

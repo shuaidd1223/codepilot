@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import click
 
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
-from codepilot.core.config import resolve_project_config_reference
+from codepilot.core.config import load_project_config, resolve_project_config_reference
 from codepilot.core.output import echo
 from codepilot.core.workflow_state import get_agent_session, read_workflow_state, workflow_dirs
 from codepilot.storage import database as db
@@ -243,19 +244,75 @@ def _workflow_action_was_executed(project_info: dict[str, Any], *, action_id: st
     return False
 
 
+@dataclass(frozen=True)
+class WorkflowAutoPolicy:
+    allow_create_inspect_tasks: bool = False
+    allow_import_plan_tasks: bool = False
+    max_steps: int = 1
+    failure_threshold: int = 1
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def resolve_workflow_auto_policy(project_info: dict[str, Any]) -> WorkflowAutoPolicy:
+    cfg = load_project_config(project_info)
+    automation = getattr(cfg, "automation", None) if cfg else None
+    if automation is None:
+        return WorkflowAutoPolicy()
+    return WorkflowAutoPolicy(
+        allow_create_inspect_tasks=bool(
+            getattr(automation, "workflow_auto_create_inspect_tasks", False)
+        ),
+        allow_import_plan_tasks=bool(
+            getattr(automation, "workflow_auto_import_plan_tasks", False)
+        ),
+        max_steps=_positive_int(getattr(automation, "workflow_auto_max_steps", 1), 1),
+        failure_threshold=_positive_int(
+            getattr(automation, "workflow_auto_failure_threshold", 1),
+            1,
+        ),
+    )
+
+
+def _workflow_auto_policy_payload(policy: WorkflowAutoPolicy) -> dict[str, Any]:
+    return {
+        "allow_create_inspect_tasks": policy.allow_create_inspect_tasks,
+        "allow_import_plan_tasks": policy.allow_import_plan_tasks,
+        "max_steps": policy.max_steps,
+        "failure_threshold": policy.failure_threshold,
+    }
+
+
+def _risk_allows_policy_action(action: dict[str, Any]) -> bool:
+    return str(action.get("risk") or "").lower() in {"low", "medium"}
+
+
 def _select_auto_next_action(
     project_info: dict[str, Any],
     bundle: dict[str, Any],
     *,
     source: dict[str, Any],
+    policy: WorkflowAutoPolicy,
+    blocked_action_ids: set[str] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     actions = [dict(action) for action in bundle.get("next_actions") or []]
+    blocked = set(blocked_action_ids or set())
     negative_report_ids = _negative_report_feedback_candidate_ids(project_info)
     for action in actions:
         action_id = str(action.get("id") or "")
+        if action_id in blocked:
+            continue
         if str(action.get("risk") or "").lower() != "low":
             continue
         if not action_id.startswith("ignore_inspect_report_"):
+            continue
+        if _workflow_action_was_executed(project_info, action_id=action_id, source=source):
             continue
         candidate_id = str(action.get("candidate_id") or "") or _candidate_id_from_report_action(
             action_id, "ignore_inspect_report_"
@@ -263,8 +320,32 @@ def _select_auto_next_action(
         if candidate_id in negative_report_ids:
             return action, "negative_feedback_report_only"
 
+    if policy.allow_create_inspect_tasks:
+        for action in actions:
+            action_id = str(action.get("id") or "")
+            if action_id in blocked or action_id != "create_inspect_tasks":
+                continue
+            if not _risk_allows_policy_action(action):
+                continue
+            if _workflow_action_was_executed(project_info, action_id=action_id, source=source):
+                continue
+            return action, "policy_allowed_inspect_task_creation"
+
+    if policy.allow_import_plan_tasks:
+        for action in actions:
+            action_id = str(action.get("id") or "")
+            if action_id in blocked or action_id != "import_tasks":
+                continue
+            if not _risk_allows_policy_action(action):
+                continue
+            if _workflow_action_was_executed(project_info, action_id=action_id, source=source):
+                continue
+            return action, "policy_allowed_plan_import"
+
     for action in actions:
         action_id = str(action.get("id") or "")
+        if action_id in blocked:
+            continue
         if action_id != "plan_from_inspect":
             continue
         if str(action.get("risk") or "").lower() != "low":
@@ -432,11 +513,13 @@ def workflow_status_payload(project: str | None = None, *, mode: str | None = No
 def workflow_next_payload(project: str | None = None, *, mode: str | None = None) -> dict[str, Any]:
     project_info = _resolve_project(project)
     bundle = _load_next_context(project_info, mode=mode)
+    policy = resolve_workflow_auto_policy(project_info)
     return {
         "project": project_info["name"],
         "project_path": project_info["path"],
         "source": _source_summary(bundle),
         "next_actions": bundle.get("next_actions") or [],
+        "auto_policy": _workflow_auto_policy_payload(policy),
     }
 
 
@@ -473,38 +556,99 @@ def _execute_workflow_auto_next_action_payload(
     project_info: dict[str, Any],
     bundle: dict[str, Any],
     *,
+    mode: str | None = None,
     allow_high_risk: bool = False,
 ) -> dict[str, Any]:
+    policy = resolve_workflow_auto_policy(project_info)
+    policy_payload = _workflow_auto_policy_payload(policy)
+    steps: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    blocked_action_ids: set[str] = set()
+    stopped_reason = ""
+    last_reason = "no_low_risk_auto_action"
+
+    for _ in range(policy.max_steps):
+        source = _source_summary(bundle)
+        action, reason = _select_auto_next_action(
+            project_info,
+            bundle,
+            source=source,
+            policy=policy,
+            blocked_action_ids=blocked_action_ids,
+        )
+        last_reason = reason
+        if action is None:
+            stopped_reason = reason
+            break
+
+        action_id = str(action.get("id") or "")
+        try:
+            result = _execute_next_action(project_info, bundle, action, allow_high_risk=allow_high_risk)
+        except Exception as exc:
+            failures.append({
+                "action_id": action_id,
+                "selected_reason": reason,
+                "message": str(exc),
+            })
+            blocked_action_ids.add(action_id)
+            if len(failures) >= policy.failure_threshold:
+                raise click.ClickException(
+                    f"自动推进失败达到熔断阈值 ({policy.failure_threshold})：{action_id}: {exc}"
+                ) from exc
+            continue
+
+        _record_workflow_action_memory(
+            project_info,
+            action_id=action_id,
+            action=action,
+            source=source,
+            result=result,
+        )
+        step = {
+            "source": source,
+            "selected_reason": reason,
+            "action": action,
+            "result": result,
+        }
+        steps.append(step)
+        if len(steps) >= policy.max_steps:
+            stopped_reason = "max_steps_reached"
+            break
+
+        try:
+            bundle = _load_next_context(project_info, mode=mode)
+        except click.ClickException:
+            stopped_reason = "no_next_context"
+            break
+
     source = _source_summary(bundle)
-    action, reason = _select_auto_next_action(project_info, bundle, source=source)
-    if action is None:
+    if not steps:
         return {
             "project": project_info["name"],
             "project_path": project_info["path"],
             "source": source,
             "auto": True,
+            "policy": policy_payload,
+            "steps": [],
+            "failures": failures,
             "action": None,
             "result": {},
-            "skipped_reason": reason,
+            "skipped_reason": stopped_reason or last_reason,
         }
 
-    action_id = str(action.get("id") or "")
-    result = _execute_next_action(project_info, bundle, action, allow_high_risk=allow_high_risk)
-    _record_workflow_action_memory(
-        project_info,
-        action_id=action_id,
-        action=action,
-        source=source,
-        result=result,
-    )
+    last = steps[-1]
     return {
         "project": project_info["name"],
         "project_path": project_info["path"],
-        "source": source,
+        "source": last["source"],
         "auto": True,
-        "selected_reason": reason,
-        "action": action,
-        "result": result,
+        "policy": policy_payload,
+        "steps": steps,
+        "failures": failures,
+        "selected_reason": last["selected_reason"],
+        "action": last["action"],
+        "result": last["result"],
+        "stopped_reason": stopped_reason or last_reason,
     }
 
 
@@ -516,7 +660,12 @@ def execute_workflow_auto_next_action(
 ) -> dict[str, Any]:
     project_info = _resolve_project(project)
     bundle = _load_next_context(project_info, mode=mode)
-    return _execute_workflow_auto_next_action_payload(project_info, bundle, allow_high_risk=allow_high_risk)
+    return _execute_workflow_auto_next_action_payload(
+        project_info,
+        bundle,
+        mode=mode,
+        allow_high_risk=allow_high_risk,
+    )
 
 
 @click.command("status")
@@ -605,6 +754,7 @@ def next_cmd(
             data = _execute_workflow_auto_next_action_payload(
                 project_info,
                 bundle,
+                mode=mode,
                 allow_high_risk=allow_high_risk,
             )
             if json_mode:

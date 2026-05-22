@@ -152,7 +152,9 @@ def _render_chat_workflow(project_name: str) -> str:
         raise RuntimeError(f"项目 '{project_name}' 未注册。")
     context = read_inspect_workflow_context(project) or {}
     quality = context.get("quality_summary") or {}
-    actions = workflow_next_payload(project_name).get("next_actions") or []
+    next_payload = workflow_next_payload(project_name)
+    actions = next_payload.get("next_actions") or []
+    policy = next_payload.get("auto_policy") or {}
     lines = [
         f"{project_name} 巡检工作流：",
         (
@@ -160,6 +162,12 @@ def _render_chat_workflow(project_name: str) -> str:
             f"created={quality.get('created_count', len(context.get('created_preview') or []))} "
             f"report_only={quality.get('report_only_count', len(context.get('report_only') or []))} "
             f"dropped={quality.get('dropped_count', len(context.get('dropped') or []))}"
+        ),
+        (
+            "自动策略: "
+            f"steps={policy.get('max_steps', 1)} "
+            f"import={str(bool(policy.get('allow_import_plan_tasks'))).lower()} "
+            f"create_inspect={str(bool(policy.get('allow_create_inspect_tasks'))).lower()}"
         ),
     ]
     for item in (context.get("report_only") or [])[:4]:

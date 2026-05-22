@@ -16,7 +16,7 @@
     "To submit a natural-language requirement, call `codepilot \"requirement text\"` or `codepilot go \"requirement text\"`.",
     "Chat, Web UI sessions, and Feishu free text all route through OpenCode + CodePilot MCP; free text may express a question, requirement, or operation intent.",
     "Call `clarify` / `plan` or MCP tools explicitly when deterministic artifacts are required.",
-    "Advance `clarify` / `plan` `next_actions` with `workflow next --list` / `workflow next --action <id>`; treat `suggested_command` as display/review metadata only.",
+    "Advance `clarify` / `plan` `next_actions` with `workflow next --list` / `workflow next --action <id>`; `workflow next --auto` only chooses policy-allowed actions and defaults do not create or import tasks; treat `suggested_command` as display/review metadata only.",
     "If the user asks about project state, task counts, completion ratio, failed tasks, running tasks, or service status, treat it as a question and let CodePilot read local task/project data.",
     "For release artifacts, prefer `codepilot binary prepare --version <version>`.",
     "If a task is running, inspect its phase with `codepilot status -p <project-name> -v` before deciding whether to view logs or stop it.",
@@ -91,7 +91,7 @@
     {
       "command": "codepilot workflow next -p <project-name> --auto --json",
       "format": "json",
-      "purpose": "Automatically choose one low-risk workflow next_action without executing medium/high-risk actions or suggested_command strings."
+      "purpose": "Automatically choose policy-allowed workflow next_actions without executing suggested_command strings; defaults do not create or import tasks."
     },
     {
       "command": "codepilot task find <keyword> -p <project-name> --json",
@@ -346,8 +346,8 @@
     {
       "name": "workflow_next",
       "syntax": "codepilot workflow next -p <project-name> [--mode <mode>] [--list | --action <id> | --auto] [--allow-high-risk] --json",
-      "purpose": "List, safely execute, or low-risk auto-advance artifact next_actions through a fixed allowlist; it never executes suggested_command strings.",
-      "when_to_use": "Use after clarify/plan/inspect returns next_actions and an external agent needs to advance by action id or let CodePilot choose one low-risk policy action.",
+      "purpose": "List, safely execute, or policy-auto-advance artifact next_actions through a fixed allowlist; it never executes suggested_command strings.",
+      "when_to_use": "Use after clarify/plan/inspect returns next_actions and an external agent needs to advance by action id or let CodePilot choose policy-allowed auto actions. Defaults do not create inspect tasks or import plan tasks unless AGENTS.toml opts in.",
       "examples": [
         "codepilot workflow next -p <project-name> --list --json",
         "codepilot workflow next -p <project-name> --auto --json",

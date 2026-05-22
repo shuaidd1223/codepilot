@@ -174,6 +174,7 @@ def test_feishu_requirement_command_does_not_emit_old_planning_progress_cards(tm
 
 def test_feishu_workflow_auto_command_uses_shared_policy(tmp_path, monkeypatch):
     project_path = _setup_project(tmp_path, monkeypatch)
+    (project_path / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
     (project_path / "AGENTS.toml").write_text(
         """
 [project]

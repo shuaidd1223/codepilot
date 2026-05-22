@@ -47,7 +47,7 @@ codepilot workflow next -p <project-name> --action <id> --json
 codepilot workflow next -p <project-name> --auto --json
 ```
 
-`clarify`, `plan`, and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions, `workflow next --action <id>` to execute an allowlisted action, or `workflow next --auto` to let CodePilot choose one low-risk policy action. `suggested_command` is only display/review metadata; do not compose or execute it automatically. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
+`clarify`, `plan`, and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions, `workflow next --action <id>` to execute an allowlisted action, or `workflow next --auto` to let CodePilot choose low-risk policy actions. `suggested_command` is only display/review metadata; do not compose or execute it automatically. By default `--auto` does not create inspect tasks or import plan tasks; projects can opt in with `[automation] workflow_auto_create_inspect_tasks`, `workflow_auto_import_plan_tasks`, `workflow_auto_max_steps`, and `workflow_auto_failure_threshold`. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
 
 ### Status and Evidence
 

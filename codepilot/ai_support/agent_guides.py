@@ -59,7 +59,7 @@ This guide is for other AI agents. For the latest machine-readable command list,
 {_cmd(command, "workflow next -p <project-name> --auto --json")}
 ```
 
-`clarify`, `plan`, and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions, `workflow next --action <id>` to execute an allowlisted action, or `workflow next --auto` to let CodePilot choose one low-risk policy action. `suggested_command` is only display/review metadata; do not compose or execute it automatically. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
+`clarify`, `plan`, and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions, `workflow next --action <id>` to execute an allowlisted action, or `workflow next --auto` to let CodePilot choose low-risk policy actions. `suggested_command` is only display/review metadata; do not compose or execute it automatically. By default `--auto` does not create inspect tasks or import plan tasks; projects can opt in with `[automation] workflow_auto_create_inspect_tasks`, `workflow_auto_import_plan_tasks`, `workflow_auto_max_steps`, and `workflow_auto_failure_threshold`. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
 
 ### Status and Evidence
 
@@ -143,7 +143,7 @@ Required rules:
 
 `clarify`、`plan` 和 `inspect --write-workflow` 不创建 backlog、不启动执行器。
 
-`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；也可以用 `workflow next --auto` 让 CodePilot 自动选择一个低风险策略动作。`suggested_command` 只用于展示/审查，不作为自动执行源。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
+`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；也可以用 `workflow next --auto` 让 CodePilot 自动选择低风险策略动作。`suggested_command` 只用于展示/审查，不作为自动执行源。默认 `--auto` 不创建 inspect 任务、不导入 plan 任务；项目可通过 `[automation] workflow_auto_create_inspect_tasks`、`workflow_auto_import_plan_tasks`、`workflow_auto_max_steps` 和 `workflow_auto_failure_threshold` 放开策略。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
 
 ### 4. 状态与证据
 

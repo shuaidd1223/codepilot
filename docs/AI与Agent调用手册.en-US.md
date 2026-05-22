@@ -42,7 +42,16 @@ codepilot workflow next -p <project-name> --auto --json
 
 `clarify` and `plan` do not create backlog tasks and do not start execution.
 
-Their JSON output records `next_actions` for follow-up work such as generating a plan or importing tasks. External AI agents should inspect actions with `workflow next --list`, advance by id with `workflow next --action <id>`, or let CodePilot choose one low-risk policy action with `workflow next --auto`. `suggested_command` is only display/review metadata; do not compose or execute it automatically.
+Their JSON output records `next_actions` for follow-up work such as generating a plan or importing tasks. External AI agents should inspect actions with `workflow next --list`, advance by id with `workflow next --action <id>`, or let CodePilot choose policy-allowed auto actions with `workflow next --auto`. `suggested_command` is only display/review metadata; do not compose or execute it automatically.
+
+The default `workflow next --auto` policy only allows conservative low-risk actions: ignoring inspection report items that already received negative feedback, and turning an inspect context into a reviewable plan. It does not create inspect tasks or import plan tasks unless the project opts in through `[automation]`:
+
+```toml
+workflow_auto_create_inspect_tasks = false
+workflow_auto_import_plan_tasks = false
+workflow_auto_max_steps = 1
+workflow_auto_failure_threshold = 1
+```
 
 ### 2.3 Status, Evidence, Memory
 
@@ -196,7 +205,7 @@ codepilot workflow next -p <project-name> --action import_tasks --json
 codepilot workflow next -p <project-name> --auto --json
 ```
 
-Review the listed `next_actions` before executing one, or use `workflow next --auto` to let CodePilot choose one low-risk policy action. `workflow next` uses a fixed allowlist and does not shell out to `suggested_command`; high-risk actions require explicit confirmation and must still be allowlisted.
+Review the listed `next_actions` before executing one, or use `workflow next --auto` to let CodePilot choose policy-allowed auto actions. `workflow next` uses a fixed allowlist and does not shell out to `suggested_command`; high-risk actions require explicit confirmation and must still be allowlisted.
 
 ### 4.3 Answer Project Questions
 

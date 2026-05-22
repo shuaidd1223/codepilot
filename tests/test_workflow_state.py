@@ -892,6 +892,7 @@ workflow_auto_max_steps = 2
 
 def test_workflow_next_auto_creates_inspect_tasks_when_enabled(tmp_path, monkeypatch):
     project = _register_demo_project(tmp_path, monkeypatch)
+    (Path(project["path"]) / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
     (Path(project["path"]) / "AGENTS.toml").write_text(
         """
 [project]

@@ -117,7 +117,16 @@ codepilot inspect -p myproject --once --dry-run --write-workflow --json
 codepilot doctor --project myproject --services --json
 ```
 
-`--write-workflow` creates inspection workflow context and safe `next_actions`, which can be reviewed with `codepilot workflow next -p myproject --list --json`, or advanced by one low-risk policy action with `codepilot workflow next -p myproject --auto --json`.
+`--write-workflow` creates inspection workflow context and safe `next_actions`, which can be reviewed with `codepilot workflow next -p myproject --list --json`, or advanced by low-risk policy actions with `codepilot workflow next -p myproject --auto --json`. `--auto` never executes the `suggested_command` string; by default it stays conservative and does not create inspect tasks or import plan tasks.
+
+Project `AGENTS.toml` can opt in to broader automatic progress:
+
+```toml
+workflow_auto_create_inspect_tasks = false
+workflow_auto_import_plan_tasks = false
+workflow_auto_max_steps = 1
+workflow_auto_failure_threshold = 1
+```
 
 ## Common Commands
 

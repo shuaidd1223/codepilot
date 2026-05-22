@@ -37,7 +37,7 @@ codepilot inspect -p <project-name> --status
 codepilot inspect -p <project-name> --stop
 ```
 
-`--write-workflow` only works with `--once --dry-run`. It writes the inspection preview to project-local `.codepilot/context/`, syncs the Agent Session, and exposes safe actions through `workflow next`; it does not write backlog tasks.
+`--write-workflow` only works with `--once --dry-run`. It writes the inspection preview to project-local `.codepilot/context/`, syncs the Agent Session, and exposes safe actions through `workflow next`; it does not write backlog tasks by default. `workflow next --auto` also defaults to no inspect-task creation and no plan-task import unless the project opts in through `[automation] workflow_auto_*`.
 
 ### 4. Web UI Project Page Includes Service Controls
 

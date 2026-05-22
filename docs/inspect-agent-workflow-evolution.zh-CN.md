@@ -328,9 +328,8 @@ git status --short
 
 状态：已落地。
 
-- `workflow next --auto --json` 会从当前 workflow context 中选择一个策略允许的低风险动作。
-- 当前策略优先自动忽略已有负反馈的重复 report-only；没有这类项时，会对 inspect context 自动执行一次 `plan_from_inspect`。
-- 自动策略不会执行 `create_inspect_tasks`、`promote_inspect_report_<candidate_id>`、`import_tasks` 或任何中高风险动作，也不会执行 `suggested_command` 字符串。
+- `workflow next --auto --json` 会从当前 workflow context 中选择策略允许的自动动作。
+- 默认策略优先自动忽略已有负反馈的重复 report-only；没有这类项时，会对 inspect context 自动执行一次 `plan_from_inspect`。
+- 默认不会执行 `create_inspect_tasks`、`promote_inspect_report_<candidate_id>`、`import_tasks` 或任何高风险动作，也不会执行 `suggested_command` 字符串。
+- 项目可在 `[automation]` 中用 `workflow_auto_create_inspect_tasks`、`workflow_auto_import_plan_tasks`、`workflow_auto_max_steps` 和 `workflow_auto_failure_threshold` 放开自动创建/导入、连续步数和失败熔断阈值。
 - Web UI 增加“自动推进”入口，Web API 的 `/api/workflow/actions` 支持 `{"auto": true}`，MCP `workflow_next` 支持 `auto=true`，Chat/飞书暴露 `workflow next <project> auto`，全部复用同一个 policy handler。
-
-下一阶段继续推进可配置自动性：把 `--auto` 策略拆成项目配置，例如允许自动创建低风险任务、允许自动执行验证命令、最大连续自动步数和失败熔断阈值。

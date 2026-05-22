@@ -117,7 +117,16 @@ codepilot inspect -p myproject --once --dry-run --write-workflow --json
 codepilot doctor --project myproject --services --json
 ```
 
-`--write-workflow` 会生成巡检工作流上下文和安全 `next_actions`，可继续用 `codepilot workflow next -p myproject --list --json` 审查，或用 `codepilot workflow next -p myproject --auto --json` 执行一个低风险自动推进动作。
+`--write-workflow` 会生成巡检工作流上下文和安全 `next_actions`，可继续用 `codepilot workflow next -p myproject --list --json` 审查，或用 `codepilot workflow next -p myproject --auto --json` 执行低风险自动推进动作。`--auto` 永远不执行 `suggested_command` 字符串；默认只做保守动作，不自动创建 inspect 任务、不自动导入 plan 任务。
+
+可在项目 `AGENTS.toml` 的 `[automation]` 中放开更激进的自动推进：
+
+```toml
+workflow_auto_create_inspect_tasks = false
+workflow_auto_import_plan_tasks = false
+workflow_auto_max_steps = 1
+workflow_auto_failure_threshold = 1
+```
 
 ## 常用命令
 
