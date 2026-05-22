@@ -42,6 +42,8 @@ codepilot workflow next -p <项目名> --auto --json
 
 `clarify` 和 `plan` 都不创建 backlog、不启动执行器，适合执行前审查。
 
+`plan` 的文本输入会生成可审查计划 artifact，JSON 输出中的 `plan_path` 指向 `.codepilot/plans/plan-*.md`，`context_path` 指向 `.codepilot/context/plan-*.json`，`task_batch_path` 指向可导入的 tasks JSON。默认只写入 `.codepilot/plans/plan-*.md`、`.codepilot/context/plan-*.json` 和 `.codepilot/context/plan-*.tasks.json`，不会导入 backlog、不会启动执行器。只有人工审查后显式调用 `codepilot workflow next -p <项目名> --action import_tasks --json`，或使用 `codepilot add -p <项目名> -f <task_batch_path>` 导入 task batch，候选任务才会入队。
+
 `clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。外部 AI / Agent 应优先用 `workflow next --list` 查看动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；需要低风险自动推进时可用 `workflow next --auto`。`suggested_command` 只用于展示/审查，不作为自动执行源。
 
 `workflow next --auto` 的默认策略只允许保守低风险动作：忽略已被负反馈降权的巡检报告项，以及基于 inspect context 生成可审查 plan。默认不创建 inspect 任务、不导入 plan 任务；如需放开，项目 `AGENTS.toml` 可在 `[automation]` 设置：

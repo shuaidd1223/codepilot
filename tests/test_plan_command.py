@@ -55,6 +55,49 @@ def test_plan_json_writes_artifact_without_creating_tasks(tmp_path, monkeypatch)
         assert heading in text
 
 
+def test_plan_text_input_json_contract_records_artifacts_without_backlog(tmp_path, monkeypatch):
+    project = _register_demo(tmp_path, monkeypatch)
+    before = db.get_task_stats("demo")["total"]
+    requirement = "根据 CodePilot 巡检上下文推进：清理命令模块残留的 ruff 告警。先生成可审查计划，不导入 backlog。"
+
+    result = CliRunner().invoke(main, ["plan", "-p", "demo", requirement, "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "plan"
+    data = payload["data"]
+    assert data["source"] == "text"
+    assert data["source_path"] is None
+
+    project_path = Path(project["path"])
+    plan_path = Path(data["plan_path"])
+    context_path = Path(data["context_path"])
+    task_batch_path = Path(data["task_batch_path"])
+    for artifact_path in (plan_path, context_path, task_batch_path):
+        assert artifact_path.exists()
+        assert artifact_path.is_relative_to(project_path)
+
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    assert context["requirement"] == requirement
+    assert context["source"] == "text"
+    assert context["source_path"] is None
+    assert context["task_batch_path"] == str(task_batch_path)
+    assert context["task_candidates"] == data["task_candidates"]
+    assert context["verification_plan"] == data["verification_plan"]
+    assert context["next_actions"] == data["next_actions"]
+    assert all({"criterion", "command", "expected"}.issubset(item) for item in context["verification_plan"])
+
+    task_batch = json.loads(task_batch_path.read_text(encoding="utf-8"))
+    assert len(task_batch) == len(data["task_candidates"])
+    assert all({"agent", "content", "priority", "title"}.issubset(item) for item in task_batch)
+
+    import_action = next(action for action in data["next_actions"] if action["id"] == "import_tasks")
+    assert str(task_batch_path) in import_action["suggested_command"]
+    assert str(context_path) not in import_action["suggested_command"]
+    assert db.get_task_stats("demo")["total"] == before
+
+
 def test_plan_from_spec_consumes_clarify_spec(tmp_path, monkeypatch):
     project = _register_demo(tmp_path, monkeypatch)
     spec_dir = Path(project["path"]) / ".codepilot" / "specs"
@@ -256,3 +299,23 @@ def test_ai_manifest_includes_plan_command():
     manifest = command_manifest(command_name="codepilot")
 
     assert any(cmd["name"] == "plan" for cmd in manifest["commands"])
+
+
+def test_plan_no_backlog_boundary_is_documented_for_agents():
+    root = Path(__file__).resolve().parents[1]
+    manifest = json.loads((root / "AI_MANIFEST.json").read_text(encoding="utf-8"))
+    doc = (root / "docs" / "AI与Agent调用手册.zh-CN.md").read_text(encoding="utf-8")
+    plan_command = next(cmd for cmd in manifest["commands"] if cmd["name"] == "plan")
+    plan_output = next(
+        item
+        for item in manifest["structured_outputs"]
+        if item["command"] == "codepilot plan -p <project-name> <requirement> --json"
+    )
+
+    assert "reviewable plan artifact" in plan_output["purpose"]
+    assert "should not enter backlog" in plan_command["when_to_use"]
+    assert "`plan` 的文本输入会生成可审查计划 artifact" in doc
+    assert "默认只写入 `.codepilot/plans/plan-*.md`" in doc
+    assert "不会导入 backlog、不会启动执行器" in doc
+    assert "`task_batch_path` 指向可导入的 tasks JSON" in doc
+    assert "显式调用 `codepilot workflow next -p <项目名> --action import_tasks --json`" in doc
