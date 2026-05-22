@@ -191,7 +191,7 @@ class CodePilotMCPServer:
         bound.apply_defaults()
 
         func = tool.func
-        if asyncio.iscoroutinefunction(func):
+        if inspect.iscoroutinefunction(func):
             result = await func(*bound.args, **bound.kwargs)
         else:
             # 在独立线程中运行同步工具函数，防止阻塞事件循环

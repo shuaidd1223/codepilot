@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+import warnings
 from pathlib import Path
 
 from codepilot.mcp.protocol import CodePilotToolError, ProgressEvent
@@ -109,3 +112,66 @@ def test_tool_calls_return_errors_and_forward_progress_events(tmp_path: Path):
             }
         },
     }
+
+
+def test_tool_dispatch_preserves_async_sync_and_awaitable_without_deprecation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import codepilot.mcp.server as server_module
+    from codepilot.mcp.server import MCPProjectContext, create_mcp_server
+
+    registry = ToolRegistry()
+
+    @register_tool(name="demo.async", registry=registry)
+    async def async_tool(value: str) -> dict[str, str]:
+        return {"value": value}
+
+    @register_tool(name="demo.sync", registry=registry)
+    def sync_tool(event_loop_thread: int) -> dict[str, bool]:
+        return {"used_worker_thread": threading.get_ident() != event_loop_thread}
+
+    @register_tool(name="demo.awaitable", registry=registry)
+    def sync_awaitable_tool(value: str) -> dict[str, str]:
+        async def finish() -> dict[str, str]:
+            return {"value": value}
+
+        return finish()
+
+    to_thread_calls: list[str] = []
+    original_to_thread = server_module.asyncio.to_thread
+
+    async def spy_to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return await original_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(server_module.asyncio, "to_thread", spy_to_thread)
+
+    server = create_mcp_server(
+        MCPProjectContext(project_path=tmp_path, project="demo"),
+        registry=registry,
+        include_health=False,
+        bind_sdk=False,
+    )
+
+    async def exercise() -> tuple[dict[str, str], dict[str, bool], dict[str, str]]:
+        event_loop_thread = threading.get_ident()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            async_result = await server.acall_tool("demo.async", {"value": "ok"})
+            sync_result = await server.acall_tool(
+                "demo.sync",
+                {"event_loop_thread": event_loop_thread},
+            )
+            awaitable_result = await server.acall_tool(
+                "demo.awaitable",
+                {"value": "later"},
+            )
+        return async_result, sync_result, awaitable_result
+
+    assert asyncio.run(exercise()) == (
+        {"value": "ok"},
+        {"used_worker_thread": True},
+        {"value": "later"},
+    )
+    assert to_thread_calls == ["sync_tool", "sync_awaitable_tool"]
