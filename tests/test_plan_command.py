@@ -9,6 +9,7 @@ from codepilot.ai_support.agent_support import command_manifest
 from codepilot.ai_support.agent_task_template import task_template_schema
 from codepilot.cli import main
 from codepilot.commands import add as add_cmd
+from codepilot.commands.plan import write_plan_artifact
 from codepilot.core.task_template import (
     missing_task_template_sections,
     unreplaced_task_template_placeholders,
@@ -76,6 +77,77 @@ def test_plan_from_spec_consumes_clarify_spec(tmp_path, monkeypatch):
     assert "doctor" in data["summary"].lower()
     assert data["task_candidates"]
     assert db.get_task_stats("demo")["total"] == before
+
+
+def test_plan_from_inspect_context_uses_preview_candidates(tmp_path, monkeypatch):
+    project = _register_demo(tmp_path, monkeypatch)
+    context_dir = Path(project["path"]) / ".codepilot" / "context"
+    context_dir.mkdir(parents=True)
+    context_path = context_dir / "inspect-context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "artifact_type": "inspect",
+                "summary": "清理命令模块残留的 ruff 告警",
+                "created_preview": [
+                    {
+                        "title": "清理命令模块残留的 ruff 告警",
+                        "goal": "移除命令模块中已报告的未使用导入和无占位符 f-string。",
+                        "priority": "P3",
+                        "files": [
+                            "codepilot/commands/auto_workflow.py",
+                            "codepilot/commands/cleanup.py",
+                        ],
+                        "acceptance_criteria": [
+                            "signal 中列出的 F401 未使用导入已删除或改为实际使用",
+                            "signal 中列出的 F541 已消除",
+                        ],
+                        "verification_commands": [
+                            "ruff check codepilot/commands/auto_workflow.py codepilot/commands/cleanup.py",
+                            "pytest -n auto --dist loadfile -m \"not slow\" tests/test_inspect_flow_split.py -q",
+                        ],
+                        "evidence": "signal 4: codepilot/commands/auto_workflow.py F401; cleanup.py F541",
+                    }
+                ],
+                "report_only": [],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = db.get_task_stats("demo")["total"]
+
+    result = write_plan_artifact(
+        project,
+        "根据 CodePilot 巡检上下文推进：清理命令模块残留的 ruff 告警。先生成可审查计划，不导入 backlog。",
+        source="inspect",
+        source_path=str(context_path),
+        use_wiki=False,
+    )
+
+    assert result["source"] == "inspect"
+    assert result["source_path"] == str(context_path)
+    assert result["summary"] == "清理命令模块残留的 ruff 告警"
+    assert result["files"] == [
+        "codepilot/commands/auto_workflow.py",
+        "codepilot/commands/cleanup.py",
+    ]
+    assert result["task_candidates"][0]["title"] == "清理命令模块残留的 ruff 告警"
+    assert result["task_candidates"][0]["priority"] == "P3"
+    assert result["task_candidates"][0]["acceptance_criteria"] == [
+        "signal 中列出的 F401 未使用导入已删除或改为实际使用",
+        "signal 中列出的 F541 已消除",
+    ]
+    assert [item["command"] for item in result["verification_plan"]] == [
+        "ruff check codepilot/commands/auto_workflow.py codepilot/commands/cleanup.py",
+        "pytest -n auto --dist loadfile -m \"not slow\" tests/test_inspect_flow_split.py -q",
+    ]
+    assert db.get_task_stats("demo")["total"] == before
+
+    plan_text = Path(result["plan_path"]).read_text(encoding="utf-8")
+    assert "codepilot/commands/auto_workflow.py" in plan_text
+    assert "signal 4: codepilot/commands/auto_workflow.py F401; cleanup.py F541" in plan_text
 
 
 def test_plan_marks_workflow_state_complete(tmp_path, monkeypatch):

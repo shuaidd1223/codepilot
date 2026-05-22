@@ -166,6 +166,115 @@ def _build_verification_plan(summary: str, files: list[str]) -> list[dict[str, s
     ]
 
 
+def _read_json_object(path: str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    try:
+        raw = json.loads(Path(path).expanduser().read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return _dedupe([str(item) for item in value if str(item).strip()])
+
+
+def _inspect_candidate_items(context: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for key in ("created_preview", "report_only"):
+        raw_items = context.get(key)
+        if isinstance(raw_items, list):
+            items.extend(dict(item) for item in raw_items if isinstance(item, dict))
+    return items
+
+
+def _build_inspect_task_candidates(context: dict[str, Any], summary: str) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for index, item in enumerate(_inspect_candidate_items(context), 1):
+        title = str(item.get("title") or _candidate_title(summary, index)).strip()
+        goal = str(item.get("goal") or item.get("rationale") or f"完成「{title}」。").strip()
+        files = _text_list(item.get("files")) or ["待确认相关命令或模块"]
+        acceptance = _text_list(item.get("acceptance_criteria")) or ["完成巡检候选项描述的核心行为。"]
+        candidate: dict[str, Any] = {
+            "id": f"T{index}",
+            "title": title,
+            "goal": goal,
+            "files": files,
+            "acceptance_criteria": acceptance,
+        }
+        priority = str(item.get("priority") or "").strip().upper()
+        if priority in {"P0", "P1", "P2", "P3"}:
+            candidate["priority"] = priority
+        agent = str(item.get("agent") or "").strip()
+        if agent:
+            candidate["agent"] = agent
+        evidence = str(item.get("evidence") or "").strip()
+        if evidence:
+            candidate["evidence"] = evidence
+        verification = _text_list(item.get("verification_commands"))
+        if verification:
+            candidate["verification_commands"] = verification
+        candidates.append(candidate)
+    return candidates
+
+
+def _build_inspect_verification_plan(
+    candidates: list[dict[str, Any]],
+    summary: str,
+    files: list[str],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate_id = str(candidate.get("id") or "T?").strip()
+        for command in _text_list(candidate.get("verification_commands")):
+            if command in seen:
+                continue
+            seen.add(command)
+            rows.append(
+                {
+                    "criterion": f"{candidate_id} 巡检候选验证。",
+                    "command": command,
+                    "expected": "命令通过，确认巡检候选无回归。",
+                }
+            )
+    return rows or _build_verification_plan(summary, files)
+
+
+def _build_inspect_execution_plan(
+    requirement: str,
+    *,
+    source_path: str | None,
+    wiki_context: dict[str, Any] | None,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    summary = _summary(str(context.get("summary") or requirement))
+    candidates = _build_inspect_task_candidates(context, summary)
+    if candidates:
+        files = _dedupe([file for candidate in candidates for file in candidate.get("files", [])])
+        verification_plan = _build_inspect_verification_plan(candidates, summary, files)
+    else:
+        files = _topic_files(requirement)
+        candidates = _build_task_candidates(summary, requirement, files)
+        verification_plan = _build_verification_plan(summary, files)
+    payload: dict[str, Any] = {
+        "summary": summary,
+        "source": "inspect",
+        "source_path": source_path,
+        "source_label": source_path or summary,
+        "files": files,
+        "task_candidates": candidates,
+        "risks": _build_risks(requirement, source="inspect"),
+        "verification_plan": verification_plan,
+        "wiki_context": wiki_context or {"enabled": False, "query": requirement, "results": []},
+    }
+    payload["plan"] = _render_plan_markdown(payload)
+    return payload
+
+
 def _command_path(path: str | None, placeholder: str) -> str:
     text = str(path or "").strip() or placeholder
     if re.search(r"\s", text):
@@ -219,19 +328,19 @@ def _render_plan_markdown(payload: dict[str, Any]) -> str:
     verification = payload["verification_plan"]
     candidate_blocks: list[str] = []
     for candidate in candidates:
-        candidate_blocks.append(
-            "\n".join(
-                [
-                    f"### {candidate['id']}. {candidate['title']}",
-                    "",
-                    f"- 目标：{candidate['goal']}",
-                    "- 文件范围：",
-                    _render_list(candidate["files"]),
-                    "- 验收标准：",
-                    _render_list(candidate["acceptance_criteria"]),
-                ]
-            )
-        )
+        candidate_lines = [
+            f"### {candidate['id']}. {candidate['title']}",
+            "",
+            f"- 目标：{candidate['goal']}",
+            "- 文件范围：",
+            _render_list(candidate["files"]),
+            "- 验收标准：",
+            _render_list(candidate["acceptance_criteria"]),
+        ]
+        evidence = str(candidate.get("evidence") or "").strip()
+        if evidence:
+            candidate_lines.extend(["- 证据：", _render_list([evidence])])
+        candidate_blocks.append("\n".join(candidate_lines))
     verification_rows = "\n".join(
         f"| {item['criterion']} | `{item['command']}` | {item['expected']} |" for item in verification
     )
@@ -278,6 +387,15 @@ def build_execution_plan(
     source_path: str | None = None,
     wiki_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if source == "inspect":
+        context = _read_json_object(source_path)
+        if context:
+            return _build_inspect_execution_plan(
+                requirement,
+                source_path=source_path,
+                wiki_context=wiki_context,
+                context=context,
+            )
     summary = _summary(requirement)
     files = _topic_files(requirement)
     candidates = _build_task_candidates(summary, requirement, files)
@@ -453,6 +571,7 @@ def write_plan_artifact(
         "summary": payload["summary"],
         "source": payload["source"],
         "source_path": payload["source_path"],
+        "files": payload["files"],
         "task_candidates": payload["task_candidates"],
         "risks": payload["risks"],
         "verification_plan": payload["verification_plan"],
