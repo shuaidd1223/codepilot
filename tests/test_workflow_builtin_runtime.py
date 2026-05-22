@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import types
+from datetime import datetime
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -430,6 +431,83 @@ def test_run_backlog_marks_task_cancelled_when_executor_is_stopped(tmp_path, mon
     assert stats["cancelled"] == 1
     assert current["status"] == "cancelled"
     assert current["error_message"] == "手动停止"
+
+
+@pytest.mark.parametrize("terminal_status", ["done", "failed", "cancelled"])
+def test_update_task_runtime_ignores_late_heartbeat_after_terminal_status(tmp_path, monkeypatch, terminal_status):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    final_log = tmp_path / "final.log"
+    final_log.write_text("final output", encoding="utf-8")
+    late_log = tmp_path / "late.log"
+    late_log.write_text("late output", encoding="utf-8")
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "late heartbeat", agent="dual")
+    db.update_task(
+        task["id"],
+        status=terminal_status,
+        completed_at="2026-05-22T10:00:00",
+        run_phase=None,
+        heartbeat_at=None,
+        active_pid=None,
+        current_log_path=str(final_log),
+        last_output="final output",
+    )
+
+    runtime_mod.update_task_runtime(
+        task["id"],
+        phase="reviewer",
+        pid=222222,
+        log_path=late_log,
+        last_output="late heartbeat",
+        heartbeat_at=datetime(2026, 5, 22, 10, 1, 0),
+    )
+
+    current = db.get_task(task["id"])
+    assert current["status"] == terminal_status
+    assert current["run_phase"] is None
+    assert current["heartbeat_at"] is None
+    assert current["active_pid"] is None
+    assert current["current_log_path"] == str(final_log)
+    assert current["last_output"] == "final output"
+
+
+def test_run_backlog_builtin_success_clears_live_runtime_fields(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    live_log = tmp_path / "review.log"
+    live_log.write_text("review output", encoding="utf-8")
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "success clears runtime", agent="dual")
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(run_cmd, "_cleanup_worktree_leftovers", lambda *args, **kwargs: None)
+
+    def fake_executor(task_row, *args, **kwargs):
+        runtime_mod.update_task_runtime(
+            task_row["id"],
+            phase="reviewer",
+            pid=333333,
+            log_path=live_log,
+            last_output="review still running",
+        )
+        return run_cmd.ExecutionResult(exit_code=0, output="ok", summary="done", executor="builtin")
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", fake_executor)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+
+    assert stats["done"] == 1
+    assert current["status"] == "done"
+    assert current["run_phase"] is None
+    assert current["heartbeat_at"] is None
+    assert current["active_pid"] is None
+    assert current["current_log_path"] == str(live_log)
 
 
 def test_run_backlog_cleans_worktree_leftovers_after_builtin_failure(tmp_path, monkeypatch):

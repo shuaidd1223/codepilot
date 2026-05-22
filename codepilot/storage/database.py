@@ -535,6 +535,27 @@ def update_task(task_id: int, **fields) -> Optional[dict]:
     return updated
 
 
+def update_task_if_status(task_id: int, expected_status: str, **fields) -> Optional[dict]:
+    """Update a task only while it still has the expected status."""
+    updates = _prepare_task_updates(fields)
+    if not updates:
+        return get_task(task_id)
+
+    set_clause = ", ".join(f"{column} = ?" for column in updates)
+    values = list(updates.values()) + [task_id, expected_status]
+    with get_write_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE tasks SET {set_clause} WHERE id = ? AND status = ?",
+            values,
+        )
+        changed = cur.rowcount > 0
+    _invalidate_task_caches()
+    updated = get_task(task_id)
+    if changed:
+        _publish_task_updated_event(updated, set(updates))
+    return updated
+
+
 def delete_task(task_id: int) -> bool:
     """Delete one task row and its logs."""
     with get_write_conn() as conn:

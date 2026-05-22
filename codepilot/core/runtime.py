@@ -451,7 +451,7 @@ def update_task_runtime(
     last_output: Optional[str] = None,
     heartbeat_at: Optional[datetime] = None,
 ) -> dict | None:
-    """Persist live runtime metadata for a task."""
+    """Persist live runtime metadata while a task is actively running."""
     updates = {}
     if phase is not None:
         updates["run_phase"] = phase
@@ -462,7 +462,7 @@ def update_task_runtime(
     if last_output is not None:
         updates["last_output"] = last_output
     updates["heartbeat_at"] = (heartbeat_at or datetime.now()).isoformat()
-    return db.update_task(task_id, **updates)
+    return db.update_task_if_status(task_id, "in_progress", **updates)
 
 
 def clear_task_runtime(task_id: int, **extra_fields) -> dict | None:
