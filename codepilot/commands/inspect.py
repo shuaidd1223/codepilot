@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -25,6 +26,8 @@ from codepilot.ai_support.service import (
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands import inspect_lifecycle, inspect_service, inspect_signals
 from codepilot.commands.inspect_signals import lint_fingerprint, lint_group_key
+from codepilot.commands.inspect_signal_collectors_code_metrics import is_test_file_path
+from codepilot.commands.inspect_signal_collectors_shared import CODE_EXTS, SCAN_EXTS
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.config import load_project_config, resolve_planner
 from codepilot.core.output import echo
@@ -214,6 +217,24 @@ INSPECT_SCHEMA = {
                         "type": "string",
                         "description": "Must quote or cite the specific signal line/file/commit that justifies this candidate. No evidence => candidate is hallucinated and will be dropped.",
                     },
+                    "files": {
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": {"type": "string"},
+                        "description": "Repo-relative file paths explicitly named by the evidence. Empty files => candidate will be dropped.",
+                    },
+                    "acceptance_criteria": {
+                        "type": "array",
+                        "maxItems": 5,
+                        "items": {"type": "string"},
+                        "description": "Concrete, evidence-specific acceptance checks. Avoid generic wording.",
+                    },
+                    "verification_commands": {
+                        "type": "array",
+                        "maxItems": 5,
+                        "items": {"type": "string"},
+                        "description": "Commands or manual checks the executor should run for this candidate.",
+                    },
                     "effort": {
                         "type": "string",
                         "enum": ["small", "medium", "large"],
@@ -222,7 +243,18 @@ INSPECT_SCHEMA = {
                 },
                 # OpenAI strict structured-output: every object needs
                 # additionalProperties=false AND ALL properties in `required`.
-                "required": ["title", "goal", "priority", "rationale", "kind", "evidence", "effort"],
+                "required": [
+                    "title",
+                    "goal",
+                    "priority",
+                    "rationale",
+                    "kind",
+                    "evidence",
+                    "files",
+                    "acceptance_criteria",
+                    "verification_commands",
+                    "effort",
+                ],
                 "additionalProperties": False,
             },
         }
@@ -247,10 +279,12 @@ Look at the signals below and surface 0 to {max_tasks} improvement candidates th
 - `ruff lint 报告`: style/quality warnings. Prefer grouping by rule code or file.
 - `pytest --collect-only 摘要`: collection errors or missing tests. Real collection errors are high priority; low test count is usually NOT actionable alone.
 - `依赖健康线索`: missing/stale lockfiles or unpinned deps. Only if signal lists concrete paths.
-- `代码规模与复杂度线索`: hotspots. Only if signal already flagged a specific file/function.
+- `代码规模与复杂度线索`: weak hotspots. Only production-file hotspots may become candidates, and P4/refactor items based only on code_metrics should usually be skipped. Test-file hotspots are reference-only and must not create work by themselves.
 
 [Hard rules]
 - Each candidate MUST cite `evidence` referencing a concrete line/file/commit from the signals. No evidence → drop the candidate yourself; do not emit it.
+- Each candidate MUST include non-empty `files` with repo-relative paths that appear in the evidence. No real file path → do not emit it.
+- Each candidate MUST include concrete `acceptance_criteria` and `verification_commands` tied to those files/signals.
 - `title` ≤ 80 characters; `goal` = 2–3 sentences covering "what to do + why".
 - Do NOT propose generic items like "补一下文档", "加日志", "通用优化", "重构一下" unless the signal names the exact target.
 - Do NOT repeat anything in the existing-tasks list below.
@@ -266,7 +300,7 @@ Look at the signals below and surface 0 to {max_tasks} improvement candidates th
 
 [Output]
 Return strict JSON in this shape:
-{{"candidates": [{{"title": "...", "goal": "...", "priority": "P3", "rationale": "...", "kind": "refactor", "evidence": "signal 3: codepilot/foo.py:42 TODO ...", "effort": "small"}}]}}
+{{"candidates": [{{"title": "...", "goal": "...", "priority": "P3", "rationale": "...", "kind": "refactor", "evidence": "signal 3: codepilot/foo.py:42 TODO ...", "files": ["codepilot/foo.py"], "acceptance_criteria": ["codepilot/foo.py:42 的 TODO 已处理"], "verification_commands": ["pytest -n auto --dist loadfile -m \"not slow\" tests/test_foo.py -q"], "effort": "small"}}]}}
 If nothing is worth surfacing, return: {{"candidates": []}}
 """
 
@@ -588,6 +622,90 @@ def _extract_candidates(payload: dict) -> list[dict]:
     return candidates if isinstance(candidates, list) else []
 
 
+_CANDIDATE_PATH_EXTS = tuple(sorted({*CODE_EXTS, *SCAN_EXTS}, key=len, reverse=True))
+_CANDIDATE_PATH_RE = re.compile(
+    r"(?<![\w./\\-])"
+    r"((?:[\w.-]+[\\/])+[\w.-]+(?:"
+    + "|".join(re.escape(ext) for ext in _CANDIDATE_PATH_EXTS)
+    + r")|[\w.-]+(?:"
+    + "|".join(re.escape(ext) for ext in _CANDIDATE_PATH_EXTS)
+    + r"))"
+    r"(?::\d+(?::\d+)?)?"
+)
+
+
+def _normalize_candidate_path(raw: object, *, project_path: Path | None = None, require_existing: bool = False) -> str | None:
+    text = str(raw or "").strip().strip("`'\".,;()[]{}")
+    if not text:
+        return None
+    text = re.sub(r":\d+(?::\d+)?$", "", text.replace("\\", "/"))
+    path = Path(text)
+    if path.suffix.lower() not in _CANDIDATE_PATH_EXTS:
+        return None
+    if any(part == ".." for part in path.parts):
+        return None
+    if path.is_absolute():
+        if project_path is None:
+            return None
+        try:
+            path = path.resolve().relative_to(project_path.resolve())
+        except Exception:
+            return None
+    rel = path.as_posix().lstrip("/")
+    if not rel:
+        return None
+    if project_path is not None and require_existing:
+        try:
+            target = (project_path / rel).resolve()
+            target.relative_to(project_path.resolve())
+        except Exception:
+            return None
+        if not target.exists():
+            return None
+    return rel
+
+
+def _extract_paths_from_text(text: object, *, project_path: Path | None = None, require_existing: bool = False) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in _CANDIDATE_PATH_RE.finditer(str(text or "")):
+        rel = _normalize_candidate_path(
+            match.group(1),
+            project_path=project_path,
+            require_existing=require_existing,
+        )
+        if rel and rel not in seen:
+            paths.append(rel)
+            seen.add(rel)
+    return paths
+
+
+def _candidate_files(
+    item: dict,
+    *,
+    project_path: Path | None = None,
+    require_existing: bool = False,
+) -> list[str]:
+    raw_files = item.get("files") if isinstance(item.get("files"), list) else []
+    paths: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_files:
+        rel = _normalize_candidate_path(raw, project_path=project_path, require_existing=require_existing)
+        if rel and rel not in seen:
+            paths.append(rel)
+            seen.add(rel)
+    for field in ("evidence", "goal", "rationale"):
+        for rel in _extract_paths_from_text(
+            item.get(field),
+            project_path=project_path,
+            require_existing=require_existing,
+        ):
+            if rel not in seen:
+                paths.append(rel)
+                seen.add(rel)
+    return paths
+
+
 def _signal_evidence_tokens(signal_results: list[InspectSignalResult]) -> set[str]:
     """Tokens planner may legitimately cite as evidence (signal titles + content words)."""
     tokens: set[str] = set()
@@ -617,10 +735,41 @@ def _evidence_references_signal(evidence: str, signal_tokens: set[str]) -> bool:
     return evidence_grounded_in(evidence, signal_tokens)
 
 
+def _candidate_signal_keys(evidence: str, signal_results: list[InspectSignalResult]) -> set[str]:
+    keys: set[str] = set()
+    for result in signal_results:
+        if not result.enabled or _is_empty_signal_content(result.content):
+            continue
+        tokens = {result.title, result.key, f"signal {result.order}", f"信号 {result.order}"}
+        for line in result.content.splitlines():
+            stripped = line.strip(" -#*`")
+            if len(stripped) >= 4:
+                tokens.add(stripped)
+        if evidence_grounded_in(evidence, tokens):
+            keys.add(result.key)
+    return keys
+
+
+def _is_code_metrics_only_candidate(
+    item: dict,
+    *,
+    evidence: str,
+    files: list[str],
+    signal_results: list[InspectSignalResult],
+) -> bool:
+    signal_keys = _candidate_signal_keys(evidence, signal_results)
+    if signal_keys != {"code_metrics"}:
+        return False
+    kind = str(item.get("kind") or "").strip().lower()
+    priority = str(item.get("priority") or "").strip().upper()
+    return kind == "refactor" or priority == "P4" or all(is_test_file_path(path) for path in files)
+
+
 def _filter_candidates(
     candidates: list[dict],
     *,
     signal_results: list[InspectSignalResult],
+    project_path: Path | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Drop low-quality / hallucinated candidates before materialization.
 
@@ -651,6 +800,18 @@ def _filter_candidates(
         if not _evidence_references_signal(evidence, signal_tokens):
             dropped.append({"title": title, "reason": "evidence_not_grounded"})
             continue
+        files = _candidate_files(item, project_path=project_path, require_existing=project_path is not None)
+        if not files:
+            loose_files = _candidate_files(item)
+            dropped.append({"title": title, "reason": "files_not_found" if loose_files and project_path is not None else "missing_files"})
+            continue
+        if _candidate_signal_keys(evidence, signal_results) == {"code_metrics"} and all(is_test_file_path(path) for path in files):
+            dropped.append({"title": title, "reason": "test_file_metric_only"})
+            continue
+        if _is_code_metrics_only_candidate(item, evidence=evidence, files=files, signal_results=signal_results):
+            dropped.append({"title": title, "reason": "code_metrics_only_weak_signal"})
+            continue
+        item["files"] = files
         kept.append(item)
     return kept, dropped
 
@@ -751,6 +912,12 @@ def _materialize_inspection_output(
         if fp and _any_task_has_fingerprint(existing_tasks, fp):
             skipped.append({"title": title, "reason": "duplicate_fingerprint"})
             continue
+        files = _candidate_files(item, project_path=project_path, require_existing=True)
+        if not files:
+            loose_files = _candidate_files(item)
+            skipped.append({"title": title, "reason": "files_not_found" if loose_files else "missing_files"})
+            continue
+        item["files"] = files
         content = _build_content(item, agent=agent, default_priority=priority, fingerprint=fp)
         missing_sections = missing_task_template_sections(content)
         if missing_sections:
@@ -763,7 +930,7 @@ def _materialize_inspection_output(
             )
             continue
         if dry_run:
-            created.append({"title": title, "goal": goal, "priority": item.get("priority") or priority})
+            created.append({"title": title, "goal": goal, "priority": item.get("priority") or priority, "files": files})
             continue
         task = db.create_task(
             project=project_name,
@@ -779,6 +946,30 @@ def _materialize_inspection_output(
         existing_keys.add(key)
         existing_inspector_titles.add(title)
     return created, skipped
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _default_acceptance_criteria(item: dict, *, files: list[str], evidence: str) -> list[str]:
+    target = ", ".join(files[:3]) if files else "巡检证据指向的文件"
+    evidence_head = evidence.replace("\n", " ")[:140] if evidence else "巡检证据"
+    return [
+        f"{target} 中由 `{evidence_head}` 指向的问题已被实际处理。",
+        "实现范围限制在 Files In Scope 和必要配套测试内，没有扩散到无关模块。",
+    ]
+
+
+def _default_verification_commands(item: dict, *, files: list[str]) -> list[str]:
+    evidence = str(item.get("evidence") or "").lower()
+    if "ruff" in evidence or lint_group_key(str(item.get("evidence") or "")):
+        return [f"ruff check {' '.join(files)}"] if files else ["ruff check ."]
+    if any(path.endswith(".py") for path in files):
+        return ['pytest -n auto --dist loadfile -m "not slow" -q']
+    return ["git diff --check"]
 
 
 def run_inspection(
@@ -848,7 +1039,11 @@ def run_inspection(
         }
 
     raw_candidates = _extract_candidates(payload)
-    kept_candidates, dropped = _filter_candidates(raw_candidates, signal_results=signal_results)
+    kept_candidates, dropped = _filter_candidates(
+        raw_candidates,
+        signal_results=signal_results,
+        project_path=project_path,
+    )
     kept_candidates = _group_lint_candidates(kept_candidates)
     created, skipped = _materialize_inspection_output(
         kept_candidates,
@@ -876,6 +1071,16 @@ def _build_content(item: dict, *, agent: str = "codex", default_priority: str = 
     rationale = (item.get("rationale") or "").strip()
     goal = (item.get("goal") or "").strip()
     evidence = (item.get("evidence") or "").strip()
+    files = _candidate_files(item) or _string_list(item.get("files"))
+    acceptance_criteria = _string_list(item.get("acceptance_criteria")) or _default_acceptance_criteria(
+        item,
+        files=files,
+        evidence=evidence,
+    )
+    verification_commands = _string_list(item.get("verification_commands")) or _default_verification_commands(
+        item,
+        files=files,
+    )
     notes = [
         f"由 `codepilot inspect` 自动建议（kind={kind}, effort={effort}）。",
         "执行前请人工确认方向与优先级。",
@@ -887,25 +1092,25 @@ def _build_content(item: dict, *, agent: str = "codex", default_priority: str = 
         "agent": agent,
         "priority": (item.get("priority") or "").strip() or default_priority,
         "goal": goal or "根据巡检信号完成针对性处理，并消除对应风险。",
-        "acceptance_criteria": [
-            "规划证据里的信号已经被实际处理，并能说明对应改动。",
-            "改动范围与本任务目标一致，没有扩散到无关模块。",
-        ],
+        "acceptance_criteria": acceptance_criteria,
+        "verification_commands": verification_commands,
         "builder_notes": [
             f"优先按巡检建议执行最小闭环改动（kind={kind}, effort={effort}）。",
             rationale or "结合信号内容确认具体处理路径，再开始实现。",
+            "验证命令：" + " && ".join(verification_commands),
         ],
         "reviewer_notes": [
             "逐项核对 Planning Evidence 是否被真实引用到改动与验证里。",
+            "确认 Verification Matrix 中的命令已执行或有明确不能执行的原因。",
             "确认实现没有超出本次巡检建议的目标与边界。",
         ],
-        "files": [],
+        "files": files,
         "notes": notes,
         "forbidden": [
             "不要因为巡检建议而顺手做无关重构或范围外修补。",
         ],
         "not_in_scope": [
-            "与当前巡检信号无直接关系的模块、文档、部署流程。",
+            "Files In Scope 之外的模块、文档、部署流程，除非验证所需的最小测试配套。",
         ],
         "evidence": evidence or "（未提供规划依据，建议人工复核）",
         "risk_level": "medium",

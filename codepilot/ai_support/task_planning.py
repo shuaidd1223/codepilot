@@ -84,10 +84,11 @@ def build_task_markdown_from_plan(
             return [str(item) for item in value]
         return []
 
-    def _ac_matrix(criteria_items: list[str]) -> str:
+    def _ac_matrix(criteria_items: list[str], verification_items: list[str]) -> str:
         rows = [str(item).strip() for item in (criteria_items or []) if str(item).strip()]
         if not rows:
             rows = ["待补充" if chinese else "The requested behavior is verified."]
+        commands = [str(item).strip().replace("|", "\\|") for item in (verification_items or []) if str(item).strip()]
         header = (
             "| AC # | Criterion | Verification Command / Action | Expected Result | Evidence Location |\n"
             "| :--- | :--- | :--- | :--- | :--- |"
@@ -95,15 +96,17 @@ def build_task_markdown_from_plan(
         body_lines = []
         for i, row in enumerate(rows):
             safe = row.replace("|", "\\|")
-            body_lines.append(f"| AC-{i + 1} | {safe} |  |  |  |")
+            command = commands[min(i, len(commands) - 1)] if commands else ""
+            body_lines.append(f"| AC-{i + 1} | {safe} | {command} |  |  |")
         return header + "\n" + "\n".join(body_lines)
 
     chinese = str(language).lower().startswith("zh")
     title = str(task.get("title") or "").strip() or ("未命名任务" if chinese else "Untitled task")
     goal = str(task.get("goal") or "").strip() or ("待补充" if chinese else "Complete the requested scoped change.")
     acceptance_items = _coerce_list(task.get("acceptance_criteria"))
+    verification_items = _coerce_list(task.get("verification_commands"))
     acceptance = _bullet(acceptance_items, "待补充" if chinese else "The requested behavior is delivered and verified.")
-    ac_matrix = _ac_matrix(acceptance_items)
+    ac_matrix = _ac_matrix(acceptance_items, verification_items)
     builder_notes = _bullet(_coerce_list(task.get("builder_notes")), "待补充" if chinese else "Implement only the scoped task requirements.")
     reviewer_notes = _bullet(_coerce_list(task.get("reviewer_notes")), "待补充" if chinese else "Verify the acceptance criteria and scope boundaries.")
     files = _bullet(_coerce_list(task.get("files")), "待确认" if chinese else "To be confirmed by implementation.")

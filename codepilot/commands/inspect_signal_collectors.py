@@ -106,7 +106,7 @@ def collect_ruff(project_path: Path, limit: int = 30) -> str:
         return f"（ruff 执行失败：{exc}）"
 
 
-def _summarize_pytest_collect_output(lines: list[str], limit: int = 30) -> str:
+def _summarize_pytest_collect_output(lines: list[str], limit: int = 30, returncode: int = 0) -> str:
     stripped = [ln for ln in lines if ln.strip()]
     if not stripped:
         return "（pytest collect 无输出）"
@@ -120,15 +120,21 @@ def _summarize_pytest_collect_output(lines: list[str], limit: int = 30) -> str:
         return path_text
 
     def _is_diagnostic_line(line: str) -> bool:
-        if _nodeid_file(line) is not None:
-            return False
         lowered = line.lower()
         return (
             lowered.startswith("error")
             or lowered.startswith("warning")
+            or "warning" in lowered
             or " error " in lowered
             or " warning " in lowered
+            or "collectionerror" in lowered
+            or "pytestcollectionwarning" in lowered
+            or "traceback" in lowered
         )
+
+    has_collect_problem = returncode != 0 or any(_is_diagnostic_line(ln) for ln in stripped)
+    if not has_collect_problem:
+        return "（pytest collect 通过）"
 
     status_lines = [
         ln
@@ -154,14 +160,17 @@ def _summarize_pytest_collect_output(lines: list[str], limit: int = 30) -> str:
             continue
         file_counts[path_text] = file_counts.get(path_text, 0) + 1
 
-    if not file_counts:
-        interesting = warnings_and_errors or [
-            ln
-            for ln in stripped
-            if " collected" in ln.lower()
-            or " deselected" in ln.lower()
-            or "test" in ln.lower()
-        ]
+    if not file_counts or warnings_and_errors:
+        interesting = [*status_lines[-3:], *warnings_and_errors]
+        if not interesting:
+            interesting = [
+                ln
+                for ln in stripped
+                if "error" in ln.lower()
+                or "failed" in ln.lower()
+                or "warning" in ln.lower()
+                or "collected" in ln.lower()
+            ]
         picked = interesting[:limit] if interesting else stripped[-limit:]
         return "\n".join(picked)
 
@@ -199,7 +208,6 @@ def collect_pytest_collect(project_path: Path, limit: int = 30) -> str:
         )
         output = decode_subprocess_text(result.stdout) + decode_subprocess_text(result.stderr)
         lines = [ln for ln in output.splitlines() if ln.strip()]
-        return _summarize_pytest_collect_output(lines, limit=limit)
+        return _summarize_pytest_collect_output(lines, limit=limit, returncode=result.returncode)
     except Exception as exc:
         return f"（pytest collect 失败：{exc}）"
-

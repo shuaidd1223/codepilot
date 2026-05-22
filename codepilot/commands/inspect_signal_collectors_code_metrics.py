@@ -111,12 +111,115 @@ def _python_function_complexities(
     return hits
 
 
+def is_test_file_path(rel_path: str) -> bool:
+    """Return whether a repo-relative path is test-only surface."""
+    normalized = str(rel_path or "").replace("\\", "/").strip().lower()
+    if not normalized:
+        return False
+    parts = [part for part in normalized.split("/") if part]
+    name = parts[-1] if parts else normalized
+    stem = Path(name).stem
+    return (
+        any(part in {"test", "tests", "__tests__", "spec", "specs"} for part in parts[:-1])
+        or name.startswith("test_")
+        or stem.endswith("_test")
+        or ".test." in name
+        or ".spec." in name
+    )
+
+
+def _new_metric_bucket() -> dict[str, object]:
+    return {
+        "totals": {},
+        "largest": [],
+        "complex_files": [],
+        "complex_functions": [],
+        "files": 0,
+        "lines": 0,
+    }
+
+
+def _add_metric(
+    bucket: dict[str, object],
+    *,
+    lang: str,
+    code_lines: int,
+    complexity: int,
+    rel: str,
+    function_hits: list[tuple[int, str, str]],
+) -> None:
+    totals = bucket["totals"]
+    assert isinstance(totals, dict)
+    stat = totals.setdefault(lang, {"files": 0, "lines": 0})
+    stat["files"] += 1
+    stat["lines"] += code_lines
+    bucket["files"] = int(bucket["files"]) + 1
+    bucket["lines"] = int(bucket["lines"]) + code_lines
+    largest = bucket["largest"]
+    assert isinstance(largest, list)
+    largest.append((code_lines, complexity, rel))
+    if complexity >= 20:
+        complex_files = bucket["complex_files"]
+        assert isinstance(complex_files, list)
+        complex_files.append((complexity, code_lines, rel))
+    complex_functions = bucket["complex_functions"]
+    assert isinstance(complex_functions, list)
+    complex_functions.extend(function_hits)
+
+
+def _sort_metric_bucket(bucket: dict[str, object]) -> None:
+    for key in ("largest", "complex_files", "complex_functions"):
+        values = bucket[key]
+        assert isinstance(values, list)
+        values.sort(reverse=True)
+
+
+def _render_metric_bucket(
+    lines: list[str],
+    bucket: dict[str, object],
+    *,
+    label: str,
+    limit: int,
+    advisory_suffix: str = "",
+) -> None:
+    totals = bucket["totals"]
+    largest = bucket["largest"]
+    complex_files = bucket["complex_files"]
+    complex_functions = bucket["complex_functions"]
+    assert isinstance(totals, dict)
+    assert isinstance(largest, list)
+    assert isinstance(complex_files, list)
+    assert isinstance(complex_functions, list)
+
+    if int(bucket["files"]) <= 0:
+        lines.append(f"{label}：未发现可报告热点{advisory_suffix}")
+        return
+
+    lines.append(f"语言分布（{label}）：")
+    for lang, stat in sorted(totals.items(), key=lambda item: item[1]["lines"], reverse=True)[:8]:
+        lines.append(f"- {lang}: {stat['files']} 文件 / {stat['lines']} 行")
+
+    lines.append(f"{label}大文件{advisory_suffix}：")
+    for code_lines, complexity, rel in largest[: min(5, limit)]:
+        if code_lines <= 0:
+            continue
+        lines.append(f"- {rel}: {code_lines} 行，分支复杂度约 {complexity}")
+
+    if complex_functions:
+        lines.append(f"{label}复杂函数{advisory_suffix}（Python，估算圈复杂度）：")
+        for complexity, location, name in complex_functions[: min(5, limit)]:
+            lines.append(f"- {location} {name}: 复杂度约 {complexity}")
+
+    if complex_files:
+        lines.append(f"{label}复杂文件{advisory_suffix}（跨语言粗略估算）：")
+        for complexity, code_lines, rel in complex_files[: min(5, limit)]:
+            lines.append(f"- {rel}: 分支复杂度约 {complexity} / {code_lines} 行")
+
+
 def collect_code_metrics(project_path: Path, limit: int = 20) -> str:
     """Collect offline code size and rough complexity signals."""
-    totals: dict[str, dict[str, int]] = {}
-    largest: list[tuple[int, int, str]] = []
-    complex_files: list[tuple[int, int, str]] = []
-    complex_functions: list[tuple[int, str, str]] = []
+    production = _new_metric_bucket()
+    tests = _new_metric_bucket()
     total_files = 0
     total_code_lines = 0
 
@@ -133,43 +236,36 @@ def collect_code_metrics(project_path: Path, limit: int = 20) -> str:
         complexity = _generic_complexity_score(text, path.suffix)
         total_files += 1
         total_code_lines += code_lines
-        bucket = totals.setdefault(lang, {"files": 0, "lines": 0})
-        bucket["files"] += 1
-        bucket["lines"] += code_lines
-        largest.append((code_lines, complexity, rel))
-        if complexity >= 20:
-            complex_files.append((complexity, code_lines, rel))
+        function_hits: list[tuple[int, str, str]] = []
         if path.suffix == ".py":
-            complex_functions.extend(
-                _python_function_complexities(path, project_path, text, threshold=8)
-            )
+            function_hits = _python_function_complexities(path, project_path, text, threshold=8)
+        bucket = tests if is_test_file_path(rel) else production
+        _add_metric(
+            bucket,
+            lang=lang,
+            code_lines=code_lines,
+            complexity=complexity,
+            rel=rel,
+            function_hits=function_hits,
+        )
 
     if not total_files:
         return "（未发现可扫描的代码文件）"
 
-    largest.sort(reverse=True)
-    complex_files.sort(reverse=True)
-    complex_functions.sort(reverse=True)
+    _sort_metric_bucket(production)
+    _sort_metric_bucket(tests)
 
     lines = [f"总体：{total_files} 个代码文件，约 {total_code_lines} 行有效代码"]
-    lines.append("语言分布：")
-    for lang, stat in sorted(totals.items(), key=lambda item: item[1]["lines"], reverse=True)[:8]:
-        lines.append(f"- {lang}: {stat['files']} 文件 / {stat['lines']} 行")
-
-    lines.append("大文件：")
-    for code_lines, complexity, rel in largest[: min(5, limit)]:
-        if code_lines <= 0:
-            continue
-        lines.append(f"- {rel}: {code_lines} 行，分支复杂度约 {complexity}")
-
-    if complex_functions:
-        lines.append("复杂函数（Python，估算圈复杂度）：")
-        for complexity, location, name in complex_functions[: min(5, limit)]:
-            lines.append(f"- {location} {name}: 复杂度约 {complexity}")
-
-    if complex_files:
-        lines.append("复杂文件（跨语言粗略估算）：")
-        for complexity, code_lines, rel in complex_files[: min(5, limit)]:
-            lines.append(f"- {rel}: 分支复杂度约 {complexity} / {code_lines} 行")
+    lines.append(f"生产代码：{production['files']} 个文件，约 {production['lines']} 行有效代码")
+    lines.append(f"测试代码：{tests['files']} 个文件，约 {tests['lines']} 行有效代码（仅参考，不单独触发任务）")
+    _render_metric_bucket(lines, production, label="生产", limit=limit)
+    lines.append("测试文件（仅参考，不单独触发任务）：")
+    _render_metric_bucket(
+        lines,
+        tests,
+        label="测试",
+        limit=limit,
+        advisory_suffix="（仅参考，不单独触发任务）",
+    )
 
     return "\n".join(lines)

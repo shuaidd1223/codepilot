@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+from click.testing import CliRunner
+
+from codepilot.cli import main
 from codepilot.core.task_template import missing_task_template_sections
 from codepilot.commands import inspect as inspect_cmd
+from codepilot.storage import database as db
+from tests.workflow_testkit import init_test_db
 
 
 def test_collect_inspection_signals_collects_selected_only(tmp_path, monkeypatch):
@@ -122,10 +128,17 @@ def test_build_inspection_prompt_can_request_chinese_output_language(monkeypatch
 def test_materialize_inspection_output_dry_run_skips_db_write(tmp_path, monkeypatch):
     project = tmp_path / "demo"
     project.mkdir()
+    (project / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
     duplicate = {"title": "重复项", "goal": "同一个目标", "priority": "P1"}
-    fresh = {"title": "新任务", "goal": "处理新的问题", "priority": "P2"}
+    fresh = {
+        "title": "新任务",
+        "goal": "处理 foo.py 的新问题",
+        "priority": "P2",
+        "evidence": "signal 3: foo.py:1 TODO handle timeout",
+    }
     dup_key = inspect_cmd._dedup_key(duplicate["title"], duplicate["goal"])
     monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda *_: {dup_key})
+    monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **kwargs: [])
 
     def _should_not_write(**kwargs):
         raise AssertionError("dry-run path should not write into db")
@@ -142,7 +155,7 @@ def test_materialize_inspection_output_dry_run_skips_db_write(tmp_path, monkeypa
         dry_run=True,
     )
 
-    assert created == [{"title": "新任务", "goal": "处理新的问题", "priority": "P2"}]
+    assert created == [{"title": "新任务", "goal": "处理 foo.py 的新问题", "priority": "P2", "files": ["foo.py"]}]
     assert skipped == [{"title": "重复项", "reason": "duplicate"}]
 
 
@@ -421,7 +434,38 @@ def test_filter_candidates_drops_generic_overlong_and_ungrounded():
 
     assert len(kept) == 1
     assert kept[0]["title"] == "修复 foo.py 的超时 TODO"
+    assert kept[0]["files"] == ["codepilot/foo.py"]
     assert reasons == {"generic_filler", "title_too_long", "missing_evidence", "evidence_not_grounded"}
+
+
+def test_filter_candidates_drops_items_without_real_file_paths():
+    signal_results = [
+        inspect_cmd.InspectSignalResult(
+            key="todos",
+            title="代码里的 TODO/FIXME/XXX",
+            order=3,
+            enabled=True,
+            content="signal text says timeout handling is incomplete",
+        ),
+    ]
+
+    kept, dropped = inspect_cmd._filter_candidates(
+        [
+            {
+                "title": "修复超时处理",
+                "goal": "处理巡检发现的超时问题。",
+                "priority": "P3",
+                "rationale": "TODO 指向不完整处理。",
+                "kind": "bug",
+                "evidence": "signal 3: timeout handling is incomplete",
+                "effort": "small",
+            }
+        ],
+        signal_results=signal_results,
+    )
+
+    assert kept == []
+    assert dropped == [{"title": "修复超时处理", "reason": "missing_files"}]
 
 
 def test_build_content_surfaces_evidence_and_effort():
@@ -432,21 +476,67 @@ def test_build_content_surfaces_evidence_and_effort():
         "kind": "bug",
         "evidence": "signal 3: codepilot/foo.py:42",
         "effort": "small",
+        "files": ["codepilot/foo.py"],
+        "acceptance_criteria": ["codepilot/foo.py:42 指向的超时 TODO 已被消除。"],
+        "verification_commands": ["pytest -n auto --dist loadfile -m \"not slow\" tests/test_foo.py -q"],
     })
     assert "Agent | codex" in content
     assert "Priority | P3" in content
     assert "kind=bug" in content
     assert "effort=small" in content
+    assert "## Files In Scope" in content
+    assert "- codepilot/foo.py" in content
+    assert "待确认" not in content
     assert "## Planning Evidence" in content
     assert "## Reviewer Checkpoints" in content
     assert "codepilot/foo.py:42" in content
+    assert "pytest -n auto --dist loadfile -m \"not slow\" tests/test_foo.py -q" in content
     assert missing_task_template_sections(content) == []
+
+
+def test_materialize_inspection_output_skips_candidates_without_existing_files(tmp_path, monkeypatch):
+    project = tmp_path / "demo"
+    project.mkdir()
+    monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda project_name: set())
+    monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **kwargs: [])
+
+    def _should_not_write(**kwargs):
+        raise AssertionError("candidate without a real file must not be written")
+
+    monkeypatch.setattr(inspect_cmd.db, "create_task", _should_not_write)
+
+    created, skipped = inspect_cmd._materialize_inspection_output(
+        [
+            {
+                "title": "修复 missing.py",
+                "goal": "处理 missing.py 的 TODO。",
+                "priority": "P2",
+                "rationale": "TODO 指向文件。",
+                "kind": "bug",
+                "evidence": "signal 3: missing.py:1 TODO handle timeout",
+                "effort": "small",
+            }
+        ],
+        max_new_tasks=1,
+        project_name="demo",
+        project_path=project,
+        priority="P3",
+        agent="codex",
+        dry_run=False,
+    )
+
+    assert created == []
+    assert skipped == [{"title": "修复 missing.py", "reason": "files_not_found"}]
 
 
 def test_materialize_inspection_output_writes_task_template_content(tmp_path, monkeypatch):
     captured: dict[str, object] = {}
+    project = Path(tmp_path)
+    (project / "codepilot").mkdir()
+    (project / "codepilot" / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
 
     monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda project_name: set())
+    monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **kwargs: [])
 
     def fake_create_task(**kwargs):
         captured.update(kwargs)
@@ -464,11 +554,14 @@ def test_materialize_inspection_output_writes_task_template_content(tmp_path, mo
                 "kind": "bug",
                 "evidence": "signal 3: codepilot/foo.py:42",
                 "effort": "small",
+                "files": ["codepilot/foo.py"],
+                "acceptance_criteria": ["codepilot/foo.py:42 指向的 TODO 已处理。"],
+                "verification_commands": ["pytest -n auto --dist loadfile -m \"not slow\" tests/test_foo.py -q"],
             }
         ],
         max_new_tasks=1,
         project_name="demo",
-        project_path=Path(tmp_path),
+        project_path=project,
         priority="P3",
         agent="claude-sonnet",
         dry_run=False,
@@ -482,8 +575,80 @@ def test_materialize_inspection_output_writes_task_template_content(tmp_path, mo
     assert "Agent | claude-sonnet" in content
     assert "Priority | P1" in content
     assert "## Task Goal" in content
+    assert "- codepilot/foo.py" in content
     assert "## Planning Evidence" in content
+    assert "pytest -n auto --dist loadfile -m \"not slow\" tests/test_foo.py -q" in content
+    assert "待确认" not in content
     assert missing_task_template_sections(content) == []
+
+
+def test_inspect_json_mode_outputs_only_contract_stdout(tmp_path, monkeypatch):
+    init_test_db(tmp_path, monkeypatch)
+    project = tmp_path / "demo"
+    project.mkdir()
+    (project / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+    db.register_project("demo", str(project))
+
+    cfg = SimpleNamespace(
+        inspect=SimpleNamespace(
+            max_new_tasks_per_round=1,
+            interval_seconds=1,
+            signals=("todos",),
+            priority="P3",
+            auto_execute=False,
+        ),
+        automation=SimpleNamespace(agent_language="en"),
+    )
+    monkeypatch.setattr(inspect_cmd, "load_project_config", lambda *_args, **_kwargs: cfg)
+    monkeypatch.setattr(inspect_cmd, "resolve_planner", lambda *_args, **_kwargs: "codex")
+    monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **kwargs: [])
+    monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda project_name: set())
+    monkeypatch.setattr(
+        inspect_cmd,
+        "collect_inspection_signal_results",
+        lambda *_args, **_kwargs: [
+            inspect_cmd.InspectSignalResult(
+                key="todos",
+                title="代码里的 TODO/FIXME/XXX",
+                order=3,
+                enabled=True,
+                content="foo.py:1: TODO handle timeout",
+            )
+        ],
+    )
+
+    def _fake_call_llm(*_args, **kwargs):
+        callback = kwargs.get("stream_callback")
+        if callback:
+            callback("[planner] streamed noise")
+        return {
+            "candidates": [
+                {
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py:1 的 TODO，避免超时路径继续缺实现。",
+                    "priority": "P3",
+                    "rationale": "TODO 指向明确文件。",
+                    "kind": "bug",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "effort": "small",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的超时 TODO 已处理。"],
+                    "verification_commands": ["pytest -n auto --dist loadfile -m \"not slow\" -q"],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(inspect_cmd, "_call_llm", _fake_call_llm)
+
+    result = CliRunner().invoke(main, ["inspect", "-p", "demo", "--once", "--dry-run", "--json", "--max", "1"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "inspect"
+    assert payload["ok"] is True
+    assert payload["data"]["created"][0]["files"] == ["foo.py"]
+    assert "[planner]" not in result.output
+    assert "streamed noise" not in result.output
 
 
 def test_emit_inspection_result_maps_error_into_contract(monkeypatch):
