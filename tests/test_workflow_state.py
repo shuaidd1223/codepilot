@@ -450,6 +450,35 @@ def test_workflow_next_executes_import_tasks_from_task_batch_not_suggested_comma
     assert data["result"]["count"] == len(plan_data["task_candidates"])
     assert len(db.list_tasks(project="demo")) == len(plan_data["task_candidates"])
 
+    consumed_state = read_workflow_state(project["path"], mode="plan")
+    assert any(item["id"] == "import_tasks" for item in consumed_state["consumed_actions"])
+    consumed_context = json.loads(context_path.read_text(encoding="utf-8"))
+    assert any(item["id"] == "import_tasks" for item in consumed_context["consumed_actions"])
+
+    listed = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--list", "--json"])
+    assert listed.exit_code == 0, listed.output
+    listed_ids = [item["id"] for item in json.loads(listed.output)["data"]["next_actions"]]
+    assert "import_tasks" not in listed_ids
+    assert "execute_directly" not in listed_ids
+
+    status = CliRunner().invoke(main, ["workflow", "status", "-p", "demo", "--json"])
+    assert status.exit_code == 0, status.output
+    status_data = json.loads(status.output)["data"]
+    state_ids = [item["id"] for item in status_data["state"]["next_actions"]]
+    session_ids = [item["id"] for item in status_data["agent_session"]["next_action_details"]]
+    assert "import_tasks" not in state_ids
+    assert "execute_directly" not in state_ids
+    assert "import_tasks" not in session_ids
+    assert "execute_directly" not in session_ids
+    phase_state_ids = [
+        item["id"]
+        for entry in status_data["agent_session"]["phase_history"]
+        for item in (entry.get("mode_state") or {}).get("next_actions") or []
+        if isinstance(item, dict)
+    ]
+    assert "import_tasks" not in phase_state_ids
+    assert "execute_directly" not in phase_state_ids
+
 
 def test_workflow_next_rejects_unknown_and_high_risk_actions_by_default(tmp_path, monkeypatch):
     project = _register_demo_project(tmp_path, monkeypatch)

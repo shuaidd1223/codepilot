@@ -190,6 +190,295 @@ def _next_action_ids(raw_actions: Any) -> list[str]:
     return ids
 
 
+def _next_action_id(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("id") or item.get("action_id") or "").strip()
+    return str(item or "").strip() if isinstance(item, str) else ""
+
+
+def normalize_workflow_next_actions(raw_actions: Any) -> list[dict[str, Any]]:
+    """Normalize legacy string actions and structured actions into dicts."""
+    actions: list[dict[str, Any]] = []
+    if not isinstance(raw_actions, list):
+        return actions
+    for item in raw_actions:
+        if isinstance(item, dict):
+            action_id = _next_action_id(item)
+            if not action_id:
+                continue
+            action = dict(item)
+            action["id"] = action_id
+            action["label"] = str(action.get("label") or action_id)
+            action["risk"] = str(action.get("risk") or "unknown").lower()
+            actions.append(action)
+        elif isinstance(item, str) and item.strip():
+            text = item.strip()
+            actions.append({"id": text, "label": text, "risk": "unknown", "suggested_command": ""})
+    return actions
+
+
+def _iter_action_history_payloads(payload: Any):
+    if not isinstance(payload, dict):
+        return
+    yield payload
+    nested_state = payload.get("state")
+    if isinstance(nested_state, dict):
+        yield nested_state
+
+
+def _payload_context_paths(payload: Any) -> set[str]:
+    paths: set[str] = set()
+    if not isinstance(payload, dict):
+        return paths
+    raw_context = str(payload.get("context_path") or "").strip()
+    if raw_context:
+        paths.add(raw_context)
+    artifacts = payload.get("artifact_paths")
+    if isinstance(artifacts, dict):
+        artifact_context = str(artifacts.get("context") or "").strip()
+        if artifact_context:
+            paths.add(artifact_context)
+    nested_state = payload.get("state")
+    if isinstance(nested_state, dict):
+        paths.update(_payload_context_paths(nested_state))
+    return paths
+
+
+def _consumed_record_context_path(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    source = item.get("source")
+    if isinstance(source, dict):
+        return str(source.get("context_path") or "").strip()
+    return ""
+
+
+def consumed_workflow_action_ids(*payloads: Any) -> set[str]:
+    """Return action ids persisted as consumed or expired in compatible payloads."""
+    ids: set[str] = set()
+    target_context_paths: set[str] = set()
+    for payload in payloads:
+        target_context_paths.update(_payload_context_paths(payload))
+    for payload in payloads:
+        for source in _iter_action_history_payloads(payload):
+            for key in ("consumed_actions", "action_history"):
+                raw_items = source.get(key)
+                if not isinstance(raw_items, list):
+                    continue
+                for item in raw_items:
+                    action_id = _next_action_id(item)
+                    if not action_id:
+                        continue
+                    if key == "action_history" and isinstance(item, dict):
+                        status = str(item.get("status") or "").strip().lower()
+                        if status and status not in {"consumed", "expired"}:
+                            continue
+                    record_context = _consumed_record_context_path(item)
+                    if target_context_paths and record_context and record_context not in target_context_paths:
+                        continue
+                    ids.add(action_id)
+    return ids
+
+
+def filter_consumed_next_action_items(raw_actions: Any, *payloads: Any) -> list[Any]:
+    """Filter next action items while preserving their original item shape."""
+    if not isinstance(raw_actions, list):
+        return []
+    consumed = consumed_workflow_action_ids(*payloads)
+    if not consumed:
+        return [dict(item) if isinstance(item, dict) else item for item in raw_actions]
+    filtered: list[Any] = []
+    for item in raw_actions:
+        action_id = _next_action_id(item)
+        if not action_id or action_id in consumed:
+            continue
+        filtered.append(dict(item) if isinstance(item, dict) else item)
+    return filtered
+
+
+def filter_consumed_workflow_next_actions(raw_actions: Any, *payloads: Any) -> list[dict[str, Any]]:
+    """Normalize next actions after applying persisted consumed/expired records."""
+    return normalize_workflow_next_actions(filter_consumed_next_action_items(raw_actions, *payloads))
+
+
+def workflow_action_ids_consumed_by(action_id: str, extra_action_ids: list[str] | None = None) -> list[str]:
+    """Return the action ids that should disappear after a successful action."""
+    primary = str(action_id or "").strip()
+    ids: list[str] = []
+    seen: set[str] = set()
+    for candidate in [primary, *(extra_action_ids or [])]:
+        text = str(candidate or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            ids.append(text)
+    if primary == "import_tasks" and "execute_directly" not in seen:
+        ids.append("execute_directly")
+    return ids
+
+
+def _normalize_consumed_records(raw_records: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_records, list):
+        return []
+    records: list[dict[str, Any]] = []
+    for item in raw_records:
+        action_id = _next_action_id(item)
+        if not action_id:
+            continue
+        if isinstance(item, dict):
+            record = dict(item)
+            record["id"] = action_id
+        else:
+            record = {"id": action_id}
+        records.append(record)
+    return records
+
+
+def _merge_consumed_records(payload: dict[str, Any], new_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    replace_ids = {str(item.get("id") or "") for item in new_records}
+    merged = [
+        item
+        for item in _normalize_consumed_records(payload.get("consumed_actions"))
+        if str(item.get("id") or "") not in replace_ids
+    ]
+    merged.extend(new_records)
+    return merged
+
+
+def _consumed_records(
+    action_id: str,
+    *,
+    source: dict[str, Any] | None,
+    extra_action_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    now = _now_iso()
+    primary = str(action_id or "").strip()
+    records: list[dict[str, Any]] = []
+    for item_id in workflow_action_ids_consumed_by(primary, extra_action_ids):
+        record: dict[str, Any] = {
+            "id": item_id,
+            "consumed_at": now,
+            "source": dict(source or {}),
+            "status": "consumed" if item_id == primary else "expired",
+        }
+        if item_id != primary:
+            record["superseded_by"] = primary
+        records.append(record)
+    return records
+
+
+def _resolve_context_path(project_path: Path, raw_path: str | Path | None) -> Path | None:
+    if raw_path is None or str(raw_path).strip() == "":
+        return None
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = project_path / candidate
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    if not resolved.is_relative_to(project_path):
+        return None
+    return resolved
+
+
+def mark_workflow_actions_consumed(
+    project_path: str | Path,
+    *,
+    action_id: str,
+    mode: str | None = None,
+    context_path: str | Path | None = None,
+    source: dict[str, Any] | None = None,
+    extra_action_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Persist successful workflow action consumption in context/state files."""
+    project_root = Path(project_path).expanduser().resolve()
+    records = _consumed_records(action_id, source=source, extra_action_ids=extra_action_ids)
+    if not records:
+        return {"consumed_actions": []}
+
+    resolved_context = _resolve_context_path(project_root, context_path)
+    context_payload: dict[str, Any] | None = None
+    if resolved_context and resolved_context.is_file():
+        context_payload = _read_json(resolved_context) or {}
+        context_payload["consumed_actions"] = _merge_consumed_records(context_payload, records)
+        nested_state = context_payload.get("state")
+        if isinstance(nested_state, dict):
+            nested_state["consumed_actions"] = _merge_consumed_records(nested_state, records)
+        _atomic_write_json(resolved_context, context_payload)
+
+    clean_mode = str(mode or "").strip().lower()
+    if not clean_mode and context_payload:
+        nested_state = context_payload.get("state")
+        if isinstance(nested_state, dict):
+            clean_mode = str(nested_state.get("mode") or "").strip().lower()
+        if not clean_mode:
+            clean_mode = str(context_payload.get("artifact_type") or "").strip().lower()
+
+    if clean_mode:
+        state = read_workflow_state(project_root, mode=clean_mode)
+        if state is not None:
+            update_workflow_state(
+                project_root,
+                clean_mode,
+                consumed_actions=_merge_consumed_records(state, records),
+            )
+
+    session = get_agent_session(project_root)
+    if session is not None:
+        update_agent_session(
+            project_root,
+            consumed_actions=_merge_consumed_records(session, records),
+        )
+
+    return {"consumed_actions": records}
+
+
+def workflow_payload_with_consumable_actions(
+    payload: dict[str, Any] | None,
+    *extra_payloads: Any,
+) -> dict[str, Any] | None:
+    """Return a payload copy whose next actions exclude consumed/expired records."""
+    if payload is None:
+        return None
+    view = dict(payload)
+    filter_payloads = (view, *extra_payloads)
+    if isinstance(view.get("next_actions"), list):
+        view["next_actions"] = filter_consumed_next_action_items(view.get("next_actions"), *filter_payloads)
+    if isinstance(view.get("next_action_details"), list):
+        view["next_action_details"] = filter_consumed_workflow_next_actions(
+            view.get("next_action_details"),
+            *filter_payloads,
+        )
+    if isinstance(view.get("phase_history"), list):
+        phase_history: list[Any] = []
+        for entry in view.get("phase_history") or []:
+            if not isinstance(entry, dict):
+                phase_history.append(entry)
+                continue
+            entry_view = dict(entry)
+            mode_state = entry_view.get("mode_state")
+            if isinstance(mode_state, dict):
+                mode_context = str(mode_state.get("context_path") or "").strip()
+                inherited_consumption: list[dict[str, Any]] = []
+                for payload in filter_payloads:
+                    if not isinstance(payload, dict):
+                        continue
+                    inherited: dict[str, Any] = {"context_path": mode_context}
+                    if isinstance(payload.get("consumed_actions"), list):
+                        inherited["consumed_actions"] = payload.get("consumed_actions")
+                    if isinstance(payload.get("action_history"), list):
+                        inherited["action_history"] = payload.get("action_history")
+                    if len(inherited) > 1:
+                        inherited_consumption.append(inherited)
+                entry_view["mode_state"] = workflow_payload_with_consumable_actions(
+                    mode_state,
+                    *inherited_consumption,
+                )
+            phase_history.append(entry_view)
+        view["phase_history"] = phase_history
+    return view
+
+
 def _coerce_artifact_paths(raw_paths: dict[str, str | Path] | None) -> dict[str, str]:
     if not raw_paths:
         return {}

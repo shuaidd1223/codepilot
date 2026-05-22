@@ -356,6 +356,11 @@ workflow_auto_max_steps = 1
     assert payload["action"]["id"] == "import_tasks"
     assert len(db.list_tasks(project="demo")) == len(plan["task_candidates"])
 
+    next_payload = server.call_tool("workflow_next", {"project": "demo"})
+    action_ids = [item["id"] for item in next_payload["next_actions"]]
+    assert "import_tasks" not in action_ids
+    assert "execute_directly" not in action_ids
+
 
 def test_workflow_next_tool_returns_structured_error_for_missing_project(tmp_path, monkeypatch):
     project_path = _init_demo_project(tmp_path, monkeypatch)

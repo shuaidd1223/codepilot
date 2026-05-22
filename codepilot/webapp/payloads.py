@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from codepilot.storage import database as db
+from codepilot.core.workflow_state import filter_consumed_workflow_next_actions
 from codepilot.webapp.display_sort import TASK_STATUS_ORDER, sort_tasks_for_display
 from codepilot.core.runtime import runtime_summary
 from codepilot.core.config import resolve_project_config_reference
@@ -458,7 +459,7 @@ def _materialize_artifact_next_actions(
     summary = str(ctx.get("summary") or "")
 
     actions: list[dict] = []
-    for item in _raw_artifact_next_actions(ctx, artifact_type):
+    for item in filter_consumed_workflow_next_actions(_raw_artifact_next_actions(ctx, artifact_type), ctx):
         if isinstance(item, dict):
             action = dict(item)
             action_id = str(action.get("id") or "").strip()

@@ -19,6 +19,10 @@ from codepilot.ai_support.clarification_protocol import (
     render_clarification_questions,
 )
 from codepilot.commands.auto import normalize_requirement_text
+from codepilot.core.workflow_state import (
+    filter_consumed_workflow_next_actions,
+    mark_workflow_actions_consumed,
+)
 from codepilot.ai_support.interaction_controller import (
     ClarificationTransition,
     build_workflow_session_record,
@@ -1067,13 +1071,10 @@ def _context_next_action(context: dict[str, Any], action_id: str) -> dict[str, A
     raw_actions = context.get("next_actions")
     if not isinstance(raw_actions, list) or not raw_actions:
         raw_actions = artifact_next_actions_for_type(_artifact_type_from_context(context))
-    for item in raw_actions:
-        if isinstance(item, dict):
-            found = str(item.get("id") or "").strip()
-            if found == wanted:
-                return dict(item)
-        elif isinstance(item, str) and item.strip() == wanted:
-            return {"id": wanted, "label": wanted, "risk": "unknown"}
+    for item in filter_consumed_workflow_next_actions(raw_actions, context):
+        found = str(item.get("id") or "").strip()
+        if found == wanted:
+            return dict(item)
     raise RuntimeError(f"未找到 artifact next_action：{wanted}")
 
 
@@ -1156,6 +1157,17 @@ def execute_artifact_next_action(
         raise RuntimeError(f"不支持的 artifact next_action：{normalized_action_id}。当前 allowlist：{allowed}。")
 
     result = handler(project_info, context)
+    mark_workflow_actions_consumed(
+        project_info["path"],
+        action_id=normalized_action_id,
+        mode=_artifact_type_from_context(context) or None,
+        context_path=resolved_context,
+        source={
+            "type": "artifact_context",
+            "mode": _artifact_type_from_context(context),
+            "context_path": str(resolved_context),
+        },
+    )
     payload = {
         "ok": True,
         "project": project_info["name"],

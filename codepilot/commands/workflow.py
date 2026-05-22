@@ -12,7 +12,16 @@ import click
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.config import load_project_config, resolve_project_config_reference
 from codepilot.core.output import echo
-from codepilot.core.workflow_state import get_agent_session, read_workflow_state, workflow_dirs
+from codepilot.core.workflow_state import (
+    filter_consumed_workflow_next_actions,
+    get_agent_session,
+    mark_workflow_actions_consumed,
+    normalize_workflow_next_actions,
+    read_workflow_state,
+    workflow_dirs,
+    workflow_action_ids_consumed_by,
+    workflow_payload_with_consumable_actions,
+)
 from codepilot.storage import database as db
 
 
@@ -69,6 +78,84 @@ def _read_context(project_path: Path, raw_path: str | Path | None) -> tuple[Path
     return context_path, _read_json_file(context_path) or {}
 
 
+def _payload_context_paths(payload: dict[str, Any] | None) -> set[str]:
+    if not payload:
+        return set()
+    paths: set[str] = set()
+    raw_context = str(payload.get("context_path") or "").strip()
+    if raw_context:
+        paths.add(raw_context)
+    artifacts = payload.get("artifact_paths") if isinstance(payload.get("artifact_paths"), dict) else {}
+    artifact_context = str(artifacts.get("context") or "").strip()
+    if artifact_context:
+        paths.add(artifact_context)
+    return paths
+
+
+def _memory_consumed_records(project_info: dict[str, Any], payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    context_paths = _payload_context_paths(payload)
+    if not context_paths:
+        return []
+    try:
+        from codepilot.core.memory import read_memory_events
+    except Exception:
+        return []
+    try:
+        events = read_memory_events(project_info, event_type="workflow.action_executed", limit=500)
+    except Exception:
+        return []
+
+    records: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for event in events:
+        details = dict(event.get("details") or {})
+        action_id = str(details.get("action_id") or "").strip()
+        if not action_id:
+            continue
+        event_source = details.get("source") if isinstance(details.get("source"), dict) else {}
+        event_context = str(event_source.get("context_path") or "").strip()
+        if event_context not in context_paths:
+            continue
+        consumed_at = str(event.get("timestamp") or "")
+        for item_id in workflow_action_ids_consumed_by(action_id):
+            key = (item_id, event_context)
+            if key in seen:
+                continue
+            seen.add(key)
+            record: dict[str, Any] = {
+                "id": item_id,
+                "consumed_at": consumed_at,
+                "source": dict(event_source),
+                "status": "consumed" if item_id == action_id else "expired",
+            }
+            if item_id != action_id:
+                record["superseded_by"] = action_id
+            records.append(record)
+    return records
+
+
+def _payload_with_memory_consumption(project_info: dict[str, Any], payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    view = dict(payload)
+    records = _memory_consumed_records(project_info, view)
+    if records:
+        view["consumed_actions"] = list(view.get("consumed_actions") or []) + records
+    if isinstance(view.get("phase_history"), list):
+        phase_history: list[Any] = []
+        for entry in view.get("phase_history") or []:
+            if not isinstance(entry, dict):
+                phase_history.append(entry)
+                continue
+            entry_view = dict(entry)
+            mode_state = entry_view.get("mode_state")
+            if isinstance(mode_state, dict):
+                entry_view["mode_state"] = _payload_with_memory_consumption(project_info, mode_state)
+            phase_history.append(entry_view)
+        view["phase_history"] = phase_history
+    return view
+
+
 def _iter_mode_states(project_path: Path) -> list[dict[str, Any]]:
     state_dir = workflow_dirs(project_path)["state"]
     if not state_dir.is_dir():
@@ -98,23 +185,7 @@ def _latest_workflow_state(project_path: Path) -> dict[str, Any] | None:
 
 
 def _normalize_next_actions(raw_actions: Any) -> list[dict[str, Any]]:
-    actions: list[dict[str, Any]] = []
-    if not isinstance(raw_actions, list):
-        return actions
-    for item in raw_actions:
-        if isinstance(item, dict):
-            action_id = str(item.get("id") or "").strip()
-            if not action_id:
-                continue
-            action = dict(item)
-            action["id"] = action_id
-            action["label"] = str(action.get("label") or action_id)
-            action["risk"] = str(action.get("risk") or "unknown").lower()
-            actions.append(action)
-        elif isinstance(item, str) and item.strip():
-            text = item.strip()
-            actions.append({"id": text, "label": text, "risk": "unknown", "suggested_command": ""})
-    return actions
+    return normalize_workflow_next_actions(raw_actions)
 
 
 def _format_next_actions(raw_actions: Any) -> list[str]:
@@ -133,8 +204,13 @@ def _load_next_context(project_info: dict, *, mode: str | None = None) -> dict[s
     project_path = Path(project_info["path"]).resolve()
     state = read_workflow_state(project_path, mode=mode) if mode else _latest_workflow_state(project_path)
     if state:
+        state = _payload_with_memory_consumption(project_info, state) or state
         context_path, context = _read_context(project_path, state.get("context_path"))
-        next_actions = _normalize_next_actions(context.get("next_actions") or state.get("next_actions") or [])
+        next_actions = filter_consumed_workflow_next_actions(
+            context.get("next_actions") or state.get("next_actions") or [],
+            context,
+            state,
+        )
         return {
             "type": "workflow_state",
             "state": state,
@@ -147,13 +223,16 @@ def _load_next_context(project_info: dict, *, mode: str | None = None) -> dict[s
 
     agent_session = get_agent_session(project_path)
     if agent_session:
+        agent_session = _payload_with_memory_consumption(project_info, agent_session) or agent_session
         artifacts = agent_session.get("artifact_paths") or {}
         context_path, context = _read_context(project_path, artifacts.get("context"))
-        next_actions = _normalize_next_actions(
+        next_actions = filter_consumed_workflow_next_actions(
             context.get("next_actions")
             or agent_session.get("next_action_details")
             or agent_session.get("next_actions")
-            or []
+            or [],
+            context,
+            agent_session,
         )
         return {
             "type": "agent_session",
@@ -496,18 +575,53 @@ def _record_workflow_action_memory(
         return
 
 
+def _mark_workflow_action_consumed(
+    project_info: dict[str, Any],
+    *,
+    action_id: str,
+    source: dict[str, Any],
+) -> None:
+    mark_workflow_actions_consumed(
+        project_info["path"],
+        action_id=action_id,
+        mode=str(source.get("mode") or "") or None,
+        context_path=source.get("context_path") or None,
+        source=source,
+    )
+
+
+def _status_context(project_path: Path, payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not payload:
+        return {}
+    raw_path = payload.get("context_path")
+    if not raw_path:
+        artifacts = payload.get("artifact_paths") if isinstance(payload.get("artifact_paths"), dict) else {}
+        raw_path = artifacts.get("context")
+    _, context = _read_context(project_path, raw_path)
+    return context
+
+
+def _status_payload_view(
+    project_info: dict[str, Any],
+    project_path: Path,
+    payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    payload = _payload_with_memory_consumption(project_info, payload)
+    return workflow_payload_with_consumable_actions(payload, _status_context(project_path, payload))
+
+
 def workflow_status_payload(project: str | None = None, *, mode: str | None = None) -> dict[str, Any]:
     project_info = _resolve_project(project)
-    project_path = str(project_info["path"])
-    state = read_workflow_state(project_path, mode=mode) if mode else _latest_workflow_state(Path(project_path))
+    project_path = Path(project_info["path"]).resolve()
+    state = read_workflow_state(project_path, mode=mode) if mode else _latest_workflow_state(project_path)
     agent_session = get_agent_session(project_path)
     policy = resolve_workflow_auto_policy(project_info)
     return {
         "project": project_info["name"],
-        "project_path": project_path,
+        "project_path": str(project_path),
         "mode": mode,
-        "state": state,
-        "agent_session": agent_session,
+        "state": _status_payload_view(project_info, project_path, state),
+        "agent_session": _status_payload_view(project_info, project_path, agent_session),
         "auto_policy": _workflow_auto_policy_payload(policy),
     }
 
@@ -544,6 +658,7 @@ def execute_workflow_next_action(
         source=source,
         result=result,
     )
+    _mark_workflow_action_consumed(project_info, action_id=action_id, source=source)
     payload = {
         "project": project_info["name"],
         "project_path": project_info["path"],
@@ -606,6 +721,7 @@ def _execute_workflow_auto_next_action_payload(
             source=source,
             result=result,
         )
+        _mark_workflow_action_consumed(project_info, action_id=action_id, source=source)
         step = {
             "source": source,
             "selected_reason": reason,
@@ -679,36 +795,41 @@ def status_cmd(ctx: click.Context, project: str | None, mode: str | None, json_m
     """查看当前 workflow 状态。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     project_info = _resolve_project(project)
-    project_path = str(project_info["path"])
+    project_path_obj = Path(project_info["path"]).resolve()
+    project_path = str(project_path_obj)
     state = read_workflow_state(project_path, mode=mode) if mode else _latest_workflow_state(Path(project_path))
     agent_session = get_agent_session(project_path)
     policy = resolve_workflow_auto_policy(project_info)
+    state_view = _status_payload_view(project_info, project_path_obj, state)
+    agent_session_view = _status_payload_view(project_info, project_path_obj, agent_session)
     data = {
         "project": project_info["name"],
         "project_path": project_path,
         "mode": mode,
-        "state": state,
-        "agent_session": agent_session,
+        "state": state_view,
+        "agent_session": agent_session_view,
         "auto_policy": _workflow_auto_policy_payload(policy),
     }
     if json_mode:
         emit_json_payload("workflow status", ok=True, data=data)
         return
 
-    if agent_session:
+    if agent_session_view:
         click.echo("--- Agent Session ---")
-        click.echo(f"session: {agent_session.get('session_id') or '-'}")
-        click.echo(f"目标: {agent_session.get('goal') or '-'}")
-        click.echo(f"当前阶段: {agent_session.get('current_phase') or '-'}")
-        blocked = agent_session.get("blocked_reason")
+        click.echo(f"session: {agent_session_view.get('session_id') or '-'}")
+        click.echo(f"目标: {agent_session_view.get('goal') or '-'}")
+        click.echo(f"当前阶段: {agent_session_view.get('current_phase') or '-'}")
+        blocked = agent_session_view.get("blocked_reason")
         if blocked:
             click.echo(f"阻塞原因: {blocked}")
-        actions = _format_next_actions(agent_session.get("next_action_details") or agent_session.get("next_actions"))
+        actions = _format_next_actions(
+            agent_session_view.get("next_action_details") or agent_session_view.get("next_actions")
+        )
         if actions:
             click.echo(f"下一步: {', '.join(actions)}")
         click.echo()
 
-    if state is None:
+    if state_view is None:
         target = f"模式 {mode}" if mode else "latest workflow"
         echo(f"[yellow]没有 {target} 状态[/yellow]")
         click.echo(f"项目: {project_info['name']}")
@@ -716,12 +837,12 @@ def status_cmd(ctx: click.Context, project: str | None, mode: str | None, json_m
         return
 
     click.echo(f"项目: {project_info['name']}")
-    click.echo(f"模式: {state.get('mode') or '-'}")
-    click.echo(f"active: {state.get('active')}")
-    click.echo(f"阶段: {state.get('current_phase') or '-'}")
-    click.echo(f"session: {state.get('session_id') or '-'}")
-    click.echo(f"context: {state.get('context_path') or '-'}")
-    click.echo(f"updated_at: {state.get('updated_at') or '-'}")
+    click.echo(f"模式: {state_view.get('mode') or '-'}")
+    click.echo(f"active: {state_view.get('active')}")
+    click.echo(f"阶段: {state_view.get('current_phase') or '-'}")
+    click.echo(f"session: {state_view.get('session_id') or '-'}")
+    click.echo(f"context: {state_view.get('context_path') or '-'}")
+    click.echo(f"updated_at: {state_view.get('updated_at') or '-'}")
 
 
 @click.command("next")
@@ -797,6 +918,7 @@ def next_cmd(
             source=source,
             result=result,
         )
+        _mark_workflow_action_consumed(project_info, action_id=action_id, source=source)
     except (click.ClickException, OSError, ValueError, json.JSONDecodeError) as exc:
         _emit_error(ctx, "workflow next", json_mode, exc)
         return

@@ -1028,6 +1028,24 @@ def test_artifact_context_payload_resolves_plan_import_action_to_task_batch(tmp_
     }
 
 
+def test_webui_artifact_import_consumes_plan_actions(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    (project_path / "README.md").write_text("explore command checks evidence\n", encoding="utf-8")
+    project = db.register_project("demo", str(project_path))
+    result = write_plan_artifact(project, "新增 explore", use_wiki=False)
+
+    executed = webui_mod.execute_artifact_next_action("demo", result["context_path"], "import_tasks")
+
+    assert executed["ok"] is True
+    assert executed["action_id"] == "import_tasks"
+    payload = webui_mod.artifact_context_payload(result["context_path"])
+    action_ids = [item["id"] for item in payload["next_actions"]]
+    assert "import_tasks" not in action_ids
+    assert "execute_directly" not in action_ids
+
+
 def test_webui_dashboard_exposes_latest_inspect_workflow_context(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
