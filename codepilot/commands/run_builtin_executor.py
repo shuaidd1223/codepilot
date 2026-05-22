@@ -717,6 +717,25 @@ def _is_reviewer_timeout_error(reviewer: _PhaseOutcome) -> bool:
     return "timed out" in output.lower() or "timeout" in output.lower() or "超时" in output
 
 
+def _first_nonempty_line(text: str, *, limit: int = 240) -> str:
+    """Return a compact single-line detail for task error summaries."""
+    for raw_line in str(text or "").splitlines():
+        line = " ".join(raw_line.strip().split())
+        if line:
+            return line[:limit]
+    return ""
+
+
+def _builder_done_review_tool_failure_summary(reviewer: _PhaseOutcome) -> str:
+    """Build the terminal summary for reviewer CLI/tooling failures."""
+    detail = _first_nonempty_line(reviewer.output or "")
+    detail_part = f"：{detail}" if detail else ""
+    return (
+        f"✅ Builder 已完成但 ❌ Reviewer 工具失败（exit={reviewer.exit_code}）{detail_part}。"
+        "可重试 review、切换 reviewer，或人工接受/提交 builder 补丁。"
+    )
+
+
 def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
     """Run builder/reviewer rounds until success or a terminal failure state."""
     from codepilot.core import progress_bus
@@ -737,11 +756,11 @@ def _run_builtin_round_loop(ctx: _ExecutorContext) -> _BuiltinLoopOutcome:
         )
         if reviewer.exit_code != 0:
             _is_timeout = _is_reviewer_timeout_error(reviewer)
-            status = "builder_done_review_timeout" if _is_timeout else "reviewer_error"
+            status = "builder_done_review_timeout" if _is_timeout else "builder_done_review_tool_failure"
             summary = (
                 "✅ Builder 已完成但 ❌ Reviewer 超时，可以重试 review、切换 reviewer 或接受 builder 结果"
                 if _is_timeout
-                else "review 命令执行失败"
+                else _builder_done_review_tool_failure_summary(reviewer)
             )
             return _BuiltinLoopOutcome(
                 status=status,
@@ -829,6 +848,23 @@ def _map_builtin_loop_outcome(
             output=outcome.builder.output,
             review_output=reviewer_output,
             summary=outcome.summary or "review 命令执行失败",
+            executor="builtin",
+        )
+
+    if outcome.status == "builder_done_review_tool_failure":
+        reviewer = outcome.reviewer
+        reviewer_output = reviewer.output if reviewer else ""
+        reviewer_exit = reviewer.exit_code if reviewer else 1
+        return ExecutionResult(
+            exit_code=reviewer_exit,
+            output=outcome.builder.output,
+            review_output=reviewer_output,
+            summary=outcome.summary
+            or (
+                _builder_done_review_tool_failure_summary(reviewer)
+                if reviewer
+                else "✅ Builder 已完成但 ❌ Reviewer 工具失败。可重试 review、切换 reviewer，或人工接受/提交 builder 补丁。"
+            ),
             executor="builtin",
         )
 

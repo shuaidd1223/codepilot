@@ -527,3 +527,113 @@ def test_builder_done_review_timeout_preserves_builder_evidence(tmp_path, monkey
     assert stats.get("failed") == 1, "Stats must report 1 failed task"
     assert stats.get("requeued", 0) == 0, "Timeout must not requeue task"
 
+
+def test_builder_done_review_tool_failure_preserves_builder_evidence(tmp_path, monkeypatch):
+    """Reviewer tooling failures after a successful builder must not requeue."""
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "review tool failure test", agent="dual", max_retries=2)
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+
+    phases = iter(
+        [
+            ("codex", 0, "builder success evidence"),
+            OSError("[Errno 22] Invalid argument"),
+        ]
+    )
+
+    def fake_builtin_phase(**kwargs):
+        phase = next(phases)
+        if isinstance(phase, BaseException):
+            raise phase
+        return phase
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_phase", fake_builtin_phase)
+    monkeypatch.setattr(run_cmd, "_triage_review_failure", lambda *a, **kw: None)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+    logs = db.list_task_logs(task["id"])
+    error_message = current.get("error_message") or ""
+
+    assert current["status"] == "failed", "Reviewer tool failure must stop instead of requeueing dirty builder output"
+    assert stats.get("failed") == 1
+    assert stats.get("requeued", 0) == 0
+    assert "Builder 已完成" in error_message
+    assert "Reviewer 工具失败" in error_message
+    assert "[Errno 22] Invalid argument" in error_message
+    assert "重试 review" in error_message
+    assert "切换 reviewer" in error_message
+    assert "人工接受/提交" in error_message
+    assert any(log["phase"] == "builder" and "builder success evidence" in (log["output"] or "") for log in logs)
+    assert any(log["phase"] == "reviewer" and "[Errno 22] Invalid argument" in (log["output"] or "") for log in logs)
+
+
+def test_builder_done_reviewer_tooling_failure_does_not_requeue_dirty_backlog(tmp_path, monkeypatch):
+    """Builder success + reviewer tooling failure must not requeue into dirty preflight."""
+    import subprocess
+
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    subprocess.run(["git", "init"], cwd=project_path, capture_output=True, check=True)
+    (project_path / "README.md").write_text("# repo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=project_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=project_path, capture_output=True, check=True)
+    base_branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    config_file = project_path / "AGENTS.toml"
+    config_file.write_text(
+        f"""
+[project]
+name = "demo"
+base_branch = "{base_branch}"
+
+[automation]
+task_workspace = "direct"
+per_task_branch = false
+preflight_dirty_worktree = "stop"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    db.register_project("demo", str(project_path), base_branch=base_branch, config_file=str(config_file))
+    task = db.create_task("demo", "review tool failure test", agent="dual", max_retries=2)
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(run_cmd, "_triage_review_failure", lambda *a, **kw: None)
+
+    def fake_executor(*args, **kwargs):
+        (project_path / "README.md").write_text("# repo\n\nbuilder change\n", encoding="utf-8")
+        return run_cmd.ExecutionResult(
+            exit_code=1,
+            output="builder success evidence",
+            review_output="[Errno 22] Invalid argument",
+            summary="✅ Builder 已完成但 ❌ Reviewer 工具失败，可以重试 review、切换 reviewer 或人工接受/提交补丁",
+            executor="builtin",
+        )
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", fake_executor)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False)
+    current = db.get_task(task["id"])
+
+    assert current["status"] == "failed"
+    assert stats.get("failed") == 1
+    assert stats.get("requeued", 0) == 0
+    assert "Builder 已完成" in (current.get("error_message") or "")
+    assert "Reviewer 工具失败" in (current.get("error_message") or "")
+    assert "重试 review" in (current.get("error_message") or "")
+    assert "切换 reviewer" in (current.get("error_message") or "")
+    assert "builder change" in (project_path / "README.md").read_text(encoding="utf-8")

@@ -513,6 +513,14 @@ def _render_dashboard(project: str, *, quiet: bool, title: str) -> None:
     _runner_module().render_project_dashboard(project, include_done=False, max_rows=10, title=title)
 
 
+def _is_builder_done_review_terminal_failure(summary: str | None) -> bool:
+    """Return whether a failure happened after builder completed successfully."""
+    text = str(summary or "")
+    if "Builder 已完成" not in text:
+        return False
+    return "Reviewer 工具失败" in text or "超时" in text or "timeout" in text.lower()
+
+
 def _recover_retryable_dirty_task_branch(context: _RunContext, project: str) -> dict | None:
     """Requeue a failed task when its dirty task branch is still checked out.
 
@@ -542,6 +550,8 @@ def _recover_retryable_dirty_task_branch(context: _RunContext, project: str) -> 
     if not task or task.get("project") != project:
         return None
     if task.get("status") not in {"failed", "cancelled"}:
+        return None
+    if _is_builder_done_review_terminal_failure(task.get("error_message")):
         return None
     retry_count = int(task.get("retry_count") or 0)
     max_retries = int(task.get("max_retries") or 3)
@@ -816,11 +826,8 @@ def _handle_execution_result(
     else:
         error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
         runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
-        _is_builder_timeout = (
-            "Builder 已完成" in (result.summary or "")
-            and ("超时" in (result.summary or "") or "timeout" in (result.summary or "").lower())
-        )
-        if _is_builder_timeout:
+        is_builder_done_review_terminal_failure = _is_builder_done_review_terminal_failure(result.summary)
+        if is_builder_done_review_terminal_failure:
             updated = runner._mark_task_failed(task, error_message)
             should_stop = False
         elif result.deterministic_failure and not result.review_output:
@@ -847,7 +854,9 @@ def _handle_execution_result(
             updated = triage_result["updated"]
             error_message = triage_result["error_message"]
             should_stop = bool(triage_result.get("should_stop", True))
-        if updated["status"] == "failed":
+        if updated["status"] == "failed" and not is_builder_done_review_terminal_failure:
+            # Builder-done reviewer terminal failures must keep the dirty patch
+            # available for manual accept/review recovery.
             runner._finalize_failed_task_workspace(
                 task_id=task_id,
                 project_path=context.project_path,

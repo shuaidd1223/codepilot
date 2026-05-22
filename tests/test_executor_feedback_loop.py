@@ -659,6 +659,38 @@ def test_reviewer_timeout_preserves_builder_evidence(fake_project, monkeypatch, 
     assert "timeout" in (result.summary or "").lower() or "超时" in (result.summary or "")
 
 
+def test_reviewer_tooling_failure_after_builder_done_has_blocked_summary(fake_project, monkeypatch, tmp_path):
+    """Reviewer tool/command failures after builder success are not normal review FAIL."""
+    from codepilot.ai_support import service as ai_mod
+
+    class _BuilderThenReviewerToolingFailure:
+        def __call__(self, *, task, project_path, phase, prompt):
+            if phase == "builder":
+                return "codex", 0, "builder output ok"
+            return "codex-review", 1, "[Errno 22] Invalid argument"
+
+    monkeypatch.setattr(ai_mod, "_phase_stub", _BuilderThenReviewerToolingFailure())
+    monkeypatch.setattr(run_mod, "_write_task_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_mod, "_git_changed_files", lambda project_path: [])
+
+    task = _sample_task()
+    task_file = tmp_path / "42-task.md"
+    task_file.write_text("stub", encoding="utf-8")
+
+    result = run_mod._run_builtin_executor(
+        task, fake_project, task_file, auto_commit=False, max_review_rounds=2,
+    )
+
+    assert result.exit_code != 0
+    assert result.output == "builder output ok"
+    assert "[Errno 22] Invalid argument" in result.review_output
+    assert "Builder 已完成" in (result.summary or "")
+    assert "Reviewer 工具失败" in (result.summary or "")
+    assert "重试 review" in (result.summary or "")
+    assert "切换 reviewer" in (result.summary or "")
+    assert result.deterministic_failure is False
+
+
 def test_map_builtin_loop_outcome_builder_done_review_timeout(fake_project, tmp_path):
     """builder_done_review_timeout maps to non-zero exit with builder evidence."""
     task = _sample_task()
