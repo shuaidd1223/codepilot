@@ -16,11 +16,13 @@ from typing import Any
 
 import click
 
+from codepilot.core.config import resolve_project_config_reference
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import global_storage_root
 from codepilot.core.runtime import codepilot_command, is_process_alive, no_window_kwargs, stop_process_tree
 from codepilot.core.service_launcher import DetachedProcessHandle, append_log_header, spawn_detached_command_via_launcher
 from codepilot.core.text_decode import decode_subprocess_text
+from codepilot.feishu_config import FEISHU_CONFIG_REF_ENV
 from codepilot.feishu_runtime import runtime_root, worker_script
 from codepilot.feishu_bot import handle_event_payload, load_feishu_bot_config, validate_feishu_bot_config
 from codepilot.storage import database as db
@@ -64,6 +66,39 @@ def _now_iso() -> str:
 
 def _repo_root() -> Path:
     return runtime_root()
+
+
+def _config_ref_text(config_ref: Any = None) -> str:
+    return str(config_ref or "").strip()
+
+
+def _resolve_config_ref(project_ref: Any = None, *, config_ref: Any = None) -> str:
+    explicit = _config_ref_text(config_ref)
+    if explicit:
+        return explicit
+    if project_ref is not None:
+        resolved = resolve_project_config_reference(project_ref)
+        return _config_ref_text(resolved)
+    return _config_ref_text(os.environ.get(FEISHU_CONFIG_REF_ENV))
+
+
+def _load_config(config_ref: Any = None):
+    ref = _config_ref_text(config_ref)
+    return load_feishu_bot_config(ref) if ref else load_feishu_bot_config()
+
+
+def _validate_config(config_ref: Any = None) -> list[str]:
+    ref = _config_ref_text(config_ref)
+    return validate_feishu_bot_config(ref) if ref else validate_feishu_bot_config()
+
+
+def _env_with_config_ref(config_ref: Any = None) -> dict[str, str] | None:
+    ref = _config_ref_text(config_ref)
+    if not ref:
+        return None
+    env = os.environ.copy()
+    env[FEISHU_CONFIG_REF_ENV] = ref
+    return env
 
 
 def _worker_script() -> Path:
@@ -246,8 +281,9 @@ def _clear_state() -> None:
     db.clear_service_state("feishu", _service_scope())
 
 
-def _build_worker_env() -> dict[str, str]:
-    cfg = load_feishu_bot_config()
+def _build_worker_env(config_ref: Any = None) -> dict[str, str]:
+    ref = _resolve_config_ref(config_ref=config_ref)
+    cfg = _load_config(ref)
     env = os.environ.copy()
     env.update(
         {
@@ -257,17 +293,20 @@ def _build_worker_env() -> dict[str, str]:
             "CODEPILOT_FEISHU_PYTHON_MODE": "binary" if getattr(sys, "frozen", False) else "module",
         }
     )
+    if ref:
+        env[FEISHU_CONFIG_REF_ENV] = ref
     return env
 
 
-def _worker_command() -> list[str]:
-    cfg = load_feishu_bot_config()
+def _worker_command(config_ref: Any = None) -> list[str]:
+    cfg = _load_config(_resolve_config_ref(config_ref=config_ref))
     return [cfg.node_command or "node", str(_worker_script())]
 
 
-def _check_runtime_ready() -> None:
-    cfg = load_feishu_bot_config()
-    problems = validate_feishu_bot_config()
+def _check_runtime_ready(config_ref: Any = None) -> None:
+    ref = _resolve_config_ref(config_ref=config_ref)
+    cfg = _load_config(ref)
+    problems = _validate_config(ref)
     if problems:
         raise RuntimeError("飞书机器人配置不完整：\n- " + "\n- ".join(problems))
 
@@ -291,32 +330,39 @@ def _check_runtime_ready() -> None:
         ) from exc
 
 
-def _spawn_detached() -> DetachedProcessHandle:
+def _spawn_detached(config_ref: Any = None) -> DetachedProcessHandle:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     append_log_header(LOG_FILE, f"\n--- start {_now_iso()} ---\n")
     cmd = codepilot_command("feishu", "run")
-    pid = spawn_detached_command_via_launcher(cmd, log_file=LOG_FILE, cwd=_repo_root())
+    ref = _resolve_config_ref(config_ref=config_ref)
+    env = _env_with_config_ref(ref)
+    pid = spawn_detached_command_via_launcher(cmd, log_file=LOG_FILE, cwd=_repo_root(), env=env)
     return DetachedProcessHandle(pid)
 
 
-def _spawn_worker() -> subprocess.Popen:
+def _spawn_worker(config_ref: Any = None) -> subprocess.Popen:
+    ref = _resolve_config_ref(config_ref=config_ref)
     return subprocess.Popen(
-        _worker_command(),
+        _worker_command(ref),
         cwd=str(_repo_root()),
-        env=_build_worker_env(),
+        env=_build_worker_env(ref),
         **no_window_kwargs(new_process_group=True),
     )
 
 
-def _supervise_worker() -> None:
-    _check_runtime_ready()
+def _supervise_worker(config_ref: Any = None) -> None:
+    ref = _resolve_config_ref(config_ref=config_ref)
+    _check_runtime_ready(ref)
     status = _service_status()
     if status["running"]:
         raise click.ClickException(f"飞书服务已在运行，PID={status['pid']}")
 
     db.init_db()
     _clear_state()
-    _write_state(os.getpid(), meta_updates={"restart_count": 0, "worker_pid": 0, "last_exit_code": None})
+    meta = {"restart_count": 0, "worker_pid": 0, "last_exit_code": None}
+    if ref:
+        meta["config_ref"] = ref
+    _write_state(os.getpid(), meta_updates=meta)
     echo("[cyan]CodePilot Feishu Bot[/cyan] 长连接已启动，按 Ctrl+C 停止。")
     restart_count = 0
     proc: subprocess.Popen | None = None
@@ -324,7 +370,7 @@ def _supervise_worker() -> None:
         while True:
             if _stop_requested():
                 break
-            proc = _spawn_worker()
+            proc = _spawn_worker(ref)
             _touch_state(
                 os.getpid(),
                 meta_updates={
@@ -379,14 +425,18 @@ def _start_foreground() -> None:
     _supervise_worker()
 
 
-def ensure_service_running_if_enabled() -> dict[str, Any]:
+def ensure_service_running_if_enabled(project_ref: Any = None, *, config_ref: Any = None) -> dict[str, Any]:
     """Best-effort autostart hook for UI/daemon entrypoints."""
-    cfg = load_feishu_bot_config()
+    ref = _resolve_config_ref(project_ref, config_ref=config_ref)
+    cfg = _load_config(ref)
     if not cfg.enabled:
         return {"enabled": False, "running": False, "started": False}
 
     try:
-        _check_runtime_ready()
+        if ref:
+            _check_runtime_ready(ref)
+        else:
+            _check_runtime_ready()
     except Exception as exc:
         return {"enabled": True, "running": False, "started": False, "error": str(exc)}
 
@@ -396,7 +446,7 @@ def ensure_service_running_if_enabled() -> dict[str, Any]:
 
     _stop_feishu_processes()
     _clear_state()
-    proc = _spawn_detached()
+    proc = _spawn_detached(ref) if ref else _spawn_detached()
     time.sleep(0.8)
     if proc.poll() is not None:
         tail = ""

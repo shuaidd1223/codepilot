@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from codepilot.commands import feishu as feishu_cmd
+from codepilot.feishu_config import FEISHU_CONFIG_REF_ENV, load_feishu_bot_config
 from codepilot.feishu_bot import card_builders
 from codepilot.feishu_bot import handle_command_text
 from codepilot.storage import database as db
@@ -18,6 +20,31 @@ def _stub_opencode(monkeypatch, calls: list[dict], *, message: str = "OpenCode å
         return {"ok": True, "message": message, "opencode_session_id": f"ses-{len(calls)}"}
 
     monkeypatch.setattr("codepilot.opencode.session.run_opencode_message", fake_run)
+
+
+def _write_feishu_config(
+    path: Path,
+    *,
+    enabled: bool = True,
+    app_id: str = "cli-target",
+    app_secret: str = "secret-target",
+    node_command: str = "node-target",
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"""
+[project]
+name = "demo"
+
+[feishu_bot]
+enabled = {str(enabled).lower()}
+app_id = "{app_id}"
+app_secret = "{app_secret}"
+node_command = "{node_command}"
+default_project = "demo"
+""".strip(),
+        encoding="utf-8",
+    )
 
 
 def test_feishu_req_new_enters_opencode_without_old_requirement_session(tmp_path, monkeypatch):
@@ -94,6 +121,107 @@ def test_ensure_feishu_service_running_if_enabled_returns_disabled_when_config_o
     result = feishu_cmd.ensure_service_running_if_enabled()
 
     assert result == {"enabled": False, "running": False, "started": False}
+
+def test_ensure_feishu_service_running_if_enabled_uses_registered_project_config_from_foreign_cwd(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    project_path = tmp_path / "project"
+    foreign_cwd = tmp_path / "elsewhere"
+    config_file = tmp_path / "config-root" / "AGENTS.toml"
+    project_path.mkdir()
+    foreign_cwd.mkdir()
+    _write_feishu_config(config_file)
+    project_info = db.register_project("demo", str(project_path), config_file=str(config_file))
+    monkeypatch.chdir(foreign_cwd)
+
+    checked_refs: list[str | None] = []
+    spawned_refs: list[str | None] = []
+
+    def fake_check_runtime_ready(config_ref=None):
+        checked_refs.append(str(config_ref) if config_ref else None)
+        cfg = load_feishu_bot_config(config_ref)
+        assert cfg.enabled is True
+        assert cfg.app_id == "cli-target"
+        assert cfg.app_secret == "secret-target"
+        assert cfg.node_command == "node-target"
+
+    class _Proc:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    def fake_spawn_detached(config_ref=None):
+        spawned_refs.append(str(config_ref) if config_ref else None)
+        return _Proc()
+
+    monkeypatch.setattr(feishu_cmd, "_check_runtime_ready", fake_check_runtime_ready)
+    monkeypatch.setattr(feishu_cmd, "_service_status", lambda: {"running": False})
+    monkeypatch.setattr(feishu_cmd, "_clear_state", lambda: None)
+    monkeypatch.setattr(feishu_cmd, "_stop_feishu_processes", lambda: [])
+    monkeypatch.setattr(feishu_cmd, "_spawn_detached", fake_spawn_detached)
+    monkeypatch.setattr(feishu_cmd, "LOG_FILE", tmp_path / "feishu.log")
+    monkeypatch.setattr(feishu_cmd.time, "sleep", lambda _seconds: None)
+
+    result = feishu_cmd.ensure_service_running_if_enabled(project_info)
+
+    assert result["started"] is True
+    assert checked_refs == [str(config_file)]
+    assert spawned_refs == [str(config_file)]
+
+def test_feishu_spawn_detached_passes_config_reference_in_env_not_command(monkeypatch, tmp_path):
+    calls = []
+    config_file = tmp_path / "config-root" / "AGENTS.toml"
+    _write_feishu_config(config_file)
+    monkeypatch.setattr(feishu_cmd, "STATE_DIR", tmp_path / "feishu")
+    monkeypatch.setattr(feishu_cmd, "LOG_FILE", tmp_path / "feishu.log")
+    monkeypatch.setattr(feishu_cmd, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        feishu_cmd,
+        "spawn_detached_command_via_launcher",
+        lambda cmd, *, log_file, cwd=None, env=None: calls.append((cmd, log_file, cwd, env)) or 4321,
+    )
+
+    proc = feishu_cmd._spawn_detached(str(config_file))
+
+    assert proc.pid == 4321
+    cmd, log_file, cwd, env = calls[0]
+    assert cmd == [feishu_cmd.sys.executable, "-m", "codepilot", "feishu", "run"]
+    assert str(config_file) not in " ".join(cmd)
+    assert env[FEISHU_CONFIG_REF_ENV] == str(config_file)
+    assert env.get("CODEPILOT_FEISHU_APP_SECRET") != "secret-target"
+    assert log_file == tmp_path / "feishu.log"
+    assert cwd == tmp_path
+
+def test_feishu_worker_env_and_command_use_config_reference(monkeypatch, tmp_path):
+    config_file = tmp_path / "config-root" / "AGENTS.toml"
+    _write_feishu_config(config_file)
+    monkeypatch.setattr(feishu_cmd, "_worker_script", lambda: tmp_path / "feishu_worker.mjs")
+
+    env = feishu_cmd._build_worker_env(str(config_file))
+    command = feishu_cmd._worker_command(str(config_file))
+
+    assert command == ["node-target", str(tmp_path / "feishu_worker.mjs")]
+    assert env[FEISHU_CONFIG_REF_ENV] == str(config_file)
+    assert env["CODEPILOT_FEISHU_APP_ID"] == "cli-target"
+    assert env["CODEPILOT_FEISHU_APP_SECRET"] == "secret-target"
+
+def test_feishu_config_loader_uses_env_config_reference_from_foreign_cwd(tmp_path, monkeypatch):
+    config_file = tmp_path / "config-root" / "AGENTS.toml"
+    foreign_cwd = tmp_path / "elsewhere"
+    foreign_cwd.mkdir()
+    _write_feishu_config(config_file, app_id="env-target", app_secret="env-secret")
+    monkeypatch.chdir(foreign_cwd)
+    monkeypatch.setenv(FEISHU_CONFIG_REF_ENV, str(config_file))
+
+    cfg = load_feishu_bot_config()
+
+    assert cfg.enabled is True
+    assert cfg.app_id == "env-target"
+    assert cfg.app_secret == "env-secret"
 
 def test_ensure_feishu_service_running_if_enabled_starts_detached_worker(monkeypatch, tmp_path):
     monkeypatch.setattr(
@@ -178,17 +306,18 @@ def test_feishu_spawn_detached_uses_external_launcher(monkeypatch, tmp_path):
     monkeypatch.setattr(
         feishu_cmd,
         "spawn_detached_command_via_launcher",
-        lambda cmd, *, log_file, cwd=None: calls.append((cmd, log_file, cwd)) or 4321,
+        lambda cmd, *, log_file, cwd=None, env=None: calls.append((cmd, log_file, cwd, env)) or 4321,
     )
 
     proc = feishu_cmd._spawn_detached()
 
     assert proc.pid == 4321
     assert calls
-    cmd, log_file, cwd = calls[0]
+    cmd, log_file, cwd, env = calls[0]
     assert cmd == [feishu_cmd.sys.executable, "-m", "codepilot", "feishu", "run"]
     assert log_file == tmp_path / "feishu.log"
     assert cwd == tmp_path
+    assert env is None
 
 def test_feishu_spawn_detached_uses_binary_command_when_frozen(monkeypatch, tmp_path):
     calls = []
@@ -200,7 +329,7 @@ def test_feishu_spawn_detached_uses_binary_command_when_frozen(monkeypatch, tmp_
     monkeypatch.setattr(
         feishu_cmd,
         "spawn_detached_command_via_launcher",
-        lambda cmd, *, log_file, cwd=None: calls.append((cmd, log_file, cwd)) or 4321,
+        lambda cmd, *, log_file, cwd=None, env=None: calls.append((cmd, log_file, cwd, env)) or 4321,
     )
 
     proc = feishu_cmd._spawn_detached()

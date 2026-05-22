@@ -370,7 +370,7 @@ def _start_heartbeat_thread(project: str | None = None, *, interval_seconds: int
     return stop
 
 
-def _ensure_ui_service_process(port: int = 8766) -> bool:
+def _ensure_ui_service_process(port: int = 8766, *, project: str | None = None) -> bool:
     """Ensure Web UI runs in a **separate process** from daemon.
 
     Historically foreground daemon started Web UI as an in-process thread.
@@ -385,6 +385,8 @@ def _ensure_ui_service_process(port: int = 8766) -> bool:
         "--port",
         str(int(port)),
     )
+    if project:
+        cmd.extend(["--project", project])
     try:
         result = subprocess.run(
             cmd,
@@ -536,8 +538,8 @@ def daemon(
 
     try:
         if enable_ui:
-            _ensure_ui_service_process(ui_port)
-        _ensure_feishu_service()
+            _ensure_ui_service_process(ui_port, project=project)
+        _ensure_feishu_service(project)
         _run_loop(project, interval, verbose, shell, executor, auto_commit, max_concurrent)
     except KeyboardInterrupt:
         echo()
@@ -546,9 +548,19 @@ def daemon(
         _release_lock(project)
 
 
-def _ensure_feishu_service() -> None:
+def _ensure_feishu_service(project: str | None = None) -> None:
+    project_info = None
+    if project:
+        try:
+            project_info = db.get_project(project)
+        except Exception as exc:
+            echo(f"[yellow]飞书项目配置读取失败：{safe(exc)}[/yellow]")
+            return
+        if not project_info:
+            echo(f"[yellow]项目 {project} 未注册，跳过飞书服务自动启动。[/yellow]")
+            return
     try:
-        result = ensure_service_running_if_enabled()
+        result = ensure_service_running_if_enabled(project_info) if project_info else ensure_service_running_if_enabled()
     except Exception as exc:
         echo(f"[yellow]飞书服务自动启动失败：{safe(exc)}[/yellow]")
         return

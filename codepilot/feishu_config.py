@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Mapping
 
-from codepilot.core.config import load_config
+from codepilot.core.config import load_config, load_project_config
+
+
+FEISHU_CONFIG_REF_ENV = "CODEPILOT_FEISHU_CONFIG"
 
 
 @dataclass
@@ -18,8 +23,22 @@ class FeishuBotConfig:
     command_prefix: str = ""
 
 
-def load_feishu_bot_config(config_path: Path | None = None) -> FeishuBotConfig:
-    cfg = load_config(config_path)
+ConfigReference = str | Path | Mapping[str, Any]
+
+
+def _env_config_reference() -> str:
+    return str(os.environ.get(FEISHU_CONFIG_REF_ENV) or "").strip()
+
+
+def _effective_config_reference(config_path: ConfigReference | None = None) -> ConfigReference | None:
+    if config_path is not None:
+        return config_path
+    return _env_config_reference() or None
+
+
+def load_feishu_bot_config(config_path: ConfigReference | None = None) -> FeishuBotConfig:
+    config_ref = _effective_config_reference(config_path)
+    cfg = load_project_config(config_ref) if config_ref is not None else load_config()
     if cfg is None:
         return FeishuBotConfig()
     section = cfg.feishu_bot if isinstance(cfg.feishu_bot, dict) else {}
@@ -33,7 +52,7 @@ def load_feishu_bot_config(config_path: Path | None = None) -> FeishuBotConfig:
     )
 
 
-def validate_feishu_bot_config(config_path: Path | None = None) -> list[str]:
+def validate_feishu_bot_config(config_path: ConfigReference | None = None) -> list[str]:
     cfg = load_feishu_bot_config(config_path)
     problems: list[str] = []
     if not cfg.enabled:

@@ -14,7 +14,6 @@ import sys
 import time
 import webbrowser
 from datetime import datetime
-from pathlib import Path
 
 import click
 
@@ -233,15 +232,17 @@ def _remaining_service_pids(targets: list[int], *, wait_seconds: float = 2.0) ->
         time.sleep(0.2)
 
 
-def _foreground_ui_command(host: str, port: int) -> list[str]:
+def _foreground_ui_command(host: str, port: int, *, project: str = "") -> list[str]:
     command = [sys.executable]
     if not getattr(sys, "frozen", False):
         command.extend(["-m", "codepilot"])
     command.extend(["ui", "--host", host, "--port", str(port), "--no-open"])
+    if project:
+        command.extend(["--project", project])
     return command
 
 
-def _spawn_detached(host: str, port: int) -> subprocess.Popen:
+def _spawn_detached(host: str, port: int, project: str = "") -> subprocess.Popen:
     """Spawn `codepilot ui --host ... --port ... --no-open` as a detached process.
 
     Output goes to LOG_FILE so the terminal isn't blocked, and the process
@@ -255,7 +256,7 @@ def _spawn_detached(host: str, port: int) -> subprocess.Popen:
     except Exception:
         pass
 
-    cmd = _foreground_ui_command(host, port)
+    cmd = _foreground_ui_command(host, port, project=project)
 
     popen_kwargs = {
         "stdin": subprocess.DEVNULL,
@@ -309,14 +310,14 @@ def start_cmd(host: str | None, port: int | None, open_browser: bool, start_daem
         echo("[dim]如果需要重启：codepilot ui restart[/dim]")
         if start_daemon:
             _ensure_daemon_started(project)
-        _ensure_feishu_started()
+        _ensure_feishu_started(project)
         return
 
     # Clean up stale state
     _cleanup_files()
 
     try:
-        proc = _spawn_detached(resolved_host, resolved_port)
+        proc = _spawn_detached(resolved_host, resolved_port, project)
     except Exception as exc:
         echo(f"[red]启动失败：{safe(exc)}[/red]")
         raise click.Abort()
@@ -344,7 +345,7 @@ def start_cmd(host: str | None, port: int | None, open_browser: bool, start_daem
 
     if start_daemon:
         _ensure_daemon_started(project)
-    _ensure_feishu_started()
+    _ensure_feishu_started(project)
 
     if open_browser:
         try:
@@ -368,9 +369,20 @@ def _ensure_daemon_started(project: str = "") -> None:
         echo(f"[dim]项目 {project} 任务执行服务已在运行[/dim]  PID={result.get('pid')}")
 
 
-def _ensure_feishu_started() -> None:
+def _ensure_feishu_started(project: str = "") -> None:
+    project_info = None
+    if project:
+        try:
+            db.init_db()
+            project_info = db.get_project(project)
+        except Exception as exc:
+            echo(f"[yellow]飞书项目配置读取失败：{safe(exc)}[/yellow]")
+            return
+        if not project_info:
+            echo(f"[yellow]项目 {project} 未注册，跳过飞书服务自动启动。[/yellow]")
+            return
     try:
-        result = ensure_service_running_if_enabled()
+        result = ensure_service_running_if_enabled(project_info) if project_info else ensure_service_running_if_enabled()
     except Exception as exc:
         echo(f"[yellow]飞书服务自动启动失败：{safe(exc)}[/yellow]")
         return

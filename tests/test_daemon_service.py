@@ -359,6 +359,61 @@ def test_daemon_foreground_ui_starts_detached_webui_process(tmp_path, monkeypatc
     cmd = calls[0][0]
     assert cmd[:5] == [daemon_cmd.sys.executable, "-m", "codepilot", "ui", "start"]
 
+def test_daemon_foreground_passes_project_config_to_feishu_autostart(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
+    db.init_db()
+    project_path = tmp_path / "project"
+    config_file = tmp_path / "config-root" / "AGENTS.toml"
+    project_path.mkdir()
+    config_file.parent.mkdir()
+    config_file.write_text(
+        """
+[project]
+name = "demo"
+
+[feishu_bot]
+enabled = true
+app_id = "target"
+app_secret = "secret"
+""".strip(),
+        encoding="utf-8",
+    )
+    db.register_project("demo", str(project_path), config_file=str(config_file))
+    monkeypatch.setattr(daemon_cmd, "_run_loop", lambda *args, **kwargs: None)
+
+    feishu_refs = []
+    monkeypatch.setattr(
+        daemon_cmd,
+        "ensure_service_running_if_enabled",
+        lambda project_ref=None: feishu_refs.append(project_ref) or {"enabled": True, "running": False, "started": False},
+    )
+
+    result = CliRunner().invoke(
+        daemon_cmd.daemon,
+        ["--project", "demo", "--foreground", "--no-ui"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert feishu_refs
+    assert feishu_refs[0]["name"] == "demo"
+    assert feishu_refs[0]["config_file"] == str(config_file)
+
+def test_daemon_foreground_ui_command_carries_project(monkeypatch):
+    monkeypatch.setattr(daemon_cmd.sys, "frozen", False, raising=False)
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    monkeypatch.setattr(daemon_cmd.subprocess, "run", lambda cmd, **kwargs: calls.append((cmd, kwargs)) or _Result())
+
+    assert daemon_cmd._ensure_ui_service_process(9911, project="demo") is True
+    cmd = calls[0][0]
+    assert cmd[-2:] == ["--project", "demo"]
+
 
 def test_daemon_foreground_ui_uses_binary_command_when_frozen(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)

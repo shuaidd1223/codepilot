@@ -80,7 +80,7 @@ def test_webui_restart_stops_existing_service_before_starting_new_one(tmp_path, 
             return None
 
     monkeypatch.setattr(svc, "stop_process_tree", fake_stop_process_tree)
-    monkeypatch.setattr(svc, "_spawn_detached", lambda host, port: _FakeProc())
+    monkeypatch.setattr(svc, "_spawn_detached", lambda host, port, project="": _FakeProc())
     monkeypatch.setattr(svc.time, "sleep", lambda _: None)
 
     runner = CliRunner()
@@ -109,7 +109,7 @@ def test_webui_start_ensures_daemon_service(tmp_path, monkeypatch):
             return None
 
     calls = []
-    monkeypatch.setattr(svc, "_spawn_detached", lambda host, port: _FakeProc())
+    monkeypatch.setattr(svc, "_spawn_detached", lambda host, port, project="": _FakeProc())
     monkeypatch.setattr(svc.time, "sleep", lambda _: None)
     monkeypatch.setattr(svc, "request_daemon_service_start", lambda project="": calls.append(project) or {"started": True, "pid": 8765})
 
@@ -119,6 +119,56 @@ def test_webui_start_ensures_daemon_service(tmp_path, monkeypatch):
     assert calls == ["demo"]
     assert "Web UI 已启动" in result.output
     assert "项目 demo 任务执行服务已后台启动" in result.output
+
+def test_webui_start_passes_project_config_to_feishu_autostart(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    config_file = tmp_path / "config-root" / "AGENTS.toml"
+    project_path.mkdir()
+    config_file.parent.mkdir()
+    config_file.write_text(
+        """
+[project]
+name = "demo"
+
+[feishu_bot]
+enabled = true
+app_id = "target"
+app_secret = "secret"
+""".strip(),
+        encoding="utf-8",
+    )
+    db.register_project("demo", str(project_path), config_file=str(config_file))
+
+    class _FakeProc:
+        pid = 5678
+        returncode = None
+
+        def poll(self):
+            return None
+
+    feishu_refs = []
+    monkeypatch.setattr(svc, "_spawn_detached", lambda host, port, project="": _FakeProc())
+    monkeypatch.setattr(svc.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        svc,
+        "ensure_service_running_if_enabled",
+        lambda project_ref=None: feishu_refs.append(project_ref) or {"enabled": True, "running": False, "started": False},
+    )
+
+    result = CliRunner().invoke(svc.webui, ["start", "--no-open", "--no-daemon", "-p", "demo"])
+
+    assert result.exit_code == 0, result.output
+    assert feishu_refs
+    assert feishu_refs[0]["name"] == "demo"
+    assert feishu_refs[0]["config_file"] == str(config_file)
+
+def test_webui_foreground_command_carries_project_to_child(monkeypatch):
+    monkeypatch.setattr(svc.sys, "frozen", False, raising=False)
+
+    cmd = svc._foreground_ui_command("127.0.0.1", 9876, project="demo")
+
+    assert cmd[-2:] == ["--project", "demo"]
 
 
 def test_webui_spawn_command_uses_frozen_executable_without_module_args(monkeypatch):
@@ -217,7 +267,7 @@ def test_webui_restart_port_env_overrides_stale_meta(tmp_path, monkeypatch):
 
     captured: dict[str, int | str] = {}
 
-    def fake_spawn(host: str, port: int):
+    def fake_spawn(host: str, port: int, project: str = ""):
         captured["host"] = host
         captured["port"] = port
         return _FakeProc()
