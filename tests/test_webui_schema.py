@@ -16,6 +16,7 @@ from codepilot.webapp import payloads as webui_payloads
 from codepilot.webapp import task_payloads
 from codepilot.webapp.schema import (
     DashboardPayload,
+    ProjectWorkflow,
     ProjectStats,
     ProjectSummary,
     TaskActions,
@@ -89,6 +90,7 @@ def test_project_summary_keys(fresh_db):
     project = db.get_project(fresh_db["project"])
     summary = webui_payloads.project_summary(project)
     assert set(summary.keys()) == payload_keys(ProjectSummary)
+    assert set(summary["workflow"].keys()) == payload_keys(ProjectWorkflow)
 
 
 def test_to_json_schema_captures_required_fields():
@@ -98,4 +100,3 @@ def test_to_json_schema_captures_required_fields():
         assert field in schema["properties"]
     # required mirrors declared keys for a fully-typed dict.
     assert set(schema["required"]) == payload_keys(TaskListItem)
-

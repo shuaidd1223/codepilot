@@ -171,6 +171,39 @@ class ProjectServices(TypedDict):
     inspect: ProjectServiceStatus
 
 
+class ProjectWorkflowAutoPolicy(TypedDict):
+    """Resolved workflow auto-advance policy shown in the project view."""
+
+    allow_create_inspect_tasks: bool
+    allow_import_plan_tasks: bool
+    max_steps: int
+    failure_threshold: int
+
+
+class ProjectWorkflowInspect(TypedDict):
+    """Latest inspect workflow context exposed to the project view."""
+
+    context_path: str
+    quality_summary: dict[str, Any]
+    created_preview: list[dict[str, Any]]
+    report_only: list[dict[str, Any]]
+    ignored_report_only: list[dict[str, Any]]
+    deleted_report_only: list[dict[str, Any]]
+    archived_report_only: list[dict[str, Any]]
+    dropped: list[dict[str, Any]]
+    skipped: list[dict[str, Any]]
+    source_command: str
+
+
+class ProjectWorkflow(TypedDict):
+    """Latest workflow state and available actions for a project."""
+
+    status: dict[str, Any]
+    next_actions: list[dict[str, Any]]
+    auto_policy: ProjectWorkflowAutoPolicy
+    inspect: ProjectWorkflowInspect
+
+
 class ProjectSummary(TypedDict):
     """One row in the dashboard's project selector."""
 
@@ -181,6 +214,7 @@ class ProjectSummary(TypedDict):
     job_count: int
     active_summary: str
     services: ProjectServices
+    workflow: ProjectWorkflow
 
 
 class DashboardPayload(TypedDict):
