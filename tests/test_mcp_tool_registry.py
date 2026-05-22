@@ -24,6 +24,7 @@ DEFAULT_MCP_TOOL_NAMES = {
     "generate_breakdown",
     "hook_trigger",
     "inspect_project",
+    "inspect_workflow",
     "list_tasks",
     "note_add",
     "run_once",
@@ -33,6 +34,8 @@ DEFAULT_MCP_TOOL_NAMES = {
     "webhook_invoke",
     "wiki_add",
     "wiki_query",
+    "workflow_next",
+    "workflow_status",
 }
 
 
@@ -64,7 +67,7 @@ def test_register_tool_builds_schema_from_annotations():
     }
 
 
-def test_default_mcp_registry_loads_22_tools_without_duplicates():
+def test_default_mcp_registry_loads_25_tools_without_duplicates():
     from codepilot.mcp.tool_registry import default_registry
     from codepilot.mcp.tools import load_default_tools
 

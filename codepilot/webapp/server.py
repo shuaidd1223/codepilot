@@ -89,9 +89,14 @@ from codepilot.webapp.payloads import (  # noqa: F401 (re-export)
     artifact_context_payload,
     daemon_health_payload,
     dashboard_payload,
+    project_workflow_payload,
     project_summary,
     task_detail_payload,
     task_log_delta,
+)
+from codepilot.webapp.action_workflow import (  # noqa: F401 (re-export)
+    execute_workflow_action,
+    run_inspect_workflow_action,
 )
 
 
@@ -706,6 +711,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send_json(dashboard_payload(unquote(match.group(1))))
         return True
 
+    def _dispatch_get_project_workflow(self, path: str) -> bool:
+        match = re.fullmatch(r"/api/projects/([^/]+)/workflow", path)
+        if not match:
+            return False
+        try:
+            self._send_json(project_workflow_payload(unquote(match.group(1))))
+        except RuntimeError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        return True
+
     def _dispatch_get_task_detail(self, path: str) -> bool:
         match = re.fullmatch(r"/api/tasks/(\d+)", path)
         if not match:
@@ -774,6 +789,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return True
 
     def _dispatch_get_pattern(self, path: str, parsed: ParseResult) -> bool:
+        if self._dispatch_get_project_workflow(path):
+            return True
         if self._dispatch_get_project_detail(path):
             return True
         if self._dispatch_get_task_detail(path):
@@ -849,6 +866,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             allow_high_risk=bool(body.get("allow_high_risk", False)),
         )
 
+    def _handle_post_workflow_action(self, body: dict) -> dict:
+        return execute_workflow_action(
+            body.get("project") or "",
+            body.get("action_id") or body.get("id") or "",
+            mode=(body.get("mode") or "").strip() or None,
+            allow_high_risk=bool(body.get("allow_high_risk", False)),
+        )
+
     def _handle_post_requirements(self, body: dict) -> dict:
         return submit_requirement_action(
             body.get("project") or "",
@@ -898,6 +923,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/tasks/batch": self._handle_post_tasks_batch,
             "/api/tasks/import": self._handle_post_tasks_import,
             "/api/artifacts/actions": self._handle_post_artifact_action,
+            "/api/workflow/actions": self._handle_post_workflow_action,
             "/api/requirements": self._handle_post_requirements,
             "/api/sessions": self._handle_post_sessions,
             "/api/files/upload": self._handle_post_file_upload,
@@ -946,6 +972,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             match.group(3),
         )
 
+    def _dispatch_post_project_inspect_run(self, path: str, get_body: Callable[[], dict]) -> dict | None:
+        match = re.fullmatch(r"/api/projects/([^/]+)/inspect/runs", path)
+        if not match:
+            return None
+        body = get_body()
+        max_new_raw = body.get("max_new")
+        try:
+            max_new = int(max_new_raw) if max_new_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            max_new = None
+        return run_inspect_workflow_action(
+            unquote(match.group(1)),
+            max_new=max_new,
+            planner=(body.get("planner") or "").strip() or None,
+            agent=(body.get("agent") or "").strip() or "codex",
+        )
+
     def _dispatch_post_session_message(self, path: str, get_body: Callable[[], dict]) -> dict | None:
         match = re.fullmatch(r"/api/sessions/(\d+)/messages", path)
         if not match:
@@ -985,6 +1028,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _dispatch_post_pattern(self, path: str, get_body: Callable[[], dict]) -> dict | None:
         """Handle regex POST routes; return ``None`` if unmatched."""
+        payload = self._dispatch_post_project_inspect_run(path, get_body)
+        if payload is not None:
+            return payload
         payload = self._dispatch_post_task_action(path)
         if payload is not None:
             return payload

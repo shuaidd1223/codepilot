@@ -9,6 +9,7 @@ import textwrap
 import threading
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import BinaryIO
 
 import pytest
@@ -467,6 +468,31 @@ def test_project_detail_endpoint(ui_server):
     status, body = _get(f"{ui_server}/api/projects/demo")
     assert status == 200
     assert body.get("selected_project") == "demo"
+
+
+def test_project_permission_endpoint_updates_agents_toml(ui_server):
+    project = db.get_project("demo")
+    config_path = Path(project["path"]) / "AGENTS.toml"
+    config_path.write_text(
+        """
+[project]
+name = "demo"
+
+[opencode.permission]
+mode = "ask"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    status, body = _post(
+        f"{ui_server}/api/projects/demo/permission",
+        {"mode": "full_access"},
+    )
+
+    assert status == 200
+    assert body["ok"] is True
+    assert body["mode"] == "full_access"
+    assert 'mode = "full_access"' in config_path.read_text(encoding="utf-8")
 
 
 def test_sessions_endpoint_searches_message_history(ui_server):

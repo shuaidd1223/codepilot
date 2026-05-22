@@ -28,6 +28,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       autoRefresh: true, timer: null,
       loading: false, sending: false, newSessionLoading: false,
       actionPending: {},
+      workflowPending: '',
       projectSubmitting: false, deletingProject: '',
       servicePending: '',
       pendingTasks: {},
@@ -622,6 +623,36 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       return ensureSubmissionBoundary().projectService(service, action);
     }
 
+    async function runInspectWorkflow(project = state.nav.project) {
+      if (!project || state.workflowPending) return;
+      state.workflowPending = 'inspect';
+      try {
+        const data = await CP.api.post(`/api/projects/${encodeURIComponent(project)}/inspect/runs`, {});
+        pushToast('巡检工作流已生成', 'success');
+        await loadDashboard();
+        return data;
+      } catch (err) {
+        pushToast(err.message, 'error');
+      } finally {
+        state.workflowPending = '';
+      }
+    }
+
+    async function workflowAction(actionId, project = state.nav.project) {
+      if (!project || !actionId || state.workflowPending) return;
+      state.workflowPending = actionId;
+      try {
+        const data = await CP.api.post('/api/workflow/actions', { project, action_id: actionId });
+        pushToast('工作流动作已执行', 'success');
+        await loadDashboard();
+        return data;
+      } catch (err) {
+        pushToast(err.message, 'error');
+      } finally {
+        state.workflowPending = '';
+      }
+    }
+
     async function jobAction(job, action) {
       return ensureSubmissionBoundary().jobAction(job, action);
     }
@@ -1061,6 +1092,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       taskBatchAction,
       toggleProjectForm, submitProject, deleteProject,
       projectService, jobAction,
+      runInspectWorkflow, workflowAction,
       newSession, sendChat, sendEmbeddedChat, stopSessionRun, deleteSession,
       submitClarifyAnswer,
       cancelGoalClarify, cancelComposerClarify, cancelSessionClarify,

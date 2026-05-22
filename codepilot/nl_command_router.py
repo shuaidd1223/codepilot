@@ -449,6 +449,20 @@ def _resolve_inspect_command(ctx: _CommandRouteContext) -> dict[str, Any] | None
     )
 
 
+def _resolve_workflow_command(ctx: _CommandRouteContext) -> dict[str, Any] | None:
+    if not _contains_any(ctx.content, ("巡检建议", "工作流", "下一步", "next action", "next_actions")):
+        return None
+    if ctx.project_name:
+        return _build_result("match", command=f"workflow {ctx.project_name}", label=f"查看 {ctx.project_name} 工作流下一步")
+    default_project = _resolve_default_project(ctx.active_project)
+    if default_project:
+        return _build_result("match", command=f"workflow {default_project}", label=f"查看 {default_project} 工作流下一步")
+    options = _project_options("workflow", active_project=ctx.active_project, label_prefix="查看工作流 ")
+    if options:
+        return _format_options("你是想看哪个项目的工作流下一步？", options)
+    return None
+
+
 def _resolve_daemon_command(ctx: _CommandRouteContext) -> dict[str, Any] | None:
     return _resolve_service_control_command(
         ctx,
@@ -541,6 +555,7 @@ def resolve_natural_language_command(text: str, *, active_project: str = "") -> 
     for resolver in (
         _resolve_catalog_command,
         _resolve_project_switch_command,
+        _resolve_workflow_command,
         _resolve_inspect_command,
         _resolve_daemon_command,
         _resolve_task_action_command,

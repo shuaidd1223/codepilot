@@ -41,12 +41,13 @@ codepilot go "修复任务重试逻辑并补测试" -p <项目名>
 codepilot clarify -p <项目名> "模糊需求" --json
 codepilot plan -p <项目名> "明确需求" --json
 codepilot plan -p <项目名> --from-spec .codepilot/specs/example.md --json
+codepilot inspect -p <项目名> --once --dry-run --write-workflow --json
 codepilot workflow status -p <项目名> --json
 codepilot workflow next -p <项目名> --list --json
 codepilot workflow next -p <项目名> --action <id> --json
 ```
 
-`clarify` 和 `plan` 不创建 backlog、不启动执行器。
+`clarify`、`plan` 和 `inspect --write-workflow` 不创建 backlog、不启动执行器。
 
 `clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；`suggested_command` 只用于展示/审查，不作为自动执行源。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
 
@@ -83,9 +84,12 @@ codepilot task rm <task_id>
 codepilot run -p <项目名> --once
 codepilot daemon -p <项目名> --status
 codepilot inspect -p <项目名> --once --json
+codepilot inspect -p <项目名> --once --dry-run --write-workflow --json
 codepilot build-fix -p <项目名> --task-id <task_id> --dry-run
 codepilot build-fix -p <项目名> --task-id <task_id> --json
 ```
+
+普通 `inspect --dry-run` 保持只输出预览；加 `--write-workflow` 才会写 `.codepilot/context/` 和 Agent Session，并通过 `workflow next` 暴露安全动作。
 
 任务失败后，如需完整修复闭环优先用 `build-fix`；只需重新排队时用 `task retry`。
 

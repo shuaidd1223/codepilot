@@ -10,6 +10,11 @@ CP.Components.ProjectView = Vue.defineComponent({
     runningTasks() { return this.s.tasks.filter(t => t.status === 'in_progress'); },
     taskService() { return (this.currentProject && this.currentProject.services && this.currentProject.services.tasks) || {}; },
     inspectService() { return (this.currentProject && this.currentProject.services && this.currentProject.services.inspect) || {}; },
+    workflowInspect() { return (this.currentProject && this.currentProject.workflow && this.currentProject.workflow.inspect) || {}; },
+    workflowActions() { return (this.currentProject && this.currentProject.workflow && this.currentProject.workflow.next_actions) || []; },
+    reportOnlyItems() { return this.workflowInspect.report_only || []; },
+    createdPreviewItems() { return this.workflowInspect.created_preview || []; },
+    qualitySummary() { return this.workflowInspect.quality_summary || {}; },
   },
   methods: {
     servicePending(service, action) {
@@ -21,6 +26,12 @@ CP.Components.ProjectView = Vue.defineComponent({
     sessionTitle(session) {
       const title = (session && session.title) || '新会话';
       return `#${session.id} ${title}`;
+    },
+    workflowPending(action) {
+      return this.s.workflowPending === action;
+    },
+    workflowActionLabel(action) {
+      return (action && action.label) || (action && action.id) || '执行';
     },
   },
   template: `
@@ -126,6 +137,50 @@ CP.Components.ProjectView = Vue.defineComponent({
           </section>
 
           <cp-metrics-panel class="project-metrics-panel"></cp-metrics-panel>
+
+          <section class="project-inspect-workflow-panel ops-panel">
+            <div class="card-head">
+              <h3>巡检工作流</h3>
+              <p class="muted">{{ workflowInspect.context_path ? '最近一次巡检建议' : '尚未生成巡检上下文' }}</p>
+            </div>
+            <div class="row gap-xs wrap">
+              <button class="btn btn-primary btn-sm" @click="cp.runInspectWorkflow(s.nav.project)" :disabled="!!s.workflowPending">
+                <span v-if="workflowPending('inspect')" class="spinner"></span>
+                运行巡检
+              </button>
+              <button
+                v-for="action in workflowActions"
+                :key="action.id"
+                class="btn btn-outline btn-sm"
+                @click="cp.workflowAction(action.id, s.nav.project)"
+                :disabled="!!s.workflowPending">
+                <span v-if="workflowPending(action.id)" class="spinner"></span>
+                {{ workflowActionLabel(action) }}
+              </button>
+            </div>
+            <div class="project-status-grid inspect-summary-grid">
+              <div class="project-status-tile">
+                <div class="project-status-label">可建任务</div>
+                <div class="project-status-value">{{ qualitySummary.created_count || createdPreviewItems.length || 0 }}</div>
+              </div>
+              <div class="project-status-tile">
+                <div class="project-status-label">仅报告</div>
+                <div class="project-status-value">{{ qualitySummary.report_only_count || reportOnlyItems.length || 0 }}</div>
+              </div>
+            </div>
+            <div v-if="reportOnlyItems.length" class="task-list compact-task-list inspect-report-list">
+              <article v-for="item in reportOnlyItems.slice(0, 4)" :key="item.candidate_id" class="task-item">
+                <div class="task-item-body">
+                  <div class="task-item-title">{{ item.title }}</div>
+                  <div class="chip-row">
+                    <cp-chip>{{ item.priority || 'P3' }}</cp-chip>
+                    <cp-chip>{{ item.reason || 'report_only' }}</cp-chip>
+                  </div>
+                  <div class="task-item-preview">{{ (item.files || []).join(', ') || item.goal }}</div>
+                </div>
+              </article>
+            </div>
+          </section>
 
           <section class="project-running-panel ops-panel">
             <div class="card-head">

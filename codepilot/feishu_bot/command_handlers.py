@@ -256,7 +256,56 @@ def _handle_project_view_command(
     if verb in {"requirements", "sessions", "jobs"}:
         project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=active_project)
         return _reply_card(build_sessions_card(project_name, prefix=cfg.command_prefix))
+    if verb in {"workflow", "next"}:
+        if verb == "workflow" and len(parts) > 1 and parts[1].lower() == "next":
+            if len(parts) < 4:
+                raise RuntimeError("请提供项目和动作，例如 `workflow next demo create_inspect_tasks`。")
+            project_name = _resolve_project(parts[2], default_project=active_project)
+            action_id = parts[3]
+            from codepilot.commands.workflow import execute_workflow_next_action
+
+            execute_workflow_next_action(project_name, action_id)
+            return _reply_card(_build_workflow_card(project_name, prefix=cfg.command_prefix, title="工作流动作已执行"))
+        project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=active_project)
+        return _reply_card(_build_workflow_card(project_name, prefix=cfg.command_prefix))
     return None
+
+
+def _build_workflow_card(project_name: str, *, prefix: str = "", title: str = "CodePilot 工作流下一步") -> dict[str, Any]:
+    from codepilot.commands.inspect_workflow import read_inspect_workflow_context
+    from codepilot.commands.workflow import workflow_next_payload
+
+    project = db.get_project(project_name)
+    if not project:
+        raise RuntimeError(f"项目 '{project_name}' 不存在。")
+    context = read_inspect_workflow_context(project) or {}
+    quality = context.get("quality_summary") or {}
+    report_only = context.get("report_only") or []
+    actions = workflow_next_payload(project_name).get("next_actions") or []
+    blocks: list[str | dict[str, Any]] = [
+        _field_block(
+            [
+                _field(f"**项目**\n`{project_name}`"),
+                _field(
+                    "**质量摘要**\n"
+                    f"`created={quality.get('created_count', len(context.get('created_preview') or []))} "
+                    f"report_only={quality.get('report_only_count', len(report_only))}`"
+                ),
+            ]
+        )
+    ]
+    if report_only:
+        blocks.append(_section("仅报告建议"))
+        blocks.append(_plain_block("\n".join(
+            f"- `{item.get('candidate_id')}` {item.get('title')}" for item in report_only[:5]
+        )))
+    commands = [
+        (f"workflow next {project_name} {action.get('id')}", str(action.get("label") or action.get("id")))
+        for action in actions[:6]
+        if str(action.get("id") or "").strip()
+    ]
+    blocks.extend(_command_panel(prefix, commands, title="工作流动作"))
+    return _card(title, blocks, template="blue")
 
 
 # ---------------------------------------------------------------------------

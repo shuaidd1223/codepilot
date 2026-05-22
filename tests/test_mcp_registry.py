@@ -33,6 +33,7 @@ EXPECTED_DEFAULT_MCP_TOOLS = {
     "generate_breakdown",
     "hook_trigger",
     "inspect_project",
+    "inspect_workflow",
     "list_tasks",
     "note_add",
     "run_once",
@@ -42,6 +43,8 @@ EXPECTED_DEFAULT_MCP_TOOLS = {
     "webhook_invoke",
     "wiki_add",
     "wiki_query",
+    "workflow_next",
+    "workflow_status",
 }
 
 FORBIDDEN_DRIFT_TOOL_NAMES = {
@@ -61,7 +64,7 @@ def _assert_no_chat_or_scheduled_agent_tools(names: set[str]) -> None:
     assert all("scheduled" not in name for name in names)
 
 
-def test_default_list_tools_exposes_exact_22_tool_contracts_without_unintended_drift(tmp_path):
+def test_default_list_tools_exposes_exact_25_tool_contracts_without_unintended_drift(tmp_path):
     load_default_tools()
     server = create_mcp_server(
         MCPProjectContext(project_path=tmp_path, project=None),
@@ -73,20 +76,20 @@ def test_default_list_tools_exposes_exact_22_tool_contracts_without_unintended_d
     tools = server.list_tools()
     names = {tool["name"] for tool in tools}
 
-    assert len(tools) == 22
+    assert len(tools) == 25
     assert names == EXPECTED_DEFAULT_MCP_TOOLS
     assert PHASE_4B_TOOL_NAMES <= names
     _assert_no_chat_or_scheduled_agent_tools(names)
     assert all(tool["inputSchema"]["additionalProperties"] is False for tool in tools)
 
 
-def test_mcp_list_tools_cli_prints_the_same_exact_22_tool_names():
+def test_mcp_list_tools_cli_prints_the_same_exact_25_tool_names():
     result = CliRunner().invoke(main, ["mcp", "serve", "--list-tools"])
 
     assert result.exit_code == 0, result.output
     lines = result.output.strip().splitlines()
     listed_names = {line.removeprefix("- ") for line in lines[1:]}
 
-    assert lines[0] == "22 MCP tools registered:"
+    assert lines[0] == "25 MCP tools registered:"
     assert listed_names == EXPECTED_DEFAULT_MCP_TOOLS
     _assert_no_chat_or_scheduled_agent_tools(listed_names)

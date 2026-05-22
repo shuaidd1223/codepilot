@@ -113,8 +113,11 @@ codepilot inspect -p myproject --status
 
 # 单次全量检查
 codepilot inspect -p myproject --once
+codepilot inspect -p myproject --once --dry-run --write-workflow --json
 codepilot doctor --project myproject --services --json
 ```
+
+`--write-workflow` 会生成巡检工作流上下文和安全 `next_actions`，可继续用 `codepilot workflow next -p myproject --list --json` 审查后推进。
 
 ## 常用命令
 
@@ -177,6 +180,7 @@ codepilot run -p <项目名> --once
 codepilot daemon -p <项目名>
 codepilot daemon -p <项目名> --status
 codepilot inspect -p <项目名> --once
+codepilot inspect -p <项目名> --once --dry-run --write-workflow --json
 codepilot inspect -p <项目名> --status
 codepilot build-fix -p <项目名> --task-id <task_id> --json
 codepilot doctor --project <项目名> --services --json

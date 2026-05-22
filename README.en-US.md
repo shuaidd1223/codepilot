@@ -113,8 +113,11 @@ codepilot inspect -p myproject --status
 
 # One-shot full check
 codepilot inspect -p myproject --once
+codepilot inspect -p myproject --once --dry-run --write-workflow --json
 codepilot doctor --project myproject --services --json
 ```
+
+`--write-workflow` creates inspection workflow context and safe `next_actions`, which can be reviewed with `codepilot workflow next -p myproject --list --json`.
 
 ## Common Commands
 
@@ -167,6 +170,7 @@ codepilot config sync --dry-run
 codepilot run -p <project-name> --once
 codepilot daemon -p <project-name>
 codepilot inspect -p <project-name> --once
+codepilot inspect -p <project-name> --once --dry-run --write-workflow --json
 codepilot build-fix -p <project-name> --task-id <task_id> --json
 codepilot doctor --project <project-name> --services --json
 ```

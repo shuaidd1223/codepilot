@@ -78,6 +78,7 @@ codepilot inspect -p <项目名> --status
 codepilot inspect -p <项目名> --stop
 codepilot inspect -p <项目名> --foreground
 codepilot inspect -p <项目名> --once
+codepilot inspect -p <项目名> --once --dry-run --write-workflow --json
 ```
 
 每个项目有自己的巡检状态目录：
@@ -88,6 +89,8 @@ codepilot inspect -p <项目名> --once
   inspect.json
   inspect.log
 ```
+
+`--write-workflow` 仅和 `--once --dry-run` 搭配使用。它会把巡检预览写入项目本地 `.codepilot/context/`，同步 Agent Session，并暴露 `workflow next` 可执行的安全动作；不会直接写 backlog。
 
 ### 4. Web UI 项目页增加项目服务控制
 

@@ -448,3 +448,186 @@ def test_workflow_next_rejects_unknown_and_high_risk_actions_by_default(tmp_path
     high_risk_payload = json.loads(high_risk.output)
     assert high_risk_payload["ok"] is False
     assert "高风险" in high_risk_payload["error"]["message"]
+
+
+def test_inspect_candidate_id_normalizes_absolute_project_paths(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    project_path = Path(project["path"])
+    source_file = project_path / "src" / "foo.py"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    base_candidate = {
+        "title": "修复 foo.py 超时 TODO",
+        "goal": "处理 foo.py 的超时 TODO。",
+        "priority": "P3",
+        "kind": "bug",
+        "reason": "actionable",
+        "evidence": "signal 3: src/foo.py:1 TODO handle timeout",
+        "acceptance_criteria": ["TODO 已处理。"],
+        "verification_commands": ["git diff --check"],
+        "effort": "small",
+    }
+    base_result = {
+        "project": "demo",
+        "report_only": [],
+        "dropped": [],
+        "skipped": [],
+        "quality_summary": {"created_count": 1, "report_only_count": 0},
+    }
+    absolute_result = {**base_result, "created": [dict(base_candidate, files=[str(source_file)])]}
+    relative_result = {**base_result, "created": [dict(base_candidate, files=["src/foo.py"])]}
+
+    absolute_context = write_inspect_workflow_context(
+        project,
+        absolute_result,
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-absolute",
+    )
+    relative_context = write_inspect_workflow_context(
+        project,
+        relative_result,
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-relative",
+    )
+
+    absolute_payload = json.loads(Path(absolute_context["context_path"]).read_text(encoding="utf-8"))
+    relative_payload = json.loads(Path(relative_context["context_path"]).read_text(encoding="utf-8"))
+
+    assert absolute_payload["created_preview"][0]["candidate_id"] == relative_payload["created_preview"][0]["candidate_id"]
+
+
+def test_workflow_next_executes_inspect_create_tasks_without_shelling_suggested_command(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    project_path = Path(project["path"])
+    (project_path / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    context = write_inspect_workflow_context(
+        project,
+        {
+            "project": "demo",
+            "created": [
+                {
+                    "candidate_id": "inspect-actionable",
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py:1 的 TODO，避免超时路径继续缺实现。",
+                    "priority": "P3",
+                    "rationale": "TODO 指向明确文件。",
+                    "kind": "bug",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的超时 TODO 已处理。"],
+                    "verification_commands": ["pytest tests/test_workflow_state.py -q"],
+                    "effort": "small",
+                }
+            ],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 1, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-test-create",
+    )
+    context_path = Path(context["context_path"])
+    payload = json.loads(context_path.read_text(encoding="utf-8"))
+    for action in payload["next_actions"]:
+        if action["id"] == "create_inspect_tasks":
+            action["suggested_command"] = "codepilot run -p demo --once --json"
+    context_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", "create_inspect_tasks", "--json"])
+
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.output)
+    assert out["ok"] is True
+    assert out["data"]["action"]["id"] == "create_inspect_tasks"
+    assert out["data"]["result"]["created_count"] == 1
+    tasks = db.list_tasks(project="demo")
+    assert len(tasks) == 1
+    assert tasks[0]["source"] == "inspector"
+    assert "修复 foo.py 超时 TODO" == tasks[0]["title"]
+
+
+def test_workflow_next_promotes_single_inspect_report_candidate(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    project_path = Path(project["path"])
+    (project_path / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    context = write_inspect_workflow_context(
+        project,
+        {
+            "project": "demo",
+            "created": [],
+            "report_only": [
+                {
+                    "candidate_id": "inspect-report",
+                    "title": "记录 foo.py P4 线索",
+                    "goal": "记录 foo.py:1 的 TODO，后续人工判断是否需要整理。",
+                    "priority": "P4",
+                    "rationale": "TODO 只有低优先级整理价值。",
+                    "kind": "chore",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的 TODO 已被人工复核。"],
+                    "verification_commands": ["git diff --check"],
+                    "effort": "small",
+                    "reason": "priority_p4_report_only",
+                }
+            ],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 0, "report_only_count": 1},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-test-promote",
+    )
+
+    action_id = next(
+        action["id"]
+        for action in context["next_actions"]
+        if action["id"].startswith("promote_inspect_report_")
+    )
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", action_id, "--json"])
+
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.output)
+    assert out["data"]["result"]["created_count"] == 1
+    task = db.list_tasks(project="demo")[0]
+    assert task["title"] == "记录 foo.py P4 线索"
+    assert task["priority"] == "P3"
+
+
+def test_workflow_next_builds_plan_from_inspect_context(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    context = write_inspect_workflow_context(
+        project,
+        {
+            "project": "demo",
+            "created": [],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 0, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-test-plan",
+    )
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", "plan_from_inspect", "--json"])
+
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.output)
+    plan_result = out["data"]["result"]
+    assert plan_result["source"] == "inspect"
+    assert plan_result["source_path"] == context["context_path"]
+    assert Path(plan_result["plan_path"]).is_file()

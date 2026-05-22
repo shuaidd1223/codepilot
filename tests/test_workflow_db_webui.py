@@ -1028,6 +1028,90 @@ def test_artifact_context_payload_resolves_plan_import_action_to_task_batch(tmp_
     }
 
 
+def test_webui_dashboard_exposes_latest_inspect_workflow_context(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    context = write_inspect_workflow_context(
+        db.get_project("demo"),
+        {
+            "project": "demo",
+            "created": [],
+            "report_only": [
+                {
+                    "candidate_id": "inspect-report",
+                    "title": "报告 foo.py 线索",
+                    "goal": "人工评估 foo.py。",
+                    "priority": "P4",
+                    "reason": "priority_p4_report_only",
+                    "files": ["foo.py"],
+                    "evidence": "signal 3: foo.py",
+                }
+            ],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 0, "report_only_count": 1},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-webui",
+    )
+
+    payload = webui_mod.dashboard_payload("demo")
+    project = payload["projects"][0]
+
+    assert project["workflow"]["inspect"]["context_path"] == context["context_path"]
+    assert project["workflow"]["inspect"]["quality_summary"]["report_only_count"] == 1
+    assert project["workflow"]["inspect"]["report_only"][0]["candidate_id"] == "inspect-report"
+    assert db.get_task_stats("demo")["total"] == 0
+
+
+def test_webui_workflow_action_uses_shared_next_action_handler(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    (project_path / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+    db.register_project("demo", str(project_path))
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    write_inspect_workflow_context(
+        db.get_project("demo"),
+        {
+            "project": "demo",
+            "created": [
+                {
+                    "candidate_id": "inspect-actionable",
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py:1 的 TODO。",
+                    "priority": "P3",
+                    "kind": "bug",
+                    "evidence": "signal 3: foo.py:1 TODO",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["TODO 已处理。"],
+                    "verification_commands": ["git diff --check"],
+                    "effort": "small",
+                }
+            ],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 1, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-webui-action",
+    )
+
+    result = webui_mod.execute_workflow_action("demo", "create_inspect_tasks")
+
+    assert result["ok"] is True
+    assert result["result"]["created_count"] == 1
+    assert db.list_tasks(project="demo")[0]["title"] == "修复 foo.py 超时 TODO"
+
+
 def test_webui_requirement_list_sort_matches_display_rules(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

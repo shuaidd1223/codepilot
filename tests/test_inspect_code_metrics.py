@@ -191,15 +191,15 @@ def test_code_metrics_only_candidate_is_report_only_after_quality_filter(tmp_pat
 
     assert dropped == []
     assert actionable == []
-    assert report_only == [
-        {
-            "title": "报告 app.py 复杂度",
-            "goal": "报告 app.py 里的复杂函数，等待人工确认是否要拆分。",
-            "priority": "P3",
-            "files": ["app.py"],
-            "reason": "code_metrics_only_weak_signal",
-            "evidence": "signal 7: app.py:1 tangled 分支复杂度约 21",
-            "kind": "refactor",
-            "effort": "small",
-        }
-    ]
+    assert len(report_only) == 1
+    item = report_only[0]
+    assert item["title"] == "报告 app.py 复杂度"
+    assert item["goal"] == "报告 app.py 里的复杂函数，等待人工确认是否要拆分。"
+    assert item["priority"] == "P3"
+    assert item["files"] == ["app.py"]
+    assert item["reason"] == "code_metrics_only_weak_signal"
+    assert item["evidence"] == "signal 7: app.py:1 tangled 分支复杂度约 21"
+    assert item["kind"] == "refactor"
+    assert item["effort"] == "small"
+    assert item["candidate_id"].startswith("inspect-")
+    assert item["signal_keys"] == ["code_metrics"]

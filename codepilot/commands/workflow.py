@@ -241,10 +241,25 @@ def _execute_import_tasks(project_info: dict, bundle: dict[str, Any]) -> dict[st
     }
 
 
+def _execute_inspect_workflow_action(project_info: dict, bundle: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
+    from codepilot.commands.inspect_workflow import execute_inspect_workflow_action
+
+    context_path = bundle.get("context_path") or (bundle.get("state") or {}).get("context_path") or ""
+    return execute_inspect_workflow_action(
+        project_info,
+        action_id=str(action.get("id") or ""),
+        context_path=context_path,
+    )
+
+
 _ALLOWED_NEXT_ACTIONS = {
     "plan_from_spec": _execute_plan_from_spec,
     "import_tasks": _execute_import_tasks,
 }
+
+
+def _is_inspect_next_action(action_id: str) -> bool:
+    return action_id in {"create_inspect_tasks", "plan_from_inspect"} or action_id.startswith("promote_inspect_report_")
 
 
 def _execute_next_action(
@@ -262,22 +277,70 @@ def _execute_next_action(
         )
     handler = _ALLOWED_NEXT_ACTIONS.get(action_id)
     if handler is None:
+        if _is_inspect_next_action(action_id):
+            return _execute_inspect_workflow_action(project_info, bundle, action)
         allowed = ", ".join(sorted(_ALLOWED_NEXT_ACTIONS))
-        raise click.ClickException(f"不支持的 next_action：{action_id}。当前 allowlist：{allowed}。")
+        inspect_allowed = "create_inspect_tasks, plan_from_inspect, promote_inspect_report_<candidate_id>"
+        raise click.ClickException(f"不支持的 next_action：{action_id}。当前 allowlist：{allowed}, {inspect_allowed}。")
     return handler(project_info, bundle)
+
+
+def workflow_status_payload(project: str | None = None, *, mode: str | None = None) -> dict[str, Any]:
+    project_info = _resolve_project(project)
+    project_path = str(project_info["path"])
+    state = read_workflow_state(project_path, mode=mode) if mode else _latest_workflow_state(Path(project_path))
+    agent_session = get_agent_session(project_path)
+    return {
+        "project": project_info["name"],
+        "project_path": project_path,
+        "mode": mode,
+        "state": state,
+        "agent_session": agent_session,
+    }
+
+
+def workflow_next_payload(project: str | None = None, *, mode: str | None = None) -> dict[str, Any]:
+    project_info = _resolve_project(project)
+    bundle = _load_next_context(project_info, mode=mode)
+    return {
+        "project": project_info["name"],
+        "project_path": project_info["path"],
+        "source": _source_summary(bundle),
+        "next_actions": bundle.get("next_actions") or [],
+    }
+
+
+def execute_workflow_next_action(
+    project: str | None,
+    action_id: str,
+    *,
+    mode: str | None = None,
+    allow_high_risk: bool = False,
+) -> dict[str, Any]:
+    project_info = _resolve_project(project)
+    bundle = _load_next_context(project_info, mode=mode)
+    action = _find_next_action(bundle, action_id)
+    result = _execute_next_action(project_info, bundle, action, allow_high_risk=allow_high_risk)
+    return {
+        "project": project_info["name"],
+        "project_path": project_info["path"],
+        "source": _source_summary(bundle),
+        "action": action,
+        "result": result,
+    }
 
 
 @click.command("status")
 @click.option("--project", "-p", help="项目名称，不指定则按当前目录匹配")
-@click.option("--mode", "-m", help="查看指定模式状态；不指定则查看 active workflow")
+@click.option("--mode", "-m", help="查看指定模式状态；不指定则查看最新 workflow")
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
 def status_cmd(ctx: click.Context, project: str | None, mode: str | None, json_mode: bool) -> None:
-    """查看当前 active workflow 状态。"""
+    """查看当前 workflow 状态。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     project_info = _resolve_project(project)
     project_path = str(project_info["path"])
-    state = read_workflow_state(project_path, mode=mode)
+    state = read_workflow_state(project_path, mode=mode) if mode else _latest_workflow_state(Path(project_path))
     agent_session = get_agent_session(project_path)
     data = {
         "project": project_info["name"],
@@ -304,7 +367,7 @@ def status_cmd(ctx: click.Context, project: str | None, mode: str | None, json_m
         click.echo()
 
     if state is None:
-        target = f"模式 {mode}" if mode else "active workflow"
+        target = f"模式 {mode}" if mode else "latest workflow"
         echo(f"[yellow]没有 {target} 状态[/yellow]")
         click.echo(f"项目: {project_info['name']}")
         click.echo(f"路径: {project_path}")

@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from codepilot.storage import database as db

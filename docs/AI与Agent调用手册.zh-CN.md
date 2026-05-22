@@ -81,9 +81,12 @@ codepilot daemon -p <项目名>
 codepilot daemon -p <项目名> --status
 codepilot daemon -p <项目名> --stop
 codepilot inspect -p <项目名> --once --json
+codepilot inspect -p <项目名> --once --dry-run --write-workflow --json
 codepilot inspect -p <项目名> --status
 codepilot build-fix -p <项目名> --task-id <task_id> --json
 ```
+
+`inspect --write-workflow` 只支持 `--once --dry-run`，会把巡检结果写入项目本地 workflow context，并生成 `create_inspect_tasks`、`promote_inspect_report_<candidate_id>`、`plan_from_inspect` 等安全 `next_actions`；不会直接创建 backlog 或启动执行器。
 
 ### 2.6 Web UI、飞书和 Webhook
 
@@ -146,7 +149,7 @@ codepilot ai template --format guide
 
 ### 2.10 MCP 默认工具契约
 
-`codepilot mcp serve --list-tools` 和 MCP `list_tools` 使用同一份默认注册表。默认公开工具数为 22 个，不包含运行时健康检查工具 `codepilot.health`。启动真实 MCP 服务时，`codepilot.health` 会额外注册用于探活。
+`codepilot mcp serve --list-tools` 和 MCP `list_tools` 使用同一份默认注册表。默认公开工具数为 25 个，不包含运行时健康检查工具 `codepilot.health`。启动真实 MCP 服务时，`codepilot.health` 会额外注册用于探活。
 
 默认公开工具：
 
@@ -163,6 +166,7 @@ codepilot ai template --format guide
 - `generate_breakdown`
 - `hook_trigger`
 - `inspect_project`
+- `inspect_workflow`
 - `list_tasks`
 - `note_add`
 - `run_once`
@@ -172,6 +176,8 @@ codepilot ai template --format guide
 - `webhook_invoke`
 - `wiki_add`
 - `wiki_query`
+- `workflow_next`
+- `workflow_status`
 
 ## 3. 直接投递任务
 

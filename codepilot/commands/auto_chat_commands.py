@@ -143,6 +143,36 @@ def _render_chat_sessions(project_name: str) -> str:
     return "\n".join(lines)
 
 
+def _render_chat_workflow(project_name: str) -> str:
+    from codepilot.commands.inspect_workflow import read_inspect_workflow_context
+    from codepilot.commands.workflow import workflow_next_payload
+
+    project = db.get_project(project_name)
+    if not project:
+        raise RuntimeError(f"项目 '{project_name}' 未注册。")
+    context = read_inspect_workflow_context(project) or {}
+    quality = context.get("quality_summary") or {}
+    actions = workflow_next_payload(project_name).get("next_actions") or []
+    lines = [
+        f"{project_name} 巡检工作流：",
+        (
+            "质量摘要: "
+            f"created={quality.get('created_count', len(context.get('created_preview') or []))} "
+            f"report_only={quality.get('report_only_count', len(context.get('report_only') or []))} "
+            f"dropped={quality.get('dropped_count', len(context.get('dropped') or []))}"
+        ),
+    ]
+    for item in (context.get("report_only") or [])[:4]:
+        lines.append(f"- 报告项 {item.get('candidate_id')}: {item.get('title')}")
+    if actions:
+        lines.append("下一步：")
+        for action in actions[:6]:
+            lines.append(f"- {action.get('id')}: {action.get('label')}")
+    else:
+        lines.append("暂无 next_actions。")
+    return "\n".join(lines)
+
+
 def _run_catalog_chat_command(command: _ParsedChatCommand, runtime: Any, *, echo) -> str | None:
     if command.verb in {"projects", "global"}:
         return _emit_chat_message(_render_chat_projects_summary())
@@ -173,6 +203,9 @@ def _run_project_view_chat_command(command: _ParsedChatCommand, runtime: Any, *,
 
     if command.verb in {"requirements", "sessions"}:
         return _emit_chat_message(_render_chat_sessions(_project_arg_or_active(command.parts, runtime)))
+
+    if command.verb in {"workflow", "next"}:
+        return _emit_chat_message(_render_chat_workflow(_project_arg_or_active(command.parts, runtime)))
 
     if command.verb == "services":
         return _emit_chat_message(_render_chat_services(_project_arg_or_active(command.parts, runtime)))

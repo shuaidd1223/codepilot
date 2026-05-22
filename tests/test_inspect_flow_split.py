@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 from codepilot.cli import main
 from codepilot.core.task_template import missing_task_template_sections
+from codepilot.core.workflow_state import get_agent_session, read_workflow_state
 from codepilot.commands import inspect as inspect_cmd
 from codepilot.storage import database as db
 from tests.workflow_testkit import init_test_db
@@ -38,6 +39,126 @@ def test_collect_inspection_signals_collects_selected_only(tmp_path, monkeypatch
     assert signal_map["deps"] == "deps"
     assert signal_map["code_metrics"] == "metrics"
     assert called == ["git_log", "deps", "code_metrics"]
+
+
+def _patch_cli_inspect_fixture(monkeypatch, project_path: Path) -> None:
+    (project_path / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+    signal_results = [
+        inspect_cmd.InspectSignalResult(
+            key="todos",
+            title="代码里的 TODO/FIXME/XXX",
+            order=3,
+            enabled=True,
+            content="foo.py:1: TODO handle timeout",
+        )
+    ]
+    monkeypatch.setattr(inspect_cmd, "collect_inspection_signal_results", lambda *_args, **_kwargs: signal_results)
+    monkeypatch.setattr(
+        inspect_cmd,
+        "load_project_config",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            inspect=SimpleNamespace(
+                max_new_tasks_per_round=3,
+                interval_seconds=1800,
+                signals=("todos",),
+                priority="P3",
+                auto_execute=False,
+            ),
+            automation=SimpleNamespace(agent_language="zh-CN"),
+        ),
+    )
+    monkeypatch.setattr(inspect_cmd, "resolve_planner", lambda _cfg, _kind, explicit=None: explicit or "codex")
+    monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda _project_name: set())
+    monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **_kwargs: [])
+
+    def fake_call_llm(*_args, **_kwargs):
+        return {
+            "candidates": [
+                {
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py:1 的 TODO，避免超时路径继续缺实现。",
+                    "priority": "P3",
+                    "rationale": "TODO 指向明确文件和处理目标。",
+                    "kind": "bug",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的超时 TODO 已处理。"],
+                    "verification_commands": ['pytest -n auto --dist loadfile -m "not slow" -q'],
+                    "effort": "small",
+                },
+                {
+                    "title": "记录 foo.py P4 线索",
+                    "goal": "记录 foo.py:1 的 TODO，后续人工判断是否需要整理。",
+                    "priority": "P4",
+                    "rationale": "TODO 只有低优先级整理价值。",
+                    "kind": "chore",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的 TODO 已被人工复核。"],
+                    "verification_commands": ["git diff --check"],
+                    "effort": "small",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(inspect_cmd, "_call_llm", fake_call_llm)
+
+
+def test_inspect_dry_run_does_not_write_workflow_without_explicit_flag(tmp_path, monkeypatch):
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    _patch_cli_inspect_fixture(monkeypatch, project_path)
+
+    result = CliRunner().invoke(main, ["inspect", "-p", "demo", "--once", "--dry-run", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["data"]["created"]
+    assert read_workflow_state(project_path, mode="inspect") is None
+    assert get_agent_session(project_path) is None
+    assert db.get_task_stats("demo")["total"] == 0
+
+
+def test_inspect_write_workflow_creates_context_state_and_candidate_ids(tmp_path, monkeypatch):
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    _patch_cli_inspect_fixture(monkeypatch, project_path)
+
+    result = CliRunner().invoke(
+        main,
+        ["inspect", "-p", "demo", "--once", "--dry-run", "--write-workflow", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    data = payload["data"]
+    context_meta = data["workflow_context"]
+    context_path = Path(context_meta["context_path"])
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+
+    assert context_path.is_relative_to(project_path)
+    assert context["artifact_type"] == "inspect"
+    assert context["source_command"] == "codepilot inspect -p demo --once --dry-run --write-workflow --json"
+    assert context["quality_summary"]["created_count"] == 1
+    assert context["created_preview"][0]["candidate_id"].startswith("inspect-")
+    assert context["report_only"][0]["candidate_id"].startswith("inspect-")
+    assert context["context_path"] == str(context_path)
+    assert {action["id"] for action in context["next_actions"]} >= {"create_inspect_tasks", "plan_from_inspect"}
+    assert any(action["id"].startswith("promote_inspect_report_") for action in context["next_actions"])
+    assert read_workflow_state(project_path, mode="inspect")["context_path"] == str(context_path)
+    assert get_agent_session(project_path)["current_phase"] == "explore"
+    assert db.get_task_stats("demo")["total"] == 0
+
+    status_result = CliRunner().invoke(main, ["workflow", "status", "-p", "demo", "--json"])
+    assert status_result.exit_code == 0, status_result.output
+    status_payload = json.loads(status_result.output)
+    assert status_payload["data"]["state"]["mode"] == "inspect"
+    assert status_payload["data"]["state"]["context_path"] == str(context_path)
 
 
 def test_collect_inspection_signal_results_has_unified_model_and_order(tmp_path, monkeypatch):

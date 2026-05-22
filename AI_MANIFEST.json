@@ -69,9 +69,14 @@
       "purpose": "Create a reviewable plan artifact with risks, verification matrix, and task candidates."
     },
     {
+      "command": "codepilot inspect -p <project-name> --once --dry-run --write-workflow --json",
+      "format": "json",
+      "purpose": "Run a read-only inspection preview, persist project-local workflow context, and expose safe inspect next_actions."
+    },
+    {
       "command": "codepilot workflow status -p <project-name> --json",
       "format": "json",
-      "purpose": "Return workflow state, agent session, artifact paths, and next-action context."
+      "purpose": "Return the latest workflow state, agent session, artifact paths, and next-action context."
     },
     {
       "command": "codepilot workflow next -p <project-name> --list --json",
@@ -283,11 +288,12 @@
     },
     {
       "name": "inspect",
-      "syntax": "codepilot inspect -p <project-name> [--once|--status|--stop|--json]",
-      "purpose": "Inspect project signals and create candidate tasks.",
+      "syntax": "codepilot inspect -p <project-name> [--once|--status|--stop|--dry-run|--write-workflow|--json]",
+      "purpose": "Inspect project signals, preview candidates, optionally write workflow context, or create candidate tasks.",
       "when_to_use": "Use to discover technical debt, failed-task patterns, and improvement candidates.",
       "examples": [
-        "codepilot inspect -p <project-name> --once"
+        "codepilot inspect -p <project-name> --once",
+        "codepilot inspect -p <project-name> --once --dry-run --write-workflow --json"
       ]
     },
     {
@@ -320,8 +326,8 @@
     {
       "name": "workflow_status",
       "syntax": "codepilot workflow status -p <project-name> [--mode <mode>] --json",
-      "purpose": "Read workflow mode state and agent session context, including artifact paths and next-action source.",
-      "when_to_use": "Use before advancing a clarify/plan artifact or when inspecting current workflow state.",
+      "purpose": "Read latest or mode-specific workflow state and agent session context, including artifact paths and next-action source.",
+      "when_to_use": "Use before advancing a clarify/plan/inspect artifact or when inspecting current workflow state.",
       "examples": [
         "codepilot workflow status -p <project-name> --json",
         "codepilot workflow status -p <project-name> --mode plan --json"

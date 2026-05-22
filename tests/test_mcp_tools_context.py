@@ -48,6 +48,9 @@ def test_context_tools_register_independent_contracts():
         "note_add",
         "explore",
         "inspect_project",
+        "inspect_workflow",
+        "workflow_status",
+        "workflow_next",
         "hook_trigger",
     }
 
@@ -68,6 +71,9 @@ def test_context_tool_input_schemas_capture_required_fields():
     assert _tool_by_name("note_add")["inputSchema"]["required"] == ["project", "content"]
     assert _tool_by_name("explore")["inputSchema"]["required"] == ["project", "query"]
     assert _tool_by_name("inspect_project")["inputSchema"]["required"] == ["project"]
+    assert _tool_by_name("inspect_workflow")["inputSchema"]["required"] == ["project"]
+    assert _tool_by_name("workflow_status")["inputSchema"]["required"] == ["project"]
+    assert _tool_by_name("workflow_next")["inputSchema"]["required"] == ["project"]
     assert _tool_by_name("hook_trigger")["inputSchema"]["required"] == ["project"]
 
     wiki_props = _tool_by_name("wiki_add")["inputSchema"]["properties"]
@@ -189,6 +195,89 @@ def test_inspect_project_returns_structured_error_on_inspect_failure(tmp_path, m
         "project_path": str(project_path.resolve()),
         "signals": ["git_log"],
     }
+
+
+def test_workflow_context_tools_expose_status_next_and_inspect_run(tmp_path, monkeypatch):
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _context_server(project_path)
+    (project_path / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+
+    from codepilot.commands import inspect as inspect_cmd
+
+    monkeypatch.setattr(
+        inspect_cmd,
+        "collect_inspection_signal_results",
+        lambda *_args, **_kwargs: [
+            inspect_cmd.InspectSignalResult(
+                key="todos",
+                title="代码里的 TODO/FIXME/XXX",
+                order=3,
+                enabled=True,
+                content="foo.py:1: TODO handle timeout",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        inspect_cmd,
+        "load_project_config",
+        lambda *_args, **_kwargs: type(
+            "Cfg",
+            (),
+            {
+                "inspect": type(
+                    "Inspect",
+                    (),
+                    {
+                        "max_new_tasks_per_round": 3,
+                        "signals": ("todos",),
+                        "priority": "P3",
+                        "auto_execute": False,
+                    },
+                )(),
+                "automation": type("Automation", (), {"agent_language": "zh-CN"})(),
+            },
+        )(),
+    )
+    monkeypatch.setattr(inspect_cmd, "resolve_planner", lambda _cfg, _kind, explicit=None: explicit or "codex")
+    monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda _project_name: set())
+    monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        inspect_cmd,
+        "_call_llm",
+        lambda *_args, **_kwargs: {
+            "candidates": [
+                {
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py:1 的 TODO。",
+                    "priority": "P3",
+                    "kind": "bug",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["TODO 已处理。"],
+                    "verification_commands": ["git diff --check"],
+                    "effort": "small",
+                }
+            ]
+        },
+    )
+
+    inspected = server.call_tool("inspect_workflow", {"project": "demo"})
+    status = server.call_tool("workflow_status", {"project": "demo"})
+    next_actions = server.call_tool("workflow_next", {"project": "demo"})
+
+    assert inspected["ok"] is True
+    assert inspected["workflow_context"]["context_path"]
+    assert status["agent_session"]["current_phase"] == "explore"
+    assert any(action["id"] == "create_inspect_tasks" for action in next_actions["next_actions"])
+
+
+def test_workflow_next_tool_returns_structured_error_for_missing_project(tmp_path, monkeypatch):
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _context_server(project_path)
+
+    result = server.call_tool("workflow_status", {"project": "missing"})
+
+    assert _error_code(result) == "project_not_found"
 
 
 def test_hook_trigger_uses_existing_project_hook_path(tmp_path, monkeypatch):

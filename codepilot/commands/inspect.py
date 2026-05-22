@@ -25,6 +25,7 @@ from codepilot.ai_support.service import (
 )
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands import inspect_lifecycle, inspect_service, inspect_signals
+from codepilot.commands.inspect_workflow import ensure_candidate_id, write_inspect_workflow_context
 from codepilot.commands.inspect_signals import lint_fingerprint, lint_group_key
 from codepilot.commands.inspect_signal_collectors_shared import CODE_EXTS, SCAN_EXTS
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
@@ -907,8 +908,8 @@ def _filter_candidates(
     return kept, dropped
 
 
-def _report_only_entry(item: dict, *, reason: str) -> dict:
-    return {
+def _report_only_entry(item: dict, *, reason: str, signal_results: list[InspectSignalResult]) -> dict:
+    entry = {
         "title": (item.get("title") or "").strip(),
         "goal": (item.get("goal") or "").strip(),
         "priority": (item.get("priority") or "").strip() or "P3",
@@ -917,7 +918,13 @@ def _report_only_entry(item: dict, *, reason: str) -> dict:
         "evidence": (item.get("evidence") or "").strip(),
         "kind": (item.get("kind") or "").strip() or "chore",
         "effort": (item.get("effort") or "").strip() or "small",
+        "rationale": (item.get("rationale") or "").strip(),
+        "acceptance_criteria": _string_list(item.get("acceptance_criteria")),
+        "verification_commands": _string_list(item.get("verification_commands")),
+        "signal_keys": sorted(_candidate_signal_keys(str(item.get("evidence") or ""), signal_results)),
     }
+    ensure_candidate_id(entry, reason=reason)
+    return entry
 
 
 def _git_log_candidate_has_abnormal_terms(item: dict, signal_results: list[InspectSignalResult]) -> bool:
@@ -953,7 +960,7 @@ def _partition_report_only_candidates(
     for item in candidates:
         reason = _report_only_reason(item, signal_results=signal_results)
         if reason:
-            report_only.append(_report_only_entry(item, reason=reason))
+            report_only.append(_report_only_entry(item, reason=reason, signal_results=signal_results))
             continue
         actionable.append(item)
     return actionable, report_only
@@ -1073,7 +1080,21 @@ def _materialize_inspection_output(
             )
             continue
         if dry_run:
-            created.append({"title": title, "goal": goal, "priority": item.get("priority") or priority, "files": files})
+            preview = {"title": title, "goal": goal, "priority": item.get("priority") or priority, "files": files}
+            if item.get("candidate_id"):
+                preview.update(
+                    {
+                        "candidate_id": item.get("candidate_id") or "",
+                        "rationale": (item.get("rationale") or "").strip(),
+                        "kind": (item.get("kind") or "").strip() or "chore",
+                        "evidence": evidence,
+                        "acceptance_criteria": _string_list(item.get("acceptance_criteria")),
+                        "verification_commands": _string_list(item.get("verification_commands")),
+                        "effort": (item.get("effort") or "").strip() or "small",
+                        "signal_keys": _string_list(item.get("signal_keys")),
+                    }
+                )
+            created.append(preview)
             continue
         task = db.create_task(
             project=project_name,
@@ -1207,6 +1228,10 @@ def run_inspection(
         signal_results=signal_results,
     )
     task_candidates = _group_lint_candidates(actionable_candidates)
+    for item in task_candidates:
+        if isinstance(item, dict):
+            item["signal_keys"] = sorted(_candidate_signal_keys(str(item.get("evidence") or ""), signal_results))
+            ensure_candidate_id(item, reason="actionable")
     created, skipped = _materialize_inspection_output(
         task_candidates,
         max_new_tasks=max_new_tasks,
@@ -1404,6 +1429,7 @@ def _emit_inspection_result(result: dict, *, dry_run: bool, json_mode: bool) -> 
     help="巡检用的 LLM；优先级：显式参数 > [inspect].planner > [agents].planner > codex",
 )
 @click.option("--json", "json_mode", is_flag=True, help="以 JSON 输出结果，便于脚本和其他 AI 调用")
+@click.option("--write-workflow", is_flag=True, help="将 dry-run 巡检结果写入项目 workflow context")
 @click.option("--interval", type=int, default=None, help="巡检间隔秒数（默认 1800）")
 @click.option("--once", is_flag=True, help="仅巡检一次后退出")
 @click.option("--foreground", is_flag=True, help="以前台持续巡检模式运行")
@@ -1418,6 +1444,7 @@ def inspect(
     agent: str,
     planner: Optional[str],
     json_mode: bool,
+    write_workflow: bool,
     interval: Optional[int],
     once: bool,
     foreground: bool,
@@ -1431,6 +1458,13 @@ def inspect(
     """
     db.init_db()
     json_mode = resolve_json_mode(ctx, json_mode)
+    if write_workflow and (not dry_run or not once):
+        message = "--write-workflow 仅支持与 --once --dry-run 一起使用。"
+        if json_mode:
+            emit_json_payload("inspect", ok=False, data={}, error=message, error_code="invalid_options")
+            ctx.exit(1)
+            return
+        raise click.ClickException(message)
     proj = db.get_project(project) if project else None
     if not proj:
         if json_mode:
@@ -1500,6 +1534,12 @@ def inspect(
         if streamed["seen"]:
             click.echo()
             streamed["seen"] = False
+        if write_workflow:
+            result["workflow_context"] = write_inspect_workflow_context(
+                project_info,
+                result,
+                source_command=f"codepilot inspect -p {project_info['name']} --once --dry-run --write-workflow --json",
+            )
         _emit_inspection_result(result, dry_run=dry_run, json_mode=json_mode)
 
     loop_options = inspect_lifecycle.ForegroundInspectLoopOptions(

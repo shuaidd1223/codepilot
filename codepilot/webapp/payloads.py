@@ -270,6 +270,41 @@ def project_summary(project: dict, *, job_count: int | None = None) -> dict:
             "tasks": daemon_status,
             "inspect": inspect_status,
         },
+        "workflow": project_workflow_payload(project["name"]),
+    }
+
+
+def project_workflow_payload(project: str) -> dict:
+    """Return the latest workflow state plus inspect context for a project."""
+    db.init_db()
+    project_info = db.get_project(project)
+    if not project_info:
+        raise RuntimeError(f"项目 '{project}' 不存在。")
+    try:
+        from codepilot.commands.inspect_workflow import read_inspect_workflow_context
+        from codepilot.commands.workflow import workflow_next_payload, workflow_status_payload
+
+        inspect_context = read_inspect_workflow_context(project_info) or {}
+        next_payload = workflow_next_payload(project)
+    except Exception:  # noqa: BLE001
+        inspect_context = {}
+        next_payload = {"next_actions": []}
+    try:
+        status_payload = workflow_status_payload(project)
+    except Exception:  # noqa: BLE001
+        status_payload = {"state": None, "agent_session": None}
+    return {
+        "status": status_payload,
+        "next_actions": next_payload.get("next_actions") or [],
+        "inspect": {
+            "context_path": str(inspect_context.get("context_path") or ""),
+            "quality_summary": inspect_context.get("quality_summary") or {},
+            "created_preview": inspect_context.get("created_preview") or [],
+            "report_only": inspect_context.get("report_only") or [],
+            "dropped": inspect_context.get("dropped") or [],
+            "skipped": inspect_context.get("skipped") or [],
+            "source_command": str(inspect_context.get("source_command") or ""),
+        },
     }
 
 

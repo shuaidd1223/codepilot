@@ -69,6 +69,44 @@ def test_feishu_tasks_card_lists_project_tasks(tmp_path, monkeypatch):
         if isinstance(elem, dict)
     )
 
+
+def test_feishu_workflow_card_lists_inspect_next_actions(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    write_inspect_workflow_context(
+        db.get_project("demo"),
+        {
+            "project": "demo",
+            "created": [],
+            "report_only": [
+                {
+                    "candidate_id": "inspect-report",
+                    "title": "报告 foo.py 线索",
+                    "goal": "人工评估 foo.py。",
+                    "priority": "P4",
+                    "reason": "priority_p4_report_only",
+                    "files": ["foo.py"],
+                    "evidence": "signal 3: foo.py",
+                }
+            ],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 0, "report_only_count": 1},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-feishu",
+    )
+
+    reply = handle_command_text("workflow demo")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "CodePilot 工作流下一步" in payload
+    assert "报告 foo.py 线索" in payload
+    assert "promote_inspect_report_inspect-report" in payload
+    assert "workflow next demo promote_inspect_report_inspect-report" in set(_button_commands(reply["card"]))
+
 def test_feishu_tasks_card_uses_visual_task_rows_instead_of_plain_text_only(tmp_path, monkeypatch):
     project_path = _setup_project(tmp_path, monkeypatch)
     running = db.create_task(

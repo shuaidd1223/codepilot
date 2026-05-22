@@ -77,9 +77,12 @@ codepilot run -p <project-name> --once
 codepilot daemon -p <project-name>
 codepilot daemon -p <project-name> --status
 codepilot inspect -p <project-name> --once
+codepilot inspect -p <project-name> --once --dry-run --write-workflow --json
 codepilot inspect -p <project-name> --status
 codepilot build-fix -p <project-name> --task-id <task_id> --json
 ```
+
+`inspect --write-workflow` only works with `--once --dry-run`. It writes the inspection result to project-local workflow context and exposes safe `next_actions` such as `create_inspect_tasks`, `promote_inspect_report_<candidate_id>`, and `plan_from_inspect`; it does not create backlog items or start the executor.
 
 ### 2.6 Web UI, Feishu, Webhook
 
@@ -121,7 +124,7 @@ codepilot ai template --format guide
 
 ### 2.10 MCP Default Tool Contract
 
-`codepilot mcp serve --list-tools` and MCP `list_tools` use the same default registry. The default public tool count is 22, excluding the runtime health-check tool `codepilot.health`. When a real MCP service starts, `codepilot.health` is registered in addition to these default tools for liveness checks.
+`codepilot mcp serve --list-tools` and MCP `list_tools` use the same default registry. The default public tool count is 25, excluding the runtime health-check tool `codepilot.health`. When a real MCP service starts, `codepilot.health` is registered in addition to these default tools for liveness checks.
 
 Default public tools:
 
@@ -138,6 +141,7 @@ Default public tools:
 - `generate_breakdown`
 - `hook_trigger`
 - `inspect_project`
+- `inspect_workflow`
 - `list_tasks`
 - `note_add`
 - `run_once`
@@ -147,6 +151,8 @@ Default public tools:
 - `webhook_invoke`
 - `wiki_add`
 - `wiki_query`
+- `workflow_next`
+- `workflow_status`
 
 ## 3. Direct Task Submission
 
