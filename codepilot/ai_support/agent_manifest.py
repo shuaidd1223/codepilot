@@ -104,6 +104,11 @@ def command_manifest(
                 "purpose": "通过固定 allowlist 执行指定 next_action；不会执行 suggested_command 字符串。",
             },
             {
+                "command": _cmd(command, "workflow next -p <项目名> --auto --json"),
+                "format": "json",
+                "purpose": "自动选择一个低风险 workflow next_action；不会执行中高风险动作或 suggested_command 字符串。",
+            },
+            {
                 "command": _cmd(command, "wiki list -p <项目名> --json"),
                 "format": "json",
                 "purpose": "列出项目本地 Markdown wiki 页面。",
@@ -122,6 +127,11 @@ def command_manifest(
                 "command": _cmd(command, "note show -p <项目名> --json"),
                 "format": "json",
                 "purpose": "读取项目持久工作记忆，恢复跨会话关键上下文。",
+            },
+            {
+                "command": _cmd(command, "memory events -p <项目名> --json"),
+                "format": "json",
+                "purpose": "读取项目本地自动观察事实日志；CodePilot 会自动生成带 score/feedback/seen_count 的去重候选并维护 autocapture 摘要。",
             },
             {
                 "command": _cmd(command, "trace -p <项目名> --json"),
@@ -447,11 +457,12 @@ def command_manifest(
             },
             {
                 "name": "workflow_next",
-                "syntax": _cmd(command, "workflow next -p <项目名> [--mode <mode>] [--list | --action <id>] [--allow-high-risk] --json"),
-                "purpose": "列出或安全执行 artifact next_actions；动作必须在固定 allowlist 内，且不会执行 suggested_command 字符串。",
-                "when_to_use": "clarify/plan 输出 next_actions 后，需要由外部 Agent 以受控方式继续生成计划或导入任务时。",
+                "syntax": _cmd(command, "workflow next -p <项目名> [--mode <mode>] [--list | --action <id> | --auto] [--allow-high-risk] --json"),
+                "purpose": "列出、安全执行或低风险自动推进 artifact next_actions；动作必须在固定 allowlist 内，且不会执行 suggested_command 字符串。",
+                "when_to_use": "clarify/plan/inspect 输出 next_actions 后，需要由外部 Agent 以受控方式继续生成计划、导入任务或执行低风险自动策略时。",
                 "examples": [
                     _cmd(command, "workflow next -p codepilot-dev --list --json"),
+                    _cmd(command, "workflow next -p codepilot-dev --auto --json"),
                     _cmd(command, "workflow next -p codepilot-dev --action plan_from_spec --json"),
                     _cmd(command, "workflow next -p codepilot-dev --action import_tasks --json"),
                 ],
@@ -491,6 +502,16 @@ def command_manifest(
                     _cmd(command, 'note add -p codepilot-dev --priority "项目使用 Python 3.11"'),
                     _cmd(command, "note show -p codepilot-dev --json"),
                     _cmd(command, "note prune -p codepilot-dev --days 7"),
+                ],
+            },
+            {
+                "name": "memory",
+                "syntax": _cmd(command, "memory events -p <项目名> [--type <event_type>] [--limit N] --json"),
+                "purpose": "读取项目本地自动观察事实日志；CodePilot 会自动生成带 score/feedback/seen_count 的去重候选并维护 `.codepilot/memory/autocapture.md`。",
+                "when_to_use": "需要分析 inspect/workflow 等事实事件或排查自我进化依据时。",
+                "examples": [
+                    _cmd(command, "memory events -p codepilot-dev --json"),
+                    _cmd(command, "memory events -p codepilot-dev --type workflow.action_executed --json"),
                 ],
             },
             {
@@ -664,6 +685,7 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
             {"command": _cmd(command, f"workflow status -p {project} --json"), "format": "json", "purpose": "Return the latest workflow state, agent session, artifact paths, and next-action context."},
             {"command": _cmd(command, f"workflow next -p {project} --list --json"), "format": "json", "purpose": "List the current workflow next_actions for safe external-agent selection."},
             {"command": _cmd(command, f"workflow next -p {project} --action <id> --json"), "format": "json", "purpose": "Execute one allowlisted next_action without shelling out to suggested_command."},
+            {"command": _cmd(command, f"workflow next -p {project} --auto --json"), "format": "json", "purpose": "Automatically choose one low-risk workflow next_action without executing medium/high-risk actions or suggested_command strings."},
             {"command": _cmd(command, f"task find <keyword> -p {project} --json"), "format": "json", "purpose": "Search tasks and return structured matches."},
             {"command": _cmd(command, "task show <task_id> --json"), "format": "json", "purpose": "Return one task's full metadata, content, errors, delivery record, and log summary."},
             {"command": _cmd(command, "doctor --json"), "format": "json", "purpose": "Check local environment, CLI tools, configuration, and database health."},
@@ -674,6 +696,7 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
             {"command": _cmd(command, f'skill run ralplan -p {project} --provider codex --input "requirement" --json'), "format": "json", "purpose": "Run an enabled local workflow skill and return structured output."},
             {"command": _cmd(command, f"wiki query <keyword> -p {project} --json"), "format": "json", "purpose": "Search the local project wiki for durable project knowledge."},
             {"command": _cmd(command, f"note show -p {project} --json"), "format": "json", "purpose": "Read persistent project working memory."},
+            {"command": _cmd(command, f"memory events -p {project} --json"), "format": "json", "purpose": "Read project-local factual memory events; CodePilot automatically creates deduplicated candidates with score/feedback/seen_count and an autocapture summary."},
             {"command": _cmd(command, f"trace -p {project} --json"), "format": "json", "purpose": "Return recent project activity across tasks, logs, services, and workflow state."},
         ],
         "commands": [
@@ -697,9 +720,10 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
             {"name": "clarify", "syntax": _cmd(command, f"clarify [-p {project}] [--quick|--standard] <requirement> [--json]"), "purpose": "Generate a pre-execution requirement specification artifact.", "when_to_use": "Use when a requirement is still vague but should not create tasks yet.", "examples": [_cmd(command, f'clarify -p {project} "Improve doctor" --json')]},
             {"name": "plan", "syntax": _cmd(command, f"plan [-p {project}] <requirement> [--from-spec <path>] [--use-wiki|--no-wiki] [--json]"), "purpose": "Generate a reviewable plan artifact with scope, risks, verification matrix, and task candidates.", "when_to_use": "Use when requirements are ready for plan review but should not enter backlog.", "examples": [_cmd(command, f'plan -p {project} "Add explore" --json')]},
             {"name": "workflow_status", "syntax": _cmd(command, f"workflow status -p {project} [--mode <mode>] --json"), "purpose": "Read latest or mode-specific workflow state and agent session context, including artifact paths and next-action source.", "when_to_use": "Use before advancing a clarify/plan/inspect artifact or when inspecting current workflow state.", "examples": [_cmd(command, f"workflow status -p {project} --json"), _cmd(command, f"workflow status -p {project} --mode plan --json")]},
-            {"name": "workflow_next", "syntax": _cmd(command, f"workflow next -p {project} [--mode <mode>] [--list | --action <id>] [--allow-high-risk] --json"), "purpose": "List or safely execute artifact next_actions through a fixed allowlist; it never executes suggested_command strings.", "when_to_use": "Use after clarify/plan returns next_actions and an external agent needs to advance by action id.", "examples": [_cmd(command, f"workflow next -p {project} --list --json"), _cmd(command, f"workflow next -p {project} --action plan_from_spec --json"), _cmd(command, f"workflow next -p {project} --action import_tasks --json")]},
+            {"name": "workflow_next", "syntax": _cmd(command, f"workflow next -p {project} [--mode <mode>] [--list | --action <id> | --auto] [--allow-high-risk] --json"), "purpose": "List, safely execute, or low-risk auto-advance artifact next_actions through a fixed allowlist; it never executes suggested_command strings.", "when_to_use": "Use after clarify/plan/inspect returns next_actions and an external agent needs to advance by action id or let CodePilot choose one low-risk policy action.", "examples": [_cmd(command, f"workflow next -p {project} --list --json"), _cmd(command, f"workflow next -p {project} --auto --json"), _cmd(command, f"workflow next -p {project} --action plan_from_spec --json"), _cmd(command, f"workflow next -p {project} --action import_tasks --json")]},
             {"name": "wiki", "syntax": _cmd(command, "wiki <add|list|query|update|delete|refresh|lint|ingest> ..."), "purpose": "Maintain local Markdown project knowledge.", "when_to_use": "Use to record or query build commands, architecture facts, failure modes, and decisions.", "examples": [_cmd(command, f'wiki query -p {project} "build" --json')]},
             {"name": "note", "syntax": _cmd(command, "note <add|show|prune|clear> ..."), "purpose": "Maintain persistent project working memory.", "when_to_use": "Use to preserve important context across sessions.", "examples": [_cmd(command, f'note add -p {project} "pytest -q is the main validation command"')]},
+            {"name": "memory", "syntax": _cmd(command, f"memory events -p {project} [--type <event_type>] [--limit N] --json"), "purpose": "Read project-local factual memory events; CodePilot automatically creates deduplicated candidates with score/feedback/seen_count and `.codepilot/memory/autocapture.md`.", "when_to_use": "Use to analyze inspect/workflow events and self-improvement evidence.", "examples": [_cmd(command, f"memory events -p {project} --json"), _cmd(command, f"memory events -p {project} --type workflow.action_executed --json")]},
             {"name": "trace", "syntax": _cmd(command, f"trace [-p {project}] [--task <task_id>] [--limit N] [--json]"), "purpose": "Show recent activity across task lifecycle, logs, service heartbeats, and workflow state.", "when_to_use": "Use to understand what happened recently.", "examples": [_cmd(command, f"trace -p {project} --limit 30")]},
             {"name": "ui", "syntax": _cmd(command, "ui [--host 127.0.0.1] [--port 8766] | ui <start|status|logs|stop|restart>"), "purpose": "Run or manage the Web UI.", "when_to_use": "Use for graphical multi-project overview or persistent UI service management.", "examples": [_cmd(command, "ui --no-open --port 8877"), _cmd(command, "ui start")]},
             {"name": "daemon", "syntax": _cmd(command, f"daemon -p {project} [--status|--stop]"), "purpose": "Continuously poll backlog and execute tasks for a project.", "when_to_use": "Use when tasks should run continuously in the background.", "examples": [_cmd(command, f"daemon -p {project} --status")]},

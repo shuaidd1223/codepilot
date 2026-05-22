@@ -262,10 +262,15 @@ def _handle_project_view_command(
                 raise RuntimeError("请提供项目和动作，例如 `workflow next demo create_inspect_tasks`。")
             project_name = _resolve_project(parts[2], default_project=active_project)
             action_id = parts[3]
-            from codepilot.commands.workflow import execute_workflow_next_action
+            from codepilot.commands.workflow import execute_workflow_auto_next_action, execute_workflow_next_action
 
-            execute_workflow_next_action(project_name, action_id)
-            return _reply_card(_build_workflow_card(project_name, prefix=cfg.command_prefix, title="工作流动作已执行"))
+            if action_id.lower() == "auto":
+                result = execute_workflow_auto_next_action(project_name)
+                title = "工作流自动推进已执行" if result.get("action") else "工作流暂无自动动作"
+            else:
+                execute_workflow_next_action(project_name, action_id)
+                title = "工作流动作已执行"
+            return _reply_card(_build_workflow_card(project_name, prefix=cfg.command_prefix, title=title))
         project_name = _resolve_project(parts[1] if len(parts) > 1 else "", default_project=active_project)
         return _reply_card(_build_workflow_card(project_name, prefix=cfg.command_prefix))
     return None
@@ -299,11 +304,12 @@ def _build_workflow_card(project_name: str, *, prefix: str = "", title: str = "C
         blocks.append(_plain_block("\n".join(
             f"- `{item.get('candidate_id')}` {item.get('title')}" for item in report_only[:5]
         )))
-    commands = [
+    commands = [(f"workflow next {project_name} auto", "自动推进")]
+    commands.extend(
         (f"workflow next {project_name} {action.get('id')}", str(action.get("label") or action.get("id")))
         for action in actions[:6]
         if str(action.get("id") or "").strip()
-    ]
+    )
     blocks.extend(_command_panel(prefix, commands, title="工作流动作"))
     return _card(title, blocks, template="blue")
 

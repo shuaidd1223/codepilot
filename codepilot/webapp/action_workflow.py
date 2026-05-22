@@ -53,3 +53,22 @@ def execute_workflow_action(
     except click.ClickException as exc:
         raise RuntimeError(str(exc)) from exc
     return {"ok": True, **result}
+
+
+def execute_workflow_auto_action(
+    project: str,
+    *,
+    mode: str | None = None,
+    allow_high_risk: bool = False,
+) -> dict[str, Any]:
+    from codepilot.commands.workflow import execute_workflow_auto_next_action
+
+    try:
+        result = execute_workflow_auto_next_action(
+            project,
+            mode=mode,
+            allow_high_risk=allow_high_risk,
+        )
+    except click.ClickException as exc:
+        raise RuntimeError(str(exc)) from exc
+    return {"ok": True, **result}

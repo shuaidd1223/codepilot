@@ -28,6 +28,9 @@ from codepilot.storage import database as db
 
 
 _PROMOTE_PREFIX = "promote_inspect_report_"
+_IGNORE_PREFIX = "ignore_inspect_report_"
+_DELETE_PREFIX = "delete_inspect_report_"
+_ARCHIVE_PREFIX = "archive_inspect_report_"
 
 
 def _now_slug() -> str:
@@ -113,10 +116,11 @@ def _inspect_next_actions(project_name: str, context_path: Path, context: dict[s
         )
     for item in report_only:
         candidate_id = ensure_candidate_id(item, reason=str(item.get("reason") or "report_only"))
+        title = str(item.get("title") or candidate_id)
         actions.append(
             {
                 "id": f"{_PROMOTE_PREFIX}{candidate_id}",
-                "label": f"提升报告项：{str(item.get('title') or candidate_id)}",
+                "label": f"提升报告项：{title}",
                 "risk": "medium",
                 "suggested_command": (
                     f"codepilot workflow next -p {project_arg} "
@@ -126,6 +130,24 @@ def _inspect_next_actions(project_name: str, context_path: Path, context: dict[s
                 "context_path": str(context_path),
             }
         )
+        for prefix, label in (
+            (_IGNORE_PREFIX, "忽略报告项"),
+            (_DELETE_PREFIX, "删除报告项"),
+            (_ARCHIVE_PREFIX, "归档报告项"),
+        ):
+            actions.append(
+                {
+                    "id": f"{prefix}{candidate_id}",
+                    "label": f"{label}：{title}",
+                    "risk": "low",
+                    "suggested_command": (
+                        f"codepilot workflow next -p {project_arg} "
+                        f"--action {prefix}{candidate_id} --json"
+                    ),
+                    "candidate_id": candidate_id,
+                    "context_path": str(context_path),
+                }
+            )
     actions.append(
         {
             "id": "plan_from_inspect",
@@ -233,6 +255,26 @@ def write_inspect_workflow_context(
         next_action_details=context["next_actions"],
         mode_state=final_state,
     )
+    try:
+        from codepilot.core.memory import append_memory_event
+
+        append_memory_event(
+            project_info,
+            event_type="inspect.workflow_context_written",
+            source="codepilot.inspect",
+            summary=f"巡检写入 workflow context：{context['summary']}",
+            details={
+                "context_path": str(context_path.relative_to(project_path)),
+                "created_preview_count": len(context["created_preview"]),
+                "report_only_count": len(context["report_only"]),
+                "dropped_count": len(context["dropped"]),
+                "skipped_count": len(context["skipped"]),
+                "next_actions": [action.get("id") for action in context["next_actions"]],
+            },
+            tags=["inspect", "workflow"],
+        )
+    except Exception:
+        pass
     return {
         "project": project_name,
         "context_path": str(context_path),
@@ -272,6 +314,109 @@ def read_inspect_workflow_context(project_info: dict[str, Any], context_path: st
         return None
     payload["context_path"] = str(path)
     return payload
+
+
+def _write_context(path: Path, context: dict[str, Any]) -> None:
+    path.write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def _record_report_feedback(
+    project_info: dict[str, Any],
+    *,
+    project_path: Path,
+    context_path: Path,
+    candidate: dict[str, Any],
+    status: str,
+    action_id: str,
+) -> None:
+    try:
+        from codepilot.core.memory import append_memory_event
+
+        details = {
+            "action_id": action_id,
+            "candidate_id": candidate.get("candidate_id") or "",
+            "status": status,
+            "title": candidate.get("title") or "",
+            "reason": candidate.get("reason") or "",
+            "files": list(candidate.get("files") or []),
+            "context_path": str(context_path.relative_to(project_path)),
+        }
+        append_memory_event(
+            project_info,
+            event_type="inspect.report_feedback",
+            source="codepilot.inspect",
+            summary=f"巡检报告项{status}：{candidate.get('title') or candidate.get('candidate_id') or ''}",
+            details=details,
+            tags=["inspect", "feedback", status],
+        )
+    except Exception:
+        return
+
+
+def _refresh_inspect_context_actions(project_info: dict[str, Any], project_path: Path, path: Path, context: dict[str, Any]) -> None:
+    project_name = str(project_info["name"])
+    context["next_actions"] = _inspect_next_actions(project_name, path, context)
+    _write_context(path, context)
+    update_workflow_state(project_path, "inspect", next_actions=context["next_actions"])
+
+
+def _feedback_bucket(status: str) -> str:
+    if status == "ignored":
+        return "ignored_report_only"
+    if status == "deleted":
+        return "deleted_report_only"
+    return "archived_report_only"
+
+
+def _apply_report_feedback_action(
+    project_info: dict[str, Any],
+    *,
+    project_path: Path,
+    context_path: Path,
+    context: dict[str, Any],
+    candidate_id: str,
+    status: str,
+    action_id: str,
+) -> dict[str, Any]:
+    report_only = list(context.get("report_only") or [])
+    remaining: list[dict[str, Any]] = []
+    selected: dict[str, Any] | None = None
+    for item in report_only:
+        candidate = dict(item)
+        if str(candidate.get("candidate_id") or "") == candidate_id:
+            selected = candidate
+            continue
+        remaining.append(candidate)
+    if selected is None:
+        raise click.ClickException(f"未找到 inspect report candidate：{candidate_id}")
+
+    selected["feedback_status"] = status
+    selected["feedback_action_id"] = action_id
+    selected["feedback_at"] = datetime.now().isoformat(timespec="seconds")
+    bucket = _feedback_bucket(status)
+    archived = list(context.get(bucket) or [])
+    archived.append(selected)
+    context["report_only"] = remaining
+    context[bucket] = archived
+    quality_summary = dict(context.get("quality_summary") or {})
+    quality_summary["report_only_count"] = len(remaining)
+    context["quality_summary"] = quality_summary
+    _refresh_inspect_context_actions(project_info, project_path, context_path, context)
+    _record_report_feedback(
+        project_info,
+        project_path=project_path,
+        context_path=context_path,
+        candidate=selected,
+        status=status,
+        action_id=action_id,
+    )
+    return {
+        "candidate_id": candidate_id,
+        "status": status,
+        "title": selected.get("title") or "",
+        "context_path": str(context_path),
+        "remaining_report_only_count": len(remaining),
+    }
 
 
 def _task_priority(item: dict[str, Any], default_priority: str) -> str:
@@ -333,6 +478,21 @@ def execute_inspect_workflow_action(
             if str(item.get("candidate_id") or "") == candidate_id:
                 return _materialize_candidates(project_info, [dict(item)])
         raise click.ClickException(f"未找到 inspect report candidate：{candidate_id}")
+    for prefix, status in (
+        (_IGNORE_PREFIX, "ignored"),
+        (_DELETE_PREFIX, "deleted"),
+        (_ARCHIVE_PREFIX, "archived"),
+    ):
+        if action.startswith(prefix):
+            return _apply_report_feedback_action(
+                project_info,
+                project_path=project_path,
+                context_path=path,
+                context=context,
+                candidate_id=action[len(prefix) :],
+                status=status,
+                action_id=action,
+            )
     if action == "plan_from_inspect":
         from codepilot.commands.plan import write_plan_artifact
 

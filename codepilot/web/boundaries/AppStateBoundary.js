@@ -653,6 +653,22 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       }
     }
 
+    async function workflowAutoAction(project = state.nav.project) {
+      if (!project || state.workflowPending) return;
+      state.workflowPending = 'workflow-auto';
+      try {
+        const data = await CP.api.post('/api/workflow/actions', { project, auto: true });
+        const actionId = data && data.action && data.action.id;
+        pushToast(actionId ? `已自动推进: ${actionId}` : '暂无可自动推进动作', actionId ? 'success' : 'info');
+        await loadDashboard();
+        return data;
+      } catch (err) {
+        pushToast(err.message, 'error');
+      } finally {
+        state.workflowPending = '';
+      }
+    }
+
     async function jobAction(job, action) {
       return ensureSubmissionBoundary().jobAction(job, action);
     }
@@ -1092,7 +1108,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       taskBatchAction,
       toggleProjectForm, submitProject, deleteProject,
       projectService, jobAction,
-      runInspectWorkflow, workflowAction,
+      runInspectWorkflow, workflowAction, workflowAutoAction,
       newSession, sendChat, sendEmbeddedChat, stopSessionRun, deleteSession,
       submitClarifyAnswer,
       cancelGoalClarify, cancelComposerClarify, cancelSessionClarify,

@@ -56,9 +56,10 @@ This guide is for other AI agents. For the latest machine-readable command list,
 {_cmd(command, "workflow status -p <project-name> --json")}
 {_cmd(command, "workflow next -p <project-name> --list --json")}
 {_cmd(command, "workflow next -p <project-name> --action <id> --json")}
+{_cmd(command, "workflow next -p <project-name> --auto --json")}
 ```
 
-`clarify`, `plan`, and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions and `workflow next --action <id>` to execute an allowlisted action. `suggested_command` is only display/review metadata; do not compose or execute it automatically. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
+`clarify`, `plan`, and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions, `workflow next --action <id>` to execute an allowlisted action, or `workflow next --auto` to let CodePilot choose one low-risk policy action. `suggested_command` is only display/review metadata; do not compose or execute it automatically. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
 
 ### Status and Evidence
 
@@ -67,7 +68,10 @@ This guide is for other AI agents. For the latest machine-readable command list,
 {_cmd(command, "hud -p <project-name> --preset full --json")}
 {_cmd(command, 'explore -p <project-name> --prompt "find task template" --json')}
 {_cmd(command, "trace -p <project-name> --limit 30 --json")}
+{_cmd(command, "memory events -p <project-name> --json")}
 ```
+
+`memory events` reads automatic factual observations from `.codepilot/memory/events.jsonl`. CodePilot turns them into deduplicated candidates and maintains `.codepilot/memory/autocapture.md`; candidates record `score`, `feedback`, and `seen_count`, with workflow actions and terminal task outcomes automatically adjusting weight. It does not directly write human-maintained long-term wiki/note content.
 
 ### Task Template
 
@@ -134,11 +138,12 @@ Required rules:
 {_cmd(command, "workflow status -p <项目名> --json")}
 {_cmd(command, "workflow next -p <项目名> --list --json")}
 {_cmd(command, "workflow next -p <项目名> --action <id> --json")}
+{_cmd(command, "workflow next -p <项目名> --auto --json")}
 ```
 
 `clarify`、`plan` 和 `inspect --write-workflow` 不创建 backlog、不启动执行器。
 
-`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；`suggested_command` 只用于展示/审查，不作为自动执行源。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
+`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；也可以用 `workflow next --auto` 让 CodePilot 自动选择一个低风险策略动作。`suggested_command` 只用于展示/审查，不作为自动执行源。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
 
 ### 4. 状态与证据
 
@@ -149,9 +154,12 @@ Required rules:
 {_cmd(command, "trace -p <项目名> --limit 30 --json")}
 {_cmd(command, 'wiki query -p <项目名> "构建" --json')}
 {_cmd(command, "note show -p <项目名> --json")}
+{_cmd(command, "memory events -p <项目名> --json")}
 ```
 
 `explore` 是只读入口，不写文件、不改 Git、不启动服务、不安装依赖、不执行测试。
+
+`memory events` 读取 `.codepilot/memory/events.jsonl` 中的自动观察事实。CodePilot 会自动生成去重候选并维护 `.codepilot/memory/autocapture.md`；候选会记录 `score`、`feedback` 和 `seen_count`，由 workflow action 和任务终态自动升权/降权，但不会直接写人工维护的长期 wiki/note。
 
 ### 5. 任务查看与控制
 

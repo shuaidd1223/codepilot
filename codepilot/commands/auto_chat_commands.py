@@ -164,6 +164,7 @@ def _render_chat_workflow(project_name: str) -> str:
     ]
     for item in (context.get("report_only") or [])[:4]:
         lines.append(f"- 报告项 {item.get('candidate_id')}: {item.get('title')}")
+    lines.append(f"自动推进: workflow next {project_name} auto")
     if actions:
         lines.append("下一步：")
         for action in actions[:6]:

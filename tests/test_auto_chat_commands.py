@@ -78,4 +78,8 @@ def test_chat_command_dispatch_renders_inspect_workflow_next_actions(tmp_path, m
     assert handled is True
     assert "巡检工作流" in response
     assert "report_only=1" in response
+    assert "workflow next demo auto" in response
     assert "promote_inspect_report_inspect-report" in response
+    assert "ignore_inspect_report_inspect-report" in response
+    assert "archive_inspect_report_inspect-report" in response
+    assert "delete_inspect_report_inspect-report" in response

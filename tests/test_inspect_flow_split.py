@@ -8,6 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from codepilot.cli import main
+from codepilot.core.memory import append_memory_event, read_memory_events
 from codepilot.core.task_template import missing_task_template_sections
 from codepilot.core.workflow_state import get_agent_session, read_workflow_state
 from codepilot.commands import inspect as inspect_cmd
@@ -159,6 +160,8 @@ def test_inspect_write_workflow_creates_context_state_and_candidate_ids(tmp_path
     status_payload = json.loads(status_result.output)
     assert status_payload["data"]["state"]["mode"] == "inspect"
     assert status_payload["data"]["state"]["context_path"] == str(context_path)
+    events = read_memory_events(db.get_project("demo"))
+    assert any(event["event_type"] == "inspect.workflow_context_written" for event in events)
 
 
 def test_collect_inspection_signal_results_has_unified_model_and_order(tmp_path, monkeypatch):
@@ -828,6 +831,135 @@ def test_run_inspection_reports_weak_candidates_without_materializing_and_keeps_
     assert all(item["files"] for item in result["report_only"])
 
 
+def test_run_inspection_promotes_positive_memory_feedback_from_report_only(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+    project_info = {"name": "demo", "path": str(project)}
+
+    signal_results = [
+        inspect_cmd.InspectSignalResult(
+            key="todos",
+            title="代码里的 TODO/FIXME/XXX",
+            order=3,
+            enabled=True,
+            content="foo.py:1: TODO handle timeout",
+        )
+    ]
+    monkeypatch.setattr(inspect_cmd, "collect_inspection_signal_results", lambda *_args, **_kwargs: signal_results)
+    monkeypatch.setattr(
+        inspect_cmd,
+        "load_project_config",
+        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_language="zh-CN")),
+    )
+    monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda _project_name: set())
+    monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **_kwargs: [])
+
+    candidate = {
+        "title": "记录 foo.py P4 线索",
+        "goal": "记录 foo.py:1 的 TODO，后续人工判断是否需要整理。",
+        "priority": "P4",
+        "rationale": "TODO 只有低优先级整理价值。",
+        "kind": "chore",
+        "evidence": "signal 3: foo.py:1 TODO handle timeout",
+        "files": ["foo.py"],
+        "acceptance_criteria": ["foo.py:1 的 TODO 已被人工复核。"],
+        "verification_commands": ["git diff --check"],
+        "effort": "small",
+    }
+    report_entry = inspect_cmd._report_only_entry(
+        dict(candidate),
+        reason="priority_p4_report_only",
+        signal_results=signal_results,
+    )
+    append_memory_event(
+        project_info,
+        event_type="workflow.action_executed",
+        source="codepilot.workflow",
+        summary=f"执行 workflow action：promote_inspect_report_{report_entry['candidate_id']}",
+        details={"action_id": f"promote_inspect_report_{report_entry['candidate_id']}"},
+        tags=["workflow", "action"],
+        timestamp="2026-05-22T00:00:00Z",
+    )
+    monkeypatch.setattr(inspect_cmd, "_call_llm", lambda *_args, **_kwargs: {"candidates": [candidate]})
+
+    result = inspect_cmd.run_inspection(project_info, signals=("todos",), max_new_tasks=3, dry_run=True)
+
+    assert [item["title"] for item in result["created"]] == ["记录 foo.py P4 线索"]
+    assert result["report_only"] == []
+    adjustment = result["quality_summary"]["feedback_adjusted"][0]
+    assert adjustment["candidate_id"] == report_entry["candidate_id"]
+    assert adjustment["from"] == "report_only"
+    assert adjustment["to"] == "actionable"
+    assert adjustment["feedback"] == "positive"
+
+
+def test_run_inspection_demotes_negative_memory_feedback_to_report_only(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+    project_info = {"name": "demo", "path": str(project)}
+
+    signal_results = [
+        inspect_cmd.InspectSignalResult(
+            key="todos",
+            title="代码里的 TODO/FIXME/XXX",
+            order=3,
+            enabled=True,
+            content="foo.py:1: TODO handle timeout",
+        )
+    ]
+    monkeypatch.setattr(inspect_cmd, "collect_inspection_signal_results", lambda *_args, **_kwargs: signal_results)
+    monkeypatch.setattr(
+        inspect_cmd,
+        "load_project_config",
+        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_language="zh-CN")),
+    )
+    monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda _project_name: set())
+    monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **_kwargs: [])
+
+    append_memory_event(
+        project_info,
+        event_type="task.deleted",
+        source="codepilot.task",
+        summary="任务 #7 deleted：修复 foo.py 超时 TODO",
+        details={"task_id": 7, "status": "backlog", "title": "修复 foo.py 超时 TODO"},
+        tags=["task", "feedback", "deleted"],
+        timestamp="2026-05-22T00:00:00Z",
+    )
+    monkeypatch.setattr(
+        inspect_cmd,
+        "_call_llm",
+        lambda *_args, **_kwargs: {
+            "candidates": [
+                {
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py:1 的 TODO，避免超时路径继续缺实现。",
+                    "priority": "P3",
+                    "rationale": "TODO 指向明确文件。",
+                    "kind": "bug",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的超时 TODO 已处理。"],
+                    "verification_commands": ["pytest -n auto --dist loadfile -m \"not slow\" -q"],
+                    "effort": "small",
+                }
+            ]
+        },
+    )
+
+    result = inspect_cmd.run_inspection(project_info, signals=("todos",), max_new_tasks=3, dry_run=True)
+
+    assert result["created"] == []
+    assert result["report_only_count"] == 1
+    assert result["report_only"][0]["reason"] == "memory_negative_feedback"
+    adjustment = result["quality_summary"]["feedback_adjusted"][0]
+    assert adjustment["title"] == "修复 foo.py 超时 TODO"
+    assert adjustment["from"] == "actionable"
+    assert adjustment["to"] == "report_only"
+    assert adjustment["feedback"] == "negative"
+
+
 def test_call_llm_skips_unavailable_api_and_marks_fallback(tmp_path, monkeypatch):
     calls: dict[str, object] = {"api": 0, "marks": []}
 
@@ -1124,6 +1256,7 @@ def test_inspect_json_mode_outputs_only_contract_stdout(tmp_path, monkeypatch):
     )
 
     def _fake_call_llm(*_args, **kwargs):
+        print("[planner] leaked stdout")
         callback = kwargs.get("stream_callback")
         if callback:
             callback("[planner] streamed noise")
@@ -1158,6 +1291,7 @@ def test_inspect_json_mode_outputs_only_contract_stdout(tmp_path, monkeypatch):
     assert payload["data"]["quality_summary"]["enabled_signals"] == ["todos"]
     assert "[planner]" not in result.output
     assert "streamed noise" not in result.output
+    assert "leaked stdout" not in result.output
 
 
 def test_emit_inspection_result_maps_error_into_contract(monkeypatch):

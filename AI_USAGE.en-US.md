@@ -44,9 +44,10 @@ codepilot inspect -p <project-name> --once --dry-run --write-workflow --json
 codepilot workflow status -p <project-name> --json
 codepilot workflow next -p <project-name> --list --json
 codepilot workflow next -p <project-name> --action <id> --json
+codepilot workflow next -p <project-name> --auto --json
 ```
 
-`clarify`, `plan`, and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions and `workflow next --action <id>` to execute an allowlisted action. `suggested_command` is only display/review metadata; do not compose or execute it automatically. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
+`clarify`, `plan`, and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions, `workflow next --action <id>` to execute an allowlisted action, or `workflow next --auto` to let CodePilot choose one low-risk policy action. `suggested_command` is only display/review metadata; do not compose or execute it automatically. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
 
 ### Status and Evidence
 
@@ -55,7 +56,10 @@ codepilot status -p <project-name> --json
 codepilot hud -p <project-name> --preset full --json
 codepilot explore -p <project-name> --prompt "find task template" --json
 codepilot trace -p <project-name> --limit 30 --json
+codepilot memory events -p <project-name> --json
 ```
+
+`memory events` reads automatic factual observations from `.codepilot/memory/events.jsonl`. CodePilot turns them into deduplicated candidates and maintains `.codepilot/memory/autocapture.md`; candidates record `score`, `feedback`, and `seen_count`, with workflow actions and terminal task outcomes automatically adjusting weight. It does not directly write human-maintained long-term wiki/note content.
 
 ### Task Template
 

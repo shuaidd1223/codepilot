@@ -45,11 +45,22 @@ def workflow_next(
     action_id: str | None = None,
     mode: str | None = None,
     allow_high_risk: bool = False,
+    auto: bool = False,
 ) -> dict[str, Any]:
     resolve_project(project)
     try:
-        from codepilot.commands.workflow import execute_workflow_next_action, workflow_next_payload
+        from codepilot.commands.workflow import (
+            execute_workflow_auto_next_action,
+            execute_workflow_next_action,
+            workflow_next_payload,
+        )
 
+        if auto:
+            return execute_workflow_auto_next_action(
+                project,
+                mode=mode,
+                allow_high_risk=allow_high_risk,
+            )
         if action_id:
             return execute_workflow_next_action(
                 project,
@@ -62,4 +73,3 @@ def workflow_next(
         raise _workflow_error(exc, project=project) from exc
     except Exception as exc:
         raise _workflow_error(exc, project=project) from exc
-

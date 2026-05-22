@@ -95,6 +95,7 @@ from codepilot.webapp.payloads import (  # noqa: F401 (re-export)
     task_log_delta,
 )
 from codepilot.webapp.action_workflow import (  # noqa: F401 (re-export)
+    execute_workflow_auto_action,
     execute_workflow_action,
     run_inspect_workflow_action,
 )
@@ -867,6 +868,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
 
     def _handle_post_workflow_action(self, body: dict) -> dict:
+        if bool(body.get("auto", False)):
+            return execute_workflow_auto_action(
+                body.get("project") or "",
+                mode=(body.get("mode") or "").strip() or None,
+                allow_high_risk=bool(body.get("allow_high_risk", False)),
+            )
         return execute_workflow_action(
             body.get("project") or "",
             body.get("action_id") or body.get("id") or "",

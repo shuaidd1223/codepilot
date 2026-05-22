@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
+import io
 import json
 import re
 import sys
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import click
 
@@ -38,6 +40,7 @@ from codepilot.core.task_template import missing_task_template_sections
 
 INSPECT_STATE_DIR = global_storage_root() / "inspect"
 SKIPPED_SIGNAL = "（跳过）"
+_PROMOTE_INSPECT_REPORT_PREFIX = "promote_inspect_report_"
 
 
 def _now_iso() -> str:
@@ -649,12 +652,14 @@ def _build_quality_summary(
     skipped: list[dict] | None = None,
     dropped: list[dict] | None = None,
     report_only: list[dict] | None = None,
+    feedback_adjusted: list[dict] | None = None,
     llm_decision: str = "completed",
 ) -> dict:
     created = created or []
     skipped = skipped or []
     dropped = dropped or []
     report_only = report_only or []
+    feedback_adjusted = feedback_adjusted or []
     enabled_signals = _enabled_signal_keys(signal_results)
     substantive_signals = _substantive_signal_keys(signal_results)
     signal_decision = "substantive_signals" if substantive_signals else "no_substantive_signals"
@@ -688,6 +693,15 @@ def _build_quality_summary(
             "report_only": len(report_only),
         },
     ]
+    if feedback_adjusted:
+        decision_chain.append(
+            {
+                "stage": "memory_feedback",
+                "adjusted": len(feedback_adjusted),
+                "promoted": sum(1 for item in feedback_adjusted if item.get("to") == "actionable"),
+                "demoted": sum(1 for item in feedback_adjusted if item.get("to") == "report_only"),
+            }
+        )
     if grouped_candidates_count is not None:
         decision_chain.append(
             {
@@ -721,6 +735,7 @@ def _build_quality_summary(
         "dropped_by_reason": _count_by_reason(dropped),
         "skipped_by_reason": _count_by_reason(skipped),
         "report_only_by_reason": _count_by_reason(report_only),
+        "feedback_adjusted": feedback_adjusted,
         "decision_chain": decision_chain,
     }
 
@@ -964,6 +979,164 @@ def _partition_report_only_candidates(
             continue
         actionable.append(item)
     return actionable, report_only
+
+
+def _memory_feedback_title(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _memory_feedback_score(value: Any) -> int:
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return 50
+
+
+def _memory_feedback_snapshot(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "memory_candidate_id": candidate.get("candidate_id") or "",
+        "feedback": str(candidate.get("feedback") or "neutral"),
+        "score": _memory_feedback_score(candidate.get("score")),
+        "signals": list(candidate.get("signals") or []),
+        "last_seen_at": str(candidate.get("last_seen_at") or candidate.get("created_at") or ""),
+        "source_event_ids": list(candidate.get("source_event_ids") or []),
+    }
+
+
+def _prefer_latest_feedback(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
+    if existing is None:
+        return incoming
+    if str(incoming.get("last_seen_at") or "") >= str(existing.get("last_seen_at") or ""):
+        return incoming
+    return existing
+
+
+def _inspect_memory_feedback_index(project_info: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
+    try:
+        from codepilot.core.memory import read_memory_candidates
+    except Exception:
+        return {"candidate": {}, "title": {}}
+
+    by_candidate: dict[str, dict[str, Any]] = {}
+    by_title: dict[str, dict[str, Any]] = {}
+    try:
+        candidates = read_memory_candidates(project_info, limit=0)
+    except Exception:
+        return {"candidate": by_candidate, "title": by_title}
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        feedback = str(candidate.get("feedback") or "neutral")
+        if feedback not in {"positive", "negative"}:
+            continue
+        snapshot = _memory_feedback_snapshot(candidate)
+        details = candidate.get("details") if isinstance(candidate.get("details"), dict) else {}
+        action_id = str(details.get("action_id") or "")
+        if action_id.startswith(_PROMOTE_INSPECT_REPORT_PREFIX):
+            inspect_candidate_id = action_id[len(_PROMOTE_INSPECT_REPORT_PREFIX) :]
+            by_candidate[inspect_candidate_id] = _prefer_latest_feedback(
+                by_candidate.get(inspect_candidate_id),
+                snapshot,
+            )
+        title_key = _memory_feedback_title(details.get("title") or candidate.get("summary"))
+        if title_key:
+            by_title[title_key] = _prefer_latest_feedback(by_title.get(title_key), snapshot)
+
+    return {"candidate": by_candidate, "title": by_title}
+
+
+def _feedback_for_inspect_candidate(
+    item: dict,
+    *,
+    reason: str,
+    feedback_index: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, Any] | None:
+    candidate_id = ensure_candidate_id(item, reason=reason)
+    by_candidate = feedback_index.get("candidate") or {}
+    if candidate_id in by_candidate:
+        return dict(by_candidate[candidate_id])
+    by_title = feedback_index.get("title") or {}
+    title_key = _memory_feedback_title(item.get("title"))
+    if title_key in by_title:
+        return dict(by_title[title_key])
+    return None
+
+
+def _feedback_adjustment(
+    item: dict,
+    *,
+    feedback: dict[str, Any],
+    from_state: str,
+    to_state: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "candidate_id": item.get("candidate_id") or "",
+        "title": str(item.get("title") or ""),
+        "from": from_state,
+        "to": to_state,
+        "reason": reason,
+        "feedback": feedback.get("feedback") or "neutral",
+        "score": feedback.get("score"),
+        "memory_candidate_id": feedback.get("memory_candidate_id") or "",
+    }
+
+
+def _apply_memory_feedback_to_candidates(
+    project_info: dict[str, Any],
+    actionable_candidates: list[dict],
+    report_only: list[dict],
+    *,
+    signal_results: list[InspectSignalResult],
+) -> tuple[list[dict], list[dict], list[dict]]:
+    feedback_index = _inspect_memory_feedback_index(project_info)
+    adjusted: list[dict] = []
+    next_actionable: list[dict] = []
+    next_report_only: list[dict] = []
+
+    for item in actionable_candidates:
+        feedback = _feedback_for_inspect_candidate(item, reason="actionable", feedback_index=feedback_index)
+        if feedback and feedback.get("feedback") == "negative" and _memory_feedback_score(feedback.get("score")) <= 40:
+            demoted = _report_only_entry(item, reason="memory_negative_feedback", signal_results=signal_results)
+            demoted["memory_feedback"] = feedback
+            next_report_only.append(demoted)
+            adjusted.append(
+                _feedback_adjustment(
+                    demoted,
+                    feedback=feedback,
+                    from_state="actionable",
+                    to_state="report_only",
+                    reason="negative_memory_feedback",
+                )
+            )
+            continue
+        if feedback:
+            item["memory_feedback"] = feedback
+        next_actionable.append(item)
+
+    for item in report_only:
+        reason = str(item.get("reason") or "report_only")
+        feedback = _feedback_for_inspect_candidate(item, reason=reason, feedback_index=feedback_index)
+        if feedback and feedback.get("feedback") == "positive" and _memory_feedback_score(feedback.get("score")) >= 80:
+            promoted = dict(item)
+            if str(promoted.get("priority") or "").upper() == "P4":
+                promoted["priority"] = "P3"
+            promoted["memory_feedback"] = feedback
+            next_actionable.append(promoted)
+            adjusted.append(
+                _feedback_adjustment(
+                    promoted,
+                    feedback=feedback,
+                    from_state="report_only",
+                    to_state="actionable",
+                    reason="positive_memory_feedback",
+                )
+            )
+            continue
+        next_report_only.append(item)
+
+    return next_actionable, next_report_only, adjusted
 
 
 def _group_lint_candidates(candidates: list[dict]) -> list[dict]:
@@ -1227,6 +1400,12 @@ def run_inspection(
         kept_candidates,
         signal_results=signal_results,
     )
+    actionable_candidates, report_only, feedback_adjusted = _apply_memory_feedback_to_candidates(
+        project_info,
+        actionable_candidates,
+        report_only,
+        signal_results=signal_results,
+    )
     task_candidates = _group_lint_candidates(actionable_candidates)
     for item in task_candidates:
         if isinstance(item, dict):
@@ -1261,6 +1440,7 @@ def run_inspection(
             skipped=skipped,
             dropped=dropped,
             report_only=report_only,
+            feedback_adjusted=feedback_adjusted,
             llm_decision="completed",
         ),
         "auto_execute": auto_execute,
@@ -1524,10 +1704,17 @@ def inspect(
         click.echo(chunk, nl=False)
 
     def _run_inspection_with_stream(project_info: dict, **kwargs) -> dict:
+        if json_mode:
+            with contextlib.redirect_stdout(io.StringIO()):
+                return run_inspection(
+                    project_info,
+                    **kwargs,
+                    stream_callback=None,
+                )
         return run_inspection(
             project_info,
             **kwargs,
-            stream_callback=None if json_mode else _stream_chunk,
+            stream_callback=_stream_chunk,
         )
 
     def _emit_result_after_stream(result: dict, *, dry_run: bool, json_mode: bool) -> None:

@@ -12,7 +12,15 @@ CP.Components.ProjectView = Vue.defineComponent({
     inspectService() { return (this.currentProject && this.currentProject.services && this.currentProject.services.inspect) || {}; },
     workflowInspect() { return (this.currentProject && this.currentProject.workflow && this.currentProject.workflow.inspect) || {}; },
     workflowActions() { return (this.currentProject && this.currentProject.workflow && this.currentProject.workflow.next_actions) || []; },
+    primaryWorkflowActions() { return this.workflowActions.filter(action => !(action && action.candidate_id)); },
     reportOnlyItems() { return this.workflowInspect.report_only || []; },
+    feedbackReportItems() {
+      return [
+        ...(this.workflowInspect.ignored_report_only || []).map(item => ({ ...item, feedback_status: item.feedback_status || 'ignored' })),
+        ...(this.workflowInspect.archived_report_only || []).map(item => ({ ...item, feedback_status: item.feedback_status || 'archived' })),
+        ...(this.workflowInspect.deleted_report_only || []).map(item => ({ ...item, feedback_status: item.feedback_status || 'deleted' })),
+      ].slice(0, 4);
+    },
     createdPreviewItems() { return this.workflowInspect.created_preview || []; },
     qualitySummary() { return this.workflowInspect.quality_summary || {}; },
   },
@@ -32,6 +40,22 @@ CP.Components.ProjectView = Vue.defineComponent({
     },
     workflowActionLabel(action) {
       return (action && action.label) || (action && action.id) || '执行';
+    },
+    workflowActionId(item, prefix) {
+      const candidateId = item && item.candidate_id;
+      return candidateId ? `${prefix}${candidateId}` : '';
+    },
+    workflowActionAvailable(item, prefix) {
+      const actionId = this.workflowActionId(item, prefix);
+      return !!actionId && this.workflowActions.some(action => action && action.id === actionId);
+    },
+    runInspectCandidateAction(item, prefix) {
+      const actionId = this.workflowActionId(item, prefix);
+      if (!actionId) return undefined;
+      return this.cp.workflowAction(actionId, this.s.nav.project);
+    },
+    feedbackLabel(status) {
+      return ({ ignored: '已忽略', archived: '已归档', deleted: '已删除' })[status] || '已处理';
     },
   },
   template: `
@@ -148,8 +172,12 @@ CP.Components.ProjectView = Vue.defineComponent({
                 <span v-if="workflowPending('inspect')" class="spinner"></span>
                 运行巡检
               </button>
+              <button class="btn btn-outline btn-sm" @click="cp.workflowAutoAction(s.nav.project)" :disabled="!!s.workflowPending">
+                <span v-if="workflowPending('workflow-auto')" class="spinner"></span>
+                自动推进
+              </button>
               <button
-                v-for="action in workflowActions"
+                v-for="action in primaryWorkflowActions"
                 :key="action.id"
                 class="btn btn-outline btn-sm"
                 @click="cp.workflowAction(action.id, s.nav.project)"
@@ -177,6 +205,52 @@ CP.Components.ProjectView = Vue.defineComponent({
                     <cp-chip>{{ item.reason || 'report_only' }}</cp-chip>
                   </div>
                   <div class="task-item-preview">{{ (item.files || []).join(', ') || item.goal }}</div>
+                  <div class="item-actions inspect-report-actions">
+                    <button
+                      v-if="workflowActionAvailable(item, 'promote_inspect_report_')"
+                      class="btn btn-primary btn-sm"
+                      @click="runInspectCandidateAction(item, 'promote_inspect_report_')"
+                      :disabled="!!s.workflowPending">
+                      <span v-if="workflowPending(workflowActionId(item, 'promote_inspect_report_'))" class="spinner"></span>
+                      提升
+                    </button>
+                    <button
+                      v-if="workflowActionAvailable(item, 'ignore_inspect_report_')"
+                      class="btn btn-outline btn-sm"
+                      @click="runInspectCandidateAction(item, 'ignore_inspect_report_')"
+                      :disabled="!!s.workflowPending">
+                      <span v-if="workflowPending(workflowActionId(item, 'ignore_inspect_report_'))" class="spinner"></span>
+                      忽略
+                    </button>
+                    <button
+                      v-if="workflowActionAvailable(item, 'archive_inspect_report_')"
+                      class="btn btn-outline btn-sm"
+                      @click="runInspectCandidateAction(item, 'archive_inspect_report_')"
+                      :disabled="!!s.workflowPending">
+                      <span v-if="workflowPending(workflowActionId(item, 'archive_inspect_report_'))" class="spinner"></span>
+                      归档
+                    </button>
+                    <button
+                      v-if="workflowActionAvailable(item, 'delete_inspect_report_')"
+                      class="btn btn-danger-outline btn-sm"
+                      @click="runInspectCandidateAction(item, 'delete_inspect_report_')"
+                      :disabled="!!s.workflowPending">
+                      <span v-if="workflowPending(workflowActionId(item, 'delete_inspect_report_'))" class="spinner"></span>
+                      删除
+                    </button>
+                  </div>
+                </div>
+              </article>
+            </div>
+            <div v-if="feedbackReportItems.length" class="task-list compact-task-list inspect-report-list">
+              <article v-for="item in feedbackReportItems" :key="item.feedback_action_id || item.candidate_id" class="task-item">
+                <div class="task-item-body">
+                  <div class="task-item-title">{{ item.title }}</div>
+                  <div class="chip-row">
+                    <cp-chip>{{ feedbackLabel(item.feedback_status) }}</cp-chip>
+                    <cp-chip>{{ item.reason || 'report_only' }}</cp-chip>
+                  </div>
+                  <div class="task-item-preview">{{ item.feedback_at || (item.files || []).join(', ') || item.goal }}</div>
                 </div>
               </article>
             </div>

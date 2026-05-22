@@ -8,6 +8,7 @@ from click.testing import CliRunner
 from codepilot.commands import add as add_cmd
 from codepilot.core.event_plugins import register_jsonl_sink
 from codepilot.cli import main
+from codepilot.core.memory import read_memory_candidates, read_memory_events
 from codepilot.core.workflow_state import (
     advance_agent_phase,
     cleanup_agent_session,
@@ -551,6 +552,12 @@ def test_workflow_next_executes_inspect_create_tasks_without_shelling_suggested_
     assert len(tasks) == 1
     assert tasks[0]["source"] == "inspector"
     assert "修复 foo.py 超时 TODO" == tasks[0]["title"]
+    events = read_memory_events(project)
+    assert any(
+        event["event_type"] == "workflow.action_executed"
+        and event["details"].get("action_id") == "create_inspect_tasks"
+        for event in events
+    )
 
 
 def test_workflow_next_promotes_single_inspect_report_candidate(tmp_path, monkeypatch):
@@ -602,6 +609,167 @@ def test_workflow_next_promotes_single_inspect_report_candidate(tmp_path, monkey
     task = db.list_tasks(project="demo")[0]
     assert task["title"] == "记录 foo.py P4 线索"
     assert task["priority"] == "P3"
+
+
+def test_workflow_next_ignores_inspect_report_candidate_without_creating_task(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    project_path = Path(project["path"])
+    (project_path / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    context = write_inspect_workflow_context(
+        project,
+        {
+            "project": "demo",
+            "created": [],
+            "report_only": [
+                {
+                    "candidate_id": "inspect-report",
+                    "title": "记录 foo.py P4 线索",
+                    "goal": "记录 foo.py:1 的 TODO，后续人工判断是否需要整理。",
+                    "priority": "P4",
+                    "rationale": "TODO 只有低优先级整理价值。",
+                    "kind": "chore",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的 TODO 已被人工复核。"],
+                    "verification_commands": ["git diff --check"],
+                    "effort": "small",
+                    "reason": "priority_p4_report_only",
+                }
+            ],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 0, "report_only_count": 1},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-test-ignore",
+    )
+
+    action_id = next(action["id"] for action in context["next_actions"] if action["id"].startswith("ignore_inspect_report_"))
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", action_id, "--json"])
+
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.output)
+    assert out["data"]["result"]["status"] == "ignored"
+    assert out["data"]["result"]["candidate_id"] == "inspect-report"
+    assert db.list_tasks(project="demo") == []
+
+    refreshed = json.loads(Path(context["context_path"]).read_text(encoding="utf-8"))
+    assert refreshed["report_only"] == []
+    assert refreshed["ignored_report_only"][0]["candidate_id"] == "inspect-report"
+    assert all("inspect-report" not in action["id"] for action in refreshed["next_actions"])
+
+    feedback_events = read_memory_events(project, event_type="inspect.report_feedback")
+    assert feedback_events[0]["details"]["candidate_id"] == "inspect-report"
+    assert feedback_events[0]["details"]["status"] == "ignored"
+    feedback_candidates = [item for item in read_memory_candidates(project) if item["event_type"] == "inspect.report_feedback"]
+    assert feedback_candidates[0]["feedback"] == "negative"
+
+
+def test_workflow_next_auto_ignores_repeated_negative_report_only(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+    from codepilot.core.memory import append_memory_event
+
+    append_memory_event(
+        project,
+        event_type="inspect.report_feedback",
+        source="codepilot.inspect",
+        summary="巡检报告项ignored：记录 foo.py P4 线索",
+        details={
+            "action_id": "ignore_inspect_report_inspect-report",
+            "candidate_id": "inspect-report",
+            "status": "ignored",
+            "title": "记录 foo.py P4 线索",
+            "reason": "priority_p4_report_only",
+            "files": ["foo.py"],
+        },
+        tags=["inspect", "feedback", "ignored"],
+    )
+    context = write_inspect_workflow_context(
+        project,
+        {
+            "project": "demo",
+            "created": [],
+            "report_only": [
+                {
+                    "candidate_id": "inspect-report",
+                    "title": "记录 foo.py P4 线索",
+                    "goal": "人工评估 foo.py。",
+                    "priority": "P4",
+                    "reason": "priority_p4_report_only",
+                    "files": ["foo.py"],
+                    "evidence": "signal 3: foo.py",
+                }
+            ],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 0, "report_only_count": 1},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-auto-ignore",
+    )
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--auto", "--json"])
+
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.output)
+    assert out["data"]["auto"] is True
+    assert out["data"]["selected_reason"] == "negative_feedback_report_only"
+    assert out["data"]["action"]["id"] == "ignore_inspect_report_inspect-report"
+    assert db.list_tasks(project="demo") == []
+    refreshed = json.loads(Path(context["context_path"]).read_text(encoding="utf-8"))
+    assert refreshed["report_only"] == []
+    assert refreshed["ignored_report_only"][0]["candidate_id"] == "inspect-report"
+
+
+def test_workflow_next_auto_generates_inspect_plan_once(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    write_inspect_workflow_context(
+        project,
+        {
+            "project": "demo",
+            "created": [
+                {
+                    "candidate_id": "inspect-actionable",
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py 中的超时 TODO。",
+                    "priority": "P2",
+                    "reason": "todo_signal",
+                    "files": ["foo.py"],
+                    "evidence": "signal 1: foo.py",
+                }
+            ],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 1, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-auto-plan",
+    )
+
+    first = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--auto", "--json"])
+    second = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--auto", "--json"])
+
+    assert first.exit_code == 0, first.output
+    first_out = json.loads(first.output)
+    assert first_out["data"]["auto"] is True
+    assert first_out["data"]["selected_reason"] == "low_risk_inspect_plan"
+    assert first_out["data"]["action"]["id"] == "plan_from_inspect"
+    assert db.list_tasks(project="demo") == []
+
+    assert second.exit_code == 0, second.output
+    second_out = json.loads(second.output)
+    assert second_out["data"]["auto"] is True
+    assert second_out["data"]["action"] is None
+    assert second_out["data"]["skipped_reason"] == "no_low_risk_auto_action"
 
 
 def test_workflow_next_builds_plan_from_inspect_context(tmp_path, monkeypatch):

@@ -393,6 +393,7 @@ _TASK_EVENT_FIELDS = {
     "stop_requested",
     "stop_reason",
 }
+_MEMORY_TASK_TERMINAL_STATUSES = {"done", "failed", "cancelled"}
 
 
 def _task_update_summary(task: dict) -> str:
@@ -407,44 +408,118 @@ def _task_update_summary(task: dict) -> str:
     return status or phase
 
 
+def _record_task_memory_event(
+    task: dict,
+    *,
+    event_type: str,
+    status: str,
+    tags: list[str],
+    changed_fields: set[str] | None = None,
+    project_info: Optional[dict] = None,
+    extra_details: Optional[dict] = None,
+) -> None:
+    project_name = str(task.get("project") or "").strip()
+    if not project_name:
+        return
+    try:
+        from codepilot.core.memory import append_memory_event
+
+        project_info = project_info or get_project(project_name)
+        if not project_info:
+            return
+        task_id = int(task.get("id"))
+        title = str(task.get("title") or "").strip()
+        summary = f"任务 #{task_id} {status}：{title}" if title else f"任务 #{task_id} {status}"
+        details = {
+            "task_id": task_id,
+            "status": status,
+            "title": title,
+            "source": str(task.get("source") or ""),
+            "changed_fields": sorted(changed_fields or set()),
+            "retry_count": int(task.get("retry_count") or 0),
+            "error_message": str(task.get("error_message") or "")[:1000],
+            "delivery_record": str(task.get("delivery_record") or "")[:1000],
+            "completed_at": task.get("completed_at"),
+        }
+        details.update(extra_details or {})
+        append_memory_event(
+            project_info,
+            event_type=event_type,
+            source="codepilot.task",
+            summary=summary,
+            details=details,
+            tags=tags,
+        )
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _record_task_update_memory(task: dict, changed_fields: set[str], project_info: Optional[dict] = None) -> None:
+    status = str(task.get("status") or "").strip()
+    if "status" not in changed_fields:
+        return
+    if status == "archived":
+        _record_task_memory_event(
+            task,
+            event_type="task.archived",
+            status=status,
+            tags=["task", "feedback", "archived"],
+            changed_fields=changed_fields,
+            project_info=project_info,
+        )
+        return
+    if status not in _MEMORY_TASK_TERMINAL_STATUSES:
+        return
+    _record_task_memory_event(
+        task,
+        event_type="task.updated",
+        status=status,
+        tags=["task", "outcome", status],
+        changed_fields=changed_fields,
+        project_info=project_info,
+    )
+
+
 def _publish_task_updated_event(task: Optional[dict], changed_fields: set[str]) -> None:
     if not task or not (changed_fields & _TASK_EVENT_FIELDS):
+        return
+    project_info: Optional[dict] = None
+    project_name = str(task.get("project") or "")
+    if not project_name:
         return
     try:
         from codepilot.core.event_plugins import build_event, dispatch_event_to_sinks
 
-        project_name = str(task.get("project") or "")
-        if not project_name:
-            return
         project_root = str(task.get("project_path") or "")
         if not project_root:
-            project = get_project(project_name)
-            project_root = str((project or {}).get("path") or "")
+            project_info = get_project(project_name)
+            project_root = str((project_info or {}).get("path") or "")
         if not project_root:
-            return
-
-        payload = {
-            "task_id": int(task.get("id")),
-            "status": str(task.get("status") or ""),
-            "phase": str(task.get("run_phase") or ""),
-            "summary": _task_update_summary(task),
-            "changed_fields": sorted(changed_fields),
-            "retry_count": int(task.get("retry_count") or 0),
-            "max_retries": int(task.get("max_retries") or 0),
-            "error_message": str(task.get("error_message") or ""),
-            "completed_at": task.get("completed_at"),
-        }
-        event = build_event(
-            project_name,
-            "task.updated",
-            source="codepilot.task",
-            payload=payload,
-            event_id_prefix=f"task-{task.get('id')}",
-        )
-        dispatch_event_to_sinks(project_root, event)
+            raise ValueError("project root is empty")
+        else:
+            payload = {
+                "task_id": int(task.get("id")),
+                "status": str(task.get("status") or ""),
+                "phase": str(task.get("run_phase") or ""),
+                "summary": _task_update_summary(task),
+                "changed_fields": sorted(changed_fields),
+                "retry_count": int(task.get("retry_count") or 0),
+                "max_retries": int(task.get("max_retries") or 0),
+                "error_message": str(task.get("error_message") or ""),
+                "completed_at": task.get("completed_at"),
+            }
+            event = build_event(
+                project_name,
+                "task.updated",
+                source="codepilot.task",
+                payload=payload,
+                event_id_prefix=f"task-{task.get('id')}",
+            )
+            dispatch_event_to_sinks(project_root, event)
     except Exception:  # noqa: BLE001
         # 发布事件失败不应阻止主流程
-        return
+        pass
+    _record_task_update_memory(task, changed_fields, project_info=project_info)
 
 
 def create_task(
@@ -558,10 +633,18 @@ def update_task_if_status(task_id: int, expected_status: str, **fields) -> Optio
 
 def delete_task(task_id: int) -> bool:
     """Delete one task row and its logs."""
+    task = get_task(task_id)
     with get_write_conn() as conn:
         removed = _delete_task_with_logs(conn, task_id)
     if removed:
         _invalidate_task_caches()
+        if task:
+            _record_task_memory_event(
+                task,
+                event_type="task.deleted",
+                status=str(task.get("status") or "deleted"),
+                tags=["task", "feedback", "deleted"],
+            )
     return removed
 
 
@@ -613,7 +696,21 @@ def reset_task_for_retry(task_id: int, *, reset_retry_count: bool = True) -> dic
     }
     if reset_retry_count:
         updates["retry_count"] = 0
-    return update_task(task_id, **updates)
+    updated = update_task(task_id, **updates)
+    if updated:
+        _record_task_memory_event(
+            updated,
+            event_type="task.retried",
+            status="backlog",
+            tags=["task", "feedback", "retried"],
+            changed_fields=set(updates),
+            extra_details={
+                "from_status": str(task.get("status") or ""),
+                "from_retry_count": int(task.get("retry_count") or 0),
+                "reset_retry_count": bool(reset_retry_count),
+            },
+        )
+    return updated
 
 
 def next_backlog_task(project: str, *, exclude_task_ids: Optional[set[int]] = None) -> list[dict]:

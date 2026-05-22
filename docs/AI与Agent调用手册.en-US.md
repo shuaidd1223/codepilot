@@ -37,11 +37,12 @@ codepilot plan -p <project-name> --from-spec .codepilot/specs/example.md --json
 codepilot workflow status -p <project-name> --json
 codepilot workflow next -p <project-name> --list --json
 codepilot workflow next -p <project-name> --action <id> --json
+codepilot workflow next -p <project-name> --auto --json
 ```
 
 `clarify` and `plan` do not create backlog tasks and do not start execution.
 
-Their JSON output records `next_actions` for follow-up work such as generating a plan or importing tasks. External AI agents should inspect actions with `workflow next --list`, then advance by id with `workflow next --action <id>`. `suggested_command` is only display/review metadata; do not compose or execute it automatically.
+Their JSON output records `next_actions` for follow-up work such as generating a plan or importing tasks. External AI agents should inspect actions with `workflow next --list`, advance by id with `workflow next --action <id>`, or let CodePilot choose one low-risk policy action with `workflow next --auto`. `suggested_command` is only display/review metadata; do not compose or execute it automatically.
 
 ### 2.3 Status, Evidence, Memory
 
@@ -52,9 +53,12 @@ codepilot explore -p <project-name> --prompt "find task template" --json
 codepilot trace -p <project-name> --limit 30 --json
 codepilot wiki query -p <project-name> "build" --json
 codepilot note show -p <project-name> --json
+codepilot memory events -p <project-name> --json
 ```
 
 `explore` is read-only and does not write files, change Git, start services, install dependencies, or run tests.
+
+`memory events` reads the project-local automatic observation log. CodePilot automatically turns facts into deduplicated candidates and maintains `.codepilot/memory/autocapture.md`; candidates record `score`, `feedback`, and `seen_count`, with workflow actions and terminal task outcomes automatically adjusting weight. It does not directly write human-maintained long-term wiki/note content.
 
 ### 2.4 Task Control
 
@@ -82,7 +86,7 @@ codepilot inspect -p <project-name> --status
 codepilot build-fix -p <project-name> --task-id <task_id> --json
 ```
 
-`inspect --write-workflow` only works with `--once --dry-run`. It writes the inspection result to project-local workflow context and exposes safe `next_actions` such as `create_inspect_tasks`, `promote_inspect_report_<candidate_id>`, and `plan_from_inspect`; it does not create backlog items or start the executor.
+`inspect --write-workflow` only works with `--once --dry-run`. It writes the inspection result to project-local workflow context and exposes safe `next_actions` such as `create_inspect_tasks`, `promote_inspect_report_<candidate_id>`, `ignore_inspect_report_<candidate_id>`, `delete_inspect_report_<candidate_id>`, `archive_inspect_report_<candidate_id>`, and `plan_from_inspect`; it does not create backlog items or start the executor.
 
 ### 2.6 Web UI, Feishu, Webhook
 
@@ -189,9 +193,10 @@ codepilot clarify -p <project-name> "improve task panel" --json
 codepilot workflow next -p <project-name> --list --json
 codepilot workflow next -p <project-name> --action plan_from_spec --json
 codepilot workflow next -p <project-name> --action import_tasks --json
+codepilot workflow next -p <project-name> --auto --json
 ```
 
-Review the listed `next_actions` before executing one. `workflow next` uses a fixed allowlist and does not shell out to `suggested_command`; high-risk actions require explicit confirmation and must still be allowlisted.
+Review the listed `next_actions` before executing one, or use `workflow next --auto` to let CodePilot choose one low-risk policy action. `workflow next` uses a fixed allowlist and does not shell out to `suggested_command`; high-risk actions require explicit confirmation and must still be allowlisted.
 
 ### 4.3 Answer Project Questions
 
@@ -226,6 +231,7 @@ Prefer JSON for automation. Stable commands include:
 - `codepilot workflow status -p <project-name> --json`
 - `codepilot workflow next -p <project-name> --list --json`
 - `codepilot workflow next -p <project-name> --action <id> --json`
+- `codepilot workflow next -p <project-name> --auto --json`
 - `codepilot task show <task_id> --json`
 - `codepilot task find <keyword> -p <project-name> --json`
 - `codepilot doctor --json`

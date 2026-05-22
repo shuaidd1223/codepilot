@@ -117,7 +117,7 @@ codepilot inspect -p myproject --once --dry-run --write-workflow --json
 codepilot doctor --project myproject --services --json
 ```
 
-`--write-workflow` 会生成巡检工作流上下文和安全 `next_actions`，可继续用 `codepilot workflow next -p myproject --list --json` 审查后推进。
+`--write-workflow` 会生成巡检工作流上下文和安全 `next_actions`，可继续用 `codepilot workflow next -p myproject --list --json` 审查，或用 `codepilot workflow next -p myproject --auto --json` 执行一个低风险自动推进动作。
 
 ## 常用命令
 
@@ -137,8 +137,11 @@ codepilot auto -p <项目名> -t "高层目标" --plan-only
 codepilot explore -p <项目名> --prompt "要查询的问题" --json
 codepilot wiki query -p <项目名> "构建" --json
 codepilot note add -p <项目名> "当前验证命令是 pytest tests"
+codepilot memory events -p <项目名> --json
 codepilot trace -p <项目名> --limit 30
 ```
+
+`memory events` 会读取项目本地自动观察日志，并把 workflow action、任务成功/失败等反馈沉淀为带 `score` / `feedback` / `seen_count` 的去重候选。
 
 ### 任务运维
 

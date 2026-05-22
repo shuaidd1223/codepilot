@@ -271,6 +271,42 @@ def test_workflow_context_tools_expose_status_next_and_inspect_run(tmp_path, mon
     assert any(action["id"] == "create_inspect_tasks" for action in next_actions["next_actions"])
 
 
+def test_workflow_next_tool_auto_uses_shared_policy(tmp_path, monkeypatch):
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _context_server(project_path)
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    write_inspect_workflow_context(
+        db.get_project("demo"),
+        {
+            "project": "demo",
+            "created": [
+                {
+                    "candidate_id": "inspect-actionable",
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py 中的超时 TODO。",
+                    "priority": "P2",
+                    "reason": "todo_signal",
+                    "files": ["foo.py"],
+                    "evidence": "signal 1: foo.py",
+                }
+            ],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 1, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-mcp-auto",
+    )
+
+    payload = server.call_tool("workflow_next", {"project": "demo", "auto": True})
+
+    assert payload["auto"] is True
+    assert payload["selected_reason"] == "low_risk_inspect_plan"
+    assert payload["action"]["id"] == "plan_from_inspect"
+
+
 def test_workflow_next_tool_returns_structured_error_for_missing_project(tmp_path, monkeypatch):
     project_path = _init_demo_project(tmp_path, monkeypatch)
     server = _context_server(project_path)

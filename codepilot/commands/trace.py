@@ -239,6 +239,28 @@ def _workflow_events(project: str, project_path: str | Path) -> list[dict[str, A
     return events
 
 
+def _memory_events(project_info: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        from codepilot.core.memory import read_memory_events
+    except Exception:
+        return []
+    events: list[dict[str, Any]] = []
+    for item in read_memory_events(project_info, limit=0):
+        events.append(
+            _event(
+                timestamp=str(item.get("timestamp") or ""),
+                source="memory",
+                event=str(item.get("event_type") or "memory.event"),
+                project=str(item.get("project") or project_info["name"]),
+                status=str(item.get("confidence") or ""),
+                phase="",
+                message=str(item.get("summary") or ""),
+                detail=json.dumps(item.get("details") or {}, ensure_ascii=False, sort_keys=True),
+            )
+        )
+    return events
+
+
 def _sort_and_limit_events(events: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     sorted_events = sorted(events, key=lambda item: item["timestamp"], reverse=True)
     if limit > 0:
@@ -253,6 +275,7 @@ def collect_trace_events(
     limit: int = 30,
     include_services: bool = True,
     include_workflow: bool = True,
+    include_memory: bool = True,
 ) -> list[dict[str, Any]]:
     """Collect a merged activity timeline from local CodePilot state."""
     project = project_info["name"]
@@ -265,6 +288,8 @@ def collect_trace_events(
             events.extend(_service_events(project))
         if include_workflow:
             events.extend(_workflow_events(project, project_path))
+        if include_memory:
+            events.extend(_memory_events(project_info))
 
     return _sort_and_limit_events(events, limit)
 
@@ -300,6 +325,7 @@ def render_trace(events: list[dict[str, Any]]) -> None:
 @click.option("--limit", type=int, default=30, show_default=True, help="最多显示事件数；0 表示不限制")
 @click.option("--no-services", is_flag=True, help="不包含后台服务心跳")
 @click.option("--no-workflow", is_flag=True, help="不包含 workflow state")
+@click.option("--no-memory", is_flag=True, help="不包含 memory event log")
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
 def trace(
@@ -309,6 +335,7 @@ def trace(
     limit: int,
     no_services: bool,
     no_workflow: bool,
+    no_memory: bool,
     json_mode: bool,
 ) -> None:
     """显示项目最近活动时间线，用于排障任务、日志和服务状态."""
@@ -320,6 +347,7 @@ def trace(
         limit=max(limit, 0),
         include_services=not no_services,
         include_workflow=not no_workflow,
+        include_memory=not no_memory,
     )
     data = {
         "project": project_info["name"],

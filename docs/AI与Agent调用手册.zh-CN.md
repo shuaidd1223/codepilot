@@ -37,11 +37,12 @@ codepilot plan -p <项目名> --from-spec .codepilot/specs/example.md --json
 codepilot workflow status -p <项目名> --json
 codepilot workflow next -p <项目名> --list --json
 codepilot workflow next -p <项目名> --action <id> --json
+codepilot workflow next -p <项目名> --auto --json
 ```
 
 `clarify` 和 `plan` 都不创建 backlog、不启动执行器，适合执行前审查。
 
-`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。外部 AI / Agent 应优先用 `workflow next --list` 查看动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进。`suggested_command` 只用于展示/审查，不作为自动执行源。
+`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。外部 AI / Agent 应优先用 `workflow next --list` 查看动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；需要低风险自动推进时可用 `workflow next --auto`。`suggested_command` 只用于展示/审查，不作为自动执行源。
 
 ### 2.3 状态、证据和记忆
 
@@ -53,9 +54,12 @@ codepilot explore -p <项目名> --prompt "要查询的问题" --json
 codepilot trace -p <项目名> --limit 30 --json
 codepilot wiki query -p <项目名> "构建" --json
 codepilot note show -p <项目名> --json
+codepilot memory events -p <项目名> --json
 ```
 
 `explore` 是只读取证入口，只返回 `query/evidence/sources/limitations`，不会写文件、改 Git、启动服务、安装依赖或执行测试。
+
+`memory events` 读取项目本地自动观察事实日志。CodePilot 会自动生成去重候选并维护 `.codepilot/memory/autocapture.md`；候选会记录 `score`、`feedback` 和 `seen_count`，由 workflow action 和任务终态自动升权/降权，但它不直接写人工维护的长期 wiki/note。
 
 ### 2.4 任务控制
 
@@ -86,7 +90,7 @@ codepilot inspect -p <项目名> --status
 codepilot build-fix -p <项目名> --task-id <task_id> --json
 ```
 
-`inspect --write-workflow` 只支持 `--once --dry-run`，会把巡检结果写入项目本地 workflow context，并生成 `create_inspect_tasks`、`promote_inspect_report_<candidate_id>`、`plan_from_inspect` 等安全 `next_actions`；不会直接创建 backlog 或启动执行器。
+`inspect --write-workflow` 只支持 `--once --dry-run`，会把巡检结果写入项目本地 workflow context，并生成 `create_inspect_tasks`、`promote_inspect_report_<candidate_id>`、`ignore_inspect_report_<candidate_id>`、`delete_inspect_report_<candidate_id>`、`archive_inspect_report_<candidate_id>`、`plan_from_inspect` 等安全 `next_actions`；不会直接创建 backlog 或启动执行器。
 
 ### 2.6 Web UI、飞书和 Webhook
 
@@ -214,6 +218,7 @@ codepilot add -p <项目名> -f tasks.txt
    - 输出包含 `next_actions`，推荐下一步动作。
 2. `codepilot workflow next -p <项目名> --list --json`
    - 审查可用动作、风险等级和展示用 `suggested_command`。
+   - 低风险自动推进可改用 `codepilot workflow next -p <项目名> --auto --json`。
 3. `codepilot workflow next -p <项目名> --action plan_from_spec --json`
    - 通过 allowlist 从 clarify spec 生成 plan。
 4. `codepilot workflow next -p <项目名> --action import_tasks --json`
@@ -242,6 +247,7 @@ codepilot add -p <项目名> -f tasks.txt
 推荐路径：
 
 - **列出动作**：`codepilot workflow next -p <项目名> --list --json`。
+- **低风险自动推进**：`codepilot workflow next -p <项目名> --auto --json` 只选择策略允许的低风险动作。
 - **Clarify → Plan**：检查 clarify spec 后，用 `codepilot workflow next -p <项目名> --action plan_from_spec --json` 生成执行计划。
 - **Plan → Task**：人工审查 plan 后，用 `codepilot workflow next -p <项目名> --action import_tasks --json` 将候选任务导入 backlog。
 - **Plan → Execute**：高风险动作默认拒绝；即使显式允许，也必须在 `workflow next` allowlist 内。

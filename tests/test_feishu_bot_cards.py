@@ -105,7 +105,48 @@ def test_feishu_workflow_card_lists_inspect_next_actions(tmp_path, monkeypatch):
     assert "CodePilot 工作流下一步" in payload
     assert "报告 foo.py 线索" in payload
     assert "promote_inspect_report_inspect-report" in payload
-    assert "workflow next demo promote_inspect_report_inspect-report" in set(_button_commands(reply["card"]))
+    commands = set(_button_commands(reply["card"]))
+    assert "workflow next demo auto" in commands
+    assert "workflow next demo promote_inspect_report_inspect-report" in commands
+    assert "workflow next demo ignore_inspect_report_inspect-report" in commands
+    assert "workflow next demo archive_inspect_report_inspect-report" in commands
+    assert "workflow next demo delete_inspect_report_inspect-report" in commands
+
+
+def test_feishu_workflow_next_auto_uses_shared_policy(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    write_inspect_workflow_context(
+        db.get_project("demo"),
+        {
+            "project": "demo",
+            "created": [
+                {
+                    "candidate_id": "inspect-actionable",
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py 中的超时 TODO。",
+                    "priority": "P2",
+                    "reason": "todo_signal",
+                    "files": ["foo.py"],
+                    "evidence": "signal 1: foo.py",
+                }
+            ],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 1, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-feishu-auto",
+    )
+
+    reply = handle_command_text("workflow next demo auto")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert reply["type"] == "interactive"
+    assert "工作流自动推进已执行" in payload
+    assert db.get_task_stats("demo")["total"] == 0
 
 def test_feishu_tasks_card_uses_visual_task_rows_instead_of_plain_text_only(tmp_path, monkeypatch):
     project_path = _setup_project(tmp_path, monkeypatch)

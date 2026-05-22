@@ -89,6 +89,11 @@
       "purpose": "Execute one allowlisted next_action without shelling out to suggested_command."
     },
     {
+      "command": "codepilot workflow next -p <project-name> --auto --json",
+      "format": "json",
+      "purpose": "Automatically choose one low-risk workflow next_action without executing medium/high-risk actions or suggested_command strings."
+    },
+    {
       "command": "codepilot task find <keyword> -p <project-name> --json",
       "format": "json",
       "purpose": "Search tasks and return structured matches."
@@ -137,6 +142,11 @@
       "command": "codepilot note show -p <project-name> --json",
       "format": "json",
       "purpose": "Read persistent project working memory."
+    },
+    {
+      "command": "codepilot memory events -p <project-name> --json",
+      "format": "json",
+      "purpose": "Read project-local factual memory events; CodePilot automatically creates deduplicated candidates with score/feedback/seen_count and an autocapture summary."
     },
     {
       "command": "codepilot trace -p <project-name> --json",
@@ -335,11 +345,12 @@
     },
     {
       "name": "workflow_next",
-      "syntax": "codepilot workflow next -p <project-name> [--mode <mode>] [--list | --action <id>] [--allow-high-risk] --json",
-      "purpose": "List or safely execute artifact next_actions through a fixed allowlist; it never executes suggested_command strings.",
-      "when_to_use": "Use after clarify/plan returns next_actions and an external agent needs to advance by action id.",
+      "syntax": "codepilot workflow next -p <project-name> [--mode <mode>] [--list | --action <id> | --auto] [--allow-high-risk] --json",
+      "purpose": "List, safely execute, or low-risk auto-advance artifact next_actions through a fixed allowlist; it never executes suggested_command strings.",
+      "when_to_use": "Use after clarify/plan/inspect returns next_actions and an external agent needs to advance by action id or let CodePilot choose one low-risk policy action.",
       "examples": [
         "codepilot workflow next -p <project-name> --list --json",
+        "codepilot workflow next -p <project-name> --auto --json",
         "codepilot workflow next -p <project-name> --action plan_from_spec --json",
         "codepilot workflow next -p <project-name> --action import_tasks --json"
       ]
@@ -360,6 +371,16 @@
       "when_to_use": "Use to preserve important context across sessions.",
       "examples": [
         "codepilot note add -p <project-name> \"pytest -q is the main validation command\""
+      ]
+    },
+    {
+      "name": "memory",
+      "syntax": "codepilot memory events -p <project-name> [--type <event_type>] [--limit N] --json",
+      "purpose": "Read project-local factual memory events; CodePilot automatically creates deduplicated candidates with score/feedback/seen_count and `.codepilot/memory/autocapture.md`.",
+      "when_to_use": "Use to analyze inspect/workflow events and self-improvement evidence.",
+      "examples": [
+        "codepilot memory events -p <project-name> --json",
+        "codepilot memory events -p <project-name> --type workflow.action_executed --json"
       ]
     },
     {

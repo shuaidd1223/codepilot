@@ -103,12 +103,13 @@ C:\Users\Administrator\AppData\Local\Programs\CodePilot\bin\codepilot.exe
 - 将低置信度建议降级到报告区。
 - 输出本轮质量摘要和决策原因。
 - 支持 `--dry-run --json` 作为机器可读评估入口。
+- 根据项目本地 memory feedback 对候选自动升权/降权，并在 `quality_summary.feedback_adjusted` 暴露调整记录。
 
 仍然缺少：
 
 - Web UI 对 `report_only` / `quality_summary` 的清晰展示。
 - 人工从报告项一键提升为任务的路径。
-- 基于人工删除、归档、失败、重试结果的反馈学习。
+- 基于人工删除、归档、重试结果的更细粒度反馈学习。
 - 与 Agent Kernel 会话阶段的深度绑定。
 - 跨轮次质量评测和回放基准。
 
@@ -259,6 +260,77 @@ git status --short
 ## 本轮落地记录
 
 - `inspect --once --dry-run --write-workflow --json` 已作为低风险自动入口：只写 workflow context / Agent Session，不写 backlog。
-- `workflow next` 已支持 inspect allowlist 动作：`create_inspect_tasks`、`promote_inspect_report_<candidate_id>`、`plan_from_inspect`，仍不执行 `suggested_command` 字符串。
+- `workflow next` 已支持 inspect allowlist 动作：`create_inspect_tasks`、`promote_inspect_report_<candidate_id>`、`ignore_inspect_report_<candidate_id>`、`delete_inspect_report_<candidate_id>`、`archive_inspect_report_<candidate_id>`、`plan_from_inspect`，仍不执行 `suggested_command` 字符串。
 - CLI、Web API、Web UI、MCP、Chat、飞书统一调用共享 inspect workflow core，避免各入口各自维护状态机。
 - `candidate_id` 使用信号、标题、文件集合、reason 的稳定摘要，不使用时间、绝对项目路径或临时字段。
+
+## 分阶段推进：项目记忆与自我进化
+
+### 阶段一：事实观察日志
+
+状态：已落地。
+
+- 新增 `.codepilot/memory/events.jsonl` 作为项目本地自动观察事实日志。
+- 自动从事实事件生成去重候选，并维护 `.codepilot/memory/autocapture.md`。
+- `inspect --write-workflow` 写入 `inspect.workflow_context_written` 事件。
+- `workflow next --action ...` 写入 `workflow.action_executed` 事件。
+- `trace` 默认合并 memory events，`codepilot memory events -p <项目名> --json` 可单独查看。
+- 这一层不要求人工 promote；它会自动沉淀低风险事实摘要，但不直接写人工维护的长期 wiki/note，避免记忆污染。
+
+### 阶段二：自动评分与执行反馈回流
+
+状态：已落地。
+
+- memory candidate 新增 `feedback`、`score`、`signals`、`seen_count`、`first_seen_at`、`last_seen_at`、`source_event_ids`。
+- `workflow.action_executed` 会按动作类型自动升权：提升 report-only、创建 inspect tasks、从 inspect 生成 plan 都会记录为正向反馈。
+- 任务进入 `done` / `failed` / `cancelled` 终态时，数据库更新路径会自动写入 `task.updated` memory event。
+- `done` 任务会沉淀为正向反馈，`failed` / `cancelled` 会沉淀为负向反馈，后续可用于 inspect 候选排序和降级。
+- 重复事实不会重复生成候选，而是更新 `seen_count`、`last_seen_at` 和分数；`.codepilot/memory/autocapture.md` 会显示 score、feedback 和 seen 数。
+
+### 阶段三：反馈接入 inspect 分层
+
+状态：已落地。
+
+- `run_inspection` 会读取项目本地 memory candidates，不存在历史反馈时保持原语义。
+- 正向高分反馈会把同一 report-only 候选提升为 actionable，例如用户曾提升过的 `promote_inspect_report_<candidate_id>`。
+- 负向低分反馈会把同标题 actionable 候选降级到 report-only，reason 为 `memory_negative_feedback`。
+- `quality_summary.feedback_adjusted` 记录 `candidate_id`、标题、from/to、score、feedback 和 memory candidate 来源。
+- 决策链新增可选 `memory_feedback` 阶段，仅在确实发生调整时出现。
+
+### 阶段四：任务操作反馈统一接入 memory
+
+状态：已落地。
+
+- 任务归档会写入 `task.archived` memory event，作为正向反馈，表示完成结果被接受。
+- 任务删除会写入 `task.deleted` memory event，作为负向反馈，后续同标题巡检候选会更容易降级到 report-only。
+- 任务重试会写入 `task.retried` memory event，作为中等正向反馈，表示该方向仍值得继续尝试，但不会直接把 report-only 提升为任务。
+- 这些事件下沉在 `storage.database` 层，CLI、Web UI、批量操作、飞书/MCP 只要复用同一任务操作路径，就会自动进入反馈闭环。
+
+### 阶段五：report-only 显式反馈 action
+
+状态：已落地。
+
+- `workflow next` 会为 report-only 候选暴露 `ignore_inspect_report_<candidate_id>`、`delete_inspect_report_<candidate_id>`、`archive_inspect_report_<candidate_id>`。
+- 这些动作只更新 inspect context 和 Agent Session，不创建 backlog 任务，也不执行候选里的 `suggested_command`。
+- 每次处理都会写入 `inspect.report_feedback` memory event，并把反馈合并到项目本地 memory candidate，用于后续巡检降权。
+- Web UI、CLI、Chat、飞书和 MCP 只需要调用同一个 workflow action handler，就能获得一致的忽略、删除、归档语义。
+
+### 阶段六：巡检工作台反馈交互
+
+状态：已落地。
+
+- Web dashboard payload 返回 `ignored_report_only`、`deleted_report_only`、`archived_report_only`，前端可以展示已处理报告项。
+- ProjectView 顶部只保留全局 workflow 动作，例如运行巡检、创建任务、生成计划；每个 report-only 项自身展示提升、忽略、归档、删除按钮。
+- Chat 和飞书工作流卡片也会列出同一批 action id，按钮仍然只调用 `workflow next`，不拼接执行 `suggested_command`。
+- 这样 report-only 从“静态报告列表”变成可反馈的工作台项，用户的每次处理都会自动进入 memory 闭环。
+
+### 阶段七：低风险自动策略层
+
+状态：已落地。
+
+- `workflow next --auto --json` 会从当前 workflow context 中选择一个策略允许的低风险动作。
+- 当前策略优先自动忽略已有负反馈的重复 report-only；没有这类项时，会对 inspect context 自动执行一次 `plan_from_inspect`。
+- 自动策略不会执行 `create_inspect_tasks`、`promote_inspect_report_<candidate_id>`、`import_tasks` 或任何中高风险动作，也不会执行 `suggested_command` 字符串。
+- Web UI 增加“自动推进”入口，Web API 的 `/api/workflow/actions` 支持 `{"auto": true}`，MCP `workflow_next` 支持 `auto=true`，Chat/飞书暴露 `workflow next <project> auto`，全部复用同一个 policy handler。
+
+下一阶段继续推进可配置自动性：把 `--auto` 策略拆成项目配置，例如允许自动创建低风险任务、允许自动执行验证命令、最大连续自动步数和失败熔断阈值。

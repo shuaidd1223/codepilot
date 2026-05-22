@@ -117,7 +117,7 @@ codepilot inspect -p myproject --once --dry-run --write-workflow --json
 codepilot doctor --project myproject --services --json
 ```
 
-`--write-workflow` creates inspection workflow context and safe `next_actions`, which can be reviewed with `codepilot workflow next -p myproject --list --json`.
+`--write-workflow` creates inspection workflow context and safe `next_actions`, which can be reviewed with `codepilot workflow next -p myproject --list --json`, or advanced by one low-risk policy action with `codepilot workflow next -p myproject --auto --json`.
 
 ## Common Commands
 
@@ -137,8 +137,11 @@ codepilot auto -p <project-name> -t "high-level goal" --plan-only
 codepilot explore -p <project-name> --prompt "question to investigate" --json
 codepilot wiki query -p <project-name> "build" --json
 codepilot note add -p <project-name> "current validation command is pytest tests"
+codepilot memory events -p <project-name> --json
 codepilot trace -p <project-name> --limit 30
 ```
+
+`memory events` reads the project-local automatic observation log and turns workflow actions plus task success/failure outcomes into deduplicated candidates with `score`, `feedback`, and `seen_count`.
 
 ### Task Operations
 
