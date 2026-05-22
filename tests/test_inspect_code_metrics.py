@@ -157,34 +157,29 @@ def test_run_inspection_includes_complexity_signal_in_prompt(tmp_path, monkeypat
     assert "## 信号 1：最近 git 提交\n（跳过）" in captured["prompt"]
 
 
-def test_filter_candidates_drops_code_metrics_only_test_refactor(tmp_path):
+def test_code_metrics_only_candidate_is_report_only_after_quality_filter(tmp_path):
     project = tmp_path / "demo"
     project.mkdir()
-    tests_dir = project / "tests"
-    tests_dir.mkdir()
-    (tests_dir / "test_big.py").write_text("def test_tangled():\n    assert True\n", encoding="utf-8")
+    (project / "app.py").write_text("def tangled():\n    return 1\n", encoding="utf-8")
     signal_results = [
         inspect_cmd.InspectSignalResult(
             key="code_metrics",
             title="代码规模与复杂度线索",
             order=7,
             enabled=True,
-            content=(
-                "测试文件（仅参考，不单独触发任务）:\n"
-                "- tests/test_big.py: 30 行，分支复杂度约 21"
-            ),
+            content="生产复杂函数:\n- app.py:1 tangled 分支复杂度约 21",
         )
     ]
 
     kept, dropped = inspect_cmd._filter_candidates(
         [
             {
-                "title": "收口测试复杂度",
-                "goal": "拆分 tests/test_big.py 里的复杂测试函数。",
-                "priority": "P4",
-                "rationale": "测试复杂度较高。",
+                "title": "报告 app.py 复杂度",
+                "goal": "报告 app.py 里的复杂函数，等待人工确认是否要拆分。",
+                "priority": "P3",
+                "rationale": "复杂度较高，但只有 code_metrics 单一信号。",
                 "kind": "refactor",
-                "evidence": "signal 7: tests/test_big.py:1 分支复杂度约 21",
+                "evidence": "signal 7: app.py:1 tangled 分支复杂度约 21",
                 "effort": "small",
             }
         ],
@@ -192,5 +187,19 @@ def test_filter_candidates_drops_code_metrics_only_test_refactor(tmp_path):
         project_path=project,
     )
 
-    assert kept == []
-    assert dropped == [{"title": "收口测试复杂度", "reason": "test_file_metric_only"}]
+    actionable, report_only = inspect_cmd._partition_report_only_candidates(kept, signal_results=signal_results)
+
+    assert dropped == []
+    assert actionable == []
+    assert report_only == [
+        {
+            "title": "报告 app.py 复杂度",
+            "goal": "报告 app.py 里的复杂函数，等待人工确认是否要拆分。",
+            "priority": "P3",
+            "files": ["app.py"],
+            "reason": "code_metrics_only_weak_signal",
+            "evidence": "signal 7: app.py:1 tangled 分支复杂度约 21",
+            "kind": "refactor",
+            "effort": "small",
+        }
+    ]

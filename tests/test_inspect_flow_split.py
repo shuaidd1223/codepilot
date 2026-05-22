@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from codepilot.cli import main
@@ -221,6 +222,35 @@ def test_emit_inspection_result_routes_json_and_terminal(monkeypatch):
     assert payload["data"]["candidates_total"] == 1
 
 
+def test_print_result_includes_report_only_count_and_reasons(monkeypatch):
+    lines: list[str] = []
+    monkeypatch.setattr(inspect_cmd, "echo", lines.append)
+
+    inspect_cmd._print_result(
+        {
+            "project": "demo",
+            "candidates_total": 1,
+            "created": [],
+            "skipped": [],
+            "dropped": [],
+            "report_only": [
+                {
+                    "title": "报告 app.py 复杂度",
+                    "priority": "P3",
+                    "files": ["app.py"],
+                    "reason": "code_metrics_only_weak_signal",
+                }
+            ],
+        },
+        dry_run=True,
+    )
+
+    rendered = "\n".join(lines)
+    assert "仅报告 1" in rendered
+    assert "报告 app.py 复杂度" in rendered
+    assert "code_metrics_only_weak_signal" in rendered
+
+
 def test_has_substantive_signal_detects_bracketed_markers():
     empty_results = [
         inspect_cmd.InspectSignalResult(key="git_log", title="git", order=1, enabled=False, content="（跳过）"),
@@ -320,6 +350,148 @@ def test_run_inspection_skips_classifier_provider_by_default(tmp_path, monkeypat
 
     assert result["candidates_total"] == 0
     assert captured == {"classifier_provider": "", "classifier_model": ""}
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_run_inspection_reports_weak_candidates_without_materializing_and_keeps_strong(tmp_path, monkeypatch, dry_run):
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+    (project / "app.py").write_text(
+        "import os\n\n\ndef tangled(a, b):\n    if a:\n        return b\n    return a\n",
+        encoding="utf-8",
+    )
+    created_titles: list[str] = []
+
+    signal_results = [
+        inspect_cmd.InspectSignalResult(
+            key="git_log",
+            title="最近 git 提交",
+            order=1,
+            enabled=True,
+            content="abc123 Update app.py",
+        ),
+        inspect_cmd.InspectSignalResult(
+            key="todos",
+            title="代码里的 TODO/FIXME/XXX",
+            order=3,
+            enabled=True,
+            content="foo.py:1: TODO handle timeout",
+        ),
+        inspect_cmd.InspectSignalResult(
+            key="ruff",
+            title="ruff lint 报告",
+            order=4,
+            enabled=True,
+            content="app.py:1:8: F401 `os` imported but unused",
+        ),
+        inspect_cmd.InspectSignalResult(
+            key="code_metrics",
+            title="代码规模与复杂度线索",
+            order=7,
+            enabled=True,
+            content="- app.py:4 tangled 分支复杂度约 12",
+        ),
+    ]
+    monkeypatch.setattr(inspect_cmd, "collect_inspection_signal_results", lambda *_args, **_kwargs: signal_results)
+    monkeypatch.setattr(
+        inspect_cmd,
+        "load_project_config",
+        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_language="zh-CN")),
+    )
+    monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda _project_name: set())
+    monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **_kwargs: [])
+
+    def fake_create_task(**kwargs):
+        created_titles.append(str(kwargs["title"]))
+        return {"id": len(created_titles), **kwargs}
+
+    monkeypatch.setattr(inspect_cmd.db, "create_task", fake_create_task)
+
+    def fake_call_llm(*_args, **_kwargs):
+        return {
+            "candidates": [
+                {
+                    "title": "记录 P4 TODO 线索",
+                    "goal": "记录 foo.py:1 的 TODO，后续人工判断是否需要整理。",
+                    "priority": "P4",
+                    "rationale": "TODO 只有低优先级整理价值。",
+                    "kind": "chore",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的 TODO 已被人工复核。"],
+                    "verification_commands": ["git diff --check"],
+                    "effort": "small",
+                },
+                {
+                    "title": "报告 app.py 复杂度",
+                    "goal": "报告 app.py:4 的复杂度热点，先不自动创建重构任务。",
+                    "priority": "P3",
+                    "rationale": "复杂度信号单独出现，缺少失败或 lint 佐证。",
+                    "kind": "refactor",
+                    "evidence": "signal 7: app.py:4 tangled 分支复杂度约 12",
+                    "files": ["app.py"],
+                    "acceptance_criteria": ["app.py:4 的复杂度热点已被人工评估。"],
+                    "verification_commands": ["pytest -n auto --dist loadfile -m \"not slow\" -q"],
+                    "effort": "small",
+                },
+                {
+                    "title": "报告 app.py 提交线索",
+                    "goal": "报告 abc123 对 app.py 的普通提交，等待人工确认是否需要后续动作。",
+                    "priority": "P3",
+                    "rationale": "最近提交只显示普通更新，没有异常词。",
+                    "kind": "chore",
+                    "evidence": "signal 1: abc123 Update app.py",
+                    "files": ["app.py"],
+                    "acceptance_criteria": ["abc123 的 app.py 提交已被人工评估。"],
+                    "verification_commands": ["git diff --check"],
+                    "effort": "small",
+                },
+                {
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py:1 的 TODO，避免超时路径继续缺实现。",
+                    "priority": "P3",
+                    "rationale": "TODO 指向明确文件和处理目标。",
+                    "kind": "bug",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的超时 TODO 已处理。"],
+                    "verification_commands": ["pytest -n auto --dist loadfile -m \"not slow\" -q"],
+                    "effort": "small",
+                },
+                {
+                    "title": "修复 app.py F401",
+                    "goal": "移除 app.py:1 的未使用导入，保持 lint 报告干净。",
+                    "priority": "P3",
+                    "rationale": "ruff 明确报告 F401。",
+                    "kind": "chore",
+                    "evidence": "signal 4: app.py:1:8: F401 `os` imported but unused",
+                    "files": ["app.py"],
+                    "acceptance_criteria": ["app.py:1 的 F401 已消除。"],
+                    "verification_commands": ["ruff check app.py"],
+                    "effort": "small",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(inspect_cmd, "_call_llm", fake_call_llm)
+
+    result = inspect_cmd.run_inspection(
+        {"name": "demo", "path": str(project)},
+        signals=("git_log", "todos", "ruff", "complexity"),
+        max_new_tasks=5,
+        dry_run=dry_run,
+    )
+
+    assert [item["title"] for item in result["created"]] == ["修复 foo.py 超时 TODO", "修复 app.py F401"]
+    assert created_titles == ([] if dry_run else ["修复 foo.py 超时 TODO", "修复 app.py F401"])
+    assert result["report_only_count"] == 3
+    assert {item["title"]: item["reason"] for item in result["report_only"]} == {
+        "记录 P4 TODO 线索": "priority_p4_report_only",
+        "报告 app.py 复杂度": "code_metrics_only_weak_signal",
+        "报告 app.py 提交线索": "git_log_only_benign",
+    }
+    assert all(item["files"] for item in result["report_only"])
 
 
 def test_call_llm_skips_unavailable_api_and_marks_fallback(tmp_path, monkeypatch):

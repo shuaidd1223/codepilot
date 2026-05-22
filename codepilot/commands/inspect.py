@@ -26,7 +26,6 @@ from codepilot.ai_support.service import (
 from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands import inspect_lifecycle, inspect_service, inspect_signals
 from codepilot.commands.inspect_signals import lint_fingerprint, lint_group_key
-from codepilot.commands.inspect_signal_collectors_code_metrics import is_test_file_path
 from codepilot.commands.inspect_signal_collectors_shared import CODE_EXTS, SCAN_EXTS
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.config import load_project_config, resolve_planner
@@ -632,6 +631,11 @@ _CANDIDATE_PATH_RE = re.compile(
     + r"))"
     r"(?::\d+(?::\d+)?)?"
 )
+_GIT_LOG_REPORT_ONLY_ABNORMAL_RE = re.compile(
+    r"\b(revert|wip|work in progress|fix[-_ ]?failed|failed|failure|rollback|hotfix|broken)\b"
+    r"|回滚|撤销|失败|异常|修复失败",
+    re.IGNORECASE,
+)
 
 
 def _normalize_candidate_path(raw: object, *, project_path: Path | None = None, require_existing: bool = False) -> str | None:
@@ -750,21 +754,6 @@ def _candidate_signal_keys(evidence: str, signal_results: list[InspectSignalResu
     return keys
 
 
-def _is_code_metrics_only_candidate(
-    item: dict,
-    *,
-    evidence: str,
-    files: list[str],
-    signal_results: list[InspectSignalResult],
-) -> bool:
-    signal_keys = _candidate_signal_keys(evidence, signal_results)
-    if signal_keys != {"code_metrics"}:
-        return False
-    kind = str(item.get("kind") or "").strip().lower()
-    priority = str(item.get("priority") or "").strip().upper()
-    return kind == "refactor" or priority == "P4" or all(is_test_file_path(path) for path in files)
-
-
 def _filter_candidates(
     candidates: list[dict],
     *,
@@ -805,15 +794,61 @@ def _filter_candidates(
             loose_files = _candidate_files(item)
             dropped.append({"title": title, "reason": "files_not_found" if loose_files and project_path is not None else "missing_files"})
             continue
-        if _candidate_signal_keys(evidence, signal_results) == {"code_metrics"} and all(is_test_file_path(path) for path in files):
-            dropped.append({"title": title, "reason": "test_file_metric_only"})
-            continue
-        if _is_code_metrics_only_candidate(item, evidence=evidence, files=files, signal_results=signal_results):
-            dropped.append({"title": title, "reason": "code_metrics_only_weak_signal"})
-            continue
         item["files"] = files
         kept.append(item)
     return kept, dropped
+
+
+def _report_only_entry(item: dict, *, reason: str) -> dict:
+    return {
+        "title": (item.get("title") or "").strip(),
+        "goal": (item.get("goal") or "").strip(),
+        "priority": (item.get("priority") or "").strip() or "P3",
+        "files": _string_list(item.get("files")) or _candidate_files(item),
+        "reason": reason,
+        "evidence": (item.get("evidence") or "").strip(),
+        "kind": (item.get("kind") or "").strip() or "chore",
+        "effort": (item.get("effort") or "").strip() or "small",
+    }
+
+
+def _git_log_candidate_has_abnormal_terms(item: dict, signal_results: list[InspectSignalResult]) -> bool:
+    chunks = [
+        item.get("title") or "",
+        item.get("goal") or "",
+        item.get("evidence") or "",
+    ]
+    chunks.extend(result.content for result in signal_results if result.key == "git_log" and result.enabled)
+    return bool(_GIT_LOG_REPORT_ONLY_ABNORMAL_RE.search("\n".join(str(chunk) for chunk in chunks)))
+
+
+def _report_only_reason(item: dict, *, signal_results: list[InspectSignalResult]) -> str | None:
+    priority = str(item.get("priority") or "").strip().upper()
+    if priority == "P4":
+        return "priority_p4_report_only"
+    evidence = (item.get("evidence") or "").strip()
+    signal_keys = _candidate_signal_keys(evidence, signal_results)
+    if signal_keys == {"code_metrics"}:
+        return "code_metrics_only_weak_signal"
+    if signal_keys == {"git_log"} and not _git_log_candidate_has_abnormal_terms(item, signal_results):
+        return "git_log_only_benign"
+    return None
+
+
+def _partition_report_only_candidates(
+    candidates: list[dict],
+    *,
+    signal_results: list[InspectSignalResult],
+) -> tuple[list[dict], list[dict]]:
+    actionable: list[dict] = []
+    report_only: list[dict] = []
+    for item in candidates:
+        reason = _report_only_reason(item, signal_results=signal_results)
+        if reason:
+            report_only.append(_report_only_entry(item, reason=reason))
+            continue
+        actionable.append(item)
+    return actionable, report_only
 
 
 def _group_lint_candidates(candidates: list[dict]) -> list[dict]:
@@ -1001,6 +1036,8 @@ def run_inspection(
             "created": [],
             "skipped": [],
             "dropped": [],
+            "report_only": [],
+            "report_only_count": 0,
             "auto_execute": auto_execute,
             "reason": "no_substantive_signals",
             "note": "本轮所有信号都是空/跳过，不触发 LLM，避免硬规划填充任务。",
@@ -1036,6 +1073,10 @@ def run_inspection(
             "project": project_name,
             "error": f"巡检 LLM 调用失败：{exc}",
             "created": [],
+            "skipped": [],
+            "dropped": [],
+            "report_only": [],
+            "report_only_count": 0,
         }
 
     raw_candidates = _extract_candidates(payload)
@@ -1044,9 +1085,13 @@ def run_inspection(
         signal_results=signal_results,
         project_path=project_path,
     )
-    kept_candidates = _group_lint_candidates(kept_candidates)
-    created, skipped = _materialize_inspection_output(
+    task_candidates, report_only = _partition_report_only_candidates(
         kept_candidates,
+        signal_results=signal_results,
+    )
+    task_candidates = _group_lint_candidates(task_candidates)
+    created, skipped = _materialize_inspection_output(
+        task_candidates,
         max_new_tasks=max_new_tasks,
         project_name=project_name,
         project_path=project_path,
@@ -1061,6 +1106,8 @@ def run_inspection(
         "created": created,
         "skipped": skipped,
         "dropped": dropped,
+        "report_only": report_only,
+        "report_only_count": len(report_only),
         "auto_execute": auto_execute,
     }
 
@@ -1132,16 +1179,24 @@ def _print_result(result: dict, dry_run: bool) -> None:
         return
 
     dropped = result.get("dropped") or []
+    report_only = result.get("report_only") or []
     echo(
         f"[green]候选总数 {result['candidates_total']}，"
         f"新建 {len(result['created'])}，跳过 {len(result['skipped'])}，"
-        f"过滤 {len(dropped)}[/green]"
+        f"仅报告 {len(report_only)}，过滤 {len(dropped)}[/green]"
     )
     for task in result["created"]:
         if dry_run:
             echo(f"  [dim][dry-run][/dim] {task['title']}  [{task.get('priority')}]")
         else:
             echo(f"  #{task['id']}  {task['title']}  [{task['priority']}]  source=inspector")
+    for report in report_only:
+        files = ", ".join(report.get("files") or [])
+        file_suffix = f" files={files}" if files else ""
+        echo(
+            f"  [dim]仅报告: {report['title']}  "
+            f"[{report.get('priority')}] ({report['reason']}){file_suffix}[/dim]"
+        )
     for skipped in result["skipped"]:
         echo(f"  [dim]跳过: {skipped['title']} ({skipped['reason']})[/dim]")
     for drop in dropped:
