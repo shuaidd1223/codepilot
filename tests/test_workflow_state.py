@@ -116,6 +116,59 @@ def test_workflow_status_cli_returns_active_state_json(tmp_path, monkeypatch):
     assert payload["data"]["project"] == "demo"
     assert payload["data"]["state"]["mode"] == "clarify"
     assert payload["data"]["state"]["current_phase"] == "drafting"
+    assert payload["data"]["auto_policy"] == {
+        "allow_create_inspect_tasks": False,
+        "allow_import_plan_tasks": False,
+        "max_steps": 1,
+        "failure_threshold": 1,
+    }
+
+
+def test_workflow_auto_policy_cli_shows_defaults_json(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    result = CliRunner().invoke(main, ["workflow", "auto-policy", "-p", "demo", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "workflow auto-policy"
+    assert payload["data"]["allow_create_inspect_tasks"] is False
+    assert payload["data"]["allow_import_plan_tasks"] is False
+    assert payload["data"]["max_steps"] == 1
+    assert payload["data"]["failure_threshold"] == 1
+
+
+def test_workflow_auto_policy_cli_reflects_agents_toml_overrides(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[automation]
+workflow_auto_create_inspect_tasks = true
+workflow_auto_import_plan_tasks = true
+workflow_auto_max_steps = 5
+workflow_auto_failure_threshold = 3
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(main, ["workflow", "auto-policy", "-p", "demo", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["allow_create_inspect_tasks"] is True
+    assert payload["data"]["allow_import_plan_tasks"] is True
+    assert payload["data"]["max_steps"] == 5
+    assert payload["data"]["failure_threshold"] == 3
 
 
 def test_workflow_state_write_emits_workflow_changed_event(tmp_path, monkeypatch):

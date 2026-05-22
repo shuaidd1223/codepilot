@@ -38,6 +38,7 @@ class ExecutionResult:
     summary: str = ""
     executor: str = "dispatch"
     deterministic_failure: bool = False
+    post_success_failure: bool = False
 
 
 def _builtin_runtime_dir(project: dict) -> Path:

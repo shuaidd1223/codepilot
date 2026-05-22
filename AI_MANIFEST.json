@@ -76,7 +76,12 @@
     {
       "command": "codepilot workflow status -p <project-name> --json",
       "format": "json",
-      "purpose": "Return the latest workflow state, agent session, artifact paths, and next-action context."
+      "purpose": "Return the latest workflow state, agent session, artifact paths, next-action context, and auto_policy."
+    },
+    {
+      "command": "codepilot workflow auto-policy -p <project-name> --json",
+      "format": "json",
+      "purpose": "Return the resolved auto-advance policy: allow_create_inspect_tasks, allow_import_plan_tasks, max_steps, failure_threshold."
     },
     {
       "command": "codepilot workflow next -p <project-name> --list --json",
@@ -334,9 +339,18 @@
       ]
     },
     {
+      "name": "workflow_auto_policy",
+      "syntax": "codepilot workflow auto-policy -p <project-name> --json",
+      "purpose": "Return the resolved auto-advance policy: allow_create_inspect_tasks, allow_import_plan_tasks, max_steps, failure_threshold.",
+      "when_to_use": "Use before --auto to check whether inspect task creation or plan task import is allowed by project configuration.",
+      "examples": [
+        "codepilot workflow auto-policy -p <project-name> --json"
+      ]
+    },
+    {
       "name": "workflow_status",
       "syntax": "codepilot workflow status -p <project-name> [--mode <mode>] --json",
-      "purpose": "Read latest or mode-specific workflow state and agent session context, including artifact paths and next-action source.",
+      "purpose": "Read latest or mode-specific workflow state and agent session context, including artifact paths, next-action source, and auto_policy.",
       "when_to_use": "Use before advancing a clarify/plan/inspect artifact or when inspecting current workflow state.",
       "examples": [
         "codepilot workflow status -p <project-name> --json",

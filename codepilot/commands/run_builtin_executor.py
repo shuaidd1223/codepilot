@@ -884,13 +884,38 @@ def _map_builtin_loop_outcome(
         reviewer = outcome.reviewer
         if reviewer is None:
             raise RuntimeError("_map_builtin_loop_outcome: pass outcome missing reviewer payload")
-        return _runner_module()._finalize_executor_success(
-            ctx,
-            auto_commit=auto_commit,
-            round_num=outcome.round_num,
-            builder=outcome.builder,
-            reviewer=reviewer,
-        )
+        try:
+            return _runner_module()._finalize_executor_success(
+                ctx,
+                auto_commit=auto_commit,
+                round_num=outcome.round_num,
+                builder=outcome.builder,
+                reviewer=reviewer,
+            )
+        except Exception as exc:
+            summary = (
+                "Builder 已完成且 Reviewer PASS，但 finalize/auto-commit 失败: "
+                f"{exc}"
+            )
+            try:
+                _runner_module()._write_task_log(
+                    ctx.task["id"],
+                    "system",
+                    "finalize",
+                    summary,
+                    1,
+                    datetime.now(),
+                )
+            except Exception:
+                pass
+            return ExecutionResult(
+                exit_code=2,
+                output=outcome.builder.output,
+                review_output=reviewer.output,
+                summary=summary,
+                executor="builtin",
+                post_success_failure=True,
+            )
 
     if outcome.status == "exhausted":
         reviewer = outcome.reviewer

@@ -40,6 +40,19 @@ def _error_code(payload: dict[str, Any]) -> str:
     return payload["structuredContent"]["error"]["code"]
 
 
+def test_workflow_status_tool_includes_auto_policy(tmp_path, monkeypatch):
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _context_server(project_path)
+
+    status = server.call_tool("workflow_status", {"project": "demo"})
+
+    assert "auto_policy" in status
+    assert status["auto_policy"]["allow_create_inspect_tasks"] is False
+    assert status["auto_policy"]["allow_import_plan_tasks"] is False
+    assert status["auto_policy"]["max_steps"] == 1
+    assert status["auto_policy"]["failure_threshold"] == 1
+
+
 def test_context_tools_register_independent_contracts():
     import codepilot.mcp.tools.context  # noqa: F401
 

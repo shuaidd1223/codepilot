@@ -12,6 +12,7 @@ def _init_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
     db.init_db()
+    monkeypatch.setattr(db, "_record_task_update_memory", lambda *args, **kwargs: None)
     monkeypatch.setattr(run_orchestrator_mod, "_publish_web_task_event", lambda *args, **kwargs: None)
     webui_mod._UI_JOBS.clear()
     webui_mod._UI_EVENTS.clear()
@@ -217,6 +218,122 @@ def test_run_backlog_dirty_worktree_policy_stash_records_preflight_log(tmp_path,
     assert stash_code == 0
     assert f"codepilot preflight stash before task #{task['id']}" in stash_output
     assert any(log["phase"] == "preflight" and "git stash pop" in log["output"] for log in logs)
+
+
+def test_run_backlog_pass_finalize_exception_fails_without_requeue(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    _register_project_with_dirty_policy(tmp_path, "stop")
+    task = db.create_task("demo", "pass then finalize fails", agent="dual", max_retries=3)
+
+    def fake_round_loop(ctx):
+        db.create_task_log(
+            task_id=ctx.task["id"],
+            agent="codex",
+            phase="builder",
+            output="builder exit 0",
+            exit_code=0,
+            started_at="2026-01-01T00:00:00",
+            finished_at="2026-01-01T00:00:01",
+            duration=1,
+        )
+        db.create_task_log(
+            task_id=ctx.task["id"],
+            agent="codex-review",
+            phase="reviewer",
+            output="all good\nVERDICT: PASS",
+            exit_code=0,
+            started_at="2026-01-01T00:00:01",
+            finished_at="2026-01-01T00:00:02",
+            duration=1,
+        )
+        return run_cmd._BuiltinLoopOutcome(
+            status="pass",
+            round_num=1,
+            builder=run_cmd._PhaseOutcome(agent="codex", exit_code=0, output="builder exit 0"),
+            reviewer=run_cmd._PhaseOutcome(
+                agent="codex-review",
+                exit_code=0,
+                output="all good\nVERDICT: PASS",
+            ),
+            verdict="pass",
+        )
+
+    def fail_auto_commit(*args, **kwargs):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_round_loop", fake_round_loop)
+    monkeypatch.setattr(run_cmd, "_git_auto_commit", fail_auto_commit)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=True, quiet=True)
+    current = db.get_task(task["id"])
+    logs = db.list_task_logs(task["id"])
+
+    assert stats["processed"] == 1
+    assert stats["failed"] == 1
+    assert stats["requeued"] == 0
+    assert current["status"] == "failed"
+    assert current["retry_count"] == 0
+    assert "finalize/auto-commit" in (current["error_message"] or "")
+    assert "Invalid argument" in (current["error_message"] or "")
+    assert db.next_backlog_task("demo") == []
+    assert any(log["phase"] == "builder" and log["exit_code"] == 0 for log in logs)
+    assert any("VERDICT: PASS" in log["output"] for log in logs)
+
+
+def test_run_backlog_pass_merge_finalize_failure_does_not_requeue(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    base_branch = _init_git_repo(project_path)
+    config_file = project_path / "AGENTS.toml"
+    config_file.write_text(
+        f"""
+[project]
+name = "demo"
+base_branch = "{base_branch}"
+
+[automation]
+per_task_branch = true
+task_workspace = "branch"
+""".strip(),
+        encoding="utf-8",
+    )
+    run_cmd._run_command(["git", "add", "AGENTS.toml"], cwd=project_path, timeout=30)
+    commit_code, commit_output = run_cmd._run_command(
+        ["git", "commit", "-m", "add config"],
+        cwd=project_path,
+        timeout=120,
+    )
+    assert commit_code == 0, commit_output
+    db.register_project("demo", str(project_path), base_branch=base_branch, config_file=str(config_file))
+    task = db.create_task("demo", "pass then merge fails", agent="dual", max_retries=3)
+    monkeypatch.setattr(
+        run_cmd,
+        "_run_builtin_executor",
+        lambda *args, **kwargs: run_cmd.ExecutionResult(
+            exit_code=0,
+            output="builder exit 0",
+            review_output="VERDICT: PASS",
+            summary="done",
+            executor="builtin",
+        ),
+    )
+
+    def fail_merge(*args, **kwargs):
+        raise RuntimeError("merge exploded")
+
+    monkeypatch.setattr(run_cmd, "_git_merge_task_branch", fail_merge)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False, quiet=True)
+    current = db.get_task(task["id"])
+
+    assert stats["processed"] == 1
+    assert stats["failed"] == 1
+    assert stats["requeued"] == 0
+    assert current["status"] == "failed"
+    assert current["retry_count"] == 0
+    assert "merge/finalize" in (current["error_message"] or "")
+    assert "merge exploded" in (current["error_message"] or "")
 
 
 def test_notify_task_event_routes_generic_progress_without_feishu_for_user_source(tmp_path, monkeypatch):

@@ -286,7 +286,9 @@ def _build_workflow_card(project_name: str, *, prefix: str = "", title: str = "C
     context = read_inspect_workflow_context(project) or {}
     quality = context.get("quality_summary") or {}
     report_only = context.get("report_only") or []
-    actions = workflow_next_payload(project_name).get("next_actions") or []
+    next_payload = workflow_next_payload(project_name)
+    actions = next_payload.get("next_actions") or []
+    auto_policy = next_payload.get("auto_policy") or {}
     blocks: list[str | dict[str, Any]] = [
         _field_block(
             [
@@ -297,7 +299,18 @@ def _build_workflow_card(project_name: str, *, prefix: str = "", title: str = "C
                     f"report_only={quality.get('report_only_count', len(report_only))}`"
                 ),
             ]
-        )
+        ),
+        _field_block(
+            [
+                _field(
+                    "**自动策略**\n"
+                    f"`steps={auto_policy.get('max_steps', 1)} "
+                    f"create={str(bool(auto_policy.get('allow_create_inspect_tasks'))).lower()} "
+                    f"import={str(bool(auto_policy.get('allow_import_plan_tasks'))).lower()} "
+                    f"fail={auto_policy.get('failure_threshold', 1)}`"
+                ),
+            ]
+        ),
     ]
     if report_only:
         blocks.append(_section("仅报告建议"))

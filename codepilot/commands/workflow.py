@@ -501,12 +501,14 @@ def workflow_status_payload(project: str | None = None, *, mode: str | None = No
     project_path = str(project_info["path"])
     state = read_workflow_state(project_path, mode=mode) if mode else _latest_workflow_state(Path(project_path))
     agent_session = get_agent_session(project_path)
+    policy = resolve_workflow_auto_policy(project_info)
     return {
         "project": project_info["name"],
         "project_path": project_path,
         "mode": mode,
         "state": state,
         "agent_session": agent_session,
+        "auto_policy": _workflow_auto_policy_payload(policy),
     }
 
 
@@ -680,12 +682,14 @@ def status_cmd(ctx: click.Context, project: str | None, mode: str | None, json_m
     project_path = str(project_info["path"])
     state = read_workflow_state(project_path, mode=mode) if mode else _latest_workflow_state(Path(project_path))
     agent_session = get_agent_session(project_path)
+    policy = resolve_workflow_auto_policy(project_info)
     data = {
         "project": project_info["name"],
         "project_path": project_path,
         "mode": mode,
         "state": state,
         "agent_session": agent_session,
+        "auto_policy": _workflow_auto_policy_payload(policy),
     }
     if json_mode:
         emit_json_payload("workflow status", ok=True, data=data)
@@ -815,5 +819,32 @@ def next_cmd(
         click.echo(f"导入任务: {result.get('count')}")
 
 
+@click.command("auto-policy")
+@click.option("--project", "-p", help="项目名称，不指定则按当前目录匹配")
+@click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
+@click.pass_context
+def auto_policy_cmd(ctx: click.Context, project: str | None, json_mode: bool) -> None:
+    """查看 workflow next --auto 自动推进策略配置。"""
+    json_mode = resolve_json_mode(ctx, json_mode)
+    project_info = _resolve_project(project)
+    policy = resolve_workflow_auto_policy(project_info)
+    payload = _workflow_auto_policy_payload(policy)
+
+    if json_mode:
+        emit_json_payload("workflow auto-policy", ok=True, data=payload)
+        return
+
+    click.echo(f"项目: {project_info['name']}")
+    click.echo(f"allow_create_inspect_tasks: {str(payload['allow_create_inspect_tasks']).lower()}")
+    click.echo(f"allow_import_plan_tasks:     {str(payload['allow_import_plan_tasks']).lower()}")
+    click.echo(f"max_steps:                  {payload['max_steps']}")
+    click.echo(f"failure_threshold:          {payload['failure_threshold']}")
+    click.echo()
+    click.echo("（通过 AGENTS.toml [automation] 配置：workflow_auto_create_inspect_tasks、")
+    click.echo("  workflow_auto_import_plan_tasks、workflow_auto_max_steps、")
+    click.echo("  workflow_auto_failure_threshold）")
+
+
 workflow_group.add_command(status_cmd)
 workflow_group.add_command(next_cmd)
+workflow_group.add_command(auto_policy_cmd)

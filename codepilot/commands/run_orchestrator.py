@@ -477,8 +477,9 @@ def _maybe_merge_task_branch(
             exit_code=2,
             output=result.output,
             review_output=result.review_output,
-            summary=f"任务执行完成但回合并失败: {exc}",
+            summary=f"Builder 已完成且 Reviewer PASS，但 merge/finalize 失败: {exc}",
             executor=result.executor,
+            post_success_failure=True,
         )
 
 
@@ -518,7 +519,26 @@ def _is_builder_done_review_terminal_failure(summary: str | None) -> bool:
     text = str(summary or "")
     if "Builder 已完成" not in text:
         return False
-    return "Reviewer 工具失败" in text or "超时" in text or "timeout" in text.lower()
+    return (
+        "Reviewer 工具失败" in text
+        or "超时" in text
+        or "timeout" in text.lower()
+        or _is_pass_finalize_failure(text)
+    )
+
+
+def _is_pass_finalize_failure(summary: str | None) -> bool:
+    """Return whether a PASS verdict failed during finalize/auto-commit."""
+    text = str(summary or "")
+    if "Builder 已完成" not in text:
+        return False
+    lower = text.lower()
+    return (
+        "finalize" in lower
+        or "auto-commit" in lower
+        or "自动提交" in text
+        or "收尾" in text
+    )
 
 
 def _recover_retryable_dirty_task_branch(context: _RunContext, project: str) -> dict | None:
@@ -826,8 +846,21 @@ def _handle_execution_result(
     else:
         error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
         runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
+        is_pass_finalize_failure = bool(getattr(result, "post_success_failure", False)) or _is_pass_finalize_failure(
+            result.summary
+        )
         is_builder_done_review_terminal_failure = _is_builder_done_review_terminal_failure(result.summary)
-        if is_builder_done_review_terminal_failure:
+        if is_pass_finalize_failure:
+            updated = runner.clear_task_runtime(
+                task_id,
+                status="failed",
+                completed_at=datetime.now().isoformat(),
+                error_message=error_message[:4000],
+                stop_requested=0,
+                stop_reason=None,
+            )
+            should_stop = False
+        elif is_builder_done_review_terminal_failure:
             updated = runner._mark_task_failed(task, error_message)
             should_stop = False
         elif result.deterministic_failure and not result.review_output:
@@ -854,7 +887,11 @@ def _handle_execution_result(
             updated = triage_result["updated"]
             error_message = triage_result["error_message"]
             should_stop = bool(triage_result.get("should_stop", True))
-        if updated["status"] == "failed" and not is_builder_done_review_terminal_failure:
+        if (
+            updated["status"] == "failed"
+            and not is_builder_done_review_terminal_failure
+            and not is_pass_finalize_failure
+        ):
             # Builder-done reviewer terminal failures must keep the dirty patch
             # available for manual accept/review recovery.
             runner._finalize_failed_task_workspace(

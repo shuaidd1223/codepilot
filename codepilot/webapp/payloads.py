@@ -282,20 +282,34 @@ def project_workflow_payload(project: str) -> dict:
         raise RuntimeError(f"项目 '{project}' 不存在。")
     try:
         from codepilot.commands.inspect_workflow import read_inspect_workflow_context
-        from codepilot.commands.workflow import workflow_next_payload, workflow_status_payload
+        from codepilot.commands.workflow import (
+            resolve_workflow_auto_policy,
+            workflow_next_payload,
+            workflow_status_payload,
+            _workflow_auto_policy_payload,
+        )
 
         inspect_context = read_inspect_workflow_context(project_info) or {}
         next_payload = workflow_next_payload(project)
+        auto_policy = next_payload.get("auto_policy")
     except Exception:  # noqa: BLE001
         inspect_context = {}
         next_payload = {"next_actions": []}
+        auto_policy = None
     try:
         status_payload = workflow_status_payload(project)
     except Exception:  # noqa: BLE001
         status_payload = {"state": None, "agent_session": None}
+    if auto_policy is None:
+        try:
+            policy = resolve_workflow_auto_policy(project_info)
+            auto_policy = _workflow_auto_policy_payload(policy)
+        except Exception:  # noqa: BLE001
+            auto_policy = {}
     return {
         "status": status_payload,
         "next_actions": next_payload.get("next_actions") or [],
+        "auto_policy": auto_policy,
         "inspect": {
             "context_path": str(inspect_context.get("context_path") or ""),
             "quality_summary": inspect_context.get("quality_summary") or {},

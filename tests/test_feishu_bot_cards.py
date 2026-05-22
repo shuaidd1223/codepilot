@@ -70,6 +70,34 @@ def test_feishu_tasks_card_lists_project_tasks(tmp_path, monkeypatch):
     )
 
 
+def test_feishu_workflow_card_shows_auto_policy(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    write_inspect_workflow_context(
+        db.get_project("demo"),
+        {
+            "project": "demo",
+            "created": [],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 0, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-policy-card",
+    )
+
+    reply = handle_command_text("workflow demo")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert "自动策略" in payload
+    assert "steps=1" in payload
+    assert "create=false" in payload
+    assert "import=false" in payload
+    assert "fail=1" in payload
+
+
 def test_feishu_workflow_card_lists_inspect_next_actions(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
     from codepilot.commands.inspect_workflow import write_inspect_workflow_context

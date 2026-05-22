@@ -468,6 +468,16 @@ def test_project_detail_endpoint(ui_server):
     status, body = _get(f"{ui_server}/api/projects/demo")
     assert status == 200
     assert body.get("selected_project") == "demo"
+    projects = body.get("projects") or []
+    demo = next((p for p in projects if p["name"] == "demo"), {})
+    workflow = demo.get("workflow") or {}
+    auto_policy = workflow.get("auto_policy") or {}
+    assert auto_policy == {
+        "allow_create_inspect_tasks": False,
+        "allow_import_plan_tasks": False,
+        "max_steps": 1,
+        "failure_threshold": 1,
+    }
 
 
 def test_project_permission_endpoint_updates_agents_toml(ui_server):
