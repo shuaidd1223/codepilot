@@ -376,6 +376,73 @@ def test_stop_command_cancels_in_progress_task_without_live_process(tmp_path, mo
     assert current["status"] == "cancelled"
 
 
+@pytest.mark.parametrize(
+    ("args_template", "initial_status"),
+    [
+        (["task", "done", "{id}", "-m", "premature"], "in_progress"),
+        (["task", "edit", "{id}", "--status", "done"], "backlog"),
+        (["task", "retry", "{id}"], "failed"),
+        (["task", "rm", "{id}", "--force"], "done"),
+        (["task", "cancel", "{id}", "-m", "cancel"], "backlog"),
+        (["task", "archive", "{id}"], "done"),
+        (["task", "stop", "{id}", "-m", "stop"], "in_progress"),
+    ],
+)
+def test_task_mutation_commands_reject_current_runner_task(
+    tmp_path,
+    monkeypatch,
+    args_template,
+    initial_status,
+):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "owned by runner", agent="codex")
+    db.update_task(
+        task["id"],
+        status=initial_status,
+        active_pid=999999 if initial_status == "in_progress" else None,
+        run_phase="builder" if initial_status == "in_progress" else None,
+    )
+    monkeypatch.setenv("CODEPILOT_RUNNER_TASK_ID", str(task["id"]))
+    monkeypatch.setenv("CODEPILOT_RUNNER_PHASE", "builder")
+
+    args = [str(task["id"]) if item == "{id}" else item for item in args_template]
+    result = CliRunner().invoke(main, args)
+    current = db.get_task(task["id"])
+
+    assert result.exit_code != 0
+    assert "runner 管理" in result.output
+    assert current is not None
+    assert current["status"] == initial_status
+
+
+def test_task_mutation_guard_allows_other_task_and_plain_shell(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    current = db.create_task("demo", "current runner task", agent="codex")
+    other = db.create_task("demo", "other task", agent="codex")
+    monkeypatch.setenv("CODEPILOT_RUNNER_TASK_ID", str(current["id"]))
+    monkeypatch.setenv("CODEPILOT_RUNNER_PHASE", "builder")
+
+    runner = CliRunner()
+    other_result = runner.invoke(main, ["task", "done", str(other["id"]), "-m", "ok"])
+
+    assert other_result.exit_code == 0
+    assert db.get_task(current["id"])["status"] == "backlog"
+    assert db.get_task(other["id"])["status"] == "done"
+
+    monkeypatch.delenv("CODEPILOT_RUNNER_TASK_ID", raising=False)
+    monkeypatch.delenv("CODEPILOT_RUNNER_PHASE", raising=False)
+    current_result = runner.invoke(main, ["task", "done", str(current["id"]), "-m", "manual"])
+
+    assert current_result.exit_code == 0
+    assert db.get_task(current["id"])["status"] == "done"
+
+
 def test_cancel_command_rejects_in_progress_done_and_archived(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
 from datetime import datetime
@@ -328,6 +329,52 @@ codex = "{fake_codex.as_posix()}"
     assert Path(captured["cmd"][0]) == fake_codex
     assert "--skip-git-repo-check" in captured["cmd"]
     assert "--ephemeral" in captured["cmd"]
+
+
+def test_run_builtin_phase_injects_current_task_guard_env(monkeypatch, tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    monkeypatch.delenv("CODEPILOT_RUNNER_TASK_ID", raising=False)
+    monkeypatch.delenv("CODEPILOT_RUNNER_PHASE", raising=False)
+
+    captured: dict[str, str | None] = {}
+    monkeypatch.setattr(run_cmd, "check_provider_availability", lambda agent, project_path=None: (True, f"ok:{agent}"))
+
+    class DummyProvider:
+        @staticmethod
+        def find_executable():
+            return Path("C:/fake/codex.CMD")
+
+    monkeypatch.setattr(run_cmd, "resolve_cli_provider", lambda provider_key, project_path=None: DummyProvider())
+    monkeypatch.setattr(run_cmd, "_read_output_file", lambda path: "")
+
+    def fake_run_command_live(cmd, **kwargs):
+        captured["task_id_env"] = os.environ.get("CODEPILOT_RUNNER_TASK_ID")
+        captured["phase_env"] = os.environ.get("CODEPILOT_RUNNER_PHASE")
+        captured["phase_arg"] = kwargs.get("phase")
+        return 0, "console ok"
+
+    monkeypatch.setattr(run_cmd, "_run_command_live", fake_run_command_live)
+
+    label, exit_code, output = run_cmd._run_builtin_phase(
+        task={"id": 42, "agent": "codex"},
+        project_path=project_path,
+        phase="builder",
+        prompt="implement",
+        output_path=project_path / "builder.txt",
+        timeout=30,
+    )
+
+    assert label == "codex"
+    assert exit_code == 0
+    assert output == "console ok"
+    assert captured == {
+        "task_id_env": "42",
+        "phase_env": "builder",
+        "phase_arg": "builder",
+    }
+    assert os.environ.get("CODEPILOT_RUNNER_TASK_ID") is None
+    assert os.environ.get("CODEPILOT_RUNNER_PHASE") is None
 
 
 def test_run_backlog_builtin_non_git_repo_requeues_without_retry(tmp_path, monkeypatch):

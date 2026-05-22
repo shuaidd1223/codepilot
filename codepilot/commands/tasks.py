@@ -13,6 +13,7 @@ from codepilot.webapp.display_sort import sort_tasks_for_display
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.commands.status import _resolve_project
 from codepilot.core.output import echo, terminal_console
+from codepilot.core.task_mutation_guard import RunnerTaskMutationError, guard_current_runner_task_mutation
 from codepilot.core.runtime import (
     clear_task_runtime,
     is_process_alive,
@@ -33,6 +34,13 @@ _FIND_STATUS_STYLE = {
     "cancelled": "magenta",
     "archived": "dim",
 }
+
+
+def _guard_runner_owned_task_or_exit(task_id: int, action: str) -> None:
+    try:
+        guard_current_runner_task_mutation(task_id, action=action)
+    except RunnerTaskMutationError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 # ── show ──────────────────────────────────────────────────────────────────────
@@ -268,6 +276,7 @@ def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
 @click.option("--message", "-m", default="", help="完成备注/交付说明")
 def done(task_id: int, message: str):
     """手动标记任务为完成（不运行 Agent）。"""
+    _guard_runner_owned_task_or_exit(task_id, "done")
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -288,6 +297,7 @@ def done(task_id: int, message: str):
 @click.argument("task_id", type=int)
 def retry(task_id: int):
     """手动重试指定任务：重置运行态并重新放回 backlog。"""
+    _guard_runner_owned_task_or_exit(task_id, "retry")
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -318,6 +328,8 @@ def retry(task_id: int):
 @click.option("--message", "-m", default="", help="取消原因")
 def cancel(task_ids: tuple[int, ...], message: str):
     """取消一个或多个任务（保留记录，不删除）。"""
+    for tid in task_ids:
+        _guard_runner_owned_task_or_exit(tid, "cancel")
     db.init_db()
     count = 0
     for tid in task_ids:
@@ -369,6 +381,8 @@ def cancel(task_ids: tuple[int, ...], message: str):
 @click.argument("task_ids", type=int, nargs=-1, required=True)
 def archive(task_ids: tuple[int, ...]):
     """归档一个或多个已完成任务。"""
+    for tid in task_ids:
+        _guard_runner_owned_task_or_exit(tid, "archive")
     db.init_db()
     count = 0
     for tid in task_ids:
@@ -440,6 +454,7 @@ def resume(task_ids: tuple[int, ...]):
 def edit(task_id: int, title: str | None, priority: str | None,
          status: str | None, agent: str | None, depends: str | None):
     """修改任务属性。"""
+    _guard_runner_owned_task_or_exit(task_id, "edit")
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -493,6 +508,8 @@ def rm(task_ids: tuple[int, ...], force: bool):
     if not task_ids:
         echo("[yellow]未指定任务 ID[/yellow]")
         return
+    for tid in task_ids:
+        _guard_runner_owned_task_or_exit(tid, "rm")
 
     tasks = []
     for tid in task_ids:
@@ -628,6 +645,7 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
 @click.option("--message", "-m", default="", help="停止原因")
 def stop(task_id: int, message: str):
     """停止一个正在运行的任务。"""
+    _guard_runner_owned_task_or_exit(task_id, "stop")
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -749,4 +767,3 @@ def logs(task_id: int, tail: int, full: bool):
         if text:
             click.echo(text if full else _render_log_text(text, tail))
         click.echo()
-

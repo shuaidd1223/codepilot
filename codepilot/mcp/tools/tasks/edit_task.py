@@ -13,6 +13,7 @@ from codepilot.mcp.tools._helpers import (
     task_not_found,
     task_payload,
 )
+from codepilot.mcp.tools.tasks._mutation_guard import guard_mcp_task_mutation
 from codepilot.mcp.tools.tasks import VALID_AGENTS, VALID_PRIORITIES, VALID_STATUSES
 from codepilot.storage import database as db
 
@@ -27,6 +28,7 @@ def edit_task(
     depends_on: list[int] | None = None,
 ) -> dict[str, Any]:
     tid = ensure_int(task_id, "task_id", minimum=1)
+    guard_mcp_task_mutation(tid, "edit")
 
     updates: dict[str, Any] = {}
     task_title = ensure_str(title, "title", required=False)

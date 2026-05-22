@@ -6,6 +6,7 @@ from typing import Any
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.mcp.tool_registry import register_tool
 from codepilot.mcp.tools._helpers import ensure_int, ensure_str, task_not_found
+from codepilot.mcp.tools.tasks._mutation_guard import guard_mcp_task_mutation
 from codepilot.mcp.tools.tasks import task_payload
 from codepilot.storage import database as db
 
@@ -13,6 +14,7 @@ from codepilot.storage import database as db
 @register_tool(description="请求停止正在运行的 CodePilot 任务。")
 def stop_task(task_id: int, message: str = "") -> dict[str, Any]:
     tid = ensure_int(task_id, "task_id", minimum=1)
+    guard_mcp_task_mutation(tid, "stop")
     reason = ensure_str(message, "message", required=False, allow_empty=True) or f"task #{tid} stopped via MCP"
 
     db.init_db()

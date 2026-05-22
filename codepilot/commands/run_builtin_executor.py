@@ -13,6 +13,7 @@ from codepilot.ai_support.family_runtime import build_env_for_family
 from codepilot.ai_support.service import _get_node_modules_path, normalize_agent_name
 from codepilot.core.config import AgentsConfig, load_project_config
 from codepilot.core.output import echo
+from codepilot.core.task_mutation_guard import runner_task_context_env
 from codepilot.commands.reviewer_output import ReviewerVerdict, format_findings_for_builder, parse_reviewer_output
 from codepilot.commands.run_shell import PreflightSkipError
 from codepilot.commands.run_builtin_core import (
@@ -276,6 +277,7 @@ def _run_builtin_phase(
 
     console_log = output_path.with_suffix(".console.md")
     env_overrides = _build_builtin_phase_env_overrides(runner, provider_ref)
+    env_overrides.update(runner_task_context_env(task_id, phase))
     saved_env = _overlay_process_env(env_overrides)
 
     try:

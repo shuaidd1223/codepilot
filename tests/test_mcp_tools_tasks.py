@@ -235,6 +235,26 @@ def test_stop_task_cancels_running_task_via_runtime_api(tmp_path, monkeypatch):
     assert stopped["task"]["error_message"] == "用户停止"
 
 
+def test_task_mcp_mutations_reject_current_runner_task(tmp_path, monkeypatch):
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    server = _task_server(project_path)
+    task = db.create_task(project="demo", title="runner owned", project_path=str(project_path))
+    db.update_task(task["id"], status="in_progress", run_phase="builder", active_pid=12345)
+    monkeypatch.setenv("CODEPILOT_RUNNER_TASK_ID", str(task["id"]))
+    monkeypatch.setenv("CODEPILOT_RUNNER_PHASE", "builder")
+
+    edit_result = server.call_tool("edit_task", {"task_id": task["id"], "status": "done"})
+    archive_result = server.call_tool("archive_task", {"task_id": task["id"]})
+    stop_result = server.call_tool("stop_task", {"task_id": task["id"], "message": "stop"})
+    current = db.get_task(task["id"])
+
+    assert _error_code(edit_result) == "runner_task_status_owned"
+    assert _error_code(archive_result) == "runner_task_status_owned"
+    assert _error_code(stop_result) == "runner_task_status_owned"
+    assert current["status"] == "in_progress"
+    assert current["active_pid"] == 12345
+
+
 def test_generate_breakdown_uses_registered_project_and_existing_tasks(tmp_path, monkeypatch):
     project_path = _init_demo_project(tmp_path, monkeypatch)
     server = _task_server(project_path)
