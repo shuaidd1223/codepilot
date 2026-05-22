@@ -41,11 +41,14 @@ codepilot go "修复任务重试逻辑并补测试" -p <项目名>
 codepilot clarify -p <项目名> "模糊需求" --json
 codepilot plan -p <项目名> "明确需求" --json
 codepilot plan -p <项目名> --from-spec .codepilot/specs/example.md --json
+codepilot workflow status -p <项目名> --json
+codepilot workflow next -p <项目名> --list --json
+codepilot workflow next -p <项目名> --action <id> --json
 ```
 
 `clarify` 和 `plan` 不创建 backlog、不启动执行器。
 
-`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`，供调用方或 Web UI 展示。**这些是建议，不会自动执行。**
+`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；`suggested_command` 只用于展示/审查，不作为自动执行源。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
 
 ### 4. 状态与证据
 

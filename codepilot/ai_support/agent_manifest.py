@@ -41,6 +41,7 @@ def command_manifest(
                 f"如果目标是提交一个自然语言需求，直接调用 `{command} \"需求文本\"` 或 `{command} go \"需求文本\"`。",
                 "chat、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP；自由文本可以直接表达问题、需求或操作意图。",
                 "需要确定性 artifact 时显式调用 `clarify` / `plan` 或 MCP 工具。",
+                "clarify/plan 产生的 `next_actions` 应通过 `workflow next --list` / `workflow next --action <id>` 推进；`suggested_command` 只用于展示/审查。",
                 "如果用户是在询问项目、任务数量、完成度、失败任务、运行中任务或服务状态，优先按 `question` 处理，CodePilot 会读取本地项目与任务数据辅助回答。",
                 f"如果目标是发布产物，优先调用 `{_cmd(command, 'binary prepare --version <版本号>')}`。",
                 f"如果任务处于运行中，先用 `{_cmd(command, 'status -p <项目名> -v')}` 查看阶段，再决定是否 `task logs` 或 `task stop`。",
@@ -81,6 +82,21 @@ def command_manifest(
                 "command": _cmd(command, "plan -p <项目名> <需求> --json"),
                 "format": "json",
                 "purpose": "生成可审查执行计划 artifact、任务候选、风险和验证矩阵；默认不创建 backlog。",
+            },
+            {
+                "command": _cmd(command, "workflow status -p <项目名> --json"),
+                "format": "json",
+                "purpose": "读取当前 workflow 状态、mode 状态和 agent session，定位 artifact 与 next_actions 来源。",
+            },
+            {
+                "command": _cmd(command, "workflow next -p <项目名> --list --json"),
+                "format": "json",
+                "purpose": "列出当前 artifact/workflow 的 next_actions，供外部 Agent 选择安全推进动作。",
+            },
+            {
+                "command": _cmd(command, "workflow next -p <项目名> --action <id> --json"),
+                "format": "json",
+                "purpose": "通过固定 allowlist 执行指定 next_action；不会执行 suggested_command 字符串。",
             },
             {
                 "command": _cmd(command, "wiki list -p <项目名> --json"),
@@ -414,6 +430,27 @@ def command_manifest(
                 ],
             },
             {
+                "name": "workflow_status",
+                "syntax": _cmd(command, "workflow status -p <项目名> [--mode <mode>] --json"),
+                "purpose": "查看 workflow mode 状态和 agent session，包含 artifact 路径、上下文和 next_actions 来源。",
+                "when_to_use": "外部 Agent 需要读取 clarify/plan 产物状态，或在执行下一步前确认当前 workflow 上下文时。",
+                "examples": [
+                    _cmd(command, "workflow status -p codepilot-dev --json"),
+                    _cmd(command, "workflow status -p codepilot-dev --mode plan --json"),
+                ],
+            },
+            {
+                "name": "workflow_next",
+                "syntax": _cmd(command, "workflow next -p <项目名> [--mode <mode>] [--list | --action <id>] [--allow-high-risk] --json"),
+                "purpose": "列出或安全执行 artifact next_actions；动作必须在固定 allowlist 内，且不会执行 suggested_command 字符串。",
+                "when_to_use": "clarify/plan 输出 next_actions 后，需要由外部 Agent 以受控方式继续生成计划或导入任务时。",
+                "examples": [
+                    _cmd(command, "workflow next -p codepilot-dev --list --json"),
+                    _cmd(command, "workflow next -p codepilot-dev --action plan_from_spec --json"),
+                    _cmd(command, "workflow next -p codepilot-dev --action import_tasks --json"),
+                ],
+            },
+            {
                 "name": "wiki",
                 "syntax": _cmd(command, "wiki <add|list|query|update|delete|refresh|lint|ingest> ..."),
                 "purpose": "维护项目本地 Markdown 知识库，沉淀长期有用的项目事实；ingest 可显式沉淀 trace/plan artifact。",
@@ -541,6 +578,15 @@ def command_manifest(
                 ],
             },
             {
+                "name": "审查 artifact 并安全推进 next_action",
+                "steps": [
+                    _cmd(command, "workflow status -p <项目名> --json"),
+                    _cmd(command, "workflow next -p <项目名> --list --json"),
+                    "# 只选择已展示的 action id；不要拼接执行 suggested_command",
+                    _cmd(command, "workflow next -p <项目名> --action <id> --json"),
+                ],
+            },
+            {
                 "name": "排障运行中的任务",
                 "steps": [
                     _cmd(command, "status -p <项目名> -v"),
@@ -592,6 +638,7 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
             f"To submit a natural-language requirement, call `{command} \"requirement text\"` or `{command} go \"requirement text\"`.",
             "Chat, Web UI sessions, and Feishu free text all route through OpenCode + CodePilot MCP; free text may express a question, requirement, or operation intent.",
             "Call `clarify` / `plan` or MCP tools explicitly when deterministic artifacts are required.",
+            "Advance `clarify` / `plan` `next_actions` with `workflow next --list` / `workflow next --action <id>`; treat `suggested_command` as display/review metadata only.",
             "If the user asks about project state, task counts, completion ratio, failed tasks, running tasks, or service status, treat it as a question and let CodePilot read local task/project data.",
             f"For release artifacts, prefer `{_cmd(command, 'binary prepare --version <version>')}`.",
             f"If a task is running, inspect its phase with `{_cmd(command, f'status -p {project} -v')}` before deciding whether to view logs or stop it.",
@@ -607,6 +654,9 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
             {"command": _cmd(command, f"hud -p {project} --preset full --json"), "format": "json", "purpose": "Return queue, running task, recent activity, and service status."},
             {"command": _cmd(command, "explore --prompt <question> --json"), "format": "json", "purpose": "Read-only project exploration with evidence, sources, and limitations."},
             {"command": _cmd(command, f"plan -p {project} <requirement> --json"), "format": "json", "purpose": "Create a reviewable plan artifact with risks, verification matrix, and task candidates."},
+            {"command": _cmd(command, f"workflow status -p {project} --json"), "format": "json", "purpose": "Return workflow state, agent session, artifact paths, and next-action context."},
+            {"command": _cmd(command, f"workflow next -p {project} --list --json"), "format": "json", "purpose": "List the current workflow next_actions for safe external-agent selection."},
+            {"command": _cmd(command, f"workflow next -p {project} --action <id> --json"), "format": "json", "purpose": "Execute one allowlisted next_action without shelling out to suggested_command."},
             {"command": _cmd(command, f"task find <keyword> -p {project} --json"), "format": "json", "purpose": "Search tasks and return structured matches."},
             {"command": _cmd(command, "task show <task_id> --json"), "format": "json", "purpose": "Return one task's full metadata, content, errors, delivery record, and log summary."},
             {"command": _cmd(command, "doctor --json"), "format": "json", "purpose": "Check local environment, CLI tools, configuration, and database health."},
@@ -639,6 +689,8 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
             {"name": "explore", "syntax": _cmd(command, f"explore --prompt <question> [-p {project}] [--use-wiki|--no-wiki] [--json]"), "purpose": "Read-only exploration of files, Git, task logs, wiki, and inspect signals.", "when_to_use": "Use when planning needs local evidence but should not modify anything.", "examples": [_cmd(command, 'explore --prompt "find task template" --json')]},
             {"name": "clarify", "syntax": _cmd(command, f"clarify [-p {project}] [--quick|--standard] <requirement> [--json]"), "purpose": "Generate a pre-execution requirement specification artifact.", "when_to_use": "Use when a requirement is still vague but should not create tasks yet.", "examples": [_cmd(command, f'clarify -p {project} "Improve doctor" --json')]},
             {"name": "plan", "syntax": _cmd(command, f"plan [-p {project}] <requirement> [--from-spec <path>] [--use-wiki|--no-wiki] [--json]"), "purpose": "Generate a reviewable plan artifact with scope, risks, verification matrix, and task candidates.", "when_to_use": "Use when requirements are ready for plan review but should not enter backlog.", "examples": [_cmd(command, f'plan -p {project} "Add explore" --json')]},
+            {"name": "workflow_status", "syntax": _cmd(command, f"workflow status -p {project} [--mode <mode>] --json"), "purpose": "Read workflow mode state and agent session context, including artifact paths and next-action source.", "when_to_use": "Use before advancing a clarify/plan artifact or when inspecting current workflow state.", "examples": [_cmd(command, f"workflow status -p {project} --json"), _cmd(command, f"workflow status -p {project} --mode plan --json")]},
+            {"name": "workflow_next", "syntax": _cmd(command, f"workflow next -p {project} [--mode <mode>] [--list | --action <id>] [--allow-high-risk] --json"), "purpose": "List or safely execute artifact next_actions through a fixed allowlist; it never executes suggested_command strings.", "when_to_use": "Use after clarify/plan returns next_actions and an external agent needs to advance by action id.", "examples": [_cmd(command, f"workflow next -p {project} --list --json"), _cmd(command, f"workflow next -p {project} --action plan_from_spec --json"), _cmd(command, f"workflow next -p {project} --action import_tasks --json")]},
             {"name": "wiki", "syntax": _cmd(command, "wiki <add|list|query|update|delete|refresh|lint|ingest> ..."), "purpose": "Maintain local Markdown project knowledge.", "when_to_use": "Use to record or query build commands, architecture facts, failure modes, and decisions.", "examples": [_cmd(command, f'wiki query -p {project} "build" --json')]},
             {"name": "note", "syntax": _cmd(command, "note <add|show|prune|clear> ..."), "purpose": "Maintain persistent project working memory.", "when_to_use": "Use to preserve important context across sessions.", "examples": [_cmd(command, f'note add -p {project} "pytest -q is the main validation command"')]},
             {"name": "trace", "syntax": _cmd(command, f"trace [-p {project}] [--task <task_id>] [--limit N] [--json]"), "purpose": "Show recent activity across task lifecycle, logs, service heartbeats, and workflow state.", "when_to_use": "Use to understand what happened recently.", "examples": [_cmd(command, f"trace -p {project} --limit 30")]},
@@ -658,6 +710,7 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
         "workflows": [
             {"name": "Submit and execute a new requirement", "steps": [_cmd(command, "setup ."), f'{command} "Implement a requirement"', _cmd(command, f"status -p {project} -v"), _cmd(command, "task show <task_id>"), _cmd(command, "task logs <task_id>")]},
             {"name": "Use the OpenCode workflow in chat or Feishu", "steps": ["Ask questions directly, such as `How many tasks are done?`.", "Submit requirements as natural language; OpenCode can call CodePilot MCP planning and task tools.", "Use explicit operations like `retry 123` or `tasks failed`, or describe the operation in natural language.", "Call `clarify` / `plan` explicitly when deterministic artifacts are needed."]},
+            {"name": "Review an artifact and safely advance its next action", "steps": [_cmd(command, f"workflow status -p {project} --json"), _cmd(command, f"workflow next -p {project} --list --json"), "# Choose an action id from the list; do not execute suggested_command strings.", _cmd(command, f"workflow next -p {project} --action <id> --json")]},
             {"name": "Debug a running task", "steps": [_cmd(command, f"status -p {project} -v"), _cmd(command, "task show <task_id>"), _cmd(command, "task logs <task_id> --tail 80"), _cmd(command, "task stop <task_id>")]},
             {"name": "Retry a failed or cancelled task", "steps": [_cmd(command, "task logs <task_id> --tail 80"), _cmd(command, "task retry <task_id>"), _cmd(command, f"run -p {project}")]},
             {"name": "Prepare a release package", "steps": [_cmd(command, "binary prepare --version <version>"), _cmd(command, "binary verify")]},

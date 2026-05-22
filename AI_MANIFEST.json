@@ -16,6 +16,7 @@
     "To submit a natural-language requirement, call `codepilot \"requirement text\"` or `codepilot go \"requirement text\"`.",
     "Chat, Web UI sessions, and Feishu free text all route through OpenCode + CodePilot MCP; free text may express a question, requirement, or operation intent.",
     "Call `clarify` / `plan` or MCP tools explicitly when deterministic artifacts are required.",
+    "Advance `clarify` / `plan` `next_actions` with `workflow next --list` / `workflow next --action <id>`; treat `suggested_command` as display/review metadata only.",
     "If the user asks about project state, task counts, completion ratio, failed tasks, running tasks, or service status, treat it as a question and let CodePilot read local task/project data.",
     "For release artifacts, prefer `codepilot binary prepare --version <version>`.",
     "If a task is running, inspect its phase with `codepilot status -p <project-name> -v` before deciding whether to view logs or stop it.",
@@ -66,6 +67,21 @@
       "command": "codepilot plan -p <project-name> <requirement> --json",
       "format": "json",
       "purpose": "Create a reviewable plan artifact with risks, verification matrix, and task candidates."
+    },
+    {
+      "command": "codepilot workflow status -p <project-name> --json",
+      "format": "json",
+      "purpose": "Return workflow state, agent session, artifact paths, and next-action context."
+    },
+    {
+      "command": "codepilot workflow next -p <project-name> --list --json",
+      "format": "json",
+      "purpose": "List the current workflow next_actions for safe external-agent selection."
+    },
+    {
+      "command": "codepilot workflow next -p <project-name> --action <id> --json",
+      "format": "json",
+      "purpose": "Execute one allowlisted next_action without shelling out to suggested_command."
     },
     {
       "command": "codepilot task find <keyword> -p <project-name> --json",
@@ -302,6 +318,27 @@
       ]
     },
     {
+      "name": "workflow_status",
+      "syntax": "codepilot workflow status -p <project-name> [--mode <mode>] --json",
+      "purpose": "Read workflow mode state and agent session context, including artifact paths and next-action source.",
+      "when_to_use": "Use before advancing a clarify/plan artifact or when inspecting current workflow state.",
+      "examples": [
+        "codepilot workflow status -p <project-name> --json",
+        "codepilot workflow status -p <project-name> --mode plan --json"
+      ]
+    },
+    {
+      "name": "workflow_next",
+      "syntax": "codepilot workflow next -p <project-name> [--mode <mode>] [--list | --action <id>] [--allow-high-risk] --json",
+      "purpose": "List or safely execute artifact next_actions through a fixed allowlist; it never executes suggested_command strings.",
+      "when_to_use": "Use after clarify/plan returns next_actions and an external agent needs to advance by action id.",
+      "examples": [
+        "codepilot workflow next -p <project-name> --list --json",
+        "codepilot workflow next -p <project-name> --action plan_from_spec --json",
+        "codepilot workflow next -p <project-name> --action import_tasks --json"
+      ]
+    },
+    {
       "name": "wiki",
       "syntax": "codepilot wiki <add|list|query|update|delete|refresh|lint|ingest> ...",
       "purpose": "Maintain local Markdown project knowledge.",
@@ -460,6 +497,15 @@
         "Submit requirements as natural language; OpenCode can call CodePilot MCP planning and task tools.",
         "Use explicit operations like `retry 123` or `tasks failed`, or describe the operation in natural language.",
         "Call `clarify` / `plan` explicitly when deterministic artifacts are needed."
+      ]
+    },
+    {
+      "name": "Review an artifact and safely advance its next action",
+      "steps": [
+        "codepilot workflow status -p <project-name> --json",
+        "codepilot workflow next -p <project-name> --list --json",
+        "# Choose an action id from the list; do not execute suggested_command strings.",
+        "codepilot workflow next -p <project-name> --action <id> --json"
       ]
     },
     {

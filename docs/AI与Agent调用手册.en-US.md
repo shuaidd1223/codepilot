@@ -34,9 +34,14 @@ codepilot go "fix task retry logic and add tests" -p <project-name>
 codepilot clarify -p <project-name> "vague requirement" --json
 codepilot plan -p <project-name> "clear requirement" --json
 codepilot plan -p <project-name> --from-spec .codepilot/specs/example.md --json
+codepilot workflow status -p <project-name> --json
+codepilot workflow next -p <project-name> --list --json
+codepilot workflow next -p <project-name> --action <id> --json
 ```
 
 `clarify` and `plan` do not create backlog tasks and do not start execution.
+
+Their JSON output records `next_actions` for follow-up work such as generating a plan or importing tasks. External AI agents should inspect actions with `workflow next --list`, then advance by id with `workflow next --action <id>`. `suggested_command` is only display/review metadata; do not compose or execute it automatically.
 
 ### 2.3 Status, Evidence, Memory
 
@@ -175,8 +180,12 @@ codepilot task logs <task_id> --tail 80
 
 ```bash
 codepilot clarify -p <project-name> "improve task panel" --json
-codepilot plan -p <project-name> --from-spec .codepilot/specs/<file>.md --json
+codepilot workflow next -p <project-name> --list --json
+codepilot workflow next -p <project-name> --action plan_from_spec --json
+codepilot workflow next -p <project-name> --action import_tasks --json
 ```
+
+Review the listed `next_actions` before executing one. `workflow next` uses a fixed allowlist and does not shell out to `suggested_command`; high-risk actions require explicit confirmation and must still be allowlisted.
 
 ### 4.3 Answer Project Questions
 
@@ -208,6 +217,9 @@ Prefer JSON for automation. Stable commands include:
 - `codepilot ai manifest`
 - `codepilot status -p <project-name> --json`
 - `codepilot hud -p <project-name> --json`
+- `codepilot workflow status -p <project-name> --json`
+- `codepilot workflow next -p <project-name> --list --json`
+- `codepilot workflow next -p <project-name> --action <id> --json`
 - `codepilot task show <task_id> --json`
 - `codepilot task find <keyword> -p <project-name> --json`
 - `codepilot doctor --json`

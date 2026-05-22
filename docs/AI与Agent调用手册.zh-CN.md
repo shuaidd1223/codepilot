@@ -34,11 +34,14 @@ codepilot go "需求文本" -p <项目名>
 codepilot clarify -p <项目名> "模糊需求" --json
 codepilot plan -p <项目名> "明确需求" --json
 codepilot plan -p <项目名> --from-spec .codepilot/specs/example.md --json
+codepilot workflow status -p <项目名> --json
+codepilot workflow next -p <项目名> --list --json
+codepilot workflow next -p <项目名> --action <id> --json
 ```
 
 `clarify` 和 `plan` 都不创建 backlog、不启动执行器，适合执行前审查。
 
-`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等），供调用方或 Web UI 展示。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。**这些 next actions 仅作为建议，不会自动执行。**
+`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。外部 AI / Agent 应优先用 `workflow next --list` 查看动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进。`suggested_command` 只用于展示/审查，不作为自动执行源。
 
 ### 2.3 状态、证据和记忆
 
@@ -203,9 +206,12 @@ codepilot add -p <项目名> -f tasks.txt
 
 1. `codepilot clarify -p <项目名> "模糊需求" --json`
    - 输出包含 `next_actions`，推荐下一步动作。
-2. `codepilot plan -p <项目名> --from-spec <spec_path> --json`
-   - 输出包含 `next_actions`（导入任务、继续澄清、直接执行、放弃）。
-3. 人工确认后再提交需求或通过模板投递任务。
+2. `codepilot workflow next -p <项目名> --list --json`
+   - 审查可用动作、风险等级和展示用 `suggested_command`。
+3. `codepilot workflow next -p <项目名> --action plan_from_spec --json`
+   - 通过 allowlist 从 clarify spec 生成 plan。
+4. `codepilot workflow next -p <项目名> --action import_tasks --json`
+   - 人工审查 plan 后，通过 allowlist 导入候选任务。
 
 ### 4.6 Artifact 后续动作说明
 
@@ -225,16 +231,17 @@ codepilot add -p <项目名> -f tasks.txt
 | `id` | 动作标识，用于程序化引用 |
 | `label` | 人类可读的说明文字 |
 | `risk` | 风险等级：`low` / `medium` / `high` |
-| `suggested_command` | 建议执行的终端命令，调用方替换 `<...>` 占位符后使用 |
+| `suggested_command` | 展示/审查用命令提示，不能作为自动执行源 |
 
 推荐路径：
 
-- **Clarify → Plan**：检查 clarify spec 后，用 `plan --from-spec` 生成执行计划。
-- **Plan → Task**：人工审查 plan 后，通过 `codepilot add` 将候选任务导入 backlog 供 daemon 执行。
-- **Plan → Execute**：直接执行（高风险），跳过 backlog 排队阶段。
+- **列出动作**：`codepilot workflow next -p <项目名> --list --json`。
+- **Clarify → Plan**：检查 clarify spec 后，用 `codepilot workflow next -p <项目名> --action plan_from_spec --json` 生成执行计划。
+- **Plan → Task**：人工审查 plan 后，用 `codepilot workflow next -p <项目名> --action import_tasks --json` 将候选任务导入 backlog。
+- **Plan → Execute**：高风险动作默认拒绝；即使显式允许，也必须在 `workflow next` allowlist 内。
 - **放弃**：删除 artifact 文件，流程终止。
 
-`next_actions` 默认不执行任何自动化操作，所有后续动作都需要人工确认或显式调用。
+`next_actions` 默认不执行任何自动化操作，所有后续动作都需要人工确认或显式调用 `workflow next`。`workflow next` 不会 shell 执行 `suggested_command` 字符串。
 
 ### 4.3 回答项目问题
 

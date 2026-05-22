@@ -35,6 +35,18 @@ codepilot "fix task retry logic and add tests"
 codepilot go "fix task retry logic and add tests" -p <project-name>
 ```
 
+### Clarify, Plan, and Safe Next Actions
+
+```bash
+codepilot clarify -p <project-name> "vague requirement" --json
+codepilot plan -p <project-name> "clear requirement" --json
+codepilot workflow status -p <project-name> --json
+codepilot workflow next -p <project-name> --list --json
+codepilot workflow next -p <project-name> --action <id> --json
+```
+
+`clarify` and `plan` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions and `workflow next --action <id>` to execute an allowlisted action. `suggested_command` is only display/review metadata; do not compose or execute it automatically. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
+
 ### Status and Evidence
 
 ```bash

@@ -47,6 +47,18 @@ This guide is for other AI agents. For the latest machine-readable command list,
 {_cmd(command, 'go "fix task retry logic and add tests" -p <project-name>')}
 ```
 
+### Clarify, Plan, and Safe Next Actions
+
+```bash
+{_cmd(command, 'clarify -p <project-name> "vague requirement" --json')}
+{_cmd(command, 'plan -p <project-name> "clear requirement" --json')}
+{_cmd(command, "workflow status -p <project-name> --json")}
+{_cmd(command, "workflow next -p <project-name> --list --json")}
+{_cmd(command, "workflow next -p <project-name> --action <id> --json")}
+```
+
+`clarify` and `plan` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions and `workflow next --action <id>` to execute an allowlisted action. `suggested_command` is only display/review metadata; do not compose or execute it automatically. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
+
 ### Status and Evidence
 
 ```bash
@@ -117,11 +129,14 @@ Required rules:
 {_cmd(command, 'clarify -p <项目名> "模糊需求" --json')}
 {_cmd(command, 'plan -p <项目名> "明确需求" --json')}
 {_cmd(command, "plan -p <项目名> --from-spec .codepilot/specs/example.md --json")}
+{_cmd(command, "workflow status -p <项目名> --json")}
+{_cmd(command, "workflow next -p <项目名> --list --json")}
+{_cmd(command, "workflow next -p <项目名> --action <id> --json")}
 ```
 
 `clarify` 和 `plan` 不创建 backlog、不启动执行器。
 
-`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`，供调用方或 Web UI 展示。**这些是建议，不会自动执行。**
+`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；`suggested_command` 只用于展示/审查，不作为自动执行源。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
 
 ### 4. 状态与证据
 

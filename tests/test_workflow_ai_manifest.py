@@ -93,7 +93,27 @@ def test_ai_usage_guides_include_project_metadata_and_next_actions_contract():
     assert "**Author:** 帅呆呆 <2264505396@qq.com>" in en_guide
     assert "next_actions" in zh_guide
     assert "suggested_command" in zh_guide
-    assert "这些是建议，不会自动执行" in zh_guide
+    assert "workflow next -p <项目名> --list --json" in zh_guide
+    assert "workflow next -p <项目名> --action <id> --json" in zh_guide
+    assert "suggested_command` 只用于展示/审查" in zh_guide
+    assert "workflow next -p <project-name> --list --json" in en_guide
+    assert "workflow next -p <project-name> --action <id> --json" in en_guide
+    assert "`suggested_command` is only display/review metadata" in en_guide
+
+
+def test_ai_manifest_advertises_workflow_safe_next_entrypoints():
+    payload = command_manifest()
+    commands = {item["name"]: item for item in payload["commands"]}
+    structured_commands = {item["command"] for item in payload["structured_outputs"]}
+
+    assert commands["workflow_status"]["syntax"] == "codepilot workflow status -p <project-name> [--mode <mode>] --json"
+    assert commands["workflow_next"]["syntax"] == (
+        "codepilot workflow next -p <project-name> [--mode <mode>] "
+        "[--list | --action <id>] [--allow-high-risk] --json"
+    )
+    assert "codepilot workflow status -p <project-name> --json" in structured_commands
+    assert "codepilot workflow next -p <project-name> --list --json" in structured_commands
+    assert "codepilot workflow next -p <project-name> --action <id> --json" in structured_commands
 
 
 def test_active_explanation_docs_are_bilingual_and_linked():
