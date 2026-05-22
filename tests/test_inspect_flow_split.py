@@ -231,8 +231,8 @@ def test_print_result_includes_report_only_count_and_reasons(monkeypatch):
             "project": "demo",
             "candidates_total": 1,
             "created": [],
-            "skipped": [],
-            "dropped": [],
+            "skipped": [{"title": "重复候选", "reason": "duplicate"}],
+            "dropped": [{"title": "缺证据候选", "reason": "missing_evidence"}],
             "report_only": [
                 {
                     "title": "报告 app.py 复杂度",
@@ -241,11 +241,28 @@ def test_print_result_includes_report_only_count_and_reasons(monkeypatch):
                     "reason": "code_metrics_only_weak_signal",
                 }
             ],
+            "quality_summary": {
+                "enabled_signal_count": 1,
+                "substantive_signal_count": 1,
+                "raw_candidates": 3,
+                "created_count": 0,
+                "skipped_count": 1,
+                "dropped_count": 1,
+                "report_only_count": 1,
+                "dropped_by_reason": {"missing_evidence": 1},
+                "skipped_by_reason": {"duplicate": 1},
+                "report_only_by_reason": {"code_metrics_only_weak_signal": 1},
+                "decision_chain": [],
+            },
         },
         dry_run=True,
     )
 
     rendered = "\n".join(lines)
+    assert "质量摘要" in rendered
+    assert "report_only=code_metrics_only_weak_signal=1" in rendered
+    assert "dropped=missing_evidence=1" in rendered
+    assert "skipped=duplicate=1" in rendered
     assert "仅报告 1" in rendered
     assert "报告 app.py 复杂度" in rendered
     assert "code_metrics_only_weak_signal" in rendered
@@ -301,6 +318,202 @@ def test_run_inspection_short_circuits_when_all_signals_empty(tmp_path, monkeypa
     assert result["created"] == []
     assert result["reason"] == "no_substantive_signals"
     assert "硬规划" in result["note"]
+    summary = result["quality_summary"]
+    assert summary["enabled_signals"] == ["git_log", "todos"]
+    assert summary["substantive_signals"] == []
+    assert summary["enabled_signal_count"] == 2
+    assert summary["substantive_signal_count"] == 0
+    assert summary["raw_candidates"] == 0
+    assert summary["created_count"] == 0
+    assert summary["skipped_count"] == 0
+    assert summary["dropped_count"] == 0
+    assert summary["report_only_count"] == 0
+    assert summary["dropped_by_reason"] == {}
+    assert summary["skipped_by_reason"] == {}
+    assert summary["report_only_by_reason"] == {}
+    assert summary["decision_chain"] == [
+        {"stage": "signals", "decision": "no_substantive_signals", "enabled": 2, "substantive": 0},
+        {"stage": "llm", "decision": "skipped_no_substantive_signals", "raw_candidates": 0},
+        {"stage": "filter", "input": 0, "kept": 0, "dropped": 0},
+        {"stage": "report_only", "input": 0, "actionable": 0, "report_only": 0},
+        {"stage": "materialize", "input": 0, "created": 0, "skipped": 0},
+    ]
+
+
+def test_run_inspection_quality_summary_tracks_decision_chain_and_reason_counts(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "foo.py").write_text("def handle_timeout():\n    pass\n", encoding="utf-8")
+
+    signal_results = [
+        inspect_cmd.InspectSignalResult(
+            key="todos",
+            title="代码里的 TODO/FIXME/XXX",
+            order=3,
+            enabled=True,
+            content="foo.py:1: TODO handle timeout",
+        )
+    ]
+    monkeypatch.setattr(inspect_cmd, "collect_inspection_signal_results", lambda *_args, **_kwargs: signal_results)
+    monkeypatch.setattr(
+        inspect_cmd,
+        "load_project_config",
+        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_language="zh-CN")),
+    )
+    monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **_kwargs: [])
+
+    duplicate = {
+        "title": "修复 foo.py 已有 TODO",
+        "goal": "处理 foo.py:1 的 TODO，避免超时路径继续缺实现。",
+        "priority": "P3",
+        "rationale": "TODO 指向明确文件。",
+        "kind": "bug",
+        "evidence": "signal 3: foo.py:1 TODO handle timeout",
+        "files": ["foo.py"],
+        "acceptance_criteria": ["foo.py:1 的超时 TODO 已处理。"],
+        "verification_commands": ["pytest -n auto --dist loadfile -m \"not slow\" -q"],
+        "effort": "small",
+    }
+    duplicate_key = inspect_cmd._dedup_key(duplicate["title"], duplicate["goal"])
+    monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda _project_name: {duplicate_key})
+
+    def fake_create_task(**kwargs):
+        return {"id": 1, **kwargs}
+
+    monkeypatch.setattr(inspect_cmd.db, "create_task", fake_create_task)
+
+    def fake_call_llm(*_args, **_kwargs):
+        return {
+            "candidates": [
+                duplicate,
+                {
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py:1 的 TODO，避免超时路径继续缺实现。",
+                    "priority": "P3",
+                    "rationale": "TODO 指向明确文件。",
+                    "kind": "bug",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的超时 TODO 已处理。"],
+                    "verification_commands": ["pytest -n auto --dist loadfile -m \"not slow\" -q"],
+                    "effort": "small",
+                },
+                {
+                    "title": "缺证据候选",
+                    "goal": "处理 foo.py 的 TODO。",
+                    "priority": "P3",
+                    "rationale": "缺少 evidence。",
+                    "kind": "bug",
+                    "evidence": "",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py 已处理。"],
+                    "verification_commands": ["git diff --check"],
+                    "effort": "small",
+                },
+                {
+                    "title": "记录 foo.py P4 线索",
+                    "goal": "记录 foo.py:1 的 TODO，后续人工判断是否需要整理。",
+                    "priority": "P4",
+                    "rationale": "TODO 只有低优先级整理价值。",
+                    "kind": "chore",
+                    "evidence": "signal 3: foo.py:1 TODO handle timeout",
+                    "files": ["foo.py"],
+                    "acceptance_criteria": ["foo.py:1 的 TODO 已被人工复核。"],
+                    "verification_commands": ["git diff --check"],
+                    "effort": "small",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(inspect_cmd, "_call_llm", fake_call_llm)
+
+    result = inspect_cmd.run_inspection(
+        {"name": "demo", "path": str(project)},
+        signals=("todos",),
+        max_new_tasks=5,
+        dry_run=False,
+    )
+
+    summary = result["quality_summary"]
+    assert result["candidates_total"] == 4
+    assert len(result["created"]) == 1
+    assert result["skipped"] == [{"title": "修复 foo.py 已有 TODO", "reason": "duplicate"}]
+    assert result["dropped"] == [{"title": "缺证据候选", "reason": "missing_evidence"}]
+    assert result["report_only_count"] == 1
+    assert summary["enabled_signals"] == ["todos"]
+    assert summary["substantive_signals"] == ["todos"]
+    assert summary["raw_candidates"] == 4
+    assert summary["created_count"] == 1
+    assert summary["skipped_count"] == 1
+    assert summary["dropped_count"] == 1
+    assert summary["report_only_count"] == 1
+    assert summary["dropped_by_reason"] == {"missing_evidence": 1}
+    assert summary["skipped_by_reason"] == {"duplicate": 1}
+    assert summary["report_only_by_reason"] == {"priority_p4_report_only": 1}
+    assert [step["stage"] for step in summary["decision_chain"]] == [
+        "signals",
+        "llm",
+        "filter",
+        "report_only",
+        "grouping",
+        "materialize",
+    ]
+    assert summary["decision_chain"][1] == {"stage": "llm", "decision": "completed", "raw_candidates": 4}
+    assert summary["decision_chain"][-1] == {"stage": "materialize", "input": 2, "created": 1, "skipped": 1}
+    assert "TODO handle timeout" not in json.dumps(summary, ensure_ascii=False)
+
+
+def test_run_inspection_llm_error_includes_quality_summary(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    project.mkdir()
+
+    monkeypatch.setattr(
+        inspect_cmd,
+        "collect_inspection_signal_results",
+        lambda *_args, **_kwargs: [
+            inspect_cmd.InspectSignalResult(
+                key="todos",
+                title="代码里的 TODO/FIXME/XXX",
+                order=3,
+                enabled=True,
+                content="foo.py:1: TODO handle timeout",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        inspect_cmd,
+        "load_project_config",
+        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_language="zh-CN")),
+    )
+
+    def _raise_llm_error(*_args, **_kwargs):
+        raise RuntimeError("timeout")
+
+    monkeypatch.setattr(inspect_cmd, "_call_llm", _raise_llm_error)
+
+    result = inspect_cmd.run_inspection(
+        {"name": "demo", "path": str(project)},
+        signals=("todos",),
+        dry_run=True,
+    )
+
+    summary = result["quality_summary"]
+    assert result["error"] == "巡检 LLM 调用失败：timeout"
+    assert result["candidates_total"] == 0
+    assert summary["enabled_signals"] == ["todos"]
+    assert summary["substantive_signals"] == ["todos"]
+    assert summary["raw_candidates"] == 0
+    assert summary["created_count"] == 0
+    assert summary["skipped_count"] == 0
+    assert summary["dropped_count"] == 0
+    assert summary["report_only_count"] == 0
+    assert summary["decision_chain"] == [
+        {"stage": "signals", "decision": "substantive_signals", "enabled": 1, "substantive": 1},
+        {"stage": "llm", "decision": "error", "raw_candidates": 0},
+        {"stage": "filter", "input": 0, "kept": 0, "dropped": 0},
+        {"stage": "report_only", "input": 0, "actionable": 0, "report_only": 0},
+        {"stage": "materialize", "input": 0, "created": 0, "skipped": 0},
+    ]
 
 
 def test_run_inspection_skips_classifier_provider_by_default(tmp_path, monkeypatch):
@@ -819,6 +1032,9 @@ def test_inspect_json_mode_outputs_only_contract_stdout(tmp_path, monkeypatch):
     assert payload["command"] == "inspect"
     assert payload["ok"] is True
     assert payload["data"]["created"][0]["files"] == ["foo.py"]
+    assert payload["data"]["quality_summary"]["raw_candidates"] == 1
+    assert payload["data"]["quality_summary"]["created_count"] == 1
+    assert payload["data"]["quality_summary"]["enabled_signals"] == ["todos"]
     assert "[planner]" not in result.output
     assert "streamed noise" not in result.output
 

@@ -612,8 +612,116 @@ def _is_empty_signal_content(content: str) -> bool:
     return False
 
 
+def _enabled_signal_keys(signal_results: list[InspectSignalResult]) -> list[str]:
+    return [result.key for result in sorted(signal_results, key=lambda item: item.order) if result.enabled]
+
+
+def _substantive_signal_keys(signal_results: list[InspectSignalResult]) -> list[str]:
+    return [
+        result.key
+        for result in sorted(signal_results, key=lambda item: item.order)
+        if result.enabled and not _is_empty_signal_content(result.content)
+    ]
+
+
 def _has_substantive_signal(signal_results: list[InspectSignalResult]) -> bool:
-    return any(not _is_empty_signal_content(result.content) for result in signal_results)
+    return bool(_substantive_signal_keys(signal_results))
+
+
+def _count_by_reason(items: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        reason = str(item.get("reason") or "unknown").strip() or "unknown"
+        counts[reason] = counts.get(reason, 0) + 1
+    return {key: counts[key] for key in sorted(counts)}
+
+
+def _build_quality_summary(
+    signal_results: list[InspectSignalResult],
+    *,
+    raw_candidates_count: int = 0,
+    kept_candidates_count: int = 0,
+    actionable_candidates_count: int = 0,
+    grouped_candidates_count: int | None = None,
+    materialized_candidates_count: int | None = None,
+    created: list[dict] | None = None,
+    skipped: list[dict] | None = None,
+    dropped: list[dict] | None = None,
+    report_only: list[dict] | None = None,
+    llm_decision: str = "completed",
+) -> dict:
+    created = created or []
+    skipped = skipped or []
+    dropped = dropped or []
+    report_only = report_only or []
+    enabled_signals = _enabled_signal_keys(signal_results)
+    substantive_signals = _substantive_signal_keys(signal_results)
+    signal_decision = "substantive_signals" if substantive_signals else "no_substantive_signals"
+    if materialized_candidates_count is None:
+        materialized_candidates_count = grouped_candidates_count
+        if materialized_candidates_count is None:
+            materialized_candidates_count = actionable_candidates_count
+
+    decision_chain = [
+        {
+            "stage": "signals",
+            "decision": signal_decision,
+            "enabled": len(enabled_signals),
+            "substantive": len(substantive_signals),
+        },
+        {
+            "stage": "llm",
+            "decision": llm_decision,
+            "raw_candidates": raw_candidates_count,
+        },
+        {
+            "stage": "filter",
+            "input": raw_candidates_count,
+            "kept": kept_candidates_count,
+            "dropped": len(dropped),
+        },
+        {
+            "stage": "report_only",
+            "input": kept_candidates_count,
+            "actionable": actionable_candidates_count,
+            "report_only": len(report_only),
+        },
+    ]
+    if grouped_candidates_count is not None:
+        decision_chain.append(
+            {
+                "stage": "grouping",
+                "input": actionable_candidates_count,
+                "output": grouped_candidates_count,
+            }
+        )
+    decision_chain.append(
+        {
+            "stage": "materialize",
+            "input": materialized_candidates_count,
+            "created": len(created),
+            "skipped": len(skipped),
+        }
+    )
+
+    return {
+        "enabled_signals": enabled_signals,
+        "substantive_signals": substantive_signals,
+        "enabled_signal_count": len(enabled_signals),
+        "substantive_signal_count": len(substantive_signals),
+        "raw_candidates": raw_candidates_count,
+        "kept_candidates": kept_candidates_count,
+        "actionable_candidates": actionable_candidates_count,
+        "materialized_candidates": materialized_candidates_count,
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "dropped_count": len(dropped),
+        "report_only_count": len(report_only),
+        "dropped_by_reason": _count_by_reason(dropped),
+        "skipped_by_reason": _count_by_reason(skipped),
+        "report_only_by_reason": _count_by_reason(report_only),
+        "decision_chain": decision_chain,
+    }
 
 
 def _extract_candidates(payload: dict) -> list[dict]:
@@ -1038,6 +1146,10 @@ def run_inspection(
             "dropped": [],
             "report_only": [],
             "report_only_count": 0,
+            "quality_summary": _build_quality_summary(
+                signal_results,
+                llm_decision="skipped_no_substantive_signals",
+            ),
             "auto_execute": auto_execute,
             "reason": "no_substantive_signals",
             "note": "本轮所有信号都是空/跳过，不触发 LLM，避免硬规划填充任务。",
@@ -1072,11 +1184,16 @@ def run_inspection(
         return {
             "project": project_name,
             "error": f"巡检 LLM 调用失败：{exc}",
+            "candidates_total": 0,
             "created": [],
             "skipped": [],
             "dropped": [],
             "report_only": [],
             "report_only_count": 0,
+            "quality_summary": _build_quality_summary(
+                signal_results,
+                llm_decision="error",
+            ),
         }
 
     raw_candidates = _extract_candidates(payload)
@@ -1085,11 +1202,11 @@ def run_inspection(
         signal_results=signal_results,
         project_path=project_path,
     )
-    task_candidates, report_only = _partition_report_only_candidates(
+    actionable_candidates, report_only = _partition_report_only_candidates(
         kept_candidates,
         signal_results=signal_results,
     )
-    task_candidates = _group_lint_candidates(task_candidates)
+    task_candidates = _group_lint_candidates(actionable_candidates)
     created, skipped = _materialize_inspection_output(
         task_candidates,
         max_new_tasks=max_new_tasks,
@@ -1108,6 +1225,19 @@ def run_inspection(
         "dropped": dropped,
         "report_only": report_only,
         "report_only_count": len(report_only),
+        "quality_summary": _build_quality_summary(
+            signal_results,
+            raw_candidates_count=len(raw_candidates),
+            kept_candidates_count=len(kept_candidates),
+            actionable_candidates_count=len(actionable_candidates),
+            grouped_candidates_count=len(task_candidates),
+            materialized_candidates_count=len(task_candidates),
+            created=created,
+            skipped=skipped,
+            dropped=dropped,
+            report_only=report_only,
+            llm_decision="completed",
+        ),
         "auto_execute": auto_execute,
     }
 
@@ -1167,15 +1297,48 @@ def _build_content(item: dict, *, agent: str = "codex", default_priority: str = 
     return build_task_markdown_from_plan(task_spec)
 
 
+def _format_reason_counts(counts: object) -> str:
+    if not isinstance(counts, dict) or not counts:
+        return "-"
+    parts = []
+    for reason, count in sorted(counts.items()):
+        parts.append(f"{reason}={count}")
+    return ", ".join(parts)
+
+
+def _format_quality_summary_line(summary: object) -> str:
+    if not isinstance(summary, dict) or not summary:
+        return ""
+    return (
+        "[dim]质量摘要："
+        f"信号 enabled={summary.get('enabled_signal_count', 0)}/"
+        f"substantive={summary.get('substantive_signal_count', 0)}；"
+        f"候选 raw={summary.get('raw_candidates', 0)}/"
+        f"created={summary.get('created_count', 0)}/"
+        f"report_only={summary.get('report_only_count', 0)}/"
+        f"dropped={summary.get('dropped_count', 0)}/"
+        f"skipped={summary.get('skipped_count', 0)}；"
+        f"reason report_only={_format_reason_counts(summary.get('report_only_by_reason'))}，"
+        f"dropped={_format_reason_counts(summary.get('dropped_by_reason'))}，"
+        f"skipped={_format_reason_counts(summary.get('skipped_by_reason'))}"
+        "[/dim]"
+    )
+
+
 def _print_result(result: dict, dry_run: bool) -> None:
     """Print a single inspection result to the terminal."""
+    quality_line = _format_quality_summary_line(result.get("quality_summary"))
     if result.get("error"):
         echo(f"[red]{result['error']}[/red]")
+        if quality_line:
+            echo(quality_line)
         return
 
     if result.get("reason") == "no_substantive_signals":
         note = result.get("note") or "所有信号为空，不触发 LLM。"
         echo(f"[dim]{note}[/dim]")
+        if quality_line:
+            echo(quality_line)
         return
 
     dropped = result.get("dropped") or []
@@ -1185,6 +1348,8 @@ def _print_result(result: dict, dry_run: bool) -> None:
         f"新建 {len(result['created'])}，跳过 {len(result['skipped'])}，"
         f"仅报告 {len(report_only)}，过滤 {len(dropped)}[/green]"
     )
+    if quality_line:
+        echo(quality_line)
     for task in result["created"]:
         if dry_run:
             echo(f"  [dim][dry-run][/dim] {task['title']}  [{task.get('priority')}]")
