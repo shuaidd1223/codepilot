@@ -16,6 +16,7 @@ from codepilot.core.config_parse import (
     _parse_opencode_permission,
     _parse_optional_cost,
     _parse_optional_string_list,
+    _parse_positive_int,
     _required_config_text,
     normalize_agent_language,
     normalize_preflight_dirty_worktree,
@@ -180,6 +181,22 @@ def build_agents_config_from_dict(
             clarify_max_turns=automation.get("clarify_max_turns", 3),
             max_review_rounds=automation.get("max_review_rounds", 2),
             agent_silence_timeout_seconds=automation.get("agent_silence_timeout_seconds", 0),
+            workflow_auto_create_inspect_tasks=bool(
+                automation.get("workflow_auto_create_inspect_tasks", False)
+            ),
+            workflow_auto_import_plan_tasks=bool(
+                automation.get("workflow_auto_import_plan_tasks", False)
+            ),
+            workflow_auto_max_steps=_parse_positive_int(
+                automation.get("workflow_auto_max_steps"),
+                "automation.workflow_auto_max_steps",
+                default=1,
+            ),
+            workflow_auto_failure_threshold=_parse_positive_int(
+                automation.get("workflow_auto_failure_threshold"),
+                "automation.workflow_auto_failure_threshold",
+                default=1,
+            ),
             fallback_cli_order=fallback_cli_order,
             agent_language=agent_language,
             scheduled_agents=scheduled_agents,

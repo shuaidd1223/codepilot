@@ -1076,6 +1076,43 @@ def test_artifact_import_next_action_via_api_rejects_invalid_task_batch(ui_serve
     assert len(db.list_tasks(project="demo")) == before
 
 
+def test_workflow_auto_action_via_api_uses_shared_policy(ui_server, monkeypatch):
+    project = db.get_project("demo")
+    project_path = Path(project["path"])
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[automation]
+workflow_auto_import_plan_tasks = true
+workflow_auto_max_steps = 1
+""".strip(),
+        encoding="utf-8",
+    )
+    plan = write_plan_artifact(project, "新增 Web 工作流自动策略", use_wiki=False)
+    context_path = Path(plan["context_path"])
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    for action in context["next_actions"]:
+        if action["id"] == "import_tasks":
+            action["suggested_command"] = r"codepilot add -p demo -f C:\does-not-exist\tasks.json"
+    context_path.write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr("codepilot.commands.add.check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr("codepilot.commands.add.resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+
+    status, body = _post(
+        f"{ui_server}/api/workflow/actions",
+        {"project": "demo", "auto": True},
+    )
+
+    assert status == 200
+    assert body["ok"] is True
+    assert body["action"]["id"] == "import_tasks"
+    assert body["selected_reason"] == "policy_allowed_plan_import"
+    assert len(db.list_tasks(project="demo")) == len(plan["task_candidates"])
+
+
 # ─── HTML page ──────────────────────────────────────────────────────────────
 
 def test_root_serves_html(ui_server):

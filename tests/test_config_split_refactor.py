@@ -50,3 +50,29 @@ def test_config_builder_module_preserves_agents_config_from_dict_contract():
     assert cfg.automation.fallback_cli_order == ["opencode", "codex"]
     assert cfg.automation.scheduled_agents["nightly"].interval_seconds == 3600
     assert cfg.providers["openai-gpt4o"].model == "gpt-4o"
+
+
+def test_config_builder_parses_workflow_auto_policy_defaults_and_overrides():
+    default_cfg = AgentsConfig.from_dict({"project": {"name": "demo"}})
+
+    assert default_cfg.automation.workflow_auto_create_inspect_tasks is False
+    assert default_cfg.automation.workflow_auto_import_plan_tasks is False
+    assert default_cfg.automation.workflow_auto_max_steps == 1
+    assert default_cfg.automation.workflow_auto_failure_threshold == 1
+
+    overridden = AgentsConfig.from_dict(
+        {
+            "project": {"name": "demo"},
+            "automation": {
+                "workflow_auto_create_inspect_tasks": True,
+                "workflow_auto_import_plan_tasks": True,
+                "workflow_auto_max_steps": 4,
+                "workflow_auto_failure_threshold": 2,
+            },
+        }
+    )
+
+    assert overridden.automation.workflow_auto_create_inspect_tasks is True
+    assert overridden.automation.workflow_auto_import_plan_tasks is True
+    assert overridden.automation.workflow_auto_max_steps == 4
+    assert overridden.automation.workflow_auto_failure_threshold == 2

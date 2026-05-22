@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -305,6 +306,42 @@ def test_workflow_next_tool_auto_uses_shared_policy(tmp_path, monkeypatch):
     assert payload["auto"] is True
     assert payload["selected_reason"] == "low_risk_inspect_plan"
     assert payload["action"]["id"] == "plan_from_inspect"
+
+
+def test_workflow_next_tool_auto_respects_project_policy_for_plan_import(tmp_path, monkeypatch):
+    project_path = _init_demo_project(tmp_path, monkeypatch)
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[automation]
+workflow_auto_import_plan_tasks = true
+workflow_auto_max_steps = 1
+""".strip(),
+        encoding="utf-8",
+    )
+    server = _context_server(project_path)
+
+    from codepilot.commands.plan import write_plan_artifact
+
+    project = db.get_project("demo")
+    plan = write_plan_artifact(project, "新增 MCP 自动导入策略", use_wiki=False)
+    context_path = Path(plan["context_path"])
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    for action in context["next_actions"]:
+        if action["id"] == "import_tasks":
+            action["suggested_command"] = r"codepilot add -p demo -f C:\does-not-exist\tasks.json"
+    context_path.write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr("codepilot.commands.add.check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr("codepilot.commands.add.resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+
+    payload = server.call_tool("workflow_next", {"project": "demo", "auto": True})
+
+    assert payload["selected_reason"] == "policy_allowed_plan_import"
+    assert payload["action"]["id"] == "import_tasks"
+    assert len(db.list_tasks(project="demo")) == len(plan["task_candidates"])
 
 
 def test_workflow_next_tool_returns_structured_error_for_missing_project(tmp_path, monkeypatch):

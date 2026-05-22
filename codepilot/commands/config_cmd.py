@@ -402,6 +402,26 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
                 0,
                 min_value=0,
             ),
+            "workflow_auto_create_inspect_tasks": _bool(
+                automation.get("workflow_auto_create_inspect_tasks"),
+                False,
+            ),
+            "workflow_auto_import_plan_tasks": _bool(
+                automation.get("workflow_auto_import_plan_tasks"),
+                False,
+            ),
+            "workflow_auto_max_steps": _int(
+                automation.get("workflow_auto_max_steps"),
+                1,
+                min_value=1,
+                max_value=20,
+            ),
+            "workflow_auto_failure_threshold": _int(
+                automation.get("workflow_auto_failure_threshold"),
+                1,
+                min_value=1,
+                max_value=20,
+            ),
             "fallback_cli_order": _fallback_cli_order(automation.get("fallback_cli_order")),
             "agent_language": config_mod.normalize_agent_language(automation.get("agent_language")),
         },
@@ -521,6 +541,16 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("automation", "clarify_max_turns"): ["最多澄清轮数，达到后按当前信息规划。"],
     ("automation", "max_review_rounds"): ["Builder/Reviewer 闭环最大轮数；1 等于关闭闭环。"],
     ("automation", "agent_silence_timeout_seconds"): ["CLI 连续无输出多少秒后终止；0 表示关闭保护。"],
+    ("automation", "workflow_auto_create_inspect_tasks"): [
+        "workflow next --auto 是否允许自动创建 inspect 候选任务；默认 false。"
+    ],
+    ("automation", "workflow_auto_import_plan_tasks"): [
+        "workflow next --auto 是否允许自动导入 plan 候选任务；默认 false。"
+    ],
+    ("automation", "workflow_auto_max_steps"): ["单次 workflow next --auto 最多连续执行多少步；默认 1。"],
+    ("automation", "workflow_auto_failure_threshold"): [
+        "单次 workflow next --auto 失败达到多少次后熔断；默认 1。"
+    ],
     ("automation", "fallback_cli_order"): ["文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。"],
     ("automation", "agent_language"): ["智能体 prompt / 任务内容 / 输出语言偏好：en 或 zh-CN；默认 en。"],
     ("inspect", "enabled"): ["是否启用 daemon 定时巡检。"],
@@ -767,6 +797,20 @@ def _raw_config_errors(data: dict[str, Any]) -> list[str]:
             config_mod.normalize_agent_language(automation.get("agent_language"))
         except config_mod.ConfigError as exc:
             errors.append(str(exc))
+    for key in ("workflow_auto_max_steps", "workflow_auto_failure_threshold"):
+        if key not in automation:
+            continue
+        raw_value = automation.get(key)
+        if isinstance(raw_value, bool):
+            errors.append(f"automation.{key} 必须是大于 0 的整数。")
+            continue
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            errors.append(f"automation.{key} 必须是大于 0 的整数。")
+            continue
+        if value <= 0:
+            errors.append(f"automation.{key} 必须是大于 0 的整数。")
     return errors
 
 
@@ -972,6 +1016,10 @@ def init_config(global_mode: bool, path: Path | None, non_interactive: bool) -> 
         "per_task_branch": True,
         "two_stage_planning": True,
         "clarify_vague_requirements": True,
+        "workflow_auto_create_inspect_tasks": False,
+        "workflow_auto_import_plan_tasks": False,
+        "workflow_auto_max_steps": 1,
+        "workflow_auto_failure_threshold": 1,
     }
 
     # 5. 飞书机器人（可选）

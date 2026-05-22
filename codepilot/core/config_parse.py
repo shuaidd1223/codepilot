@@ -192,6 +192,20 @@ def _parse_optional_cost(raw: object, path: str) -> Optional[float]:
     return value
 
 
+def _parse_positive_int(raw: object, path: str, *, default: int) -> int:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        raise ConfigError(f"{path} 必须是大于 0 的整数。")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{path} 必须是大于 0 的整数。") from exc
+    if value <= 0:
+        raise ConfigError(f"{path} 必须是大于 0 的整数。")
+    return value
+
+
 def _parse_named_config_table(raw: object, path: str) -> dict[str, Mapping[str, object]]:
     if raw is None:
         return {}

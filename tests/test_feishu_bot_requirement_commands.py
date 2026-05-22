@@ -170,3 +170,50 @@ def test_feishu_requirement_command_does_not_emit_old_planning_progress_cards(tm
     assert calls[0]["text"] == "优化飞书进度反馈"
     assert "需求规划开始" not in payload
     assert "规划完成" not in payload
+
+
+def test_feishu_workflow_auto_command_uses_shared_policy(tmp_path, monkeypatch):
+    project_path = _setup_project(tmp_path, monkeypatch)
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[automation]
+workflow_auto_create_inspect_tasks = true
+workflow_auto_max_steps = 1
+""".strip(),
+        encoding="utf-8",
+    )
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    write_inspect_workflow_context(
+        db.get_project("demo"),
+        {
+            "project": "demo",
+            "created": [
+                {
+                    "candidate_id": "inspect-actionable",
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py 中的超时 TODO。",
+                    "priority": "P2",
+                    "reason": "todo_signal",
+                    "files": ["foo.py"],
+                    "evidence": "signal 1: foo.py",
+                }
+            ],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 1, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-feishu-auto",
+    )
+
+    reply = handle_command_text("workflow next demo auto", chat_id="chat-workflow-auto")
+    payload = json.dumps(reply["card"], ensure_ascii=False)
+
+    assert "工作流自动推进已执行" in payload
+    assert db.list_tasks(project="demo")[0]["source"] == "inspector"

@@ -772,6 +772,228 @@ def test_workflow_next_auto_generates_inspect_plan_once(tmp_path, monkeypatch):
     assert second_out["data"]["skipped_reason"] == "no_low_risk_auto_action"
 
 
+def test_workflow_next_auto_does_not_import_plan_tasks_by_default(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    plan = CliRunner().invoke(main, ["plan", "-p", "demo", "新增 explore", "--json"])
+    assert plan.exit_code == 0, plan.output
+    plan_data = json.loads(plan.output)["data"]
+
+    context_path = Path(plan_data["context_path"])
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    for action in context["next_actions"]:
+        if action["id"] == "import_tasks":
+            action["suggested_command"] = r"codepilot add -p demo -f C:\does-not-exist\tasks.json"
+    context_path.write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--auto", "--json"])
+
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.output)
+    assert out["data"]["auto"] is True
+    assert out["data"]["action"] is None
+    assert out["data"]["skipped_reason"] == "no_low_risk_auto_action"
+    assert out["data"]["policy"]["allow_import_plan_tasks"] is False
+    assert db.list_tasks(project="demo") == []
+    assert Path(project["path"]).exists()
+
+
+def test_workflow_next_auto_imports_plan_tasks_when_enabled_without_shelling_suggested_command(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    (Path(project["path"]) / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[automation]
+workflow_auto_import_plan_tasks = true
+workflow_auto_max_steps = 1
+""".strip(),
+        encoding="utf-8",
+    )
+    plan = CliRunner().invoke(main, ["plan", "-p", "demo", "新增 explore", "--json"])
+    assert plan.exit_code == 0, plan.output
+    plan_data = json.loads(plan.output)["data"]
+
+    context_path = Path(plan_data["context_path"])
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    for action in context["next_actions"]:
+        if action["id"] == "import_tasks":
+            action["suggested_command"] = r"codepilot add -p demo -f C:\does-not-exist\tasks.json"
+    context_path.write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--auto", "--json"])
+
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.output)
+    assert out["data"]["selected_reason"] == "policy_allowed_plan_import"
+    assert out["data"]["action"]["id"] == "import_tasks"
+    assert out["data"]["result"]["task_batch_path"] == plan_data["task_batch_path"]
+    assert len(db.list_tasks(project="demo")) == len(plan_data["task_candidates"])
+
+
+def test_workflow_next_auto_chains_plan_and_import_until_configured_step_limit(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    (Path(project["path"]) / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[automation]
+workflow_auto_import_plan_tasks = true
+workflow_auto_max_steps = 2
+""".strip(),
+        encoding="utf-8",
+    )
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    write_inspect_workflow_context(
+        project,
+        {
+            "project": "demo",
+            "created": [
+                {
+                    "candidate_id": "inspect-actionable",
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py 中的超时 TODO。",
+                    "priority": "P2",
+                    "reason": "todo_signal",
+                    "files": ["foo.py"],
+                    "evidence": "signal 1: foo.py",
+                }
+            ],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 1, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-auto-chain",
+    )
+
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--auto", "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert [step["action"]["id"] for step in data["steps"]] == ["plan_from_inspect", "import_tasks"]
+    assert [step["selected_reason"] for step in data["steps"]] == [
+        "low_risk_inspect_plan",
+        "policy_allowed_plan_import",
+    ]
+    assert data["stopped_reason"] == "max_steps_reached"
+    assert db.list_tasks(project="demo")
+
+
+def test_workflow_next_auto_creates_inspect_tasks_when_enabled(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    (Path(project["path"]) / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[automation]
+workflow_auto_create_inspect_tasks = true
+workflow_auto_max_steps = 1
+""".strip(),
+        encoding="utf-8",
+    )
+
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    write_inspect_workflow_context(
+        project,
+        {
+            "project": "demo",
+            "created": [
+                {
+                    "candidate_id": "inspect-actionable",
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py 中的超时 TODO。",
+                    "priority": "P2",
+                    "reason": "todo_signal",
+                    "files": ["foo.py"],
+                    "evidence": "signal 1: foo.py",
+                }
+            ],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 1, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-auto-create",
+    )
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--auto", "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["selected_reason"] == "policy_allowed_inspect_task_creation"
+    assert data["action"]["id"] == "create_inspect_tasks"
+    assert data["result"]["created_count"] == 1
+    assert db.list_tasks(project="demo")[0]["source"] == "inspector"
+
+
+def test_workflow_next_auto_opens_failure_circuit_at_configured_threshold(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    (Path(project["path"]) / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[automation]
+workflow_auto_max_steps = 3
+workflow_auto_failure_threshold = 1
+""".strip(),
+        encoding="utf-8",
+    )
+
+    from codepilot.commands import workflow as workflow_cmd
+    from codepilot.commands.inspect_workflow import write_inspect_workflow_context
+
+    write_inspect_workflow_context(
+        project,
+        {
+            "project": "demo",
+            "created": [
+                {
+                    "candidate_id": "inspect-actionable",
+                    "title": "修复 foo.py 超时 TODO",
+                    "goal": "处理 foo.py 中的超时 TODO。",
+                    "priority": "P2",
+                    "reason": "todo_signal",
+                    "files": ["foo.py"],
+                    "evidence": "signal 1: foo.py",
+                }
+            ],
+            "report_only": [],
+            "dropped": [],
+            "skipped": [],
+            "quality_summary": {"created_count": 1, "report_only_count": 0},
+        },
+        source_command="codepilot inspect -p demo --once --dry-run --write-workflow --json",
+        session_id="inspect-auto-fail",
+    )
+
+    def fail_execute(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(workflow_cmd, "_execute_next_action", fail_execute)
+
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--auto", "--json"])
+
+    assert result.exit_code != 0
+    out = json.loads(result.output)
+    assert out["ok"] is False
+    assert "自动推进失败达到熔断阈值" in out["error"]["message"]
+
+
 def test_workflow_next_builds_plan_from_inspect_context(tmp_path, monkeypatch):
     project = _register_demo_project(tmp_path, monkeypatch)
 

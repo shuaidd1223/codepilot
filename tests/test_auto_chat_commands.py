@@ -39,7 +39,18 @@ def test_chat_command_dispatch_module_executes_project_task_status(tmp_path, mon
 
 
 def test_chat_command_dispatch_renders_inspect_workflow_next_actions(tmp_path, monkeypatch):
-    register_project(tmp_path, monkeypatch)
+    project_path = register_project(tmp_path, monkeypatch)
+    (project_path / "AGENTS.toml").write_text(
+        """
+[project]
+name = "demo"
+
+[automation]
+workflow_auto_import_plan_tasks = true
+workflow_auto_max_steps = 2
+""".strip(),
+        encoding="utf-8",
+    )
     write_inspect_workflow_context(
         db.get_project("demo"),
         {
@@ -78,6 +89,7 @@ def test_chat_command_dispatch_renders_inspect_workflow_next_actions(tmp_path, m
     assert handled is True
     assert "巡检工作流" in response
     assert "report_only=1" in response
+    assert "自动策略: steps=2 import=true create_inspect=false" in response
     assert "workflow next demo auto" in response
     assert "promote_inspect_report_inspect-report" in response
     assert "ignore_inspect_report_inspect-report" in response
