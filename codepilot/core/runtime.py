@@ -109,14 +109,35 @@ def silence_subprocess_windows_if_detached() -> None:
     subprocess.Popen = _SilencedPopen  # type: ignore[misc]
 
 
+def _detect_text_encoding(path: Path) -> str:
+    """Detect the text encoding of *path* from its leading BOM.
+
+    Returns ``"utf-16"`` when a UTF-16 LE or BE BOM is found; otherwise
+    ``"utf-8"``.
+    """
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(4)
+    except OSError:
+        return "utf-8"
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "utf-16"
+    return "utf-8"
+
+
 def tail_text(path: str | Path | None, *, max_lines: int = 12, max_chars: int = 1200) -> str:
-    """Return a compact tail snippet for live status updates."""
+    """Return a compact tail snippet for live status updates.
+
+    Automatically detects UTF-16 (LE/BE) vs UTF-8 via BOM so that
+    log files written by Windows tools are displayed correctly.
+    """
     if not path:
         return ""
     candidate = Path(path)
     if not candidate.exists():
         return ""
-    text = candidate.read_text(encoding="utf-8", errors="replace").strip()
+    encoding = _detect_text_encoding(candidate)
+    text = candidate.read_text(encoding=encoding, errors="replace").strip()
     if not text:
         return ""
     lines = text.splitlines()

@@ -111,6 +111,9 @@ def _build_env(
             sort_keys=True,
             default=_json_default,
         )
+    # Prevent subprocesses from emitting UTF-16 on Windows.
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
     return env
 
 

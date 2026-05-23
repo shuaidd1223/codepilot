@@ -374,6 +374,12 @@ def _build_live_popen_kwargs(
             from codepilot.core.runtime import no_window_kwargs
 
             popen_kwargs.update(no_window_kwargs())
+    # Ensure subprocesses use UTF-8 I/O on all platforms; Windows tools may
+    # otherwise emit UTF-16 output that causes garbled log text.
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
+    popen_kwargs["env"] = env
     return popen_kwargs, pty_master_fd, pty_slave_fd
 
 
