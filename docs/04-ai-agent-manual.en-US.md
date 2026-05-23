@@ -1,6 +1,6 @@
 # CodePilot AI And Agent Calling Guide
 
-Language: [中文](AI与Agent调用手册.zh-CN.md) | English
+Language: [中文](04-AI与Agent调用手册.zh-CN.md) | English
 
 This guide is for other AI agents and automation systems. Its goal is to make project status reads, task creation, troubleshooting, and service integration stable and repeatable.
 
@@ -258,4 +258,4 @@ Prefer JSON for automation. Stable commands include:
 
 ## 7. Using The Skill
 
-The reusable Skill lives at `skills/codepilot-workflow/SKILL.md`. It is intentionally written in English so other AI runtimes can reuse it. Installation and maintenance notes are documented in the Skill guide: [中文](Skill化集成指南.zh-CN.md) / [English](Skill化集成指南.en-US.md).
+The reusable Skill lives at `skills/codepilot-workflow/SKILL.md`. It is intentionally written in English so other AI runtimes can reuse it. Installation and maintenance notes are documented in the Skill guide: [中文](05-Skill化集成指南.zh-CN.md) / [English](05-skill-integration-guide.en-US.md).

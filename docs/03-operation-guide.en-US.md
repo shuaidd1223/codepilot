@@ -1,6 +1,6 @@
 # CodePilot Operation Guide
 
-Language: [中文](操作文档.zh-CN.md) | English
+Language: [中文](03-操作文档.zh-CN.md) | English
 
 This guide is for daily operation. It covers how to initialize a project, submit work, inspect context, operate tasks, run services, troubleshoot failures, and prepare releases.
 
@@ -162,6 +162,6 @@ Use `binary prepare` for the standard version-update, build, release-directory, 
 
 ## 10. References
 
-- Overview: [中文](说明文档.zh-CN.md) / [English](说明文档.en-US.md)
-- AI / Agent guide: [中文](AI与Agent调用手册.zh-CN.md) / [English](AI与Agent调用手册.en-US.md)
-- Skill integration: [中文](Skill化集成指南.zh-CN.md) / [English](Skill化集成指南.en-US.md)
+- Overview: [中文](02-说明文档.zh-CN.md) / [English](02-overview.en-US.md)
+- AI / Agent guide: [中文](04-AI与Agent调用手册.zh-CN.md) / [English](04-ai-agent-manual.en-US.md)
+- Skill integration: [中文](05-Skill化集成指南.zh-CN.md) / [English](05-skill-integration-guide.en-US.md)

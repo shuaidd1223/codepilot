@@ -1,6 +1,6 @@
 # CodePilot 工作流模式状态与 artifact 目录约定
 
-语言版本：中文 | [English](workflow-state.en-US.md)
+语言版本：中文 | [English](07-workflow-state.en-US.md)
 
 本文定义 CodePilot 第一阶段工作流命令共享的项目本地状态层。该层服务于后续 `clarify`、`plan`、`explore`、`wiki` 等模式，让它们可以复用上下文、恢复状态，并输出机器可读 artifact。
 

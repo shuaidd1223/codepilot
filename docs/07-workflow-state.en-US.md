@@ -1,6 +1,6 @@
 # CodePilot Workflow Mode State And Artifact Directory Conventions
 
-Language: [中文](workflow-state.zh-CN.md) | English
+Language: [中文](07-workflow-state.zh-CN.md) | English
 
 This document defines the project-local state layer shared by first-stage workflow commands. It supports `clarify`, `plan`, `explore`, `wiki`, and related modes so they can reuse context, recover state, and emit machine-readable artifacts.
 

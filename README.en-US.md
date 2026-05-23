@@ -305,13 +305,13 @@ Use these replacements:
 
 ## Documentation
 
-- **Quickstart: [中文](docs/快速上手指南.zh-CN.md) / [English](docs/quickstart-guide.en-US.md)**
-- Overview: [中文](docs/说明文档.zh-CN.md) / [English](docs/说明文档.en-US.md)
-- Operation guide: [中文](docs/操作文档.zh-CN.md) / [English](docs/操作文档.en-US.md)
-- AI / Agent guide: [中文](docs/AI与Agent调用手册.zh-CN.md) / [English](docs/AI与Agent调用手册.en-US.md)
-- Skill integration guide: [中文](docs/Skill化集成指南.zh-CN.md) / [English](docs/Skill化集成指南.en-US.md)
-- Project services: [中文](docs/project-services.md) / [English](docs/project-services.en-US.md)
-- Workflow state conventions: [中文](docs/workflow-state.zh-CN.md) / [English](docs/workflow-state.en-US.md)
+- **Quickstart: [中文](docs/01-快速上手指南.zh-CN.md) / [English](docs/01-quickstart-guide.en-US.md)**
+- Overview: [中文](docs/02-说明文档.zh-CN.md) / [English](docs/02-overview.en-US.md)
+- Operation guide: [中文](docs/03-操作文档.zh-CN.md) / [English](docs/03-operation-guide.en-US.md)
+- AI / Agent guide: [中文](docs/04-AI与Agent调用手册.zh-CN.md) / [English](docs/04-ai-agent-manual.en-US.md)
+- Skill integration guide: [中文](docs/05-Skill化集成指南.zh-CN.md) / [English](docs/05-skill-integration-guide.en-US.md)
+- Project services: [中文](docs/06-项目服务改造说明.zh-CN.md) / [English](docs/06-project-services.en-US.md)
+- Workflow state conventions: [中文](docs/07-workflow-state.zh-CN.md) / [English](docs/07-workflow-state.en-US.md)
 - Static AI usage guide: [中文](AI_USAGE.zh-CN.md) / [English](AI_USAGE.en-US.md)
 
 ## Standard Entrypoints For Other AI Agents
@@ -346,7 +346,7 @@ This repository includes a reusable Skill:
 
 - `skills/codepilot-workflow/SKILL.md`
 
-The Skill itself is written in English for other Codex / Agent runtimes. Installation and maintenance notes are in the Skill integration guide: [中文](docs/Skill化集成指南.zh-CN.md) / [English](docs/Skill化集成指南.en-US.md).
+The Skill itself is written in English for other Codex / Agent runtimes. Installation and maintenance notes are in the Skill integration guide: [中文](docs/05-Skill化集成指南.zh-CN.md) / [English](docs/05-skill-integration-guide.en-US.md).
 
 ## License
 

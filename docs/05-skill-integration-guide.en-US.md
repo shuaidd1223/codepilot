@@ -1,6 +1,6 @@
 # CodePilot Skill Integration Guide
 
-Language: [中文](Skill化集成指南.zh-CN.md) | English
+Language: [中文](05-Skill化集成指南.zh-CN.md) | English
 
 This guide explains how to expose CodePilot as a reusable Skill for other AI agents while keeping the Skill aligned with the current CLI command structure.
 
@@ -97,10 +97,10 @@ codepilot ui start
 When CodePilot command behavior changes, review these files together:
 
 - [README.md](../README.md) / [README.en-US.md](../README.en-US.md)
-- [docs/说明文档.zh-CN.md](说明文档.zh-CN.md) / [docs/说明文档.en-US.md](说明文档.en-US.md)
-- [docs/操作文档.zh-CN.md](操作文档.zh-CN.md) / [docs/操作文档.en-US.md](操作文档.en-US.md)
-- [docs/AI与Agent调用手册.zh-CN.md](AI与Agent调用手册.zh-CN.md) / [docs/AI与Agent调用手册.en-US.md](AI与Agent调用手册.en-US.md)
-- [docs/Skill化集成指南.zh-CN.md](Skill化集成指南.zh-CN.md) / [docs/Skill化集成指南.en-US.md](Skill化集成指南.en-US.md)
+- [docs/说明文档.zh-CN.md](02-说明文档.zh-CN.md) / [docs/说明文档.en-US.md](02-overview.en-US.md)
+- [docs/操作文档.zh-CN.md](03-操作文档.zh-CN.md) / [docs/操作文档.en-US.md](03-operation-guide.en-US.md)
+- [docs/AI与Agent调用手册.zh-CN.md](04-AI与Agent调用手册.zh-CN.md) / [docs/AI与Agent调用手册.en-US.md](04-ai-agent-manual.en-US.md)
+- [docs/Skill化集成指南.zh-CN.md](05-Skill化集成指南.zh-CN.md) / [docs/Skill化集成指南.en-US.md](05-skill-integration-guide.en-US.md)
 - [AI_USAGE.zh-CN.md](../AI_USAGE.zh-CN.md) / [AI_USAGE.en-US.md](../AI_USAGE.en-US.md)
 - `skills/codepilot-workflow/SKILL.md`
 - `skills/codepilot-workflow/references/command-map.md`

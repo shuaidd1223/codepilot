@@ -1,6 +1,6 @@
 # CodePilot Quickstart Guide
 
-Language: [中文](快速上手指南.zh-CN.md) | English
+Language: [中文](01-快速上手指南.zh-CN.md) | English
 
 A step-by-step guide to CodePilot — from installation to daily workflow mastery.
 
@@ -383,9 +383,9 @@ export CODEPILOT_HOME="$HOME/.codepilot-dev"
 
 ## Next Steps
 
-- [Overview](说明文档.en-US.md) — architecture and command model
-- [Operations Guide](操作文档.en-US.md) — full command reference
-- [AI/Agent Guide](AI与Agent调用手册.en-US.md) — for other AI systems
-- [Skill Integration Guide](Skill化集成指南.en-US.md) — writing and installing skills
+- [Overview](02-overview.en-US.md) — architecture and command model
+- [Operations Guide](03-operation-guide.en-US.md) — full command reference
+- [AI/Agent Guide](04-ai-agent-manual.en-US.md) — for other AI systems
+- [Skill Integration Guide](05-skill-integration-guide.en-US.md) — writing and installing skills
 
 Found an issue? [Open one here](https://gitee.com/shuai_dd/CodePilot/issues).

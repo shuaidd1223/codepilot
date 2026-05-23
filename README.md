@@ -370,13 +370,13 @@ simple_model = "deepseek-v4-flash"
 
 ## 文档导航
 
-- **快速上手：[中文](docs/快速上手指南.zh-CN.md) / [English](docs/quickstart-guide.en-US.md)**
-- 说明文档：[中文](docs/说明文档.zh-CN.md) / [English](docs/说明文档.en-US.md)
-- 操作文档：[中文](docs/操作文档.zh-CN.md) / [English](docs/操作文档.en-US.md)
-- AI / Agent 调用手册：[中文](docs/AI与Agent调用手册.zh-CN.md) / [English](docs/AI与Agent调用手册.en-US.md)
-- Skill 化集成指南：[中文](docs/Skill化集成指南.zh-CN.md) / [English](docs/Skill化集成指南.en-US.md)
-- 项目服务说明：[中文](docs/project-services.md) / [English](docs/project-services.en-US.md)
-- 工作流状态约定：[中文](docs/workflow-state.zh-CN.md) / [English](docs/workflow-state.en-US.md)
+- **快速上手：[中文](docs/01-快速上手指南.zh-CN.md) / [English](docs/01-quickstart-guide.en-US.md)**
+- 说明文档：[中文](docs/02-说明文档.zh-CN.md) / [English](docs/02-overview.en-US.md)
+- 操作文档：[中文](docs/03-操作文档.zh-CN.md) / [English](docs/03-operation-guide.en-US.md)
+- AI / Agent 调用手册：[中文](docs/04-AI与Agent调用手册.zh-CN.md) / [English](docs/04-ai-agent-manual.en-US.md)
+- Skill 化集成指南：[中文](docs/05-Skill化集成指南.zh-CN.md) / [English](docs/05-skill-integration-guide.en-US.md)
+- 项目服务说明：[中文](docs/06-项目服务改造说明.zh-CN.md) / [English](docs/06-project-services.en-US.md)
+- 工作流状态约定：[中文](docs/07-workflow-state.zh-CN.md) / [English](docs/07-workflow-state.en-US.md)
 - 静态 AI 调用手册：[中文](AI_USAGE.zh-CN.md) / [English](AI_USAGE.en-US.md)
 
 ## 给其他 AI / Agent 的标准入口
@@ -493,7 +493,7 @@ codepilot ai prompt
 
 - `skills/codepilot-workflow/SKILL.md`
 
-该 Skill 用英文编写，供其他 Codex / Agent 固化 CodePilot 的调用策略、命令顺序和排障流程。安装和维护方式见：[docs/Skill化集成指南.zh-CN.md](docs/Skill化集成指南.zh-CN.md)
+该 Skill 用英文编写，供其他 Codex / Agent 固化 CodePilot 的调用策略、命令顺序和排障流程。安装和维护方式见：[Skill化集成指南](docs/05-Skill化集成指南.zh-CN.md)
 
 ## 开源协议
 

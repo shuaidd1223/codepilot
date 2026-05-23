@@ -1,6 +1,6 @@
 # Multi-Project Task Execution And Inspection Service Notes
 
-Language: [中文](project-services.md) | English
+Language: [中文](06-项目服务改造说明.zh-CN.md) | English
 
 This document records the current state, operating model, boundaries, and follow-up work for CodePilot's multi-project task execution and inspection services.
 

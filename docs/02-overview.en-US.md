@@ -4,7 +4,7 @@
   <img src="codepilot-logo.png" alt="CodePilot Logo" width="160">
 </p>
 
-Language: [简体中文](说明文档.zh-CN.md) | English
+Language: [简体中文](02-说明文档.zh-CN.md) | English
 
 ## 1. Positioning
 
@@ -264,11 +264,11 @@ Recommended entry points:
 
 Detailed command coverage:
 
-- Operation guide: [中文](操作文档.zh-CN.md) / [English](操作文档.en-US.md)
-- AI / Agent guide: [中文](AI与Agent调用手册.zh-CN.md) / [English](AI与Agent调用手册.en-US.md)
-- Skill integration: [中文](Skill化集成指南.zh-CN.md) / [English](Skill化集成指南.en-US.md)
-- Project services: [中文](project-services.md) / [English](project-services.en-US.md)
-- Workflow state conventions: [中文](workflow-state.zh-CN.md) / [English](workflow-state.en-US.md)
+- Operation guide: [中文](03-操作文档.zh-CN.md) / [English](03-operation-guide.en-US.md)
+- AI / Agent guide: [中文](04-AI与Agent调用手册.zh-CN.md) / [English](04-ai-agent-manual.en-US.md)
+- Skill integration: [中文](05-Skill化集成指南.zh-CN.md) / [English](05-skill-integration-guide.en-US.md)
+- Project services: [中文](06-项目服务改造说明.zh-CN.md) / [English](06-project-services.en-US.md)
+- Workflow state conventions: [中文](07-workflow-state.zh-CN.md) / [English](07-workflow-state.en-US.md)
 
 ## 7. Version Changelog
 
