@@ -1,5 +1,5 @@
 /* Session/chat boundary extracted from AppStateBoundary.
- * Owns session detail fetch, chat send/delete, embedded chat, and clarify-reply actions. */
+ * Owns session detail fetch, chat send/delete, and embedded chat actions. */
 /* global CP */
 
 window.CP = window.CP || {};
@@ -15,7 +15,6 @@ CP.createAppSessionBoundary = (options = {}) => {
   const confirmDialog = options.confirmDialog || (async () => false);
   const setNav = options.setNav || (() => {});
   const openProjectCategory = options.openProjectCategory || (() => {});
-  const syncSessionClarifyDraft = options.syncSessionClarifyDraft || (() => {});
 
   function currentSessionId() {
     if (state.nav.view === 'session' && state.nav.id) return Number(state.nav.id);
@@ -52,7 +51,6 @@ CP.createAppSessionBoundary = (options = {}) => {
       }
       state.sessionDetail = loadedSession;
       state.sessionMessages = data.messages || [];
-      syncSessionClarifyDraft(targetId, state.sessionMessages);
       await nextTick();
       const chatScrollEl = getChatScrollEl();
       if (chatScrollEl) chatScrollEl.scrollTop = chatScrollEl.scrollHeight;
@@ -224,26 +222,6 @@ CP.createAppSessionBoundary = (options = {}) => {
     });
   }
 
-  async function cancelSessionClarify(sessionId) {
-    if (!sessionId) return;
-    await runScopedAction(ACTION_KEYS.SESSION_CLARIFY_CANCEL, async () => {
-      try {
-        await CP.api.post(`/api/sessions/${sessionId}/messages`, {
-          text: '/clear',
-          category: 'auto',
-        });
-        delete state.clarifyDrafts[sessionId];
-        if (isCurrentSession(sessionId)) {
-          await loadSessionChat(sessionId);
-        }
-        await loadSessions();
-        pushToast('已取消当前这次需求规划', 'info');
-      } catch (err) {
-        pushToast(err.message, 'error');
-      }
-    });
-  }
-
   async function deleteSession() {
     if (state.nav.view !== 'session' || !state.nav.id) return;
     const ok = await confirmDialog({
@@ -270,29 +248,6 @@ CP.createAppSessionBoundary = (options = {}) => {
     });
   }
 
-  async function submitClarifyAnswer(sessionId, answerText = '') {
-    const draft = state.clarifyDrafts[sessionId] || null;
-    const clarifyAnswers = draft
-      ? CP.exportClarifyAnswers(draft.questions, draft.answers)
-      : [];
-    const text = String(answerText || '').trim();
-    if (!text && !clarifyAnswers.length) return;
-    await runScopedAction(ACTION_KEYS.SESSION_CLARIFY_REPLY, async () => {
-      try {
-        await CP.api.post(`/api/sessions/${sessionId}/messages`, {
-          text,
-          category: 'auto',
-          clarify_answers: clarifyAnswers,
-        });
-        delete state.clarifyDrafts[sessionId];
-        await loadSessionChat(sessionId);
-        await loadSessions();
-      } catch (err) {
-        pushToast(err.message, 'error');
-      }
-    });
-  }
-
   return {
     loadSessionChat,
     ensureProjectSessionSelected,
@@ -302,8 +257,6 @@ CP.createAppSessionBoundary = (options = {}) => {
     sendChat,
     sendEmbeddedChat,
     stopSessionRun,
-    cancelSessionClarify,
     deleteSession,
-    submitClarifyAnswer,
   };
 };

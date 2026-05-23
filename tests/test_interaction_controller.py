@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from codepilot.ai_support.interaction_controller import (
-    interpret_clarification_outcome,
     parse_intent_prefix,
     resolve_turn_intent,
-    should_continue_pending_clarification,
 )
 
 
@@ -59,57 +57,4 @@ def test_classify_entry_intent_skips_classifier_by_default(monkeypatch):
 
     assert intent == "requirement"
     assert calls == []
-
-
-def test_should_continue_pending_clarification_only_for_auto_unforced_non_question_prefix():
-    pending = {"original_title": "优化一下"}
-    assert should_continue_pending_clarification(
-        pending_state=pending,
-        forced_intent=None,
-        raw_text="补充上下文",
-        category="auto",
-    )
-    assert not should_continue_pending_clarification(
-        pending_state=pending,
-        forced_intent="task",
-        raw_text="补充上下文",
-        category="auto",
-    )
-    assert not should_continue_pending_clarification(
-        pending_state=pending,
-        forced_intent=None,
-        raw_text="? 这个工具怎么用",
-        category="auto",
-    )
-    assert not should_continue_pending_clarification(
-        pending_state=pending,
-        forced_intent=None,
-        raw_text="补充上下文",
-        category="requirement",
-    )
-
-
-def test_interpret_clarification_outcome_normalizes_transitions():
-    pending = {"original_title": "优化一下", "last_questions": [_q("先做哪块?")]}
-
-    interrupt = interpret_clarification_outcome(
-        {"status": "error", "error_kind": "interrupt", "message": "stop"},
-        pending_state=pending,
-    )
-    assert interrupt.status == "interrupt"
-    assert interrupt.message == "stop"
-
-    needs = interpret_clarification_outcome(
-        {"status": "needs_clarification"},
-        pending_state=pending,
-    )
-    assert needs.status == "needs_clarification"
-    assert list(needs.questions) == [_q("先做哪块?")]
-
-    ready = interpret_clarification_outcome(
-        {"status": "ready", "refined_title": "  优化 webui 启动速度  "},
-        pending_state=pending,
-    )
-    assert ready.status == "ready"
-    assert ready.refined_title == "优化 webui 启动速度"
 

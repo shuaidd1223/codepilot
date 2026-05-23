@@ -18,8 +18,6 @@ CP.createAppFeedbackBoundary = (options = {}) => {
     SESSION_SEND: 'session.send',
     SESSION_STOP: 'session.stop',
     SESSION_DELETE: 'session.delete',
-    SESSION_CLARIFY_REPLY: 'session.clarify.reply',
-    SESSION_CLARIFY_CANCEL: 'session.clarify.cancel',
     JOB_ACTION: 'job.action',
   });
 
@@ -30,8 +28,6 @@ CP.createAppFeedbackBoundary = (options = {}) => {
     ACTION_KEYS.SESSION_SEND,
     ACTION_KEYS.SESSION_STOP,
     ACTION_KEYS.SESSION_DELETE,
-    ACTION_KEYS.SESSION_CLARIFY_REPLY,
-    ACTION_KEYS.SESSION_CLARIFY_CANCEL,
   ]);
 
   function registerChatScroll(el) {

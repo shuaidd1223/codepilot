@@ -1,8 +1,7 @@
-"""Session and clarification actions for the Web UI."""
+"""Session actions for the Web UI."""
 
 from __future__ import annotations
 
-import re
 import sys
 import threading
 from dataclasses import dataclass
@@ -10,25 +9,13 @@ from pathlib import Path
 from typing import Optional
 
 from codepilot.storage import database as db
-from codepilot.ai_support.clarification_protocol import (
-    build_clarification_answer_summary,
-    build_clarification_input_summary,
-    normalize_clarification_answers,
-    normalize_clarification_questions,
-    normalize_text,
-)
 from codepilot.ai_support.interaction_controller import (
     build_workflow_session_record,
-    interpret_clarification_outcome,
     parse_intent_prefix,
     resolve_turn_intent,
 )
 from codepilot.webapp.action_requirements import (
     _answer_project_question,
-    _assess_requirement,
-    _dispatch_with_intent_handlers,
-    _format_numbered_questions,
-    _raise_clarification_error,
     _submit_requirement_from_message,
 )
 from codepilot.webapp.action_session_history import (
@@ -48,9 +35,10 @@ from codepilot.webapp.action_state import (
 )
 
 
-_LEGACY_CLARIFY_LINE_RE = re.compile(
-    r"^\s*(?:(?:问题\s*)?\d+[\.\)、:：]|[一二三四五六七八九十]+[、.．:：]|[-*])\s*(.+)$"
-)
+def _normalize_text(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
 _SESSION_RUNS_LOCK = threading.Lock()
 _SESSION_RUNS: dict[tuple[int, int], "_ActiveSessionRun"] = {}
 
@@ -68,7 +56,6 @@ class _SessionDispatchContext:
     text: str
     session_context: str
     session_history: list[dict]
-    clarify_answers: Optional[list[dict]]
     category: str
     gateway_options: object
     forced_intent: Optional[str]
@@ -77,7 +64,6 @@ class _SessionDispatchContext:
 @dataclass(frozen=True)
 class _SessionDispatchDecision:
     intent: str
-    pending_clarification: Optional[dict] = None
 
 
 @dataclass
@@ -87,11 +73,6 @@ class _ActiveSessionRun:
     project: str
     stop_event: threading.Event
     thread: threading.Thread
-
-
-def _is_cancel_clarification(text: str) -> bool:
-    normalized = normalize_text(text).lower()
-    return normalized in {"/clear", "/cancel", "取消", "取消本次规划", "取消当前规划"}
 
 
 def _session_payload(
@@ -116,214 +97,6 @@ def _session_payload(
     if workflow_session is not None:
         payload["workflow_session"] = dict(workflow_session)
     return payload
-
-
-def _legacy_clarification_questions_from_content(content: str) -> list[dict]:
-    raw_content = str(content or "")
-    questions: list[dict] = []
-    for raw_line in raw_content.splitlines():
-        if not raw_line.strip():
-            continue
-        stripped = raw_line.lstrip()
-        if len(stripped) != len(raw_line) and re.match(r"^(?:\d+[\.\)、:：]|[-*])\s+", stripped):
-            continue
-        match = _LEGACY_CLARIFY_LINE_RE.match(raw_line)
-        if not match:
-            continue
-        text = normalize_text(match.group(1))
-        if not text:
-            continue
-        question_index = len(questions) + 1
-        questions.append(
-            {
-                "id": f"legacy_q{question_index}",
-                "type": "text",
-                "text": text,
-                "options": [],
-                "allow_free_text": False,
-            }
-        )
-    if questions:
-        return questions
-    fallback = normalize_text(raw_content)
-    if fallback and "\n" not in raw_content:
-        return [
-            {
-                "id": "legacy_q1",
-                "type": "text",
-                "text": fallback,
-                "options": [],
-                "allow_free_text": False,
-            }
-        ]
-    return []
-
-
-def _message_questions(message: dict) -> list[dict]:
-    structured = normalize_clarification_questions(_message_metadata(message).get("questions"))
-    if structured:
-        return structured
-    return _legacy_clarification_questions_from_content(message.get("content") or "")
-
-
-def _reconstruct_clarification_state(messages: list[dict]) -> Optional[dict]:
-    if not messages:
-        return None
-    last_assistant_idx = None
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].get("role") == "assistant":
-            last_assistant_idx = i
-            break
-    if last_assistant_idx is None:
-        return None
-    last_assistant = messages[last_assistant_idx]
-    if last_assistant.get("intent") != "clarify":
-        return None
-
-    clarify_start = last_assistant_idx
-    while clarify_start - 2 >= 0:
-        prev_assistant = messages[clarify_start - 2]
-        if prev_assistant.get("role") == "assistant" and prev_assistant.get("intent") == "clarify":
-            clarify_start -= 2
-            continue
-        break
-
-    original_user_idx = clarify_start - 1
-    if original_user_idx < 0 or messages[original_user_idx].get("role") != "user":
-        return None
-
-    assistant_metadata = _message_metadata(last_assistant)
-    original_title = (
-        assistant_metadata.get("original_title")
-        or (messages[original_user_idx].get("content") or "").strip()
-    )
-    qa_history: list[dict] = []
-    idx = clarify_start
-    while idx < last_assistant_idx:
-        a_msg = messages[idx]
-        u_msg = messages[idx + 1] if idx + 1 < len(messages) else None
-        if (
-            a_msg.get("role") == "assistant"
-            and a_msg.get("intent") == "clarify"
-            and u_msg
-            and u_msg.get("role") == "user"
-        ):
-            questions = _message_questions(a_msg)
-            answers = normalize_clarification_answers(
-                questions,
-                raw_answers=_message_metadata(u_msg).get("answers"),
-                answer_text=(u_msg.get("content") or "").strip(),
-            )
-            qa_history.append(
-                {
-                    "questions": questions,
-                    "answers": answers,
-                    "answer": build_clarification_answer_summary(answers) or (u_msg.get("content") or "").strip(),
-                }
-            )
-            idx += 2
-        else:
-            break
-
-    last_questions = _message_questions(last_assistant)
-    state = _actions().build_clarification_state(
-        original_title=original_title,
-        qa_history=qa_history,
-        last_questions=last_questions,
-        intent="requirement",
-    )
-    if assistant_metadata.get("session_context"):
-        state["session_context"] = assistant_metadata.get("session_context")
-    return state
-
-
-def _dispatch_session_pending_clarification(ctx: _SessionDispatchContext, pending: dict) -> dict:
-    if _is_cancel_clarification(ctx.text):
-        db.create_session_message(ctx.session_id, "user", "取消本次需求规划")
-        reply = "已取消当前这次需求规划，请重新输入新的需求。"
-        db.create_session_message(ctx.session_id, "assistant", reply, intent="info")
-        return _session_payload("info", reply)
-
-    user_answers = normalize_clarification_answers(
-        pending.get("last_questions"),
-        raw_answers=ctx.clarify_answers,
-        answer_text=ctx.text,
-    )
-    if not user_answers and not ctx.text:
-        return _session_payload("info", "澄清问题已变化或过期，请刷新后重试。")
-    user_content = build_clarification_answer_summary(user_answers) or ctx.text
-    db.create_session_message(
-        ctx.session_id,
-        "user",
-        user_content,
-        metadata={"answers": user_answers, "workflow_phase": "clarify"} if user_answers else {"workflow_phase": "clarify"},
-    )
-    actions = _actions()
-    outcome = actions.continue_pending_clarification(
-        pending,
-        answer=ctx.text,
-        clarify_answers=ctx.clarify_answers,
-        project_info=ctx.project_info,
-        planner=ctx.planner,
-        intent=pending.get("intent") or "requirement",
-        clarify_fn=actions.clarify_requirement,
-    )
-    transition = interpret_clarification_outcome(
-        outcome,
-        pending_state=pending,
-        fallback_title=ctx.text,
-        normalize_text=actions.normalize_requirement_text,
-    )
-    if transition.status in {"interrupt", "error"}:
-        _raise_clarification_error(transition)
-    if transition.status == "needs_clarification":
-        next_state = transition.pending_state or pending
-        questions = list(transition.questions) or next_state.get("last_questions") or []
-        reply = _format_numbered_questions(questions)
-        db.create_session_message(
-            ctx.session_id,
-            "assistant",
-            reply,
-            intent="clarify",
-            metadata={
-                "questions": questions,
-                "original_title": next_state.get("original_title") or pending.get("original_title") or ctx.text,
-                "session_context": next_state.get("session_context") or pending.get("session_context") or "",
-                "workflow_phase": "clarify",
-            },
-        )
-        return _session_payload(
-            "clarify", reply, questions=questions,
-            workflow_session=build_workflow_session_record(
-                phase="clarify", intent="requirement", next_action="clarify",
-            ),
-        )
-
-    refined = actions.normalize_requirement_text(pending.get("original_title") or "")
-    refined = transition.refined_title or refined
-    planning_text = _augment_text_with_session_context(
-        refined,
-        str(pending.get("session_context") or ""),
-    )
-    _, reply, task_ids = _submit_requirement_from_message(
-        ctx.project,
-        planning_text,
-        planner=ctx.planner,
-        max_tasks=5,
-    )
-    db.create_session_message(
-        ctx.session_id,
-        "assistant",
-        reply,
-        intent="requirement",
-        task_ids=task_ids,
-    )
-    return _session_payload(
-        "requirement", reply, refined_title=refined, task_ids=task_ids,
-        workflow_session=build_workflow_session_record(
-            phase="plan", intent="requirement", next_action="execute",
-        ),
-    )
 
 
 def _dispatch_session_command(ctx: _SessionDispatchContext) -> dict:
@@ -354,41 +127,7 @@ def _dispatch_session_question(ctx: _SessionDispatchContext) -> dict:
 
 
 def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) -> dict:
-    contextual_text = _augment_text_with_session_context(ctx.text, ctx.session_context)
-    assessment = _assess_requirement(
-        contextual_text,
-        project_info=ctx.project_info,
-        planner=ctx.planner,
-        clarify_answers=ctx.clarify_answers,
-    )
-    if assessment.get("status") == "needs_clarification":
-        questions = assessment.get("questions") or []
-        numbered = _format_numbered_questions(questions)
-        reply = (
-            "为了更好地规划，请先确认以下几个点：\n" + numbered
-            if numbered
-            else "为了更好地规划，请先确认以下几个点。"
-        )
-        db.create_session_message(
-            ctx.session_id,
-            "assistant",
-            reply,
-            intent="clarify",
-            metadata={
-                "questions": questions,
-                "original_title": assessment.get("seed_title") or contextual_text,
-                "session_context": ctx.session_context,
-                "workflow_phase": "clarify",
-            },
-        )
-        return _session_payload(
-            "clarify", reply, questions=questions,
-            workflow_session=build_workflow_session_record(
-                phase="clarify", intent=intent, next_action="clarify",
-            ),
-        )
-
-    refined = assessment.get("refined_title") or ctx.text
+    refined = ctx.text
     planning_text = _augment_text_with_session_context(refined, ctx.session_context)
     max_tasks = 1 if intent == "task" else 5
     _, reply, task_ids = _submit_requirement_from_message(
@@ -410,13 +149,6 @@ def _resolve_session_dispatch_decision(
     ctx: _SessionDispatchContext,
     existing_messages: list[dict],
 ) -> _SessionDispatchDecision:
-    pending = _reconstruct_clarification_state(existing_messages)
-    if pending and ctx.category == "auto":
-        return _SessionDispatchDecision(
-            intent=pending.get("intent") or "requirement",
-            pending_clarification=pending,
-        )
-
     actions = _actions()
     intent = resolve_turn_intent(
         ctx.text,
@@ -448,8 +180,6 @@ def _session_requirement_confirmation_payload(intent: str) -> dict:
 
 def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: list[dict]) -> dict:
     decision = _resolve_session_dispatch_decision(ctx, existing_messages)
-    if decision.pending_clarification:
-        return _actions()._dispatch_session_pending_clarification(ctx, decision.pending_clarification)
     if ctx.category == "auto" and not ctx.forced_intent and decision.intent in {"requirement", "task"}:
         db.create_session_message(ctx.session_id, "user", ctx.text)
         reply = _session_requirement_confirmation_payload(decision.intent)
@@ -457,14 +187,11 @@ def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: l
         return reply
 
     db.create_session_message(ctx.session_id, "user", ctx.text)
-    return _dispatch_with_intent_handlers(
-        decision.intent,
-        handlers={
-            "command": lambda: _dispatch_session_command(ctx),
-            "question": lambda: _dispatch_session_question(ctx),
-        },
-        fallback=lambda: _dispatch_session_requirement(ctx, intent=decision.intent),
-    )
+    if decision.intent == "command":
+        return _dispatch_session_command(ctx)
+    if decision.intent == "question":
+        return _dispatch_session_question(ctx)
+    return _dispatch_session_requirement(ctx, intent=decision.intent)
 
 
 def _emit_session_run_event(
@@ -762,7 +489,6 @@ def send_session_message_action(
     text: str,
     *,
     category: str = "auto",
-    clarify_answers: Optional[list[dict]] = None,
     run_async: bool = False,
     runtime_config: Optional[dict] = None,
 ) -> dict:

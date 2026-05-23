@@ -112,10 +112,6 @@ def _toggle(ctx: click.Context, *, project: str, name: str, enabled: bool, json_
 def _run_builtin_skill(project: str, root: str, skill: dict, input_text: str, provider: str) -> dict:
     project_info = {"name": project, "path": root}
     name = skill["name"]
-    if name == "deep-interview":
-        from codepilot.commands.clarify import write_clarify_artifact
-
-        return write_clarify_artifact(project_info, input_text, quick=True)
     if name == "ralplan":
         from codepilot.commands.plan import write_plan_artifact
 
@@ -176,7 +172,7 @@ def run_cmd(ctx: click.Context, name: str, project: str, input_text: str, provid
         if skill.get("requires_enabled", True) and not skill.get("enabled"):
             raise skill_catalog.SkillCatalogError(f"技能 {name} 未启用；请先运行 skill enable {name}。")
         text = (input_text or "").strip()
-        if not text and skill["name"] in {"deep-interview", "ralplan", "ralph", "wiki"}:
+        if not text and skill["name"] in {"ralplan", "ralph", "wiki"}:
             raise skill_catalog.SkillCatalogError("skill run 需要 --input。")
         result = _run_builtin_skill(project, root, skill, text, provider)
     except skill_catalog.SkillCatalogError as exc:

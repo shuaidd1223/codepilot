@@ -377,7 +377,7 @@ CP.Components.SessionChatPanel = Vue.defineComponent({
             {{ session ? '会话刚创建，发送第一条消息开始对话' : '还没有会话，直接输入即可创建并开始流式回复' }}
           </div>
           <div v-for="m in messages" :key="m.id" class="chat-row" :class="m.role">
-            <div class="bubble" :class="[m.role, m.intent === 'clarify' ? 'clarify' : '', m.intent === 'streaming' ? 'streaming' : '']">
+            <div class="bubble" :class="[m.role, m.intent === 'streaming' ? 'streaming' : '']">
               <div v-if="m.intent === 'opencode' || m.intent === 'streaming'" class="clarify-head">
                 OpenCode
                 <span v-if="sessionRunForMessage(m)" class="session-run-state">{{ runStatusLabel(sessionRunForMessage(m)) }}</span>

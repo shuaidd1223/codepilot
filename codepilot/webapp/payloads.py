@@ -530,7 +530,7 @@ def artifact_context_payload(context_path: str) -> dict:
     spec_path = _artifact_value(ctx, "spec")
     plan_path = _artifact_value(ctx, "plan")
     task_batch_path = _artifact_value(ctx, "task_batch")
-    artifact_path = spec_path if artifact_type == "clarify" else plan_path
+    artifact_path = plan_path
     return {
         "ok": True,
         "summary": str(ctx.get("summary") or ""),

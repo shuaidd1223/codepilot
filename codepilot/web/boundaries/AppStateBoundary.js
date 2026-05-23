@@ -49,7 +49,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       daemonHealth: { alive: true, running: false, pid: 0, reason: '', stale_seconds: 0 },
       aiStatus: { ok: true, providers: {}, balances: {}, usage: {} },
 
-      goalText: '', goalCategory: 'auto', goalClarify: null,
+      goalText: '', goalCategory: 'auto',
       projectForm: { open: false, path: '', name: '', noConfig: false },
       composerMode: 'question',
       composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
@@ -57,14 +57,12 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         agentMode: 'codepilot',
         permissionMode: 'ask',
       },
-      composerClarify: null,
       taskTemplateSchema: null,
       taskTemplateLoading: false,
       taskTemplateError: '',
       batchComposer: { raw: '' },
       projectDrafts: {},
       chatText: '', chatCategory: 'auto',
-      clarifyDrafts: {},
     });
 
     const feedbackBoundary = CP.createAppFeedbackBoundary({ state });
@@ -78,13 +76,6 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
     const isActionPending = feedbackBoundary.isActionPending;
     const isRefreshBlocked = feedbackBoundary.isRefreshBlocked;
     const runScopedAction = feedbackBoundary.runScopedAction;
-
-    const clarifyBoundary = CP.createAppClarifyBoundary({ state, pushToast });
-    const buildClarifyStateFromPayload = clarifyBoundary.buildClarifyStateFromPayload;
-    const renderClarifyMessage = clarifyBoundary.renderClarifyMessage;
-    const syncSessionClarifyDraft = clarifyBoundary.syncSessionClarifyDraft;
-    const cancelGoalClarify = clarifyBoundary.cancelGoalClarify;
-    const cancelComposerClarify = clarifyBoundary.cancelComposerClarify;
 
     const currentProject = computed(() =>
       state.projects.find((project) => project.name === state.nav.project) || null

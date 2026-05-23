@@ -168,10 +168,6 @@ class AutomationConfig:
     preflight_dirty_worktree: str = "stop"
     # 两阶段规划：先让 planner 读代码（侦察），再拆任务。关闭后变回一次性规划。
     two_stage_planning: bool = True
-    # 需求不具体时主动反问澄清。关闭后遇到模糊需求直接硬拆。
-    clarify_vague_requirements: bool = True
-    # 一次规划最多反问多少轮。用户答到这个上限后强制进规划。
-    clarify_max_turns: int = 3
     # Builder-Reviewer 闭环最大轮数。reviewer 判 FAIL 时, builder 拿 reviewer
     # 反馈再做一次, 循环最多这么多轮。设为 1 等于关闭闭环（老行为）。
     max_review_rounds: int = 2
@@ -868,10 +864,6 @@ worktree_context_link_patterns = ["node_modules", ".venv", "venv", "env", ".tox"
 preflight_dirty_worktree = "stop"
 # 规划前先做代码侦察，再拆任务
 two_stage_planning = true
-# 需求模糊时先反问澄清
-clarify_vague_requirements = true
-# 最多澄清轮数
-clarify_max_turns = 3
 # Builder/Reviewer 闭环最大轮数
 max_review_rounds = 2
 # 子进程连续多少秒没有新输出就认为卡死并终止；0 表示关闭

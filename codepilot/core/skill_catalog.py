@@ -21,17 +21,6 @@ class SkillCatalogError(ValueError):
 def default_skills() -> list[dict[str, Any]]:
     return [
         {
-            "name": "deep-interview",
-            "kind": "builtin",
-            "enabled": False,
-            "description": "分层澄清技能：把模糊需求拆成目标、边界、验收标准和待确认问题。",
-            "tags": ["workflow", "clarify", "interview"],
-            "commands": ["clarify"],
-            "supported_providers": list(SUPPORTED_PROVIDERS),
-            "entrypoint_command": "clarify",
-            "requires_enabled": True,
-        },
-        {
             "name": "ralplan",
             "kind": "builtin",
             "enabled": False,

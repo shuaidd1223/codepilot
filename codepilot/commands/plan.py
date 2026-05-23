@@ -11,7 +11,6 @@ from typing import Any
 import click
 
 from codepilot.ai_support.service import build_task_markdown_from_plan
-from codepilot.commands.clarify import _resolve_project, _slugify, _summary
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.output import echo
 from codepilot.core.workflow_state import (
@@ -25,6 +24,34 @@ from codepilot.core.workflow_state import (
 
 def _now_slug() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _resolve_project(project: str | None) -> dict:
+    from codepilot.storage import database as db
+    db.init_db()
+    if project:
+        found = db.get_project(project)
+        if not found:
+            raise click.ClickException(f"项目 '{project}' 未注册。")
+        return found
+    found = db.find_project_by_path(Path.cwd())
+    if found:
+        return found
+    projects = db.list_projects()
+    if len(projects) == 1:
+        return projects[0]
+    raise click.ClickException("当前目录不属于已注册项目；请使用 -p/--project 指定项目。")
+
+
+def _slugify(text: str) -> str:
+    tokens = re.findall(r"[a-zA-Z0-9]+|[\u4e00-\u9fff]+", text or "")
+    slug = "-".join(token.lower()[:16] for token in tokens[:4]).strip("-")
+    return slug or "requirement"
+
+
+def _summary(requirement: str) -> str:
+    compact = re.sub(r"\s+", " ", requirement.strip())
+    return compact[:160] if compact else "待澄清需求"
 
 
 def _dedupe(items: list[str]) -> list[str]:

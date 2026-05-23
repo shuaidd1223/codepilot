@@ -23,10 +23,8 @@ from typing import Callable, Optional
 import click
 
 from codepilot.ai_support.interaction_controller import (
-    interpret_clarification_outcome,
     parse_intent_prefix as _parse_intent_prefix_core,
     resolve_turn_intent,
-    should_continue_pending_clarification,
 )
 from codepilot import __version__
 from codepilot.commands.auto_chat_commands import (
@@ -180,7 +178,6 @@ class _ChatLoopState(Enum):
     READ_INPUT = auto()
     DISPATCH = auto()
     HANDLE_COMMAND = auto()
-    HANDLE_PENDING_CLARIFICATION = auto()
     HANDLE_FREE_TEXT = auto()
     EXIT = auto()
 
@@ -201,7 +198,6 @@ class _ChatRuntime:
     max_retries_opt: int
     use_async_requirements: bool = True
     chat_history: list[dict] = field(default_factory=list)
-    pending_clarification: Optional[dict] = None
     pending_action_options: list[dict] = field(default_factory=list)
 
 
@@ -392,11 +388,7 @@ def _handle_chat_meta_command(
     if cmd in {"/clear", "/cancel"}:
         runtime.chat_history.clear()
         runtime.pending_action_options.clear()
-        if runtime.pending_clarification:
-            runtime.pending_clarification = None
-            echo("[green]对话历史已清空，当前待澄清的需求也已放弃[/green]")
-        else:
-            echo("[green]对话历史已清空[/green]")
+        echo("[green]对话历史已清空[/green]")
         return True
     return False
 
@@ -422,7 +414,7 @@ def _read_turn_input(frame: _ChatTurnFrame, *, shutdown_ui, echo) -> None:
 
 
 def _dispatch_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime) -> None:
-    """Route input to command/pending-clarification/free-text handlers."""
+    """Route input to command/free-text handlers."""
     if frame.text.startswith("/"):
         frame.state = _ChatLoopState.HANDLE_COMMAND
         return
@@ -430,14 +422,6 @@ def _dispatch_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime) -> None:
     forced_intent, payload_text = _parse_intent_prefix(frame.text)
     frame.forced_intent = forced_intent
     frame.payload_text = payload_text
-    if should_continue_pending_clarification(
-        pending_state=runtime.pending_clarification,
-        forced_intent=forced_intent,
-        raw_text=frame.text,
-        category="auto",
-    ):
-        frame.state = _ChatLoopState.HANDLE_PENDING_CLARIFICATION
-        return
     frame.state = _ChatLoopState.HANDLE_FREE_TEXT
 
 
@@ -467,121 +451,6 @@ def _handle_chat_command(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdo
 
     echo("[yellow]未知会话命令[/yellow]")
     click.echo(_chat_help())
-    _reset_to_read_input(frame)
-
-
-def _handle_pending_clarification_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shutdown_ui, echo, safe) -> None:
-    """Continue an in-flight clarification dialog and possibly trigger planning."""
-    shell = runtime.shell
-    pending_state = runtime.pending_clarification or {}
-    pending_intent = pending_state.get("intent", "requirement")
-    prompt_status, clarify_answers, answer_text = shell._prompt_clarification_answers_for_cli(
-        pending_state.get("last_questions") or [],
-        first_input=frame.payload_text,
-        allow_skip=False,
-    )
-    if prompt_status == "cancel":
-        runtime.pending_clarification = None
-        echo("[yellow]已取消当前这次需求规划[/yellow]")
-        click.echo()
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-    if prompt_status == "empty":
-        echo("[yellow]请至少回答一个澄清问题，或输入 /clear 取消当前规划。[/yellow]")
-        click.echo()
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-
-    spinner = _Spinner("正在评估补充信息")
-    spinner.__enter__()
-    streamed = {"seen": False}
-
-    def _stream_chunk(chunk: str) -> None:
-        if not chunk:
-            return
-        streamed["seen"] = True
-        click.echo(chunk, nl=False)
-
-    outcome = shell.continue_pending_clarification(
-        pending_state,
-        answer=answer_text,
-        clarify_answers=clarify_answers,
-        project_info=runtime.project_info,
-        planner=runtime.effective["planner"],
-        stream_callback=_stream_chunk,
-    )
-    spinner.__exit__(None, None, None)
-    if streamed["seen"]:
-        click.echo()
-
-    transition = interpret_clarification_outcome(
-        outcome,
-        pending_state=pending_state,
-        fallback_title=answer_text,
-        default_error_message="澄清评估失败",
-        normalize_text=shell.normalize_requirement_text,
-    )
-
-    if transition.status == "interrupt":
-        _end_chat_session(frame, shutdown_ui=shutdown_ui, echo=echo, prepend_blank_line=True)
-        return
-
-    if transition.status == "error":
-        message = transition.message or "澄清评估失败"
-        echo(f"[red]{safe(message)}[/red]")
-        runtime.chat_history.append({
-            "user": answer_text,
-            "assistant": f"错误: {message}",
-            "intent": "clarify",
-        })
-        click.echo()
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-
-    if transition.status == "needs_clarification":
-        runtime.pending_clarification = transition.pending_state or pending_state
-        questions = list(transition.questions)
-        echo("[cyan]还需要再澄清一下：[/cyan]")
-        click.echo(shell.render_clarification_questions(questions))
-        runtime.chat_history.append({
-            "user": answer_text,
-            "assistant": "继续澄清：\n" + shell.render_clarification_questions(questions),
-            "intent": "clarify",
-        })
-        click.echo()
-        frame.state = _ChatLoopState.READ_INPUT
-        return
-
-    # Ready — take refined title forward into planning.
-    refined = transition.refined_title or pending_state.get("original_title") or answer_text
-    runtime.pending_clarification = None
-    echo(f"[green][OK] 已澄清需求：{refined}[/green]")
-
-    try:
-        _run_chat_requirement_workflow(runtime, title=refined, intent=pending_intent)
-        runtime.chat_history.append({
-            "user": answer_text,
-            "assistant": "需求已规划并执行",
-            "intent": pending_intent,
-        })
-    except KeyboardInterrupt:
-        _end_chat_session(frame, shutdown_ui=shutdown_ui, echo=echo, prepend_blank_line=True)
-        return
-    except click.ClickException as exc:
-        echo(f"[red]{safe(exc.format_message())}[/red]")
-        runtime.chat_history.append({
-            "user": answer_text,
-            "assistant": f"错误: {exc.format_message()}",
-            "intent": pending_intent,
-        })
-    except Exception as exc:
-        echo(f"[red]{safe(exc)}[/red]")
-        runtime.chat_history.append({
-            "user": answer_text,
-            "assistant": f"错误: {exc}",
-            "intent": pending_intent,
-        })
-    click.echo()
     _reset_to_read_input(frame)
 
 
@@ -623,7 +492,6 @@ def _run_chat_requirement_workflow(runtime: _ChatRuntime, *, title: str, intent:
         max_tasks=max_tasks,
         max_retries=runtime.effective["max_retries"],
         run_async=True,
-        clarify=False,
         task_source="chat",
     )
     job = result.get("job") if isinstance(result.get("job"), dict) else {}
@@ -683,43 +551,11 @@ def _dispatch_chat_requirement(
     echo,
 ) -> str:
     runtime = ctx.runtime
-    shell = runtime.shell
-    echo("[dim]阶段 2/3：正在评估需求完整度...[/dim]")
-    spinner._message = "正在评估需求完整度"
-    streamed = {"seen": False}
-
-    def _stream_chunk(chunk: str) -> None:
-        if not chunk:
-            return
-        streamed["seen"] = True
-        click.echo(chunk, nl=False)
-
-    assessment = shell.assess_requirement_for_planning(
-        ctx.payload_text,
-        project_info=runtime.project_info,
-        planner=runtime.effective["planner"],
-        stream_callback=_stream_chunk,
-    )
-    spinner.__exit__(None, None, None)
-    if streamed["seen"]:
-        click.echo()
-
-    runtime.pending_clarification = shell.clarification_state_from_assessment(
-        assessment=assessment,
-        seed_title=ctx.payload_text,
-        intent=ctx.intent,
-    )
-    if runtime.pending_clarification:
-        questions = runtime.pending_clarification.get("last_questions") or []
-        echo("[cyan]为了更好地规划，我想先确认几个点：[/cyan]")
-        click.echo(shell.render_clarification_questions(questions))
-        echo("[dim]下一条输入会作为澄清回答；选项题可输入编号/标签，也可直接输入其他文本。输入 /clear 或 /cancel 放弃此需求。[/dim]")
-        return "请求澄清：\n" + shell.render_clarification_questions(questions)
-
-    refined = assessment.get("refined_title") or ctx.payload_text
-    echo("[dim]阶段 3/3：正在生成计划并执行任务...[/dim]")
+    echo("[dim]阶段 2/2：正在生成计划并执行任务...[/dim]")
     spinner._message = "正在生成计划并执行任务"
+    refined = ctx.payload_text
     _run_chat_requirement_workflow(runtime, title=refined, intent=ctx.intent)
+    spinner.__exit__(None, None, None)
     return "任务已创建并执行" if ctx.intent == "task" else "需求已规划"
 
 
@@ -754,7 +590,7 @@ def _handle_free_text_turn(frame: _ChatTurnFrame, runtime: _ChatRuntime, *, shut
         shared_gateway_options=runtime.shell.resolve_shared_gateway_options(runtime.project_info),
     )
 
-    echo("[dim]阶段 1/3：正在识别输入意图...[/dim]")
+    echo("[dim]阶段 1/2：正在识别输入意图...[/dim]")
     spinner = _Spinner("正在识别输入意图")
     spinner.__enter__()
 
@@ -821,16 +657,6 @@ def _dispatch_chat_loop_command(ctx: _ChatLoopDispatchContext) -> None:
     _handle_chat_command(ctx.frame, ctx.runtime, shutdown_ui=ctx.shutdown_ui, echo=ctx.echo)
 
 
-def _dispatch_chat_loop_pending_clarification(ctx: _ChatLoopDispatchContext) -> None:
-    _handle_pending_clarification_turn(
-        ctx.frame,
-        ctx.runtime,
-        shutdown_ui=ctx.shutdown_ui,
-        echo=ctx.echo,
-        safe=ctx.safe,
-    )
-
-
 def _dispatch_chat_loop_free_text(ctx: _ChatLoopDispatchContext) -> None:
     _handle_free_text_turn(
         ctx.frame,
@@ -845,7 +671,6 @@ _CHAT_LOOP_DISPATCHERS: dict[_ChatLoopState, Callable[[_ChatLoopDispatchContext]
     _ChatLoopState.READ_INPUT: _dispatch_chat_loop_read_input,
     _ChatLoopState.DISPATCH: _dispatch_chat_loop_turn_router,
     _ChatLoopState.HANDLE_COMMAND: _dispatch_chat_loop_command,
-    _ChatLoopState.HANDLE_PENDING_CLARIFICATION: _dispatch_chat_loop_pending_clarification,
     _ChatLoopState.HANDLE_FREE_TEXT: _dispatch_chat_loop_free_text,
 }
 

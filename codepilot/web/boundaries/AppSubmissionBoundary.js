@@ -14,8 +14,6 @@ CP.createAppSubmissionBoundary = (options = {}) => {
   const selectProject = options.selectProject || (() => {});
   const setNav = options.setNav || (() => {});
   const confirmDialog = options.confirmDialog || (async () => false);
-  const buildClarifyStateFromPayload = options.buildClarifyStateFromPayload || (() => null);
-  const renderClarifyMessage = options.renderClarifyMessage || ((message) => message || '');
   const deleteProjectDraft = options.deleteProjectDraft || (() => {});
 
   async function submitGoal() {
@@ -23,12 +21,8 @@ CP.createAppSubmissionBoundary = (options = {}) => {
       pushToast('先选择一个项目', 'error');
       return;
     }
-    const goalClarify = state.goalClarify;
-    const clarifyAnswers = goalClarify
-      ? CP.exportClarifyAnswers(goalClarify.questions, goalClarify.answers)
-      : [];
     const text = state.goalText.trim();
-    if (!text && !clarifyAnswers.length) {
+    if (!text) {
       pushToast('输入不能为空', 'error');
       return;
     }
@@ -40,32 +34,10 @@ CP.createAppSubmissionBoundary = (options = {}) => {
           text,
           category: state.goalCategory,
         };
-        if (goalClarify) {
-          payload.original_title = goalClarify.original_title;
-          payload.qa_history = goalClarify.qa_history || [];
-          payload.clarify_answers = clarifyAnswers;
-          payload.clarify_questions = goalClarify.questions || [];
-        }
         const out = await CP.api.post('/api/goal', payload);
         if (out.intent === 'question' || out.intent === 'command') {
           state.answer = out.message || '完成';
-          state.goalClarify = null;
-        } else if (out.intent === 'clarify') {
-          state.goalClarify = buildClarifyStateFromPayload(
-            out,
-            {
-              fallbackTitle: (goalClarify && goalClarify.original_title) || text,
-              existing: goalClarify,
-            },
-          );
-          state.answer = renderClarifyMessage(
-            out.message || '需要补充信息',
-            state.goalClarify ? state.goalClarify.questions : [],
-          );
-          state.goalText = '';
-          return;
         } else {
-          state.goalClarify = null;
           pushToast(out.message || '提交成功', 'success');
           await loadDashboard();
         }
@@ -81,16 +53,8 @@ CP.createAppSubmissionBoundary = (options = {}) => {
       pushToast('先选择一个项目', 'error');
       return;
     }
-    const composerClarify = state.composerMode === 'requirement' ? state.composerClarify : null;
-    const clarifyAnswers = composerClarify
-      ? CP.exportClarifyAnswers(composerClarify.questions, composerClarify.answers)
-      : [];
     const title = state.composer.title.trim();
-    if (!title && state.composerMode !== 'requirement') {
-      pushToast('标题不能为空', 'error');
-      return;
-    }
-    if (!title && !clarifyAnswers.length && state.composerMode === 'requirement') {
+    if (!title) {
       pushToast('标题不能为空', 'error');
       return;
     }
@@ -104,12 +68,6 @@ CP.createAppSubmissionBoundary = (options = {}) => {
         planner: state.composer.planner,
         execute: state.composer.execute,
       };
-      if (composerClarify) {
-        payload.original_title = composerClarify.original_title;
-        payload.qa_history = composerClarify.qa_history || [];
-        payload.clarify_answers = clarifyAnswers;
-        payload.clarify_questions = composerClarify.questions || [];
-      }
       try {
         let out;
         if (state.composerMode === 'task' || state.composerMode === 'task_ai') {
@@ -122,23 +80,6 @@ CP.createAppSubmissionBoundary = (options = {}) => {
           state.composer.content = '';
         } else {
           out = await CP.api.post('/api/requirements', payload);
-          if (out.intent === 'clarify') {
-            state.composerClarify = buildClarifyStateFromPayload(
-              out,
-              {
-                fallbackTitle: (composerClarify && composerClarify.original_title) || title,
-                existing: composerClarify,
-              },
-            );
-            state.answer = renderClarifyMessage(
-              out.message || '需要补充信息',
-              state.composerClarify ? state.composerClarify.questions : [],
-            );
-            state.composer.title = '';
-            pushToast('需要补充信息', 'warning');
-            return;
-          }
-          state.composerClarify = null;
         }
         state.composer.title = '';
         pushToast(out.message || '提交成功', 'success');

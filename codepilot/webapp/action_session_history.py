@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 
-from codepilot.ai_support.clarification_protocol import normalize_text
+def _normalize_text(text: str) -> str:
+    return " ".join(str(text or "").split())
 
 
 def _message_metadata(message: dict) -> dict:
@@ -91,7 +92,7 @@ def _session_context_block(messages: list[dict], *, limit: int = 8, max_chars: i
 
 
 def _augment_text_with_session_context(text: str, session_context: str) -> str:
-    text = normalize_text(text)
+    text = _normalize_text(text)
     context = str(session_context or "").strip()
     if not context:
         return text

@@ -177,8 +177,6 @@ def build_agents_config_from_dict(
                 automation.get("preflight_dirty_worktree")
             ),
             two_stage_planning=automation.get("two_stage_planning", True),
-            clarify_vague_requirements=automation.get("clarify_vague_requirements", True),
-            clarify_max_turns=automation.get("clarify_max_turns", 3),
             max_review_rounds=automation.get("max_review_rounds", 2),
             agent_silence_timeout_seconds=automation.get("agent_silence_timeout_seconds", 0),
             workflow_auto_create_inspect_tasks=bool(

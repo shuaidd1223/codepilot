@@ -394,8 +394,6 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
             ),
             "preflight_dirty_worktree": _preflight_dirty_worktree(automation.get("preflight_dirty_worktree")),
             "two_stage_planning": _bool(automation.get("two_stage_planning"), True),
-            "clarify_vague_requirements": _bool(automation.get("clarify_vague_requirements"), True),
-            "clarify_max_turns": _int(automation.get("clarify_max_turns"), 3, min_value=0),
             "max_review_rounds": _int(automation.get("max_review_rounds"), 2, min_value=1, max_value=5),
             "agent_silence_timeout_seconds": _int(
                 automation.get("agent_silence_timeout_seconds"),
@@ -537,8 +535,6 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("automation", "task_workspace"): ["direct / branch / worktree；缺失或非法值默认 branch。"],
     ("automation", "preflight_dirty_worktree"): ["stop / commit / stash；预检发现未提交改动时的处理策略，默认 stop。"],
     ("automation", "two_stage_planning"): ["规划前先侦察代码，再拆任务。"],
-    ("automation", "clarify_vague_requirements"): ["需求模糊时先反问澄清。"],
-    ("automation", "clarify_max_turns"): ["最多澄清轮数，达到后按当前信息规划。"],
     ("automation", "max_review_rounds"): ["Builder/Reviewer 闭环最大轮数；1 等于关闭闭环。"],
     ("automation", "agent_silence_timeout_seconds"): ["CLI 连续无输出多少秒后终止；0 表示关闭保护。"],
     ("automation", "workflow_auto_create_inspect_tasks"): [
@@ -1015,7 +1011,6 @@ def init_config(global_mode: bool, path: Path | None, non_interactive: bool) -> 
         "max_retries": 3,
         "per_task_branch": True,
         "two_stage_planning": True,
-        "clarify_vague_requirements": True,
         "workflow_auto_create_inspect_tasks": False,
         "workflow_auto_import_plan_tasks": False,
         "workflow_auto_max_steps": 1,

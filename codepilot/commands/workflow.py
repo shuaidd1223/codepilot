@@ -453,9 +453,9 @@ def _execute_plan_from_spec(project_info: dict, bundle: dict[str, Any]) -> dict[
     from codepilot.commands.plan import _read_spec, _summary_from_spec, write_plan_artifact
 
     project_path = Path(project_info["path"]).resolve()
-    spec_path = _resolve_project_file(project_path, _artifact_value(bundle, "spec"), label="clarify spec")
+    spec_path = _resolve_project_file(project_path, _artifact_value(bundle, "spec"), label="spec")
     if spec_path is None:
-        raise click.ClickException("当前 workflow context 没有可用于 plan_from_spec 的 clarify spec。")
+        raise click.ClickException("当前 workflow context 没有可用于 plan_from_spec 的 spec。")
     resolved_spec, spec_text = _read_spec(project_path, str(spec_path))
     summary = _summary_from_spec(spec_text)
     return write_plan_artifact(

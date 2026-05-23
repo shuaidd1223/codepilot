@@ -270,6 +270,362 @@ codepilot binary verify
 codepilot binary where
 ```
 
+## 项目架构
+
+### 业务场景
+
+CodePilot 覆盖本地工程工作流的全生命周期，服务于 7 个核心场景：
+
+| 场景 | 说明 | 核心入口 |
+| --- | --- | --- |
+| **需求→任务** | 模糊需求澄清为结构化 spec，拆分为可执行任务，自动规划并逐任务执行 | `codepilot go "..."`, `codepilot clarify`, `codepilot plan` |
+| **代码审查闭环** | 双阶段 agent 协作 — builder 实现、reviewer 审查，FAIL 则回到 builder 修复直至通过或达到最大轮数 | `codepilot auto`, `codepilot build-fix` |
+| **项目巡检** | 多维信号采集：代码规模与复杂度、依赖健康、TODO 标记、失败任务、git 活跃度；产出可审查的候选报告并支持写入工作流上下文 | `codepilot inspect --once`, `codepilot doctor` |
+| **多通道交互** | CLI 文本模式、Web UI 管理面板、飞书/Lark 机器人双向交互、Webhook HTTP 回调 | `codepilot ui start`, `codepilot feishu start`, `codepilot webhook` |
+| **自治 Agent** | Cron 定时或事件触发 (task.failed 等) 的 agent 作业，带单次/每日成本护栏、循环熔断和审计日志 | `codepilot scheduled list`, `codepilot scheduled run-once` |
+| **二进制发布** | PyInstaller 冻结二进制一键构建，vendor CLI (codex/opencode) 自动抓取、校验、缓存与打包 | `codepilot binary build`, `codepilot binary release` |
+| **多 AI 运行时** | Claude Code / Codex CLI / OpenCode 三家 CLI agent 族注册，支持兜底链自动切换；OpenCode 作为可更新 TUI 交互内核 | `codepilot chat -a opencode`, `codepilot exec` |
+
+### 模块地图
+
+```
+codepilot/
+├── cli.py                     # CLI 入口, 自然语言路由, 50+ 命令懒加载注册
+├── commands/                  # Click 子命令 (按领域拆分, 共 ~70 个文件)
+│   ├── auto.py                #   `auto`/`go` 入口：需求→任务主流程
+│   ├── auto_chat.py           #   chat 模式交互管线 (意图分发、会话管理)
+│   ├── auto_chat_commands.py  #   chat 内斜杠命令 (/task, /inspect, /plan ...)
+│   ├── auto_workflow.py       #   自然语言工作流：项目解析→意图→规划→执行
+│   ├── auto_workflow_planning.py # 规划器调度 (两阶段侦察 + 拆分)
+│   ├── auto_project_resolution.py # 项目解析 (按名称/路径/CWD 自动发现)
+│   ├── clarify.py             #   需求澄清流程 (模糊需求→结构化 spec)
+│   ├── plan.py                #   执行计划生成 (spec→任务拆分→验收标准)
+│   ├── run.py                 #   任务执行入口 (CLI 命令 + 共享 helper)
+│   ├── run_orchestrator.py    #   队列编排 (上下文解析、workspace 准备、executor 分发)
+│   ├── run_builtin.py         #   内置执行器 CLI 入口
+│   ├── run_builtin_core.py    #   内置执行器共享工具 (agent 解析、preflight、runtime)
+│   ├── run_builtin_executor.py #  内置双阶段执行引擎 (builder + reviewer 闭环)
+│   ├── run_builtin_prompts.py #   内置执行器 prompt 构造
+│   ├── run_live_runner.py     #   实时子进程执行监控 (心跳、输出过滤、取消)
+│   ├── run_git.py             #   Git 隔离操作 (branch/worktree 创建、preflight 检查)
+│   ├── run_shell.py           #   跨平台 shell 命令执行与检测
+│   ├── run_failure_triage.py  #   失败分诊主模块 (重导出)
+│   ├── run_failure_triage_apply.py    # 分诊决策执行 (重试/replan/discard)
+│   ├── run_failure_triage_decisions.py # 分诊决策引擎 (证据收集、决策映射)
+│   ├── run_failure_triage_prompts.py  # 分诊 prompt 构造
+│   ├── reviewer_output.py     #   Reviewer 输出解析 (PASS/FAIL verdict)
+│   ├── inspect.py             #   巡检 CLI + 信号采集调度
+│   ├── inspect_service.py     #   巡检后台服务生命周期
+│   ├── inspect_lifecycle.py   #   巡检报告生命周期 (promote/ignore/delete/archive)
+│   ├── inspect_signals.py     #   信号指纹与分组
+│   ├── inspect_signal_collectors*.py # 信号采集器 (代码量/依赖健康/TODO)
+│   ├── inspect_workflow.py    #   巡检→工作流上下文写入
+│   ├── task.py                #   `task` 命令组入口
+│   ├── tasks.py               #   任务 CRUD 命令实现
+│   ├── task_quality.py        #   任务质量校验
+│   ├── chat.py                #   `chat` 交互会话 (OpenCode 内核)
+│   ├── config_cmd.py          #   `config init/validate/sync` 配置治理
+│   ├── binary.py              #   `binary build/install/release/verify`
+│   ├── doctor.py              #   项目全面健康诊断
+│   ├── daemon.py              #   任务队列守护进程
+│   ├── scheduled.py           #   定时/事件 agent 管理
+│   ├── feishu.py              #   飞书服务控制
+│   ├── webui_service.py       #   Web UI 后台服务 (start/stop/restart/logs)
+│   ├── hud.py                 #   项目仪表盘 (任务统计/健康/趋势)
+│   ├── status.py              #   项目状态展示
+│   ├── explore.py             #   只读项目探索 (代码搜索/问答)
+│   ├── wiki.py                #   项目知识库 (ingest/query)
+│   ├── note.py                #   项目笔记管理
+│   ├── trace.py               #   审计追溯 (操作历史)
+│   ├── memory.py              #   memory events CLI
+│   ├── setup.py               #   项目初始化向导
+│   ├── init.py                #   快速初始化
+│   ├── cleanup.py             #   过期数据清理
+│   ├── hook.py, event.py      #   Hook 与事件管理
+│   ├── exec_cmd.py            #   透传执行外部 CLI agent
+│   ├── skill.py               #   Skill 包管理
+│   ├── add.py                 #   外部任务投递入口
+│   ├── self_update.py         #   工具自更新
+│   ├── mcp.py                 #   MCP 调试命令
+│   ├── requirement_worker.py  #   需求 Worker 入口
+│   └── ...
+├── core/                      # 核心基础设施
+│   ├── config.py              #   AGENTS.toml 发现、解析、完整数据模型 (AgentsConfig 等 10+ 配置类)
+│   ├── config_builder.py      #   配置构造器 (from_dict、secrets overlay、provider 合并)
+│   ├── config_parse.py        #   配置解析校验 (agent 规范化、值域检查)
+│   ├── workflow_state.py      #   工作流状态机 (mode state/session/artifact 的 JSON 文件持久化)
+│   ├── runtime.py             #   进程管理 (启动/心跳/终止)、subprocess 工具、Windows console 抑制
+│   ├── memory.py              #   观察记忆系统 (事件追加→去重合并→评分→候选沉淀→autocapture.md)
+│   ├── event_plugins.py       #   事件插件总线 (发布/订阅/生命周期)
+│   ├── hook_registry.py       #   Hook 注册与执行 (pre/post task, pre/post phase)
+│   ├── skill_catalog.py       #   Skill 目录扫描、解析与校验
+│   ├── progress_bus.py        #   进度事件总线 (LLM heartbeat → SSE → Web UI 实时渲染)
+│   ├── service_launcher.py    #   后台服务 detach 启动器 (跨平台 CREATE_NO_WINDOW)
+│   ├── task_mutation_guard.py #   任务状态变更安全护栏 (状态机合法性校验)
+│   ├── task_template.py       #   任务模板合规校验
+│   ├── web_events.py          #   Web UI SSE 事件编码
+│   ├── models.py              #   共享数据模型 (Task, Session, Project)
+│   ├── logger.py              #   结构化日志 (按模块分级)
+│   ├── output.py              #   终端输出格式化 (Rich markup 安全转义)
+│   ├── error_messages.py      #   错误消息模板
+│   ├── paths.py               #   全局/项目存储路径约定
+│   ├── console_encoding.py    #   Windows 控制台编码修复
+│   ├── cli_progress.py        #   CLI 进度条组件
+│   ├── gitignore.py           #   .gitignore 管理
+│   ├── text_decode.py         #   子进程输出解码
+│   └── ...
+├── ai_support/                # AI 接入层
+│   ├── providers.py           #   CLI + API Provider 注册表与生命周期 (CLI_PROVIDERS / API_PROVIDERS)
+│   ├── provider_adapters.py   #   Provider 适配器 (OpenAI/Anthropic/DeepSeek SDK 统一接口)
+│   ├── provider_profiles.py   #   Provider 能力描述 (模型、token 限制、cost 参数)
+│   ├── provider_registry.py   #   Provider 注册与查找
+│   ├── cli_families.py        #   CLI Agent 族注册 (claude/codex/opencode 三族 + EnvBridge)
+│   ├── family_runtime.py      #   Agent 运行时环境 (API key bridge、命令解析)
+│   ├── gateway_options.py     #   AI 网关调用选项聚合
+│   ├── intent_classifier.py   #   意图分类器 (需求/问答/命令 三分类)
+│   ├── intent_rules.py        #   启发式意图匹配规则 (中文关键词/句式)
+│   ├── classifier.py          #   任务分类器 (优先级/类型/复杂度)
+│   ├── task_planning.py       #   任务规划引擎 (spec→结构化任务列表)
+│   ├── planner_context.py     #   规划器上下文构建 (项目元数据/文件树/规范摘要)
+│   ├── planner_execution.py   #   规划执行调度 (schema-prompt / CLI fallback)
+│   ├── planner_parse.py       #   规划结果解析 (JSON schema → task dict)
+│   ├── clarification_protocol.py # 需求澄清协议 (多轮 Q&A→spec)
+│   ├── clarify.py             #   澄清流程实现
+│   ├── main_execute.py        #   主执行管线 (规划→任务创建→执行调度)
+│   ├── main_resolution.py     #   主解析管线 (需求→agent→配置→执行器)
+│   ├── interaction_controller.py # 交互控制器 (chat session 生命周期)
+│   ├── question_answering.py  #   问答处理 (上下文检索→答案生成)
+│   ├── question_runtime.py    #   问答运行时 (OpenCode 会话内 Q&A)
+│   ├── opencode_runtime.py    #   OpenCode 运行时管理 (启动/停止/配置注入)
+│   ├── agent_manifest.py      #   AI_MANIFEST.json 生成
+│   ├── agent_guides.py        #   AI_USAGE.md 生成
+│   ├── agent_commands.py      #   机器可读命令清单
+│   ├── agent_support.py       #   Agent 支持工具 (模板/校验/构建)
+│   ├── agent_task_template.py #   任务模板校验 (必填字段/格式)
+│   ├── backlog_dedup.py       #   Backlog 去重 (标题/文件相似度)
+│   ├── project_metadata.py    #   项目元数据提取 (语言/框架/依赖)
+│   ├── prompts.py             #   Prompt 模板加载与渲染
+│   ├── result_parse.py        #   执行结果解析 (exit code/output/summary)
+│   └── service.py             #   AI 服务统一入口 (normalize_agent_name 等)
+├── gateway/                   # AI API 网关
+│   ├── api.py                 #   API 调用入口 (try_api → resolve → execute → format)
+│   ├── resolution.py          #   Provider 解析与路由 (配置→provider key→adapter)
+│   ├── execute.py             #   API 执行 (HTTP POST + SDK invoke)
+│   ├── prompt_build.py        #   Prompt 构造 (system/user message 拼接)
+│   ├── entrypoints.py         #   入口点注册 (dispatcher: CLI vs API)
+│   ├── call_skeleton.py       #   调用骨架 (请求/响应标准化)
+│   ├── service.py             #   网关服务
+│   └── types.py               #   网关类型 (GatewayMode/GatewayRequest/GatewayResponse)
+├── storage/                   # 持久化层 (SQLite)
+│   ├── database.py            #   数据库初始化、连接池、缓存、查询函数
+│   ├── schema_store.py        #   Schema 版本管理 (baseline + 增量迁移)
+│   ├── task_write_store.py    #   任务增删改 (CRUD + 状态流转)
+│   ├── task_read_model.py     #   任务查询 (分页/过滤/排序/统计)
+│   ├── session_store.py       #   会话存储 (消息/会话 CRUD)
+│   ├── project_store.py       #   项目注册 (upsert/delete/fetch)
+│   └── service_state_store.py #   服务状态存储 (PID/端口/健康)
+├── mcp/                       # MCP (Model Context Protocol) 服务
+│   ├── server.py              #   MCP 服务器 (FastMCP 绑定、工具注册、异步执行)
+│   ├── tool_registry.py       #   工具注册表 (声明式 ToolDefinition → MCP schema)
+│   ├── protocol.py            #   协议适配 (错误/进度标准化)
+│   ├── stdio_guard.py         #   Stdio 安全护栏 (敏感字段过滤、长度限制)
+│   ├── audit.py               #   工具调用审计日志
+│   ├── launchers/             #   MCP 启动器 (OpenCode MCP 配置生成)
+│   ├── tools/tasks/           #   任务类 MCP 工具 (8 个)
+│   │   ├── create_task.py     #     创建任务 (模板校验 + task_mutation_guard)
+│   │   ├── list_tasks.py      #     列出任务 (分页/过滤/排序)
+│   │   ├── show_task.py       #     查看任务详情
+│   │   ├── edit_task.py       #     编辑任务字段
+│   │   ├── stop_task.py       #     停止运行中任务
+│   │   ├── archive_task.py    #     归档已完成任务
+│   │   ├── validate_task_template.py # 校验任务模板
+│   │   └── generate_breakdown.py     # 生成任务拆分建议
+│   ├── tools/context/         #   上下文类 MCP 工具 (6 个)
+│   │   ├── explore.py         #     项目探索 (grep/glob 只读)
+│   │   ├── inspect_project.py #     项目巡检触发
+│   │   ├── wiki_query.py      #     Wiki 知识库查询
+│   │   ├── wiki_add.py        #     Wiki 条目添加
+│   │   ├── note_add.py        #     项目笔记添加
+│   │   ├── hook_trigger.py    #     Hook 触发
+│   │   └── workflow.py        #     工作流状态读写
+│   ├── tools/ops/             #   运维类 MCP 工具 (4 个)
+│   │   ├── exec.py            #     受控命令执行
+│   │   ├── doctor.py          #     健康诊断
+│   │   ├── daemon_status.py   #     守护进程状态
+│   │   ├── build_fix.py       #     构建修复
+│   │   └── run_once.py        #     单次任务执行
+│   └── tools/external/        #   外部集成 MCP 工具 (2 个)
+│       ├── feishu_notify.py   #     飞书消息推送
+│       └── webhook_invoke.py  #     Webhook 回调
+├── webapp/                    # Web UI 后端 (HTTP + SSE)
+│   ├── server.py              #   ThreadingHTTPServer 主体 + SSE 推送 + 静态资源服务
+│   ├── actions.py             #   动作总入口 (重导出)
+│   ├── action_requirements.py #   需求提交/分发 (goal→intent→dispatch)
+│   ├── action_sessions.py     #   会话管理 (创建/消息/停止/权限)
+│   ├── action_session_history.py # 会话历史
+│   ├── action_session_records.py  # 会话记录
+│   ├── action_task_ops.py     #   任务批量操作 (创建/删除/归档/取消)
+│   ├── action_state.py        #   UI 共享状态 (jobs/events 内存管理)
+│   ├── action_workflow.py     #   工作流动作 (artifact next_actions)
+│   ├── payloads.py            #   页面负载构造 (dashboard/goal/sessions)
+│   ├── task_payloads.py       #   任务负载构造 (list/detail)
+│   ├── live_output_payloads.py #  实时输出负载
+│   ├── display_sort.py        #   任务排序规则
+│   ├── schema.py              #   请求/响应 JSON Schema
+│   └── webhook.py             #   Webhook HTTP 端点
+├── web/                       # Web UI 前端 (单页应用)
+│   ├── index.html             #   主页面骨架
+│   ├── app.js                 #   应用入口与路由
+│   ├── styles.css             #   全局样式
+│   ├── utils.js               #   工具函数 (API 调用/格式化)
+│   ├── components/            #   UI 组件 (ChatView, Composer, GoalInput)
+│   └── boundaries/            #   边界组件 (Session, State, Submission)
+├── feishu_bot/                # 飞书/Lark 机器人
+│   ├── command_handlers.py    #   命令分发 (文本消息 → 命令路由)
+│   ├── card_builders.py       #   卡片构造 (任务/项目/会话 30+ 卡片模板)
+│   ├── session_runtime.py     #   OpenCode 会话绑定
+│   ├── helpers.py             #   辅助函数 (项目解析/待确认/去重)
+│   └── constants.py           #   常量定义
+├── feishu_cards.py            # 飞书卡片底层组件 (section/field/note/button)
+├── feishu_commands.py         # 飞书命令解析 (任务ID/状态/参数)
+├── feishu_config.py           # 飞书 Bot 配置 (AppID/Secret/Node 路径)
+├── feishu_interactions.py     # 飞书交互回调解析
+├── feishu_runtime.py          # 飞书 Node.js 运行时管理 (sidecar 启动/停止)
+├── feishu_worker.mjs          # 飞书长连接 Worker (WebSocket → 事件循环)
+├── feishu_notify.mjs          # 飞书通知推送 (HTTP API 调用)
+├── opencode/                  # OpenCode TUI 集成
+│   ├── config.py              #   OpenCodeConfig 数据模型
+│   ├── env.py                 #   环境变量桥接 (CODEPILOT_* → OPENCODE_*)
+│   ├── paths.py               #   运行时路径 (~/.codepilot/opencode/<项目>/)
+│   ├── profile.py             #   TUI Profile 生成 (opencode.json + tui.json + config/*)
+│   ├── session.py             #   会话隔离 (per-project session ID)
+│   └── model_state.py         #   用户模型选择持久化
+├── scheduled/                 # 定时/事件 Agent
+│   ├── runner.py              #   Agent 作业执行 (CLI subprocess + 输出解析)
+│   ├── daemon.py              #   调度守护进程 (间隔 + Cron 表达式)
+│   ├── guards.py              #   成本护栏 (per-job / daily USD cap) + 循环熔断
+│   ├── audit.py               #   审计日志 (.codepilot/scheduled/audit.jsonl)
+│   ├── triggers.py            #   事件触发器 (task.failed / task.done)
+│   └── templates.py           #   内置 Agent 模板 (task_health / daily_summary / auto_inspect)
+├── binary_support/            # 二进制构建与发布
+│   ├── manager.py             #   PyInstaller 构建 (spec 生成/打包/校验)
+│   ├── release.py             #   发布流程 (版本号/变更日志/产物上传)
+│   ├── vendor_fetcher.py      #   第三方 CLI 抓取 (GitHub Release → 缓存 → bundled)
+│   ├── paths.py               #   路径计算 (安装目录/资源目录)
+│   └── version.py             #   版本号管理
+├── codex/                     # Codex CLI 会话持久化 (JSON 文件存储)
+├── claude/                    # Claude Code 会话持久化 (JSON 文件存储)
+├── mcp/launchers/             # MCP 启动器 (OpenCode MCP 配置)
+├── templates/                 # 任务模板 Markdown (builder/reviewer/repl 默认 prompt)
+├── prompts/                   # Prompt 模板 (planner/clarifier/classifier 系统提示词)
+└── nl_command_router.py       # 自然语言命令路由 (中/英文关键词→结构化命令)
+```
+
+### 数据流概要
+
+```
+┌─────────────────────────────────────────────────────┐
+│              多通道输入                              │
+│  CLI (codepilot go)  Web UI  飞书   Webhook        │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│  nl_command_router / intent_classifier              │
+│  意图识别 → 需求(requirement) / 问答(question)       │
+│           / 操作(command) / 巡检(inspect)            │
+└──────────────────────┬──────────────────────────────┘
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+   clarify          plan           auto
+   (模糊→spec)     (spec→任务)    (端到端)
+        │              │              │
+        └──────────────┼──────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│  run_orchestrator  (任务队列编排)                    │
+│  ├─ 项目上下文解析 + 配置加载                         │
+│  ├─ 任务 workspace 准备 (direct / branch / worktree) │
+│  ├─ executor 选择 (builtin / dispatch / auto)         │
+│  └─ 结果收尾 (commit/merge/cleanup + event emit)     │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│  run_builtin_executor  (内置双阶段执行引擎)           │
+│  ┌─────────────────────────────────────────────┐    │
+│  │  Phase 1: Builder                           │    │
+│  │  codex/claude/opencode exec <prompt>         │    │
+│  │  → 生成/修改代码, 运行测试                    │    │
+│  └──────────────┬──────────────────────────────┘    │
+│                 │                                    │
+│  ┌──────────────▼──────────────────────────────┐    │
+│  │  Phase 2: Reviewer                          │    │
+│  │  codex review --uncommitted                  │    │
+│  │  → 审查改动, 输出 PASS/FAIL verdict           │    │
+│  └──────────────┬──────────────────────────────┘    │
+│                 │                                    │
+│     ┌───────────┴───────────┐                       │
+│     ▼                       ▼                       │
+│   PASS                   FAIL                       │
+│   → done                 → reach max_rounds?        │
+│                            │ yes      │ no           │
+│                            ▼          ▼              │
+│                          failed    backlog           │
+│                          (triage)  (builder retry)   │
+└─────────────────────────────────────────────────────┘
+                       │
+         ┌─────────────┼─────────────┐
+         ▼             ▼             ▼
+       codex        claude       opencode
+         │             │             │
+         └─────────────┼─────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│  gateway (AI API 网关)                               │
+│  resolution → execute → format                      │
+│  ├─ CLI mode: subprocess 调 CLI agent               │
+│  └─ API mode: HTTP POST → OpenAI/Anthropic/DeepSeek │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│  storage (SQLite ~/.codepilot/data.db)              │
+│  tasks │ sessions │ projects │ service_states        │
+│  memory events (.codepilot/memory/)                  │
+│  scheduled audit/guards (.codepilot/scheduled/)      │
+└─────────────────────────────────────────────────────┘
+```
+
+### 关键设计决策
+
+- **双阶段 Agent 闭环** (`run_builtin_executor.py`)：每个任务由 builder 实现、reviewer 审查。reviewer 输出结构化 PASS/FAIL verdict，FAIL 时 builder 收到 reviewer 反馈后重试，最多循环 `max_review_rounds` 轮。超过上限后进入确定性失败分诊流程。
+- **失败分诊管线** (`run_failure_triage*.py`)：任务失败时采集证据 (exit code/stderr/agent output/task context)，由分类器决定 action (retry_with_hint / replan / discard / merge_partial)，通过 LLM prompt 构造修复指令后自动执行。
+- **工作流状态机** (`core/workflow_state.py`)：项目级 mode state 管理 clarify → plan → execute 三阶段流转，每个阶段产出结构化 artifact (spec/plan/context) 以原子 JSON 文件持久化在 `.codepilot/state/`，支持断点续跑。
+- **记忆系统** (`core/memory.py`)：append-only 事实事件日志 → 去重候选生成 → 反馈评分 (positive/negative/neutral) → 合并 seen_count → 自动沉淀为 `autocapture.md`。事件源覆盖 task 状态变更、workflow action 执行、inspect 报告反馈等。
+- **MCP 工具三层架构**：任务类 (受 `task_mutation_guard` 状态机保护) → 上下文类 (只读, 不修改文件) → 外部集成类 (桥接飞书/Webhook)。每层有独立的审计和安全策略。
+- **Agent 族兜底链**：`fallback_cli_order` 定义 CLI agent 优先级列表。任一 agent 不可用时 (未安装/无 key/超时) 自动切换至下一个。双阶段执行中 builder 使用的 agent 失败时，尝试交换 builder/reviewer agent 或降级到其他可用族。
+- **三层配置叠加**：`~/.codepilot/AGENTS.toml` (全局默认) → 项目 `AGENTS.toml` (按项目覆盖) → `.codepilot.secrets.toml` (API key 等敏感值，不入 git)。加载时有 schema 校验和智能错误提示。
+- **任务工作区隔离**：支持三种模式 — `direct` (主目录直接执行)、`branch` (git 分支隔离)、`worktree` (独立 git worktree，链接 node_modules 等依赖目录)。preflight 脏工作区策略可配置为 stop/commit/stash。
+- **OpenCode 品牌隔离**：启动时在 `~/.codepilot/opencode/<项目>/` 生成完整的运行时配置 (MCP server/tools/permissions/TUI plugin/instructions)，将 CodePilot 的品牌、Agent 定义和权限策略注入官方 OpenCode 二进制，不修改 OpenCode 源码。
+
+### 测试体系
+
+项目遵循 TDD 方法论，约 150+ 测试文件覆盖所有核心模块：
+
+| 层级 | 说明 | 运行方式 |
+| --- | --- | --- |
+| **单元测试** | 每个模块的独立测试，mock 外部依赖 | `pytest tests/ -m "not slow"` (日常 ~60-90s) |
+| **集成测试** | 跨模块边界测试 (DB + CLI + MCP + Web UI API) | `pytest tests/` 全量 (~3.5min with xdist) |
+| **慢速测试** | 涉及 git worktree、完整 pipeline、自迭代的 >10s 用例 | `pytest tests/ -m "slow"` (标记 `slow`) |
+| **串行测试** | 持有全局锁/端口/daemon 的用例 | 标记 `serial`，xdist 同 worker 执行 |
+| **E2E** | Web UI 资产完整性、二进制构建/安装/发布流程 | `pytest tests/test_web_assets.py tests/test_workflow_binary_release.py` |
+
+测试基础设施：`conftest.py` 提供共享 fixture (临时项目/数据库/配置)；`*_testkit.py` 提供可复用测试工具 (AI gateway mock、feishu bot mock、chat flow builder、MCP stdio shim)。
+
 ## CLI Agent 家族与兜底链
 
 CodePilot 把可调用的 CLI agent 抽成了 family 注册表，目前内置三家：`claude`、`codex`、`opencode`。

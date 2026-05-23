@@ -31,17 +31,8 @@ from codepilot.commands.auto_chat import (  # noqa: F401 (re-export)
     run_chat_session,
 )
 from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
-    append_clarification_answer,
-    append_clarification_answer_to_state,
-    assess_requirement_for_planning,
-    build_clarification_state,
-    clarify_requirement,
     classify_entry_intent,
-    clarification_state_from_assessment,
     command_intent_guidance,
-    continue_pending_clarification,
-    normalize_clarification_history,
-    resolve_question_answer_options,
     resolve_shared_gateway_options,
     normalize_requirement_text,
     _project_config,

@@ -66,8 +66,6 @@ def test_config_empty_dict_uses_declared_defaults():
     assert cfg.automation.worktree_context_link_patterns is None
     assert cfg.automation.preflight_dirty_worktree == "stop"
     assert cfg.automation.two_stage_planning is True
-    assert cfg.automation.clarify_vague_requirements is True
-    assert cfg.automation.clarify_max_turns == 3
     assert cfg.automation.max_review_rounds == 2
     assert cfg.automation.agent_silence_timeout_seconds == 0
 

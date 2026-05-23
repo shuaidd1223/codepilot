@@ -1,4 +1,4 @@
-"""Tests for planner context / clarification / two-stage planner."""
+"""Tests for planner context and two-stage planner."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import pytest
 
 from codepilot.ai_support import service as ai_mod
 from codepilot.ai_support import backlog_dedup as dedup_mod
-from codepilot.ai_support import clarify as ai_clarify
 from codepilot.ai_support import planner_context as ctx_mod
 
 
@@ -243,156 +242,6 @@ def test_generate_task_breakdown_filters_hallucinated_recon_files(tmp_path, monk
     assert "real_mod.py" in text
     assert "ghost_mod.py" not in text
     assert "fantasy.py" not in text
-
-
-# ─── ai_clarify heuristic ──────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "title,expected_vague",
-    [
-        ("优化一下", True),
-        ("优化", True),
-        ("修 bug", True),
-        ("改进用户体验", True),
-        ("给 webui 加会话历史 sidebar", False),
-        ("重构 codepilot/webui.py 为组件化", False),
-        ("让 chat 支持多轮澄清", False),
-        ("提升 cli 启动速度", False),
-        ("add dark mode", False),
-        ("optimize", True),
-    ],
-)
-def test_heuristic_needs_clarification(title, expected_vague):
-    assert ai_clarify.heuristic_needs_clarification(title) is expected_vague
-
-
-def test_merge_clarification_history_concatenates_rounds():
-    merged = ai_clarify.merge_clarification_history(
-        "优化一下",
-        [
-            {"question": "优化什么?", "answer": "webui 加载速度"},
-            {"question": "具体哪个页面?", "answer": "任务列表"},
-        ],
-    )
-    assert "优化一下" in merged
-    assert "webui" in merged
-    assert "任务列表" in merged
-
-
-def test_assess_requirement_skips_ai_when_heuristic_is_happy(monkeypatch):
-    """Concrete requirement should be 'ready' immediately, no AI call."""
-    calls = {"count": 0}
-
-    def _should_not_run(*a, **kw):
-        calls["count"] += 1
-        raise AssertionError("AI should not be consulted for specific requirements")
-
-    monkeypatch.setattr(ai_clarify, "_invoke_clarifier_ai", _should_not_run)
-
-    result = ai_clarify.assess_requirement(
-        "给 webui 加会话历史 sidebar",
-        project_path="",
-    )
-    assert result["status"] == "ready"
-    assert result["source"] == "heuristic"
-    assert calls["count"] == 0
-
-
-def test_assess_requirement_consults_ai_for_broad_non_vague_input(monkeypatch):
-    calls = {"count": 0}
-
-    def _fake_ai(*a, **kw):
-        calls["count"] += 1
-        return {
-            "status": "needs_clarification",
-            "questions": [_q("你希望先覆盖哪些模块?")],
-        }
-
-    monkeypatch.setattr(ai_clarify, "_invoke_clarifier_ai", _fake_ai)
-
-    result = ai_clarify.assess_requirement(
-        "做一个全自动编程工作流智能体",
-        project_path="",
-    )
-    assert result["status"] == "needs_clarification"
-    assert calls["count"] == 1
-
-
-def test_assess_requirement_forces_ready_after_max_turns(monkeypatch):
-    """After max_turns rounds we stop asking and plan with what we have."""
-    monkeypatch.setattr(
-        ai_clarify, "_invoke_clarifier_ai",
-        lambda *a, **kw: {"status": "needs_clarification", "questions": [_q("again?")]},
-    )
-    result = ai_clarify.assess_requirement(
-        "优化一下",
-        qa_history=[
-            {"question": "优化什么?", "answer": "webui"},
-            {"question": "哪个模块?", "answer": "任务列表"},
-            {"question": "指标?", "answer": "首屏 < 1s"},
-        ],
-        max_turns=3,
-    )
-    assert result["status"] == "ready"
-    assert result["source"] == "forced"
-
-
-def test_assess_requirement_relays_ai_questions(monkeypatch):
-    monkeypatch.setattr(
-        ai_clarify, "_invoke_clarifier_ai",
-        lambda *a, **kw: {
-            "status": "needs_clarification",
-            "questions": [_q("优化谁?", qid="scope"), _q("目标指标?", qid="metric")],
-            "reason": "太宽泛",
-        },
-    )
-    result = ai_clarify.assess_requirement("优化一下", project_path="")
-    assert result["status"] == "needs_clarification"
-    assert result["questions"] == [_q("优化谁?", qid="scope"), _q("目标指标?", qid="metric")]
-    assert result["source"] == "ai"
-    assert result["turn"] == 1
-
-
-def test_assess_requirement_falls_back_to_ready_on_ai_error(monkeypatch):
-    def _boom(*a, **kw):
-        raise RuntimeError("no API key")
-
-    monkeypatch.setattr(ai_clarify, "_invoke_clarifier_ai", _boom)
-    result = ai_clarify.assess_requirement("优化一下", project_path="")
-    assert result["status"] == "ready"
-    assert result["source"] == "ai-error"
-
-
-def test_assess_requirement_passes_config_ref_to_gateway(monkeypatch):
-    from codepilot.gateway import service as ai_gateway
-    from codepilot.gateway.service import GatewayResponse
-
-    captured: dict[str, str] = {}
-
-    def _fake_gateway(request):
-        captured["project_path"] = request.project_path
-        captured["config_ref"] = request.config_ref
-        captured["planner"] = request.planner
-        return GatewayResponse(
-            ok=True,
-            source="cli:claude",
-            payload={"status": "ready", "refined_title": "优化 webui 启动"},
-        )
-
-    monkeypatch.setattr(ai_gateway, "call_structured", _fake_gateway)
-
-    result = ai_clarify.assess_requirement(
-        "优化一下",
-        project_path="D:/demo/project",
-        config_ref="D:/demo/config/AGENTS.toml",
-        planner="claude",
-    )
-
-    assert result["status"] == "ready"
-    assert captured["project_path"] == "D:/demo/project"
-    assert captured["config_ref"] == "D:/demo/config/AGENTS.toml"
-    assert captured["planner"] == "claude"
 
 
 # ─── two-stage generate_task_breakdown ─────────────────────────────────────

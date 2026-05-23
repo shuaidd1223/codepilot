@@ -6,7 +6,9 @@ import json
 import re
 from typing import Optional
 
-from codepilot.ai_support.clarification_protocol import normalize_text
+def _normalize_text(text: str) -> str:
+    return " ".join(str(text or "").split())
+
 from codepilot.storage import database as db
 from codepilot.webapp.action_session_history import (
     _compact_session_text,
@@ -17,7 +19,7 @@ from codepilot.webapp.display_sort import sort_sessions_for_display
 
 
 def _session_search_terms(query: str) -> list[str]:
-    normalized = normalize_text(query).lower()
+    normalized = _normalize_text(query).lower()
     return [part for part in re.split(r"\s+", normalized) if part]
 
 
@@ -30,7 +32,7 @@ def _session_match_snippet(text: str, query: str, *, context: int = 64) -> Optio
     if not terms:
         return None
 
-    needle = normalize_text(query).lower()
+    needle = _normalize_text(query).lower()
     index = lowered.find(needle)
     needle_len = len(needle)
     if index < 0:
@@ -94,7 +96,7 @@ def _session_list_item(session: dict, messages: list[dict]) -> dict:
 def list_sessions_action(project: str = "", query: str = "", limit: int = 50) -> dict:
     db.init_db()
     sessions = sort_sessions_for_display(db.list_sessions(project=project or None, status="active"))
-    query = normalize_text(query)
+    query = _normalize_text(query)
     try:
         limit = max(1, min(int(limit or 50), 200))
     except (TypeError, ValueError):

@@ -52,5 +52,5 @@
 ### 重要约束
 - 不要在 `AGENTS.toml` 中配置 `codex_cmd` / `claude_cmd`（旧格式已废弃）
 - 不要把 OpenCode 品牌/TUI/agent/commands 这类工具级定制写到业务项目配置；运行时文件属于用户级 `~/.codepilot/opencode/<项目标识>/`
-- `chat`、Web UI 会话和飞书自由文本统一走 OpenCode + CodePilot MCP；需要结构化产物时显式调用 `clarify` / `plan` 或对应 MCP 工具
+- `chat`、Web UI 会话和飞书自由文本统一走 OpenCode + CodePilot MCP；需要结构化产物时显式调用 `plan` 或对应 MCP 工具
 - 外部任务投递必须使用 `codepilot add -f` 并符合 `codepilot ai template --format json` 格式

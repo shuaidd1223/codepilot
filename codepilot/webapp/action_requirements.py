@@ -11,22 +11,13 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from codepilot.storage import database as db
-from codepilot.ai_support.clarification_protocol import (
-    build_clarification_input_summary,
-    normalize_clarification_history,
-    normalize_clarification_questions,
-    normalize_text,
-    render_clarification_questions,
-)
 from codepilot.commands.auto import normalize_requirement_text
 from codepilot.core.workflow_state import (
     filter_consumed_workflow_next_actions,
     mark_workflow_actions_consumed,
 )
 from codepilot.ai_support.interaction_controller import (
-    ClarificationTransition,
     build_workflow_session_record,
-    interpret_clarification_outcome,
     parse_intent_prefix,
     resolve_turn_intent,
 )
@@ -56,10 +47,6 @@ def _actions():
     if module is None:
         from codepilot.webapp import actions as module
     return module
-
-
-def _format_numbered_questions(questions: list[dict]) -> str:
-    return render_clarification_questions(questions)
 
 
 def _answer_project_question(project_info: dict, question: str, *, gateway_options=None, history: Optional[list[dict]] = None) -> str:
@@ -159,11 +146,7 @@ class _GoalDispatchContext:
     project_info: dict
     planner: str
     text: str
-    clarify_answers: Optional[list[dict]]
-    clarify_questions: Optional[list[dict]]
     category: str
-    qa_history: Optional[list[dict]]
-    original_title: str
     gateway_options: object
     forced_intent: Optional[str]
 
@@ -185,131 +168,6 @@ class _RequirementJobContext:
     auto_commit: bool
     max_retries: int
     task_source: str
-
-
-def _dispatch_with_intent_handlers(
-    intent: str,
-    *,
-    handlers: dict[str, Callable[[], dict]],
-    fallback: Callable[[], dict],
-) -> dict:
-    handler = handlers.get(intent)
-    if handler is None:
-        return fallback()
-    return handler()
-
-
-def _assess_requirement(
-    text: str,
-    *,
-    project_info: dict,
-    planner: str,
-    qa_history: Optional[list[dict]] = None,
-    original_title: str = "",
-    clarify_answers: Optional[list[dict]] = None,
-    last_questions: Optional[list[dict]] = None,
-) -> dict:
-    actions = _actions()
-    return actions.assess_requirement_for_planning(
-        text,
-        project_info=project_info,
-        planner=planner,
-        qa_history=qa_history,
-        original_title=original_title,
-        last_questions=last_questions,
-        clarify_answers=clarify_answers,
-        clarify_fn=actions.clarify_requirement,
-    )
-
-
-def _raise_clarification_error(outcome: dict | ClarificationTransition) -> None:
-    if isinstance(outcome, ClarificationTransition):
-        if outcome.status == "interrupt":
-            raise RuntimeError("澄清流程已中断，请重新发起需求。")
-        raise RuntimeError(outcome.message or "澄清评估失败。")
-    if outcome.get("error_kind") == "interrupt":
-        raise RuntimeError("澄清流程已中断，请重新发起需求。")
-    raise RuntimeError(outcome.get("message") or "澄清评估失败。")
-
-
-def _assess_or_continue_requirement(
-    text: str,
-    *,
-    project_info: dict,
-    planner: str,
-    qa_history: Optional[list[dict]] = None,
-    original_title: str = "",
-    clarify_answers: Optional[list[dict]] = None,
-    last_questions: Optional[list[dict]] = None,
-    intent: str = "requirement",
-) -> dict:
-    normalized_original = normalize_requirement_text(original_title)
-    if not normalized_original:
-        return _assess_requirement(
-            text,
-            project_info=project_info,
-            planner=planner,
-            qa_history=qa_history,
-            original_title="",
-            clarify_answers=clarify_answers,
-            last_questions=last_questions,
-        )
-
-    actions = _actions()
-    pending_state = actions.build_clarification_state(
-        original_title=normalized_original,
-        qa_history=qa_history,
-        last_questions=last_questions,
-        intent=intent,
-    )
-    outcome = actions.continue_pending_clarification(
-        pending_state,
-        answer=text,
-        clarify_answers=clarify_answers,
-        project_info=project_info,
-        planner=planner,
-        intent=intent,
-        clarify_fn=actions.clarify_requirement,
-    )
-    transition = interpret_clarification_outcome(
-        outcome,
-        pending_state=pending_state,
-        fallback_title=normalized_original,
-        normalize_text=normalize_requirement_text,
-    )
-    if transition.status in {"interrupt", "error"}:
-        _raise_clarification_error(transition)
-    if transition.status == "needs_clarification":
-        next_state = transition.pending_state or pending_state
-        return {
-            "status": "needs_clarification",
-            "questions": list(transition.questions) or next_state.get("last_questions") or [],
-            "seed_title": next_state.get("original_title") or normalized_original,
-            "qa_history": next_state.get("qa_history") or [],
-        }
-
-    refined = transition.refined_title or normalized_original
-    assessment = outcome.get("assessment") or {}
-    return {
-        "status": "ready",
-        "refined_title": refined,
-        "seed_title": assessment.get("seed_title") or normalized_original,
-        "qa_history": assessment.get("qa_history") or pending_state.get("qa_history") or [],
-    }
-
-
-def _goal_clarify_payload(*, seed_title: str, questions: list[dict], qa_history: Optional[list[dict]] = None) -> dict:
-    return {
-        "ok": True,
-        "intent": "clarify",
-        "questions": questions,
-        "original_title": seed_title,
-        "qa_history": qa_history or [],
-        "message": "为了更好地规划，请先回答几个问题。",
-        "workflow_session": build_workflow_session_record(
-            phase="clarify", intent="requirement", next_action="clarify",
-        ),
-    }
 
 
 def retry_task_action(task_id: int) -> dict:
@@ -700,11 +558,6 @@ def submit_requirement_action(
     auto_commit: bool = False,
     max_retries: int = 3,
     run_async: bool = True,
-    qa_history: Optional[list[dict]] = None,
-    original_title: str = "",
-    clarify_answers: Optional[list[dict]] = None,
-    clarify_questions: Optional[list[dict]] = None,
-    clarify: bool = True,
     task_source: str = "user",
 ) -> dict:
     shell = _shell()
@@ -713,41 +566,12 @@ def submit_requirement_action(
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
     normalized_title = normalize_requirement_text(title)
-    normalized_clarify_answers = clarify_answers if isinstance(clarify_answers, list) else []
-    normalized_clarify_questions = normalize_clarification_questions(clarify_questions)
-    if not normalized_title and normalized_clarify_answers:
-        normalized_title = build_clarification_input_summary(
-            normalized_clarify_questions,
-            raw_answers=normalized_clarify_answers,
-        )
     if not normalized_title:
         raise RuntimeError("需求文本不能为空。")
     normalized_priority = (priority or "P2").upper()
     if normalized_priority not in {"P0", "P1", "P2", "P3"}:
         raise RuntimeError("优先级只支持 P0 / P1 / P2 / P3。")
     effective_planner = _effective_planner(project_info, planner)
-
-    if clarify:
-        assessment = _assess_or_continue_requirement(
-            normalized_title,
-            project_info=project_info,
-            planner=effective_planner,
-            qa_history=normalize_clarification_history(qa_history),
-            original_title=original_title,
-            clarify_answers=normalized_clarify_answers,
-            last_questions=normalized_clarify_questions,
-            intent="requirement",
-        )
-        seed_title = assessment.get("seed_title") or normalized_title
-        if assessment.get("status") == "needs_clarification":
-            questions = assessment.get("questions") or []
-            _append_event(f"需求需要澄清：{seed_title[:60]}", project=project)
-            return _goal_clarify_payload(
-                seed_title=seed_title,
-                questions=questions,
-                qa_history=assessment.get("qa_history") or [],
-            )
-        normalized_title = assessment.get("refined_title") or seed_title
 
     job_id = _next_job_id()
     with shell._UI_LOCK:
@@ -878,26 +702,7 @@ def _dispatch_goal_question(ctx: _GoalDispatchContext) -> dict:
 
 
 def _dispatch_goal_requirement(ctx: _GoalDispatchContext, *, intent: str) -> dict:
-    assessment = _assess_or_continue_requirement(
-        ctx.text,
-        project_info=ctx.project_info,
-        planner=ctx.planner,
-        qa_history=ctx.qa_history,
-        original_title=ctx.original_title,
-        clarify_answers=ctx.clarify_answers,
-        last_questions=ctx.clarify_questions,
-        intent=intent,
-    )
-    seed_title = assessment.get("seed_title") or ctx.text
-    if assessment.get("status") == "needs_clarification":
-        _append_event(f"需求需要澄清：{seed_title[:60]}", project=ctx.project)
-        return _goal_clarify_payload(
-            seed_title=seed_title,
-            questions=assessment.get("questions") or [],
-            qa_history=assessment.get("qa_history") or [],
-        )
-
-    refined = assessment.get("refined_title") or seed_title
+    refined = ctx.text
     max_tasks = 1 if intent == "task" else 5
     result, _, _ = _submit_requirement_from_message(
         ctx.project,
@@ -935,7 +740,7 @@ def _resolve_goal_intent(ctx: _GoalDispatchContext) -> str:
     return resolve_turn_intent(
         ctx.text,
         category=ctx.category,
-        forced_intent=ctx.forced_intent or ("requirement" if ctx.original_title else None),
+        forced_intent=ctx.forced_intent,
         classify_fn=actions.classify_entry_intent,
         classify_kwargs={
             "project_info": ctx.project_info,
@@ -950,44 +755,21 @@ def _dispatch_goal_by_intent(ctx: _GoalDispatchContext) -> dict:
     intent = _resolve_goal_intent(ctx)
     if ctx.category == "auto" and not ctx.forced_intent and intent in {"requirement", "task"}:
         return _requirement_confirmation_payload(intent)
-    return _dispatch_with_intent_handlers(
-        intent,
-        handlers={
-            "command": lambda: _dispatch_goal_command(ctx),
-            "question": lambda: _dispatch_goal_question(ctx),
-        },
-        fallback=lambda: _dispatch_goal_requirement(ctx, intent=intent),
-    )
+    if intent == "command":
+        return _dispatch_goal_command(ctx)
+    if intent == "question":
+        return _dispatch_goal_question(ctx)
+    return _dispatch_goal_requirement(ctx, intent=intent)
 
 
 def artifact_next_actions_for_type(artifact_type: str) -> list[dict]:
     """Return the predefined next actions available for a given artifact type.
 
-    These describe the recommended follow-up steps after a clarify or plan
+    These describe the recommended follow-up steps after a plan
     artifact has been created.  The actual ``suggested_command`` templates
     should be resolved against the real artifact path before use.
     """
     _defs: dict[str, list[dict]] = {
-        "clarify": [
-            {
-                "id": "plan_from_spec",
-                "label": "根据当前 clarify spec 生成执行计划",
-                "risk": "low",
-                "suggested_command": "codepilot plan -p {project} --from-spec {artifact_path} --json",
-            },
-            {
-                "id": "submit_requirement",
-                "label": "提交为需求并创建 backlog 任务",
-                "risk": "medium",
-                "suggested_command": 'codepilot go "{summary}" -p {project} --json',
-            },
-            {
-                "id": "continue_clarify",
-                "label": "继续澄清，补充更多细节",
-                "risk": "low",
-                "suggested_command": 'codepilot clarify -p {project} "补充：..." --json',
-            },
-        ],
         "plan": [
             {
                 "id": "import_tasks",
@@ -1189,41 +971,26 @@ def submit_goal_action(
     text: str,
     *,
     category: str = "auto",
-    qa_history: Optional[list[dict]] = None,
-    original_title: str = "",
-    clarify_answers: Optional[list[dict]] = None,
-    clarify_questions: Optional[list[dict]] = None,
 ) -> dict:
     """POST /api/goal — validate payload then delegate to intent handlers."""
     db.init_db()
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
-    text = normalize_text(text)
-    normalized_clarify_answers = clarify_answers if isinstance(clarify_answers, list) else []
-    normalized_clarify_questions = normalize_clarification_questions(clarify_questions)
-    if not text and normalized_clarify_answers:
-        text = build_clarification_input_summary(
-            normalized_clarify_questions,
-            raw_answers=normalized_clarify_answers,
-        )
+    text = normalize_requirement_text(text)
     if not text:
         raise RuntimeError("输入不能为空。")
     if len(text.encode("utf-8")) > _GOAL_MAX_BYTES:
         raise RuntimeError(f"输入超过 {_GOAL_MAX_BYTES // 1024}KB 限制。")
     forced_intent, payload_text = parse_intent_prefix(text)
-    text = normalize_text(payload_text if forced_intent else text)
+    text = normalize_requirement_text(payload_text if forced_intent else text)
 
     ctx = _GoalDispatchContext(
         project=project,
         project_info=project_info,
         planner=_effective_planner(project_info),
         text=text,
-        clarify_answers=normalized_clarify_answers,
-        clarify_questions=normalized_clarify_questions,
         category=_normalize_goal_category(category),
-        qa_history=normalize_clarification_history(qa_history),
-        original_title=original_title,
         gateway_options=_actions().resolve_shared_gateway_options(project_info),
         forced_intent=forced_intent,
     )
