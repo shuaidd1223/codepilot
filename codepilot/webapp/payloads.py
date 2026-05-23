@@ -19,9 +19,6 @@ from codepilot.core.workflow_state import filter_consumed_workflow_next_actions
 from codepilot.webapp.display_sort import TASK_STATUS_ORDER, sort_tasks_for_display
 from codepilot.core.runtime import runtime_summary
 from codepilot.core.config import resolve_project_config_reference
-from codepilot.webapp.live_output_payloads import (
-    normalize_legacy_live_output_markdown as _normalize_legacy_live_output_markdown,
-)
 from codepilot.webapp.task_payloads import (
     _compose_log_text,
     _parse_depends,

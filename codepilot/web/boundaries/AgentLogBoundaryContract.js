@@ -23,33 +23,21 @@ CP.AgentLogBoundaryContract = CP.AgentLogBoundaryContract || (() => {
       : _escapeHtml(text).replace(/\n/g, '<br>'));
   }
 
-  function _defaultParseMarkdownBlocks(raw, renderBlockMarkdown, lineCount) {
+  function _defaultParseMarkdownBlocks(raw, renderBlockMarkdown) {
     const text = String(raw || '');
     if (!text) return [];
     const render = typeof renderBlockMarkdown === 'function'
       ? renderBlockMarkdown
       : (chunk) => _defaultRenderMarkdown(null, chunk);
-    const lines = Number.isFinite(lineCount) ? lineCount : text.split(/\r?\n/).length;
+    const lines = text.split(/\r?\n/).length;
     return [{
       type: 'markdown',
       key: `md:0:0:${text.length}`,
       raw: text,
       lineCount: lines,
       html: render(text),
-      section: 'other',
     }];
   }
-
-  function _defaultScheduleEnhance(vm, onEnhance) {
-    if (!vm || typeof onEnhance !== 'function') return;
-    if (vm._enhanceRaf) return;
-    vm._enhanceRaf = requestAnimationFrame(() => {
-      vm._enhanceRaf = 0;
-      onEnhance();
-    });
-  }
-
-  function _defaultEnhanceCodeBlocks(_root) {}
 
   function _defaultFindSearchMatches(blocks, query) {
     const q = String(query || '').trim().toLowerCase();
@@ -85,7 +73,6 @@ CP.AgentLogBoundaryContract = CP.AgentLogBoundaryContract || (() => {
     vm.$nextTick(() => {
       if (!vm.textLength) vm.unreadLines = 0;
       if (vm.followEnabled && vm.stickToBottom) vm._scrollToBottom();
-      vm._scheduleEnhance();
     });
   }
 
@@ -184,8 +171,6 @@ CP.AgentLogBoundaryContract = CP.AgentLogBoundaryContract || (() => {
       createMarkdownCache: _pick(renderBoundary.createMarkdownCache, _defaultCreateMarkdownCache),
       renderMarkdown: _pick(renderBoundary.renderMarkdown, _defaultRenderMarkdown),
       parseMarkdownBlocks: _pick(renderBoundary.parseMarkdownBlocks, _defaultParseMarkdownBlocks),
-      scheduleEnhance: _pick(renderBoundary.scheduleEnhance, _defaultScheduleEnhance),
-      enhanceCodeBlocks: _pick(renderBoundary.enhanceCodeBlocks, _defaultEnhanceCodeBlocks),
     });
 
     const interaction = Object.freeze({

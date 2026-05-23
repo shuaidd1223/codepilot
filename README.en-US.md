@@ -71,23 +71,20 @@ codepilot status -p <project-name> -v
 codepilot hud -p <project-name> --preset full
 ```
 
-`chat`, Web UI sessions, and Feishu free text all route through OpenCode + CodePilot MCP. Use natural language for questions, requirements, or task operations. Use `clarify` / `plan` / Web UI panels when a deterministic spec or plan artifact is needed.
+`chat`, Web UI sessions, and Feishu free text all route through OpenCode + CodePilot MCP. Use natural language for questions, requirements, or task operations. Use `plan` / Web UI panels when a deterministic plan artifact is needed.
 
 ## Typical Workflows
 
 ### Requirement → Task → Execution
 
 ```bash
-# 1. Clarify vague requirements
-codepilot clarify -p myproject "support phone OTP login" --json
-
-# 2. Generate execution plan
+# 1. Generate execution plan
 codepilot plan -p myproject "implement phone OTP login" --json
 
-# 3. Auto-execute (code + test + review)
+# 2. Auto-execute (code + test + review)
 codepilot auto -p myproject -t "implement phone OTP login"
 
-# 4. Check execution results
+# 3. Check execution results
 codepilot task show <task_id>
 codepilot task logs <task_id> --tail 50
 ```
@@ -135,7 +132,6 @@ workflow_auto_failure_threshold = 1
 ```bash
 codepilot init .
 codepilot setup . --dry-run --json
-codepilot clarify -p <project-name> "vague requirement" --json
 codepilot plan -p <project-name> "clear requirement" --json
 codepilot auto -p <project-name> -t "high-level goal" --plan-only
 ```
@@ -258,7 +254,7 @@ CodePilot covers the full lifecycle of local engineering workflows across 7 core
 
 | Scenario | Description | Primary Entrypoints |
 | --- | --- | --- |
-| **Requirements → Tasks** | Clarify vague requirements into structured specs, split into executable tasks, auto-plan and execute one by one | `codepilot go "..."`, `codepilot clarify`, `codepilot plan` |
+| **Requirements → Tasks** | Turn vague requirements into executable tasks, auto-plan and execute one by one | `codepilot go "..."`, `codepilot plan` |
 | **Review Loop** | Dual-phase agent collaboration — builder implements, reviewer inspects; FAIL sends the task back to builder for repair, up to `max_review_rounds` | `codepilot auto`, `codepilot build-fix` |
 | **Project Inspection** | Multi-dimensional signal collection: code scale & complexity, dependency health, TODO markers, failed tasks, git activity; produces reviewable candidate reports with workflow context writeback | `codepilot inspect --once`, `codepilot doctor` |
 | **Multi-Channel** | CLI text mode, Web UI dashboard, Feishu/Lark bot bidirectional interaction, Webhook HTTP callbacks | `codepilot ui start`, `codepilot feishu start`, `codepilot webhook` |
@@ -278,7 +274,6 @@ codepilot/
 │   ├── auto_workflow.py       #   Natural-language workflow: project resolution → intent → plan → execute
 │   ├── auto_workflow_planning.py # Planner dispatch (two-stage recon + breakdown)
 │   ├── auto_project_resolution.py # Project resolution (by name / path / CWD auto-discovery)
-│   ├── clarify.py             #   Requirement clarification (vague → structured spec)
 │   ├── plan.py                #   Execution plan generation (spec → task breakdown → acceptance criteria)
 │   ├── run.py                 #   Task execution entry (CLI command + shared helpers)
 │   ├── run_orchestrator.py    #   Queue orchestration (context resolution, workspace prep, executor dispatch)
@@ -369,8 +364,6 @@ codepilot/
 │   ├── planner_context.py     #   Planner context construction (project metadata / file tree / spec summary)
 │   ├── planner_execution.py   #   Planner execution dispatch (schema-prompt / CLI fallback)
 │   ├── planner_parse.py       #   Plan result parsing (JSON schema → task dict)
-│   ├── clarification_protocol.py # Requirement clarification protocol (multi-round Q&A → spec)
-│   ├── clarify.py             #   Clarification flow implementation
 │   ├── main_execute.py        #   Main execution pipeline (plan → task creation → execution dispatch)
 │   ├── main_resolution.py     #   Main resolution pipeline (requirement → agent → config → executor)
 │   ├── interaction_controller.py # Interaction controller (chat session lifecycle)
@@ -497,7 +490,7 @@ codepilot/
 ├── claude/                    # Claude Code session persistence (JSON file storage)
 ├── mcp/launchers/             # MCP launchers (OpenCode MCP config)
 ├── templates/                 # Task template markdown (builder / reviewer / repl default prompts)
-├── prompts/                   # Prompt templates (planner / clarifier / classifier system prompts)
+├── prompts/                   # Prompt templates (planner / classifier system prompts)
 └── nl_command_router.py       # Natural-language command router (Chinese / English keyword → structured command)
 ```
 
@@ -516,10 +509,10 @@ codepilot/
 │                     / command / inspection           │
 └──────────────────────┬──────────────────────────────┘
                        │
-        ┌──────────────┼──────────────┐
+        ┌──────────────┴──────────────┐
         ▼              ▼              ▼
-   clarify          plan           auto
-   (vague→spec)    (spec→tasks)   (end-to-end)
+       plan           auto           go
+   (spec→tasks)   (end-to-end)  (natural lang)
         │              │              │
         └──────────────┼──────────────┘
                        │
@@ -584,7 +577,7 @@ codepilot/
 
 - **Dual-Phase Agent Loop** (`run_builtin_executor.py`): Every task goes through builder (implements) then reviewer (inspects). The reviewer outputs a structured PASS/FAIL verdict; on FAIL the builder receives reviewer feedback and retries, up to `max_review_rounds`. Exceeding the limit triggers the deterministic failure triage pipeline.
 - **Failure Triage Pipeline** (`run_failure_triage*.py`): On task failure, the system collects evidence (exit code, stderr, agent output, task context), a classifier determines the action (retry_with_hint / replan / discard / merge_partial), and the repair is auto-executed after LLM prompt construction.
-- **Workflow State Machine** (`core/workflow_state.py`): Project-level mode state manages clarify → plan → execute phase transitions. Each phase produces structured artifacts (spec, plan, context) persisted as atomic JSON files under `.codepilot/state/`, enabling pause-and-resume.
+- **Workflow State Machine** (`core/workflow_state.py`): Project-level mode state manages plan → execute phase transitions. Each phase produces structured artifacts (plan, context) persisted as atomic JSON files under `.codepilot/state/`, enabling pause-and-resume.
 - **Memory System** (`core/memory.py`): Append-only factual event log → deduplicated candidate generation → feedback scoring (positive/negative/neutral) → merged seen_count → auto-captured as `autocapture.md`. Event sources cover task state changes, workflow action execution, inspection report feedback, and more.
 - **MCP Tool Three-Layer Architecture**: Task tools (protected by `task_mutation_guard` state machine) → Context tools (read-only, no file mutation) → External integration tools (bridge Feishu/Webhook). Each layer has independent audit and security policies.
 - **Agent Family Fallback Chain**: `fallback_cli_order` defines CLI agent priority. When one agent is unavailable (not installed / no key / timeout), the system automatically switches to the next. During dual-phase execution, if the builder's agent fails, the system attempts to swap builder/reviewer agents or fall back to another available family.

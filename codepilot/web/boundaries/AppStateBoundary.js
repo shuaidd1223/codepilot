@@ -24,6 +24,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       activeProjectSessionId: null,
 
       taskLog: { taskId: null, text: '', nextOffset: 0, size: 0, done: true, loading: false },
+      taskRunStatus: null,
 
       autoRefresh: true, timer: null,
       loading: false, sending: false, newSessionLoading: false,
@@ -467,6 +468,10 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       return ensureTaskDetailBoundary().handleTaskLogStreamEvent(event);
     }
 
+    function handleTaskRunStatusEvent(event) {
+      return ensureTaskDetailBoundary().handleTaskRunStatusEvent(event);
+    }
+
     async function loadTaskLog(taskId, options = {}) {
       return ensureTaskDetailBoundary().loadTaskLog(taskId, options);
     }
@@ -828,6 +833,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       const qs = state.nav.project ? `?project=${encodeURIComponent(state.nav.project)}` : '';
       sseHandle = CP.sse.open(`/api/events/stream${qs}`, (event) => {
         if (handleTaskLogStreamEvent(event)) return;
+        if (handleTaskRunStatusEvent(event)) return;
         if (event && event.stage === 'daemon-health' && event.extra) {
           state.daemonHealth = event.extra;
           return;

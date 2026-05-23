@@ -618,8 +618,6 @@ def test_agent_log_contract_exposes_stable_adapter_surface():
         "createMarkdownCache:",
         "renderMarkdown:",
         "parseMarkdownBlocks:",
-        "scheduleEnhance:",
-        "enhanceCodeBlocks:",
         "findSearchMatches:",
         "searchSummary:",
         "linesLabel:",

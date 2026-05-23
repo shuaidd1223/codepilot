@@ -23,7 +23,7 @@ codepilot chat -p <project> -a opencode
 
 Use `codepilot "<requirement>"` or `codepilot go "<requirement>"` for one-shot requirement intake. `go` can also answer project and task status questions.
 
-In `chat`, Web UI sessions, and Feishu free text, CodePilot routes free text into OpenCode + CodePilot MCP. Use plain natural language, or explicitly call `clarify` / `plan` / MCP tools when a deterministic artifact is required:
+In `chat`, Web UI sessions, and Feishu free text, CodePilot routes free text into OpenCode + CodePilot MCP. Use plain natural language, or explicitly call `plan` / MCP tools when a deterministic artifact is required:
 
 ```text
 What is the current project status?
@@ -33,16 +33,13 @@ Before retrying failed task 12, list the risk and ask for confirmation if needed
 
 CodePilot-launched OpenCode is isolated from a user's native OpenCode install. Generated config, TUI plugin files, session data, and project model selection live under `~/.codepilot/opencode/<project-scope>/`.
 
-## 3. Clarification, Planning, And Read-Only Evidence
+## 3. Planning And Read-Only Evidence
 
 ```bash
-codepilot clarify -p <project> "ambiguous requirement" --json
 codepilot plan -p <project> "clear requirement" --json
-codepilot plan -p <project> --from-spec <spec_path> --json
 codepilot explore -p <project> --prompt "question or search terms" --json
 ```
 
-- `clarify` writes a requirement spec artifact and does not create backlog.
 - `plan` writes a reviewable plan artifact and does not start execution.
 - `explore` is read-only and returns evidence, sources, and limitations.
 

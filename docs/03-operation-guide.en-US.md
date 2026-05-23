@@ -34,10 +34,9 @@ codepilot chat -p <project-name> -a opencode
 
 OpenCode receives a CodePilot-managed runtime profile with MCP tools, commands, permissions, model/provider settings, and language instructions.
 
-## 2. Clarification, Planning, And Read-Only Evidence
+## 2. Planning And Read-Only Evidence
 
 ```bash
-codepilot clarify -p <project-name> "vague requirement" --json
 codepilot plan -p <project-name> "clear requirement" --json
 codepilot explore -p <project-name> --prompt "question to investigate" --json
 codepilot wiki query -p <project-name> "build" --json
@@ -46,7 +45,7 @@ codepilot memory events -p <project-name> --json
 codepilot trace -p <project-name> --limit 30 --json
 ```
 
-`clarify` and `plan` create reviewable artifacts without creating backlog tasks or running code. `explore` is read-only: it does not write files, modify Git, start services, install dependencies, or run tests.
+`plan` creates reviewable artifacts without creating backlog tasks or running code. `explore` is read-only: it does not write files, modify Git, start services, install dependencies, or run tests.
 
 `memory events` reads the project-local automatic observation log at `.codepilot/memory/events.jsonl`. CodePilot automatically turns these facts into deduplicated candidates and maintains `.codepilot/memory/autocapture.md`; candidates record `score`, `feedback`, and `seen_count`, with workflow actions and terminal task outcomes automatically adjusting weight. It does not directly write human-maintained long-term wiki/note content.
 

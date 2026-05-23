@@ -16,7 +16,7 @@
 6. 任务运维统一使用 `codepilot task ...`。
 7. 发布统一使用 `codepilot binary ...`。
 8. 外部 AI 直接投递任务前必须读取 `codepilot ai template --format json`。
-9. 需要规格或计划 artifact 时显式调用 `clarify` / `plan`。
+9. 需要计划 artifact 时显式调用 `plan`。
 
 ## 推荐命令
 
@@ -35,10 +35,9 @@ codepilot "修复任务重试逻辑并补测试"
 codepilot go "修复任务重试逻辑并补测试" -p <项目名>
 ```
 
-### 3. 澄清和计划
+### 3. 计划与安全推进
 
 ```bash
-codepilot clarify -p <项目名> "模糊需求" --json
 codepilot plan -p <项目名> "明确需求" --json
 codepilot plan -p <项目名> --from-spec .codepilot/specs/example.md --json
 codepilot inspect -p <项目名> --once --dry-run --write-workflow --json
@@ -48,9 +47,9 @@ codepilot workflow next -p <项目名> --action <id> --json
 codepilot workflow next -p <项目名> --auto --json
 ```
 
-`clarify`、`plan` 和 `inspect --write-workflow` 不创建 backlog、不启动执行器。
+`plan` 和 `inspect --write-workflow` 不创建 backlog、不启动执行器。
 
-`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；也可以用 `workflow next --auto` 让 CodePilot 自动选择低风险策略动作。`suggested_command` 只用于展示/审查，不作为自动执行源。默认 `--auto` 不创建 inspect 任务、不导入 plan 任务；项目可通过 `[automation] workflow_auto_create_inspect_tasks`、`workflow_auto_import_plan_tasks`、`workflow_auto_max_steps` 和 `workflow_auto_failure_threshold` 放开策略。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
+`plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；也可以用 `workflow next --auto` 让 CodePilot 自动选择低风险策略动作。`suggested_command` 只用于展示/审查，不作为自动执行源。默认 `--auto` 不创建 inspect 任务、不导入 plan 任务；项目可通过 `[automation] workflow_auto_create_inspect_tasks`、`workflow_auto_import_plan_tasks`、`workflow_auto_max_steps` 和 `workflow_auto_failure_threshold` 放开策略。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
 
 ### 4. 状态与证据
 

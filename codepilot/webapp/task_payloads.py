@@ -8,7 +8,6 @@ from pathlib import Path
 from codepilot.commands.reviewer_output import parse_reviewer_output
 from codepilot.core.runtime import runtime_summary
 from codepilot.storage import database as db
-from codepilot.webapp.live_output_payloads import normalize_legacy_live_output_markdown
 
 
 def _tail_text(text: str, *, max_lines: int = 160, max_chars: int = 20000) -> str:
@@ -105,19 +104,6 @@ def task_log_delta(task_id: int, *, offset: int = 0) -> dict:
     target = Path(path_str)
     if not target.exists():
         return out
-
-    # Legacy runs may still contain raw protocol under one ``~~~text`` fence
-    # (no markdown sections inside Live Output). For completed tasks we can
-    # safely normalize in-place so both API polling and direct file viewing
-    # become markdown-native.
-    try:
-        if str(task.get("status") or "") != "in_progress":
-            raw_full = target.read_text(encoding="utf-8", errors="replace")
-            normalized = normalize_legacy_live_output_markdown(raw_full)
-            if normalized != raw_full:
-                target.write_text(normalized, encoding="utf-8")
-    except Exception:
-        pass
 
     try:
         size = target.stat().st_size

@@ -1,6 +1,6 @@
 ---
 name: codepilot-workflow
-description: "Use this skill when an AI agent needs to run CodePilot as a local engineering workflow orchestrator: answer project/task/service questions from local data, clarify requirements, create plans, convert explicit requirements into tasks, inspect status and logs, operate daemon/inspect/ui/feishu/webhook/event/hook/provider services, manage local skill catalog entries, and prepare binary releases. Trigger for requirement intake, project status questions, task retry/stop/show/logs, queue execution, read-only exploration, wiki/note/trace use, Feishu or webhook integration, AI manifest/template usage, and release packaging/verification."
+description: "Use this skill when an AI agent needs to run CodePilot as a local engineering workflow orchestrator: answer project/task/service questions from local data, create plans, convert explicit requirements into tasks, inspect status and logs, operate daemon/inspect/ui/feishu/webhook/event/hook/provider services, manage local skill catalog entries, and prepare binary releases. Trigger for requirement intake, project status questions, task retry/stop/show/logs, queue execution, read-only exploration, wiki/note/trace use, Feishu or webhook integration, AI manifest/template usage, and release packaging/verification."
 author: "帅呆呆 <2264505396@qq.com>"
 repository: "https://gitee.com/shuai_dd/workflow"
 license: "MIT"
@@ -14,7 +14,7 @@ license: "MIT"
 
 Use non-interactive commands by default.
 
-1. Classify the request as a question, clarification/plan, explicit work creation, task operation, service operation, or release flow.
+1. Classify the request as a question, plan, explicit work creation, task operation, service operation, or release flow.
 2. Prefer JSON output for machine reasoning.
 3. Use read-only commands before planning when evidence is needed.
 4. Operate tasks only through `codepilot task ...`.
@@ -51,15 +51,13 @@ codepilot note show -p <project> --json
 
 `explore` is read-only. It must not be used to modify files, run tests, start services, install dependencies, or mutate Git state.
 
-### 3) Clarify Or Plan Before Creating Work
+### 3) Plan Before Creating Work
 
 ```bash
-codepilot clarify -p <project> "ambiguous requirement" --json
 codepilot plan -p <project> "clear requirement" --json
-codepilot plan -p <project> --from-spec <spec_path> --json
 ```
 
-`clarify` and `plan` produce artifacts only. They do not create backlog items or start executors.
+`plan` produces artifacts only. It does not create backlog items or start executors.
 
 ### 4) Create Explicit Work
 
@@ -70,7 +68,7 @@ codepilot "<requirement>"
 codepilot go "<requirement>" -p <project>
 ```
 
-In `chat`, Web UI sessions, and Feishu free text, CodePilot routes free text into OpenCode + CodePilot MCP. Use plain natural language and let the OpenCode session call CodePilot tools, or call `clarify` / `plan` / structured MCP tools explicitly when an artifact is required.
+In `chat`, Web UI sessions, and Feishu free text, CodePilot routes free text into OpenCode + CodePilot MCP. Use plain natural language and let the OpenCode session call CodePilot tools, or call `plan` / structured MCP tools explicitly when an artifact is required.
 
 ```text
 What is the current project status?

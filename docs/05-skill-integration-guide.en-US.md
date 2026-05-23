@@ -44,7 +44,7 @@ Use this Skill when an AI agent needs to:
 
 - Inspect CodePilot project/task/service status.
 - Submit a natural-language requirement to CodePilot.
-- Clarify or plan a requirement before execution.
+- Plan a requirement before execution.
 - Retry, stop, resume, or inspect tasks.
 - Debug failed tasks through `build-fix`.
 - Use Web UI, Feishu, webhook, event, hook, provider, or skill integration commands.
@@ -61,10 +61,9 @@ codepilot task show <task_id>
 codepilot task logs <task_id> --tail 80
 ```
 
-### 4.2 Clarify Then Plan
+### 4.2 Plan Before Executing
 
 ```bash
-codepilot clarify -p <project-name> "vague requirement" --json
 codepilot plan -p <project-name> --from-spec .codepilot/specs/<file>.md --json
 ```
 

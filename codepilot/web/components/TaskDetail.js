@@ -46,6 +46,40 @@ CP.Components.TaskDetail = Vue.defineComponent({
       const t = this.task;
       return `${(t && t.agent) || 'agent'} · ${this.logFileName}`;
     },
+    runStatus() {
+      return this.s.taskRunStatus || {};
+    },
+    runElapsedSeconds() {
+      const task = this.task;
+      if (!task || !task.started_at || !(task.status === 'in_progress')) return 0;
+      const now = Date.now();
+      const start = new Date(task.started_at).getTime();
+      return Math.max(0, Math.floor((now - start) / 1000));
+    },
+    runIdleSeconds() {
+      const rs = this.runStatus;
+      if (rs && rs.task_id === this.task && this.task.id) {
+        return Number.isFinite(rs.silent_seconds) ? rs.silent_seconds : 0;
+      }
+      return 0;
+    },
+    isRunIdle() {
+      return this.runIdleSeconds >= 3;
+    },
+    runElapsedLabel() {
+      const s = this.runElapsedSeconds;
+      if (!s) return '';
+      if (s < 60) return `${s}s`;
+      if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      return `${h}h ${m}m`;
+    },
+    runStatusLabel() {
+      if (!this.task || this.task.status !== 'in_progress') return '';
+      if (this.isRunIdle) return '等待模型响应...';
+      return '运行中';
+    },
     canSplit() {
       const t = this.task;
       if (!t) return false;
@@ -223,6 +257,13 @@ CP.Components.TaskDetail = Vue.defineComponent({
             <div class="block-label">任务说明</div>
             <cp-markdown :text="taskContentText"></cp-markdown>
           </div>
+          <div v-if="task.status === 'in_progress'" class="task-run-status">
+            <span class="task-run-status-label">{{ runStatusLabel }}</span>
+            <span class="task-run-status-elapsed">已运行 {{ runElapsedLabel }}</span>
+            <span v-if="isRunIdle" class="task-run-status-idle">
+              <span class="idle-dot"></span>等待响应 · 静默 {{ runIdleSeconds }}s
+            </span>
+          </div>
           <div class="block block-log-stream">
             <div class="task-log-head">
               <div class="min-w grow">
@@ -281,10 +322,6 @@ CP.Components.TaskDetail = Vue.defineComponent({
                 <li v-for="(item, idx) in latestReview.advisory" :key="'a'+idx">{{ item }}</li>
               </ul>
             </div>
-          </div>
-          <div v-if="task.logs && task.logs.length" class="block">
-            <div class="block-label">阶段日志摘要</div>
-            <cp-markdown :text="$cp.formatLogs(task.logs)"></cp-markdown>
           </div>
         </div>
       </section>

@@ -26,7 +26,7 @@ A step-by-step guide to CodePilot — from installation to daily workflow master
 CodePilot is a CLI tool that turns natural language into executable development tasks, connecting the full pipeline:
 
 ```
-You say "implement user login" → clarifies requirements → makes a plan → writes code → runs tests → reviews → reports
+You say "implement user login" → makes a plan → writes code → runs tests → reviews → reports
 ```
 
 **Core Capabilities:**
@@ -132,16 +132,13 @@ codepilot go "fix the task retry logic and add tests" -p <project-name>
 
 ## 5. Daily Workflow
 
-### 5.1 Standard Flow: Clarify → Plan → Execute
+### 5.1 Standard Flow: Plan → Execute
 
 ```bash
-# Step 1: Clarify requirements
-codepilot clarify -p myproject "support phone OTP login" --json
-
-# Step 2: Generate an execution plan (no code changes yet)
+# Step 1: Generate an execution plan (no code changes yet)
 codepilot plan -p myproject "implement phone OTP login" --json
 
-# Step 3: Auto-execute after reviewing the plan
+# Step 2: Auto-execute after reviewing the plan
 codepilot auto -p myproject -t "implement phone OTP login"
 ```
 

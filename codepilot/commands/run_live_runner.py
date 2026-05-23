@@ -165,93 +165,6 @@ def _write_markdown_footer(
     handle.flush()
 
 
-class _MarkdownLiveWriter:
-    """Stream subprocess stdout into markdown-friendly live sections."""
-
-    _ROLE_NAMES = {"user", "codex", "claude", "assistant"}
-
-    def __init__(self) -> None:
-        self._section = ""
-        self._runtime_fence_open = False
-        self._exec_fence_open = False
-
-    @staticmethod
-    def _escape_fence(text: str) -> str:
-        return text.replace("~~~", "~~\u200b~")
-
-    @staticmethod
-    def _append(buf: list[str], text: str) -> None:
-        if text:
-            buf.append(text)
-
-    def _close_runtime_fence(self, out: list[str]) -> None:
-        if not self._runtime_fence_open:
-            return
-        self._append(out, "\n~~~\n\n")
-        self._runtime_fence_open = False
-
-    def _close_exec_fence(self, out: list[str]) -> None:
-        if not self._exec_fence_open:
-            return
-        self._append(out, "\n~~~\n\n")
-        self._exec_fence_open = False
-
-    def _switch_section(self, out: list[str], name: str, *, open_fence: bool = False) -> None:
-        self._close_runtime_fence(out)
-        self._close_exec_fence(out)
-        self._section = name
-        self._append(out, f"\n### {name}\n\n")
-        if open_fence:
-            self._append(out, "~~~text\n")
-            self._exec_fence_open = True
-
-    def feed(self, raw: str) -> str:
-        if not raw:
-            return ""
-        out: list[str] = []
-        for line in raw.splitlines(keepends=True):
-            has_newline = line.endswith("\n")
-            text = line[:-1] if has_newline else line
-            marker = text.strip()
-            is_clean_marker = bool(marker) and marker == text
-
-            if is_clean_marker and marker.lower() in self._ROLE_NAMES:
-                self._switch_section(out, marker.capitalize())
-                continue
-
-            if is_clean_marker and marker.lower() == "exec":
-                self._switch_section(out, "Exec", open_fence=True)
-                continue
-
-            if self._section == "Exec":
-                self._append(out, self._escape_fence(text))
-                if has_newline:
-                    self._append(out, "\n")
-                continue
-
-            if not self._section:
-                self._section = "Runtime"
-                self._append(out, "\n### Runtime\n\n~~~text\n")
-                self._runtime_fence_open = True
-
-            if self._section == "Runtime":
-                self._append(out, self._escape_fence(text))
-                if has_newline:
-                    self._append(out, "\n")
-                continue
-
-            self._append(out, text)
-            if has_newline:
-                self._append(out, "\n")
-        return "".join(out)
-
-    def finalize(self) -> str:
-        out: list[str] = []
-        self._close_runtime_fence(out)
-        self._close_exec_fence(out)
-        return "".join(out)
-
-
 def _format_status_console_line(line: str) -> str:
     from rich.markup import escape as _rich_escape
 
@@ -400,8 +313,7 @@ class _LiveOutputProcessor:
         self.handle = handle
         self.raw_chunk_size = int(raw_chunk_size)
         self.status_console = status_console
-        self.md_live_writer = _MarkdownLiveWriter()
-        # Stream event offsets are semantic chunk offsets (start from 0),
+        # Stream event offsets are byte offsets (start from 0),
         # independent of markdown preamble bytes in the log file.
         self.emitted_log_bytes = 0
         self.recent_lines: list[str] = []
@@ -468,17 +380,18 @@ class _LiveOutputProcessor:
         # Any inbound byte resets the silence clock — even whitespace
         # counts as "agent still responsive".
         self.last_output_monotonic = time.monotonic()
-        markdown_chunk = self.md_live_writer.feed(raw)
-        if not markdown_chunk:
-            return
+        # Write raw subprocess output directly to the log file without
+        # any wrapping — the subprocess (Codex/Claude/OpenCode) already
+        # produces well-structured Markdown with proper code fences.
         stream_start = self.emitted_log_bytes
-        self.emitted_log_bytes = stream_start + len(markdown_chunk.encode("utf-8", errors="replace"))
+        raw_bytes = raw.encode("utf-8", errors="replace")
+        self.emitted_log_bytes = stream_start + len(raw_bytes)
         try:
-            self.handle.write(markdown_chunk)
+            self.handle.write(raw)
             self.handle.flush()
         except Exception:
             pass
-        self._emit_log_stream(markdown_chunk, stream_start)
+        self._emit_log_stream(raw, stream_start)
 
         stripped = raw.rstrip()
         if stripped:
@@ -491,46 +404,29 @@ class _LiveOutputProcessor:
             if len(self.recent_lines) > 200:
                 del self.recent_lines[:-200]
 
-    def emit_idle_heartbeat(self, *, elapsed_seconds: int, silent_seconds: int) -> str:
-        """Append a lightweight log line while the child is alive but quiet."""
-        timestamp = datetime.now().isoformat(timespec="seconds")
-        raw = (
-            f"[{timestamp}] 子进程仍在运行，已运行 {max(0, int(elapsed_seconds))}s，"
-            f"暂无新的标准输出（静默 {max(0, int(silent_seconds))}s）。\n"
-        )
-        markdown_chunk = self.md_live_writer.feed(raw)
-        if not markdown_chunk:
-            return ""
-        stream_start = self.emitted_log_bytes
-        self.emitted_log_bytes = stream_start + len(markdown_chunk.encode("utf-8", errors="replace"))
-        try:
-            self.handle.write(markdown_chunk)
-            self.handle.flush()
-        except Exception:
-            pass
-        self._emit_log_stream(markdown_chunk, stream_start)
+    def emit_run_status(self, *, elapsed_seconds: int, silent_seconds: int) -> None:
+        """Send a lightweight run status event via progress_bus for the
+        frontend Run Status bar — does NOT write to the log file.
+
+        The frontend uses this to display an animated "agent thinking"
+        indicator instead of noisy heartbeat log lines.
+        """
         try:
             from codepilot.core import progress_bus
 
             progress_bus.emit(
                 task_id=self.task_id,
                 stage=self.phase,
-                level="heartbeat",
-                message=raw.strip()[:200],
+                level="info",
+                message="",
                 extra={
-                    "source": "subprocess",
-                    "subprocess_idle_heartbeat": True,
+                    "source": "task_run_status",
                     "elapsed_seconds": int(elapsed_seconds),
                     "silent_seconds": int(silent_seconds),
                 },
             )
         except Exception:
             pass
-        with self.recent_lock:
-            self.recent_lines.append(raw)
-            if len(self.recent_lines) > 200:
-                del self.recent_lines[:-200]
-        return raw
 
     def seconds_since_last_output(self) -> float:
         return time.monotonic() - self.last_output_monotonic
@@ -546,16 +442,6 @@ class _LiveOutputProcessor:
     def finalize(self, *, status: str, exit_code: int | None, detail: str = "") -> None:
         if self.footer_written:
             return
-        finalize_chunk = self.md_live_writer.finalize()
-        if finalize_chunk:
-            stream_start = self.emitted_log_bytes
-            self.emitted_log_bytes = stream_start + len(finalize_chunk.encode("utf-8", errors="replace"))
-            try:
-                self.handle.write(finalize_chunk)
-                self.handle.flush()
-            except Exception:
-                pass
-            self._emit_log_stream(finalize_chunk, stream_start)
         _write_markdown_footer(
             self.handle,
             status=str(status),
@@ -674,7 +560,7 @@ def _poll_live_process(
                 now - last_idle_log_heartbeat >= HEARTBEAT_INTERVAL_SECONDS
                 and silent_for >= HEARTBEAT_INTERVAL_SECONDS
             ):
-                output.emit_idle_heartbeat(
+                output.emit_run_status(
                     elapsed_seconds=int(now - started),
                     silent_seconds=int(silent_for),
                 )

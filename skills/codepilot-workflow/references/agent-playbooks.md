@@ -8,12 +8,11 @@
 4. Read details with `codepilot task show <task_id> --json`.
 5. Follow progress with `codepilot task logs <task_id> --tail 80`.
 
-## Playbook B: Clarify Or Plan Before Execution
+## Playbook B: Plan Before Execution
 
-1. For ambiguous work, run `codepilot clarify -p <project> "<requirement>" --json`.
-2. If the spec is usable, run `codepilot plan -p <project> --from-spec <spec_path> --json`.
-3. Review files, risks, order, and verification matrix from the plan payload.
-4. Only create tasks or submit the requirement after the user clearly wants execution.
+1. Run `codepilot plan -p <project> "<requirement>" --json`.
+2. Review files, risks, order, and verification matrix from the plan payload.
+3. Only create tasks or submit the requirement after the user clearly wants execution.
 
 ## Playbook C: Answer A Project Or Task Question
 
@@ -31,7 +30,7 @@
 
 1. Treat these channels as OpenCode + CodePilot MCP conversations.
 2. Use plain natural language for questions, requirements, and operation requests.
-3. If a deterministic artifact is required, call `codepilot clarify`, `codepilot plan`, or the corresponding MCP tool explicitly.
+3. If a deterministic artifact is required, call `codepilot plan` or the corresponding MCP tool explicitly.
 4. For Feishu project context and explicit actions, use commands like `projects`, `use <project>`, `status <project>`, `tasks <project>`, `detail <id>`, `retry <id>`, and `stop <id>`.
 5. Remember that CodePilot-launched OpenCode uses isolated runtime state under `~/.codepilot/opencode/<project-scope>/`.
 
@@ -89,4 +88,4 @@
 - If a machine-readable result is needed, add `--json`.
 - If a JSON envelope contains `error.code`, branch on `error.code` before retrying blindly.
 - Do not use empty task placeholders; external agents must provide complete task-template content or let CodePilot generate it through `add -t`.
-- If a command is meant to be read-only, prefer `explore`, `clarify`, `plan`, `status`, `hud`, `trace`, `wiki query`, or `doctor` over execution commands.
+- If a command is meant to be read-only, prefer `explore`, `plan`, `status`, `hud`, `trace`, `wiki query`, or `doctor` over execution commands.

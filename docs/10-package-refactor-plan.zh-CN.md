@@ -13,7 +13,7 @@
   - 数据库存取、会话、任务读模型
   - 例如：`database.py`、`config.py`、`project_store.py`
 - `codepilot/ai_support/`
-  - 任务规划、澄清、Provider、主 AI 流程
+  - 任务规划、Provider、主 AI 流程
   - 例如：`service.py`、`planner_parse.py`、`providers.py`
 - `codepilot/gateway/`
   - API/CLI 网关调用编排

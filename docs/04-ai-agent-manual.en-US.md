@@ -14,7 +14,7 @@ This guide is for other AI agents and automation systems. Its goal is to make pr
 6. Use `codepilot task ...` for task operations.
 7. Use `codepilot binary ...` for release operations.
 8. Before directly importing tasks, read `codepilot ai template --format json`.
-9. Use `clarify` / `plan` explicitly when a deterministic spec or plan artifact is required.
+9. Use `plan` explicitly when a deterministic plan artifact is required.
 
 ## 2. Minimal Command Set
 
@@ -26,12 +26,11 @@ codepilot setup .
 codepilot doctor --project <project-name> --services --json
 ```
 
-### 2.2 Requirements, Clarification, Planning
+### 2.2 Requirements and Planning
 
 ```bash
 codepilot "fix task retry logic and add tests"
 codepilot go "fix task retry logic and add tests" -p <project-name>
-codepilot clarify -p <project-name> "vague requirement" --json
 codepilot plan -p <project-name> "clear requirement" --json
 codepilot plan -p <project-name> --from-spec .codepilot/specs/example.md --json
 codepilot workflow status -p <project-name> --json
@@ -40,7 +39,7 @@ codepilot workflow next -p <project-name> --action <id> --json
 codepilot workflow next -p <project-name> --auto --json
 ```
 
-`clarify` and `plan` do not create backlog tasks and do not start execution.
+`plan` does not create backlog tasks and does not start execution.
 
 Their JSON output records `next_actions` for follow-up work such as generating a plan or importing tasks. External AI agents should inspect actions with `workflow next --list`, advance by id with `workflow next --action <id>`, or let CodePilot choose policy-allowed auto actions with `workflow next --auto`. `suggested_command` is only display/review metadata; do not compose or execute it automatically.
 
@@ -195,10 +194,9 @@ codepilot task show <task_id>
 codepilot task logs <task_id> --tail 80
 ```
 
-### 4.2 Clarify Before Planning
+### 4.2 Plan Before Executing
 
 ```bash
-codepilot clarify -p <project-name> "improve task panel" --json
 codepilot workflow next -p <project-name> --list --json
 codepilot workflow next -p <project-name> --action plan_from_spec --json
 codepilot workflow next -p <project-name> --action import_tasks --json

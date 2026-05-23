@@ -8,7 +8,7 @@ Language: [简体中文](02-说明文档.zh-CN.md) | English
 
 ## 1. Positioning
 
-CodePilot is a workflow orchestration CLI for local engineering repositories. Its core goal is to standardize the flow from "requirement -> clarification -> plan -> task -> execution -> review -> operations -> release".
+CodePilot is a workflow orchestration CLI for local engineering repositories. Its core goal is to standardize the flow from "requirement -> plan -> task -> execution -> review -> operations -> release".
 
 Current version: `0.7.4`
 
@@ -17,7 +17,7 @@ Current version: `0.7.4`
 Core capabilities:
 
 - Natural-language entry points: `codepilot "requirement"`, `go`, `chat`, Web UI, and Feishu.
-- Pre-execution shaping: `clarify` generates requirement specs, and `plan` generates reviewable execution plans.
+- Pre-execution shaping: `plan` generates reviewable execution plans.
 - Read-only evidence gathering and knowledge capture: `explore`, `wiki`, `note`, and `trace`.
 - Task lifecycle management through the unified `task ...` subcommands.
 - Project queue and background services: `run`, `daemon`, `inspect`, and `ui`.
@@ -57,9 +57,8 @@ Main directories:
 - `auto`: splits high-level goals into tasks, with an option to plan only.
 - `add`: low-level entry point for external AI or automation systems to submit pre-planned tasks directly. It is not intended for routine manual use.
 
-### 3.2 Clarification, Planning, and Read-Only Evidence
+### 3.2 Planning and Read-Only Evidence
 
-- `clarify`: generates a pre-execution requirement spec without creating tasks or executing code.
 - `plan`: generates a reviewable execution plan without creating backlog items or starting the executor.
 - `explore`: performs read-only exploration of project files, Git, tasks, wiki, and inspect signals.
 - `wiki`: maintains the local project Markdown knowledge base.
@@ -95,9 +94,9 @@ Hard constraints:
 - Releases must use `codepilot binary ...`.
 - Web UI services must use `codepilot ui ...`.
 - The legacy top-level `release` entry point, top-level `show/logs/stop/retry/find/...`, and the legacy `webui` entry point have been removed.
-- `chat`, Web UI sessions, and Feishu free text are routed to OpenCode + CodePilot MCP. Use `clarify`, `plan`, or the corresponding panel/MCP tool explicitly when a structured spec or plan is required.
+- `chat`, Web UI sessions, and Feishu free text are routed to OpenCode + CodePilot MCP. Use `plan` or the corresponding panel/MCP tool explicitly when a structured plan is required.
 - Inputs about project status, task counts, completion ratio, failed tasks, running tasks, service status, and similar topics are handled as Q&A by default.
-- `explore`, `clarify`, and `plan` do not execute code, start services, or write business files by default.
+- `explore` and `plan` do not execute code, start services, or write business files by default.
 
 ## 5. Configuration and State
 
@@ -315,7 +314,7 @@ The version grouping is based on consecutive feature batches in Git history. Mis
 
 ### 0.5.0 - 2026-04-29 to 2026-04-30
 
-- Added project workflow entry points including `explore`, `wiki`, `note`, `trace`, `hud`, `clarify`, `plan`, `build-fix`, `skill`, and `hook`.
+- Added project workflow entry points including `explore`, `wiki`, `note`, `trace`, `hud`, `plan`, `build-fix`, `skill`, and `hook`.
 - Enhanced project-level setup, event plugins, wiki ingest, session context retention, and local Skill execution.
 - Feishu interaction, Chinese command aliases, project registration, safe confirmation, requirement submission, and session resume capabilities took shape.
 - DeepSeek provider, task template examples, Web UI draft isolation, and notification presentation were completed.
@@ -339,7 +338,7 @@ The version grouping is based on consecutive feature batches in Git history. Mis
 - Chat mode, Web UI, AI intent routing, daemon auto-start UI, persistent WebUI service, and session management landed.
 - Doctor, cleanup, scheduled inspect scanning, task deduplication, and task cancel/resume/stats operations were completed.
 - Per-task feature branch, process tree cleanup, Windows console encoding fixes, and Rich markup safe escaping landed.
-- Requirement clarification and reconnaissance phases were introduced, planner/executor were split, and large modules such as AI, run, and binary started to be split.
+- Requirement reconnaissance phases were introduced, planner/executor were split, and large modules such as AI, run, and binary started to be split.
 
 ### 0.1.0 - 2026-04-11 to 2026-04-12
 

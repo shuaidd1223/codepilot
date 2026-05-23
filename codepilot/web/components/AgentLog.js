@@ -42,7 +42,7 @@ CP.Components.AgentLog = Vue.defineComponent({
     },
     blocks() {
       const raw = this.text || '';
-      return AgentLogRender.parseMarkdownBlocks(raw, (chunk) => this._renderMarkdown(chunk), this.lineCount);
+      return AgentLogRender.parseMarkdownBlocks(raw, (chunk) => this._renderMarkdown(chunk));
     },
     searchMatches() {
       return AgentLogInteraction.findSearchMatches(this.blocks, this.searchQuery);
@@ -77,13 +77,9 @@ CP.Components.AgentLog = Vue.defineComponent({
     searchMatches(next) {
       AgentLogInteraction.handleSearchMatchesChanged(this, next);
     },
-    blocks() {
-      this.$nextTick(() => this._scheduleEnhance());
-    },
   },
   created() {
     this._mdCache = AgentLogRender.createMarkdownCache();
-    this._enhanceRaf = 0;
   },
   mounted() {
     const body = this.$refs.body;
@@ -91,13 +87,11 @@ CP.Components.AgentLog = Vue.defineComponent({
     body.addEventListener('scroll', this._onScroll, { passive: true });
     this.$nextTick(() => {
       this._scrollToBottom();
-      this._scheduleEnhance();
     });
   },
   beforeUnmount() {
     const body = this.$refs.body;
     if (body) body.removeEventListener('scroll', this._onScroll);
-    if (this._enhanceRaf) cancelAnimationFrame(this._enhanceRaf);
   },
   methods: {
     _renderMarkdown(raw) {
@@ -124,15 +118,6 @@ CP.Components.AgentLog = Vue.defineComponent({
     },
     isSearchActive(idx) {
       return this.activeSearchIndex === idx;
-    },
-
-    _scheduleEnhance() {
-      AgentLogRender.scheduleEnhance(this, () => this._enhanceCodeBlocks());
-    },
-    _enhanceCodeBlocks() {
-      const body = this.$refs.body;
-      if (!body) return;
-      AgentLogRender.enhanceCodeBlocks(body);
     },
 
     _scrollToBottom() {
@@ -182,8 +167,7 @@ CP.Components.AgentLog = Vue.defineComponent({
             :key="b.key"
             class="al-md-wrap"
             :class="{ 'is-hit': isSearchHit(idx), 'is-active': isSearchActive(idx) }"
-            :data-idx="idx"
-            :data-section="b.section || 'other'">
+            :data-idx="idx">
             <div class="al-block al-text al-text-md al-md-block">
               <div class="md" v-html="b.html"></div>
             </div>

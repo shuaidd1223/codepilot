@@ -216,10 +216,24 @@ CP.createTaskDetailBoundary = (options = {}) => {
     }
   }
 
+  function handleTaskRunStatusEvent(event) {
+    const extra = (event && event.extra) || null;
+    if (!extra || extra.source !== 'task_run_status') return false;
+    const tid = state.nav.view === 'task' ? state.nav.id : null;
+    if (!tid || event.task_id !== tid) return true;
+    state.taskRunStatus = {
+      task_id: event.task_id,
+      elapsed_seconds: Number.isFinite(extra.elapsed_seconds) ? extra.elapsed_seconds : 0,
+      silent_seconds: Number.isFinite(extra.silent_seconds) ? extra.silent_seconds : 0,
+    };
+    return true;
+  }
+
   return {
     loadTaskDetail,
     loadTaskLog,
     handleTaskLogStreamEvent,
+    handleTaskRunStatusEvent,
     taskAction,
     taskBatchAction,
   };

@@ -71,23 +71,20 @@ codepilot status -p <项目名> -v
 codepilot hud -p <项目名> --preset full
 ```
 
-`chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP。可以像使用 OpenCode 一样直接输入问题、需求或操作意图；需要严格产出规格或计划 artifact 时，再显式调用 `clarify` / `plan` / Web UI 面板入口。
+`chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP。可以像使用 OpenCode 一样直接输入问题、需求或操作意图；需要严格产出计划 artifact 时，再显式调用 `plan` / Web UI 面板入口。
 
 ## 典型工作流
 
 ### 需求 → 任务 → 执行
 
 ```bash
-# 1. 澄清模糊需求
-codepilot clarify -p myproject "用户登录支持手机验证码" --json
-
-# 2. 生成执行计划
+# 1. 生成执行计划
 codepilot plan -p myproject "实现手机验证码登录" --json
 
-# 3. 自动执行（含代码编写 + 测试 + 审查）
+# 2. 自动执行（含代码编写 + 测试 + 审查）
 codepilot auto -p myproject -t "实现手机验证码登录"
 
-# 4. 查看执行结果
+# 3. 查看执行结果
 codepilot task show <task_id>
 codepilot task logs <task_id> --tail 50
 ```
@@ -135,7 +132,6 @@ workflow_auto_failure_threshold = 1
 ```bash
 codepilot init .
 codepilot setup . --dry-run --json
-codepilot clarify -p <项目名> "模糊需求" --json
 codepilot plan -p <项目名> "明确需求" --json
 codepilot auto -p <项目名> -t "高层目标" --plan-only
 ```
@@ -278,7 +274,7 @@ CodePilot 覆盖本地工程工作流的全生命周期，服务于 7 个核心�
 
 | 场景 | 说明 | 核心入口 |
 | --- | --- | --- |
-| **需求→任务** | 模糊需求澄清为结构化 spec，拆分为可执行任务，自动规划并逐任务执行 | `codepilot go "..."`, `codepilot clarify`, `codepilot plan` |
+| **需求→任务** | 模糊需求拆分为可执行任务，自动规划并逐任务执行 | `codepilot go "..."`, `codepilot plan` |
 | **代码审查闭环** | 双阶段 agent 协作 — builder 实现、reviewer 审查，FAIL 则回到 builder 修复直至通过或达到最大轮数 | `codepilot auto`, `codepilot build-fix` |
 | **项目巡检** | 多维信号采集：代码规模与复杂度、依赖健康、TODO 标记、失败任务、git 活跃度；产出可审查的候选报告并支持写入工作流上下文 | `codepilot inspect --once`, `codepilot doctor` |
 | **多通道交互** | CLI 文本模式、Web UI 管理面板、飞书/Lark 机器人双向交互、Webhook HTTP 回调 | `codepilot ui start`, `codepilot feishu start`, `codepilot webhook` |
@@ -298,7 +294,6 @@ codepilot/
 │   ├── auto_workflow.py       #   自然语言工作流：项目解析→意图→规划→执行
 │   ├── auto_workflow_planning.py # 规划器调度 (两阶段侦察 + 拆分)
 │   ├── auto_project_resolution.py # 项目解析 (按名称/路径/CWD 自动发现)
-│   ├── clarify.py             #   需求澄清流程 (模糊需求→结构化 spec)
 │   ├── plan.py                #   执行计划生成 (spec→任务拆分→验收标准)
 │   ├── run.py                 #   任务执行入口 (CLI 命令 + 共享 helper)
 │   ├── run_orchestrator.py    #   队列编排 (上下文解析、workspace 准备、executor 分发)
@@ -389,8 +384,6 @@ codepilot/
 │   ├── planner_context.py     #   规划器上下文构建 (项目元数据/文件树/规范摘要)
 │   ├── planner_execution.py   #   规划执行调度 (schema-prompt / CLI fallback)
 │   ├── planner_parse.py       #   规划结果解析 (JSON schema → task dict)
-│   ├── clarification_protocol.py # 需求澄清协议 (多轮 Q&A→spec)
-│   ├── clarify.py             #   澄清流程实现
 │   ├── main_execute.py        #   主执行管线 (规划→任务创建→执行调度)
 │   ├── main_resolution.py     #   主解析管线 (需求→agent→配置→执行器)
 │   ├── interaction_controller.py # 交互控制器 (chat session 生命周期)
@@ -517,7 +510,7 @@ codepilot/
 ├── claude/                    # Claude Code 会话持久化 (JSON 文件存储)
 ├── mcp/launchers/             # MCP 启动器 (OpenCode MCP 配置)
 ├── templates/                 # 任务模板 Markdown (builder/reviewer/repl 默认 prompt)
-├── prompts/                   # Prompt 模板 (planner/clarifier/classifier 系统提示词)
+├── prompts/                   # Prompt 模板 (planner/classifier 系统提示词)
 └── nl_command_router.py       # 自然语言命令路由 (中/英文关键词→结构化命令)
 ```
 
@@ -536,10 +529,10 @@ codepilot/
 │           / 操作(command) / 巡检(inspect)            │
 └──────────────────────┬──────────────────────────────┘
                        │
-        ┌──────────────┼──────────────┐
+        ┌──────────────┴──────────────┐
         ▼              ▼              ▼
-   clarify          plan           auto
-   (模糊→spec)     (spec→任务)    (端到端)
+       plan           auto           go
+   (spec→任务)    (端到端)    (自然语言)
         │              │              │
         └──────────────┼──────────────┘
                        │
@@ -604,7 +597,7 @@ codepilot/
 
 - **双阶段 Agent 闭环** (`run_builtin_executor.py`)：每个任务由 builder 实现、reviewer 审查。reviewer 输出结构化 PASS/FAIL verdict，FAIL 时 builder 收到 reviewer 反馈后重试，最多循环 `max_review_rounds` 轮。超过上限后进入确定性失败分诊流程。
 - **失败分诊管线** (`run_failure_triage*.py`)：任务失败时采集证据 (exit code/stderr/agent output/task context)，由分类器决定 action (retry_with_hint / replan / discard / merge_partial)，通过 LLM prompt 构造修复指令后自动执行。
-- **工作流状态机** (`core/workflow_state.py`)：项目级 mode state 管理 clarify → plan → execute 三阶段流转，每个阶段产出结构化 artifact (spec/plan/context) 以原子 JSON 文件持久化在 `.codepilot/state/`，支持断点续跑。
+- **工作流状态机** (`core/workflow_state.py`)：项目级 mode state 管理 plan → execute 阶段流转，每个阶段产出结构化 artifact (plan/context) 以原子 JSON 文件持久化在 `.codepilot/state/`，支持断点续跑。
 - **记忆系统** (`core/memory.py`)：append-only 事实事件日志 → 去重候选生成 → 反馈评分 (positive/negative/neutral) → 合并 seen_count → 自动沉淀为 `autocapture.md`。事件源覆盖 task 状态变更、workflow action 执行、inspect 报告反馈等。
 - **MCP 工具三层架构**：任务类 (受 `task_mutation_guard` 状态机保护) → 上下文类 (只读, 不修改文件) → 外部集成类 (桥接飞书/Webhook)。每层有独立的审计和安全策略。
 - **Agent 族兜底链**：`fallback_cli_order` 定义 CLI agent 优先级列表。任一 agent 不可用时 (未安装/无 key/超时) 自动切换至下一个。双阶段执行中 builder 使用的 agent 失败时，尝试交换 builder/reviewer agent 或降级到其他可用族。
@@ -808,7 +801,7 @@ codepilot ai prompt
 
 ### 0.5.0 - 2026-04-29 至 2026-04-30
 
-- 新增 `explore`、`wiki`、`note`、`trace`、`hud`、`clarify`、`plan`、`build-fix`、`skill`、`hook` 等项目工作流入口。
+- 新增 `explore`、`wiki`、`note`、`trace`、`hud`、`plan`、`build-fix`、`skill`、`hook` 等项目工作流入口。
 - 增强项目级 setup、事件插件、wiki ingest、会话上下文保留和本地技能运行。
 - 接入飞书卡片交互、中文命令别名、项目注册、安全确认、需求提交和会话继续能力。
 - 完善 DeepSeek provider 配置、任务模板示例、Web UI 草稿隔离和通知呈现。
@@ -835,7 +828,7 @@ codepilot ai prompt
 - 新增 chat mode、Web UI、AI intent routing、daemon 自动启动 UI、WebUI 持久服务和会话管理。
 - 增加 doctor、cleanup、inspect 定时扫描、任务去重、需求输入框、任务 cancel/resume/stats 等运维能力。
 - 支持 per-task feature branch、进程树清理、Windows 控制台编码修复和 Rich markup 安全转义。
-- 引入需求澄清与侦察阶段，拆分 planner/executor，并开始拆分 AI、run、binary 等大模块。
+- 引入需求侦察阶段，拆分 planner/executor，并开始拆分 AI、run、binary 等大模块。
 
 ### 0.1.0 - 2026-04-11 至 2026-04-12
 

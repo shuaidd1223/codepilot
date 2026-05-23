@@ -2,7 +2,7 @@
 
 Language: [中文](07-workflow-state.zh-CN.md) | English
 
-This document defines the project-local state layer shared by first-stage workflow commands. It supports `clarify`, `plan`, `explore`, `wiki`, and related modes so they can reuse context, recover state, and emit machine-readable artifacts.
+This document defines the project-local state layer shared by first-stage workflow commands. It supports `plan`, `explore`, `wiki`, and related modes so they can reuse context, recover state, and emit machine-readable artifacts.
 
 ## Design Goals
 
@@ -17,7 +17,6 @@ This document defines the project-local state layer shared by first-stage workfl
 | :--- | :--- |
 | `.codepilot/state/` | Active workflow state files and active-mode pointers. |
 | `.codepilot/context/` | Reusable context bundles collected by read-only workflow commands. |
-| `.codepilot/specs/` | Requirement specification artifacts produced by `clarify` and related commands. |
 | `.codepilot/plans/` | Reviewable execution plan artifacts produced by `plan`. |
 
 The directory layout belongs to project-local workflow state. It does not replace global CodePilot data, task queue storage, logs, or service state.
@@ -28,7 +27,7 @@ Workflow state is JSON. Common fields include:
 
 | Field | Type | Meaning |
 | :--- | :--- | :--- |
-| `mode` | string | Workflow mode such as `clarify`, `plan`, or `explore`. |
+| `mode` | string | Workflow mode such as `plan` or `explore`. |
 | `active` | boolean | Whether this mode currently has active state. |
 | `status` | string | Current workflow status, for example `active`, `completed`, or `interrupted`. |
 | `started_at` | string | ISO timestamp when the workflow state was created. |
@@ -66,7 +65,7 @@ Consumers should treat state files as best-effort workflow metadata, not as the 
 
 ## Agent Kernel Session State
 
-Since v0.7.x, CodePilot introduces an Agent Kernel session state layer that tracks the full agent workflow lifecycle. A session spans nine phases: `intake → clarify → explore → plan → approve → execute → review → recover → deliver`.
+Since v0.7.x, CodePilot introduces an Agent Kernel session state layer that tracks the full agent workflow lifecycle. A session spans nine phases: `intake → explore → plan → approve → execute → review → recover → deliver`.
 
 ### Session Fields
 
@@ -112,14 +111,14 @@ The `workflow status --json` output includes an `agent_session` field alongside 
     "project": "demo",
     "project_path": "D:\\myCode\\demo",
     "mode": null,
-    "state": { "mode": "clarify", "active": true },
+    "state": { "mode": "plan", "active": true },
     "agent_session": {
       "session_id": "sess_abc123def456",
       "goal": "Add user login",
-      "current_phase": "clarify",
+      "current_phase": "plan",
       "phase_history": [
         {"phase": "intake", "entered_at": "...", "exited_at": "..."},
-        {"phase": "clarify", "entered_at": "...", "exited_at": null}
+        {"phase": "plan", "entered_at": "...", "exited_at": null}
       ],
       "blocked_reason": null,
       "next_actions": [],

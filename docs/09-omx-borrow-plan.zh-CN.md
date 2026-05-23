@@ -4,14 +4,14 @@
 
 ## 背景
 
-CodePilot 当前优势在于本地工程任务队列、项目服务、Web UI、飞书和任务执行闭环。`oh-my-codex` 的优势在于 Codex 会话增强、明确的澄清/计划/执行/验证工作流、项目记忆、只读探索入口和运行时状态管理。
+CodePilot 当前优势在于本地工程任务队列、项目服务、Web UI、飞书和任务执行闭环。`oh-my-codex` 的优势在于 Codex 会话增强、明确的计划/执行/验证工作流、项目记忆、只读探索入口和运行时状态管理。
 
 本轮不照搬 `oh-my-codex` 的 Node/Rust/tmux runtime，而是吸收它的工作流设计，用 CodePilot 现有 Python CLI、SQLite 存储、Web UI、daemon、inspect、Feishu/webhook 体系实现。
 
 ## 设计原则
 
 - 保持 CodePilot 的跨 provider 定位，不把核心能力绑定到 Codex 专属 hooks。
-- 先做可落地的工作流纪律：澄清、计划、只读探索、状态、记忆、诊断。
+- 先做可落地的工作流纪律：计划、只读探索、状态、记忆、诊断。
 - 避免引入 Node/Rust sidecar 和 tmux 作为第一阶段依赖。
 - 新能力优先暴露 CLI 和 JSON 输出，再接 Web UI/飞书。
 - 复用现有数据库、任务模板、progress bus、web events、inspect signals 和 provider 配置。
@@ -24,11 +24,11 @@ CodePilot 当前优势在于本地工程任务队列、项目服务、Web UI、�
 
 建议交付：
 
-- 工作流状态存储：记录 `clarify`、`plan`、`run`、`review` 等模式的 active 状态、阶段、session、上下文路径。
+- 工作流状态存储：记录 `plan`、`run`、`review` 等模式的 active 状态、阶段、session、上下文路径。
 - `codepilot explore`：只读查询项目文件、Git、任务日志、inspect 信号和已有任务，给规划器提供证据。
 - `codepilot wiki`：轻量项目知识库，支持 add/list/query/lint，存放长期可复用事实。
 - `codepilot doctor --project/--services`：扩展项目服务、配置、Provider、Web UI、Feishu、daemon、inspect 检查。
-- `codepilot clarify` 和 `codepilot plan` 的最小闭环：先产出 spec/plan artifact，不直接执行。
+- `codepilot plan` 的最小闭环：先产出 plan artifact，不直接执行。
 
 ### 阶段二：事件与通知统一
 
@@ -67,9 +67,8 @@ CodePilot 当前优势在于本地工程任务队列、项目服务、Web UI、�
 
 1. 用 `codepilot explore` 获得项目证据。
 2. 用 `codepilot wiki` 沉淀和查询项目知识。
-3. 用 `codepilot clarify` 生成执行前 spec。
-4. 用 `codepilot plan` 生成可审查计划。
-5. 用扩展后的 `doctor` 判断项目服务和集成是否健康。
+3. 用 `codepilot plan` 生成可审查计划。
+4. 用扩展后的 `doctor` 判断项目服务和集成是否健康。
 
 ## 任务拆分
 
