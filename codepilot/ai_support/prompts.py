@@ -150,7 +150,7 @@ RECON_SCHEMA = {
             "description": "High-level implementation approach in one concise paragraph.",
         },
     },
-    "required": ["current_state", "relevant_files", "key_findings", "suggested_approach"],
+    "required": ["current_state", "relevant_files", "key_findings", "risks", "suggested_approach"],
     "additionalProperties": False,
 }
 

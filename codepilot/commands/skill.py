@@ -11,12 +11,23 @@ from codepilot.core.output import echo, safe
 from codepilot.storage import database as db
 
 
-def _project_root(project: str) -> str:
+def _resolve_skill_project(project: str | None) -> tuple[str, str]:
+    """Return (project_name, project_path) with auto-detection fallback."""
     db.init_db()
-    record = db.get_project(project)
-    if not record:
-        raise skill_catalog.SkillCatalogError(f"项目 {project} 未注册")
-    return str(record["path"])
+    if project:
+        record = db.get_project(project)
+        if not record:
+            raise skill_catalog.SkillCatalogError(f"项目 {project} 未注册")
+        return str(record["name"]), str(record["path"])
+    from pathlib import Path
+
+    found = db.find_project_by_path(Path.cwd())
+    if found:
+        return str(found["name"]), str(found["path"])
+    projects = db.list_projects()
+    if len(projects) == 1:
+        return str(projects[0]["name"]), str(projects[0]["path"])
+    raise skill_catalog.SkillCatalogError("当前目录不属于已注册项目；请使用 -p/--project 指定项目。")
 
 
 def _emit_error(ctx: click.Context, json_mode: bool, command: str, exc: Exception) -> None:
@@ -32,20 +43,20 @@ def skill_group() -> None:
 
 
 @skill_group.command("list")
-@click.option("--project", "-p", callback=_resolve_project, required=True, help="项目名")
+@click.option("--project", "-p", callback=_resolve_project, required=False, help="项目名；不指定则自动检测")
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
-def list_cmd(ctx: click.Context, project: str, json_mode: bool) -> None:
+def list_cmd(ctx: click.Context, project: str | None, json_mode: bool) -> None:
     """列出本地技能。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        root = _project_root(project)
+        name, root = _resolve_skill_project(project)
         skills = skill_catalog.list_skills(root)
     except skill_catalog.SkillCatalogError as exc:
         _emit_error(ctx, json_mode, "skill list", exc)
         return
     if json_mode:
-        emit_json_payload("skill list", ok=True, data={"project": project, "skills": skills})
+        emit_json_payload("skill list", ok=True, data={"project": name, "skills": skills})
         return
     for skill in skills:
         marker = "on " if skill.get("enabled") else "off"
@@ -54,20 +65,20 @@ def list_cmd(ctx: click.Context, project: str, json_mode: bool) -> None:
 
 @skill_group.command("search")
 @click.argument("query")
-@click.option("--project", "-p", callback=_resolve_project, required=True, help="项目名")
+@click.option("--project", "-p", callback=_resolve_project, required=False, help="项目名；不指定则自动检测")
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
-def search_cmd(ctx: click.Context, query: str, project: str, json_mode: bool) -> None:
+def search_cmd(ctx: click.Context, query: str, project: str | None, json_mode: bool) -> None:
     """搜索本地技能。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        root = _project_root(project)
+        name, root = _resolve_skill_project(project)
         skills = skill_catalog.search_skills(root, query)
     except skill_catalog.SkillCatalogError as exc:
         _emit_error(ctx, json_mode, "skill search", exc)
         return
     if json_mode:
-        emit_json_payload("skill search", ok=True, data={"project": project, "query": query, "skills": skills})
+        emit_json_payload("skill search", ok=True, data={"project": name, "query": query, "skills": skills})
         return
     for skill in skills:
         echo(f"[cyan]{safe(skill['name'])}[/cyan]  {safe(skill.get('description') or '')}")
@@ -75,35 +86,35 @@ def search_cmd(ctx: click.Context, query: str, project: str, json_mode: bool) ->
 
 @skill_group.command("show")
 @click.argument("name")
-@click.option("--project", "-p", callback=_resolve_project, required=True, help="项目名")
+@click.option("--project", "-p", callback=_resolve_project, required=False, help="项目名；不指定则自动检测")
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
-def show_cmd(ctx: click.Context, name: str, project: str, json_mode: bool) -> None:
+def show_cmd(ctx: click.Context, name: str, project: str | None, json_mode: bool) -> None:
     """查看单个技能。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        root = _project_root(project)
+        resolved_name, root = _resolve_skill_project(project)
         skill = skill_catalog.get_skill(root, name)
     except skill_catalog.SkillCatalogError as exc:
         _emit_error(ctx, json_mode, "skill show", exc)
         return
     if json_mode:
-        emit_json_payload("skill show", ok=True, data={"project": project, "skill": skill})
+        emit_json_payload("skill show", ok=True, data={"project": resolved_name, "skill": skill})
         return
     echo(f"[cyan]{safe(skill['name'])}[/cyan]")
     click.echo(skill.get("description") or "")
 
 
-def _toggle(ctx: click.Context, *, project: str, name: str, enabled: bool, json_mode: bool, command: str) -> None:
+def _toggle(ctx: click.Context, *, project: str | None, name: str, enabled: bool, json_mode: bool, command: str) -> None:
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        root = _project_root(project)
+        resolved_name, root = _resolve_skill_project(project)
         skill = skill_catalog.set_skill_enabled(root, name, enabled)
     except skill_catalog.SkillCatalogError as exc:
         _emit_error(ctx, json_mode, command, exc)
         return
     if json_mode:
-        emit_json_payload(command, ok=True, data={"project": project, "skill": skill})
+        emit_json_payload(command, ok=True, data={"project": resolved_name, "skill": skill})
         return
     status = "启用" if enabled else "禁用"
     echo(f"[green][OK] 已{status}技能[/green]  {safe(name)}")
@@ -135,36 +146,36 @@ def _run_builtin_skill(project: str, root: str, skill: dict, input_text: str, pr
 
 @skill_group.command("enable")
 @click.argument("name")
-@click.option("--project", "-p", callback=_resolve_project, required=True, help="项目名")
+@click.option("--project", "-p", callback=_resolve_project, required=False, help="项目名；不指定则自动检测")
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
-def enable_cmd(ctx: click.Context, name: str, project: str, json_mode: bool) -> None:
+def enable_cmd(ctx: click.Context, name: str, project: str | None, json_mode: bool) -> None:
     """启用本地技能。"""
     _toggle(ctx, project=project, name=name, enabled=True, json_mode=json_mode, command="skill enable")
 
 
 @skill_group.command("disable")
 @click.argument("name")
-@click.option("--project", "-p", callback=_resolve_project, required=True, help="项目名")
+@click.option("--project", "-p", callback=_resolve_project, required=False, help="项目名；不指定则自动检测")
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
-def disable_cmd(ctx: click.Context, name: str, project: str, json_mode: bool) -> None:
+def disable_cmd(ctx: click.Context, name: str, project: str | None, json_mode: bool) -> None:
     """禁用本地技能。"""
     _toggle(ctx, project=project, name=name, enabled=False, json_mode=json_mode, command="skill disable")
 
 
 @skill_group.command("run")
 @click.argument("name")
-@click.option("--project", "-p", callback=_resolve_project, required=True, help="项目名")
+@click.option("--project", "-p", callback=_resolve_project, required=False, help="项目名；不指定则自动检测")
 @click.option("--input", "input_text", default="", help="传给技能的输入文本")
 @click.option("--provider", type=click.Choice(skill_catalog.SUPPORTED_PROVIDERS, case_sensitive=False), default="codex", show_default=True)
 @click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
 @click.pass_context
-def run_cmd(ctx: click.Context, name: str, project: str, input_text: str, provider: str, json_mode: bool) -> None:
+def run_cmd(ctx: click.Context, name: str, project: str | None, input_text: str, provider: str, json_mode: bool) -> None:
     """运行启用的项目本地技能，复用现有 CodePilot 能力。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        root = _project_root(project)
+        resolved_name, root = _resolve_skill_project(project)
         skill = skill_catalog.get_skill(root, name)
         provider = str(provider or "codex").lower()
         if provider not in skill.get("supported_providers", []):
@@ -174,12 +185,12 @@ def run_cmd(ctx: click.Context, name: str, project: str, input_text: str, provid
         text = (input_text or "").strip()
         if not text and skill["name"] in {"ralplan", "ralph", "wiki"}:
             raise skill_catalog.SkillCatalogError("skill run 需要 --input。")
-        result = _run_builtin_skill(project, root, skill, text, provider)
+        result = _run_builtin_skill(resolved_name, root, skill, text, provider)
     except skill_catalog.SkillCatalogError as exc:
         _emit_error(ctx, json_mode, "skill run", exc)
         return
     data = {
-        "project": project,
+        "project": resolved_name,
         "provider": provider,
         "skill": skill,
         "entrypoint_command": skill.get("entrypoint_command"),

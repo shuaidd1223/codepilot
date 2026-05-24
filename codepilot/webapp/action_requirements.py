@@ -868,10 +868,10 @@ def _execute_artifact_plan_from_spec(project_info: dict, context: dict[str, Any]
     spec_path = _resolve_project_file(
         project_path,
         _artifact_context_value(context, "spec"),
-        label="clarify spec",
+        label="spec file",
     )
     if not spec_path.is_file():
-        raise RuntimeError(f"clarify spec 不存在：{spec_path}")
+        raise RuntimeError(f"spec 文件不存在：{spec_path}")
     try:
         resolved_spec, spec_text = _read_spec(project_path, str(spec_path))
     except Exception as exc:

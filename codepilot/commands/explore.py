@@ -534,7 +534,7 @@ def _print_human_result(result: dict[str, Any]) -> None:
             echo(f"  - {item}")
 
 
-@click.command("explore", context_settings={"allow_interspersed_args": False})
+@click.command("explore")
 @click.argument("query_parts", nargs=-1)
 @click.option("--prompt", "prompt", default=None, help="要探索的问题；等价于位置参数")
 @click.option("--project", "-p", default=None, help="项目名称；不传则按当前目录自动识别")

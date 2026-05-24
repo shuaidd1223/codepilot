@@ -28,7 +28,7 @@ This guide is for other AI agents. For the latest machine-readable command list,
 6. Use `{_cmd(command, "task ...")}` for task operations.
 7. Use `{_cmd(command, "binary ...")}` for releases.
 8. External AI systems must read `{_cmd(command, "ai template --format json")}` before submitting tasks directly.
-9. Use `clarify` / `plan` explicitly when a deterministic spec or plan artifact is needed.
+9. Use `plan` explicitly when a deterministic plan artifact is needed.
 
 ## Recommended Commands
 
@@ -47,10 +47,9 @@ This guide is for other AI agents. For the latest machine-readable command list,
 {_cmd(command, 'go "fix task retry logic and add tests" -p <project-name>')}
 ```
 
-### Clarify, Plan, and Safe Next Actions
+### Plan and Safe Next Actions
 
 ```bash
-{_cmd(command, 'clarify -p <project-name> "vague requirement" --json')}
 {_cmd(command, 'plan -p <project-name> "clear requirement" --json')}
 {_cmd(command, "inspect -p <project-name> --once --dry-run --write-workflow --json")}
 {_cmd(command, "workflow status -p <project-name> --json")}
@@ -59,7 +58,7 @@ This guide is for other AI agents. For the latest machine-readable command list,
 {_cmd(command, "workflow next -p <project-name> --auto --json")}
 ```
 
-`clarify`, `plan`, and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions, `workflow next --action <id>` to execute an allowlisted action, or `workflow next --auto` to let CodePilot choose low-risk policy actions. `suggested_command` is only display/review metadata; do not compose or execute it automatically. By default `--auto` does not create inspect tasks or import plan tasks; projects can opt in with `[automation] workflow_auto_create_inspect_tasks`, `workflow_auto_import_plan_tasks`, `workflow_auto_max_steps`, and `workflow_auto_failure_threshold`. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
+`plan` and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions, `workflow next --action <id>` to execute an allowlisted action, or `workflow next --auto` to let CodePilot choose low-risk policy actions. `suggested_command` is only display/review metadata; do not compose or execute it automatically. By default `--auto` does not create inspect tasks or import plan tasks; projects can opt in with `[automation] workflow_auto_create_inspect_tasks`, `workflow_auto_import_plan_tasks`, `workflow_auto_max_steps`, and `workflow_auto_failure_threshold`. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
 
 ### Status and Evidence
 
@@ -109,7 +108,7 @@ Required rules:
 6. 任务运维统一使用 `{_cmd(command, "task ...")}`。
 7. 发布统一使用 `{_cmd(command, "binary ...")}`。
 8. 外部 AI 直接投递任务前必须读取 `{_cmd(command, "ai template --format json")}`。
-9. 需要规格或计划 artifact 时显式调用 `clarify` / `plan`。
+9. 需要计划 artifact 时显式调用 `plan`。
 
 ## 推荐命令
 
@@ -128,10 +127,9 @@ Required rules:
 {_cmd(command, 'go "修复任务重试逻辑并补测试" -p <项目名>')}
 ```
 
-### 3. 澄清和计划
+### 3. 计划
 
 ```bash
-{_cmd(command, 'clarify -p <项目名> "模糊需求" --json')}
 {_cmd(command, 'plan -p <项目名> "明确需求" --json')}
 {_cmd(command, "plan -p <项目名> --from-spec .codepilot/specs/example.md --json")}
 {_cmd(command, "inspect -p <项目名> --once --dry-run --write-workflow --json")}
@@ -141,9 +139,9 @@ Required rules:
 {_cmd(command, "workflow next -p <项目名> --auto --json")}
 ```
 
-`clarify`、`plan` 和 `inspect --write-workflow` 不创建 backlog、不启动执行器。
+`plan` 和 `inspect --write-workflow` 不创建 backlog、不启动执行器。
 
-`clarify` 和 `plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（生成计划、导入任务、继续澄清、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；也可以用 `workflow next --auto` 让 CodePilot 自动选择低风险策略动作。`suggested_command` 只用于展示/审查，不作为自动执行源。默认 `--auto` 不创建 inspect 任务、不导入 plan 任务；项目可通过 `[automation] workflow_auto_create_inspect_tasks`、`workflow_auto_import_plan_tasks`、`workflow_auto_max_steps` 和 `workflow_auto_failure_threshold` 放开策略。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
+`plan` 的 `--json` 输出包含 `next_actions` 字段，列出后续可用操作（导入任务、重新规划、放弃等）。每个 next action 包含 `id`、`label`、`risk` 和 `suggested_command`。外部 AI / Agent 应优先用 `workflow next --list` 查看可用动作，再用 `workflow next --action <id>` 通过固定 allowlist 安全推进；也可以用 `workflow next --auto` 让 CodePilot 自动选择低风险策略动作。`suggested_command` 只用于展示/审查，不作为自动执行源。默认 `--auto` 不创建 inspect 任务、不导入 plan 任务；项目可通过 `[automation] workflow_auto_create_inspect_tasks`、`workflow_auto_import_plan_tasks`、`workflow_auto_max_steps` 和 `workflow_auto_failure_threshold` 放开策略。高风险动作仍需显式确认，且必须在 `workflow next` allowlist 内。
 
 ### 4. 状态与证据
 
@@ -375,22 +373,14 @@ retry 123
 
 `trace` 合并任务生命周期、任务日志、服务心跳和 workflow state，适合排查最近发生了什么、任务卡在哪个阶段、服务是否仍有心跳。
 
-### 3.6 生成执行前需求规格
-
-```bash
-{_cmd(command, 'clarify -p <项目名> "改进 doctor" --json')}
-```
-
-`clarify` 只生成 `.codepilot/specs/clarify-*.md` 和 context artifact，写入 workflow state，不创建 backlog 任务、不启动执行器。适合先把模糊需求整理成目标、范围、非目标、约束、验收标准和待确认问题。
-
-### 3.7 生成可审查执行计划
+### 3.6 生成可审查执行计划
 
 ```bash
 {_cmd(command, 'plan -p <项目名> "新增 explore" --use-wiki --json')}
 {_cmd(command, "plan -p <项目名> --from-spec .codepilot/specs/example.md --json")}
 ```
 
-`plan` 生成 `.codepilot/plans/plan-*.md` 和 context artifact，返回任务候选、wiki 引用、风险、执行顺序和验证矩阵。默认不创建 backlog、不启动执行器；人工确认后再导入任务或继续 clarify。
+`plan` 生成 `.codepilot/plans/plan-*.md` 和 context artifact，返回任务候选、wiki 引用、风险、执行顺序和验证矩阵。默认不创建 backlog、不启动执行器；人工确认后再导入任务。
 
 ### 4. 精确查看单个任务
 

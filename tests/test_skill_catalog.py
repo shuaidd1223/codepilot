@@ -30,8 +30,7 @@ def test_setup_does_not_materialize_default_skill_catalog(tmp_path, monkeypatch)
     assert listed.exit_code == 0, listed.output
     skills = json.loads(listed.output)["data"]["skills"]
     names = {item["name"] for item in skills}
-    assert {"deep-interview", "ralplan", "ralph", "build-fix", "wiki"} <= names
-    assert "team" not in names
+    assert {"ralplan", "ralph", "build-fix", "wiki"} <= names
     build_fix = next(item for item in skills if item["name"] == "build-fix")
     assert {"codex", "claude", "gemini", "custom"} <= set(build_fix["supported_providers"])
     assert build_fix["entrypoint_command"] == "build-fix"

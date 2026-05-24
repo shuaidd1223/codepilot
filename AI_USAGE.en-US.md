@@ -16,7 +16,7 @@ This guide is for other AI agents. For the latest machine-readable command list,
 6. Use `codepilot task ...` for task operations.
 7. Use `codepilot binary ...` for releases.
 8. External AI systems must read `codepilot ai template --format json` before submitting tasks directly.
-9. Use `clarify` / `plan` explicitly when a deterministic spec or plan artifact is needed.
+9. Use `plan` explicitly when a deterministic plan artifact is needed.
 
 ## Recommended Commands
 
@@ -35,10 +35,9 @@ codepilot "fix task retry logic and add tests"
 codepilot go "fix task retry logic and add tests" -p <project-name>
 ```
 
-### Clarify, Plan, and Safe Next Actions
+### Plan and Safe Next Actions
 
 ```bash
-codepilot clarify -p <project-name> "vague requirement" --json
 codepilot plan -p <project-name> "clear requirement" --json
 codepilot inspect -p <project-name> --once --dry-run --write-workflow --json
 codepilot workflow status -p <project-name> --json
@@ -47,7 +46,7 @@ codepilot workflow next -p <project-name> --action <id> --json
 codepilot workflow next -p <project-name> --auto --json
 ```
 
-`clarify`, `plan`, and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions, `workflow next --action <id>` to execute an allowlisted action, or `workflow next --auto` to let CodePilot choose low-risk policy actions. `suggested_command` is only display/review metadata; do not compose or execute it automatically. By default `--auto` does not create inspect tasks or import plan tasks; projects can opt in with `[automation] workflow_auto_create_inspect_tasks`, `workflow_auto_import_plan_tasks`, `workflow_auto_max_steps`, and `workflow_auto_failure_threshold`. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
+`plan` and `inspect --write-workflow` create reviewable artifacts and record `next_actions`, but they do not create backlog tasks or start execution by themselves. Use `workflow next --list` to inspect available actions, `workflow next --action <id>` to execute an allowlisted action, or `workflow next --auto` to let CodePilot choose low-risk policy actions. `suggested_command` is only display/review metadata; do not compose or execute it automatically. By default `--auto` does not create inspect tasks or import plan tasks; projects can opt in with `[automation] workflow_auto_create_inspect_tasks`, `workflow_auto_import_plan_tasks`, `workflow_auto_max_steps`, and `workflow_auto_failure_threshold`. High-risk actions still require explicit confirmation and must pass the workflow next allowlist.
 
 ### Status and Evidence
 
@@ -78,3 +77,4 @@ Required rules:
 3. Each `tasks.md` section must be a complete task template.
 4. `add -t "title"` and `tasks.txt` call AI to generate content and validate it.
 5. `--no-ai` / `--allow-empty` are removed; empty placeholder tasks are not allowed.
+
