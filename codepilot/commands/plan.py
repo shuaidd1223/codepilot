@@ -105,7 +105,6 @@ def _topic_files(requirement: str) -> list[str]:
     rules = [
         (("doctor", "健康", "诊断"), ["codepilot/commands/doctor.py", "tests/test_doctor_command.py", "docs/操作文档.zh-CN.md"]),
         (("explore", "探索", "证据"), ["codepilot/commands/explore.py", "tests/test_explore_command.py"]),
-        (("clarify", "澄清", "规格"), ["codepilot/commands/clarify.py", "tests/test_clarify_command.py"]),
         (("plan", "计划", "规划"), ["codepilot/commands/plan.py", "tests/test_plan_command.py"]),
         (("wiki", "memory", "知识"), ["codepilot/commands/wiki.py", "tests/test_wiki_command.py"]),
         (("ui", "web", "面板"), ["codepilot/commands/ui.py", "codepilot/commands/webui_service.py", "tests/"]),
@@ -162,7 +161,7 @@ def _build_risks(requirement: str, *, source: str) -> list[str]:
         "候选任务基于本地规则生成，复杂依赖关系需要执行前复核。",
     ]
     if source == "spec":
-        risks.append("clarify spec 中的待确认问题若未回答，计划可能仍保留不确定性。")
+        risks.append("spec 中的待确认问题若未回答，计划可能仍保留不确定性。")
     if re.search(r"(db|database|schema|数据库|迁移|auth|认证)", requirement, re.IGNORECASE):
         risks.append("需求可能触及数据库、认证或兼容性边界，需要提高验证范围。")
     return risks
@@ -170,7 +169,7 @@ def _build_risks(requirement: str, *, source: str) -> list[str]:
 
 def _build_verification_plan(summary: str, files: list[str]) -> list[dict[str, str]]:
     keyword = "plan_command"
-    for candidate in ("doctor", "explore", "clarify", "wiki"):
+    for candidate in ("doctor", "explore", "plan", "wiki"):
         if any(candidate in item.lower() for item in files) or candidate in summary.lower():
             keyword = candidate
             break
@@ -402,7 +401,7 @@ def _render_plan_markdown(payload: dict[str, Any]) -> str:
 
 ## 后续选择
 - 导入任务：人工确认后，用 `codepilot add` 或后续导入流程创建 backlog。
-- 继续 clarify：如果风险或范围仍不清晰，先运行 `codepilot clarify "{payload['summary']}" --json`。
+- 重新规划：如果风险或范围仍不清晰，重新运行 `codepilot plan -p <项目名> "{payload['summary']}" --json` 以细化。
 - 放弃：如果计划不成立，删除本 artifact 即可；本命令未创建任务、未启动执行。
 """
 
@@ -610,7 +609,7 @@ def write_plan_artifact(
 @click.command("plan")
 @click.argument("requirement", nargs=-1, required=False)
 @click.option("--project", "-p", help="项目名称；不指定则按当前目录匹配")
-@click.option("--from-spec", "from_spec", type=click.Path(path_type=str), help="从项目内 clarify spec 生成计划")
+@click.option("--from-spec", "from_spec", type=click.Path(path_type=str), help="从项目内 spec 文件生成计划")
 @click.option("--use-wiki/--no-wiki", default=True, show_default=True, help="是否读取项目 wiki 作为只读上下文")
 @click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
 @click.pass_context
@@ -628,7 +627,7 @@ def plan(
     if from_spec and text:
         raise click.ClickException("不能同时提供需求文本和 --from-spec。")
     if not from_spec and not text:
-        raise click.ClickException("需要提供需求文本，或使用 --from-spec 指向 clarify spec。")
+        raise click.ClickException("需要提供需求文本，或使用 --from-spec 指向 spec 文件。")
 
     project_info = _resolve_project(project)
     source = "text"

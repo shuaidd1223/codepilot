@@ -394,12 +394,24 @@ def test_workflow_next_executes_import_tasks_from_plan_without_shelling_suggeste
     plan = CliRunner().invoke(main, ["plan", "-p", "demo", "改进 doctor", "--json", "--no-wiki"])
     assert plan.exit_code == 0, plan.output
     plan_data = json.loads(plan.output)["data"]
+
     context_path = Path(plan_data["context_path"])
     context = json.loads(context_path.read_text(encoding="utf-8"))
     for action in context["next_actions"]:
         if action["id"] == "import_tasks":
-            action["suggested_command"] = "codepilot run -p demo --once --json"
+            action["suggested_command"] = r"codepilot add -p demo -f C:\does-not-exist\tasks.json"
     context_path.write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    state = read_workflow_state(project["path"], mode="plan")
+    poisoned_actions = []
+    for action in state["next_actions"]:
+        cloned = dict(action)
+        if cloned["id"] == "import_tasks":
+            cloned["suggested_command"] = r"codepilot add -p demo -f C:\does-not-exist\tasks.json"
+        poisoned_actions.append(cloned)
+    update_workflow_state(project["path"], "plan", next_actions=poisoned_actions)
+
+    monkeypatch.setattr(add_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
+    monkeypatch.setattr(add_cmd, "resolve_agent_with_fallback", lambda agent, **kwargs: (agent, None))
 
     result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", "import_tasks", "--json"])
 
@@ -407,11 +419,13 @@ def test_workflow_next_executes_import_tasks_from_plan_without_shelling_suggeste
     payload = json.loads(result.output)
     assert payload["ok"] is True
     data = payload["data"]
-    import_result = data["result"]
     assert data["action"]["id"] == "import_tasks"
-    assert import_result["source"] == "plan"
-    assert import_result["source_path"] == plan_data["artifact_path"]
-    assert len(import_result.get("tasks", [])) > 0
+    assert data["result"]["task_batch_path"] == plan_data["task_batch_path"]
+    assert data["result"]["count"] == len(plan_data["task_candidates"])
+    assert len(db.list_tasks(project="demo")) == len(plan_data["task_candidates"])
+
+    consumed_state = read_workflow_state(project["path"], mode="plan")
+    assert any(item["id"] == "import_tasks" for item in consumed_state["consumed_actions"])
 
 
 def test_workflow_next_executes_import_tasks_from_task_batch_not_suggested_command(tmp_path, monkeypatch):

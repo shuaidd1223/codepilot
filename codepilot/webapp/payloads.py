@@ -488,7 +488,7 @@ def _materialize_artifact_next_actions(
             action["task_batch_path"] = task_batch_path
             action["params"]["task_batch_path"] = task_batch_path
             action["executable"] = bool(project_name)
-        elif action_id == "continue_clarify":
+        elif action_id == "replan":
             action["params"]["summary"] = summary
         elif action_id == "abandon_plan" and plan_path:
             action["params"]["plan_path"] = plan_path

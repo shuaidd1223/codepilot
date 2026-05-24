@@ -779,10 +779,10 @@ def artifact_next_actions_for_type(artifact_type: str) -> list[dict]:
                 "suggested_command": "codepilot add -p {project} -f {task_batch_path}",
             },
             {
-                "id": "continue_clarify",
-                "label": "对计划中不清晰的部分进一步澄清",
+                "id": "replan",
+                "label": "重新规划以细化或补充内容",
                 "risk": "low",
-                "suggested_command": 'codepilot clarify -p {project} "{summary}" --json',
+                "suggested_command": 'codepilot plan -p {project} "{summary}" --json',
             },
             {
                 "id": "execute_directly",
