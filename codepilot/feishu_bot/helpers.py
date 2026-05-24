@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import os
 import re
 from dataclasses import dataclass
@@ -22,7 +21,7 @@ from codepilot.feishu_cards import (
     _running_label,
     _status_label,
 )
-from codepilot.feishu_config import FeishuBotConfig, load_feishu_bot_config
+from codepilot.feishu_config import FeishuBotConfig
 from codepilot.storage import database as db
 
 

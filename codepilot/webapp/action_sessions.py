@@ -11,7 +11,6 @@ from typing import Optional
 from codepilot.storage import database as db
 from codepilot.ai_support.interaction_controller import (
     build_workflow_session_record,
-    parse_intent_prefix,
     resolve_turn_intent,
 )
 from codepilot.webapp.action_requirements import (
@@ -20,18 +19,7 @@ from codepilot.webapp.action_requirements import (
 )
 from codepilot.webapp.action_session_history import (
     _augment_text_with_session_context,
-    _message_metadata,
     _session_message_payload,
-)
-from codepilot.webapp.action_session_records import (
-    create_session_action,
-    delete_session_action,
-    get_session_action,
-    list_sessions_action,
-)
-from codepilot.webapp.action_state import (
-    _effective_planner,
-    _normalize_goal_category,
 )
 
 
@@ -501,7 +489,7 @@ def send_session_message_action(
     project_info = db.get_project(project)
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
-    text = normalize_text(text)
+    text = _normalize_text(text)
     if not text:
         raise RuntimeError("输入不能为空。")
     existing_messages = db.list_session_messages(session_id)

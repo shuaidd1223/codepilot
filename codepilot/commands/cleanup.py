@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -237,7 +236,7 @@ def cleanup(
         echo("  [green]✔[/green]  无")
 
     # 2) Orphan log paths
-    echo(f"\n[bold]孤立日志路径[/bold]（文件已丢失）")
+    echo("\n[bold]孤立日志路径[/bold]（文件已丢失）")
     if orphan_results:
         for e in orphan_results:
             echo(f"  [red]✘[/red]  #{e['id']}  {safe(e['title'])}  → {safe(e['missing_path'])}")

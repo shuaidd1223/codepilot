@@ -8,46 +8,20 @@ from __future__ import annotations
 
 from typing import Callable
 
-from codepilot.commands.run_failure_triage_apply import (
-    _apply_replan_decision,
-    _apply_retry_with_hint_decision,
-    _apply_terminal_review_failure_decision,
-    _fallback_review_failure_result,
-    _override_review_failure_discard_decision,
-    _parse_reviewer_verdict_safe,
-    apply_deterministic_failure_triage,
-    apply_review_failure_triage,
-)
 from codepilot.commands.run_failure_triage_decisions import (
     _TriageEvidence,
     _classify_triage_action,
     _collect_review_failure_evidence as _collect_review_failure_evidence_impl,
     _collect_triage_evidence as _collect_triage_evidence_impl,
-    _map_discard_decision,
-    _map_merge_decision,
-    _map_replan_decision,
-    _map_retry_with_hint_decision,
     _map_review_failure_decision,
     _map_triage_decision,
-    _resolve_triage_project_context,
 )
 from codepilot.commands.run_failure_triage_prompts import (
     _DETERMINISTIC_FAILURE_TRIAGE_CANDIDATE_LIMIT,
     _DETERMINISTIC_FAILURE_TRIAGE_SCHEMA,
     _REVIEW_FAILURE_TRIAGE_SCHEMA,
-    _append_task_content,
     _build_deterministic_failure_triage_prompt as _build_deterministic_failure_triage_prompt_impl,
-    _build_forced_retry_hint,
     _build_review_failure_triage_prompt as _build_review_failure_triage_prompt_impl,
-    _format_replan_task_content,
-    _format_retry_hint_block,
-    _format_retry_hint_note,
-    _format_reviewer_verdict_block,
-    _format_triage_merge_note,
-    _iter_triage_candidates,
-    _review_output_has_actionable_failure,
-    _reviewer_actionable_items,
-    _trim_triage_text,
 )
 
 

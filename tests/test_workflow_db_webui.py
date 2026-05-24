@@ -26,7 +26,6 @@ from codepilot.cli import main
 from codepilot.commands import add as add_cmd
 from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
-from codepilot.commands.clarify import write_clarify_artifact
 from codepilot.commands.plan import write_plan_artifact
 from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
@@ -528,11 +527,6 @@ def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeyp
         "codepilot.webapp.action_requirements._request_task_service_start",
         lambda project: (service_calls.append(project) or {"running": True, "started": True, "pid": 7654}, ""),
     )
-    monkeypatch.setattr(
-        "codepilot.webapp.actions.clarify_requirement",
-        lambda title, **kw: {"status": "ready", "refined_title": title},
-    )
-
     result = webui_mod.submit_requirement_action(
         "demo",
         "让 Web UI 直接接收需求",
@@ -625,11 +619,6 @@ def test_webui_requirement_jobs_survive_ui_state_reset(tmp_path, monkeypatch):
         "codepilot.webapp.action_requirements._request_task_service_start",
         lambda project: ({"running": True, "started": False, "pid": 7654}, ""),
     )
-    monkeypatch.setattr(
-        "codepilot.webapp.actions.clarify_requirement",
-        lambda title, **kw: {"status": "ready", "refined_title": title},
-    )
-
     result = webui_mod.submit_requirement_action(
         "demo",
         "持久保留需求历史",
@@ -968,36 +957,6 @@ def test_import_tasks_action_normalizes_legacy_content_and_depends_fields(tmp_pa
     assert json.loads(imported_first["depends_on"]) == [upstream["id"]]
     assert json.loads(imported_second["depends_on"]) == [upstream["id"]]
 
-
-def test_artifact_context_payload_resolves_clarify_plan_action_to_spec_path(tmp_path, monkeypatch):
-    _init_test_db(tmp_path, monkeypatch)
-    project_path = tmp_path / "project"
-    project_path.mkdir()
-    (project_path / "README.md").write_text("doctor command checks services\n", encoding="utf-8")
-    project = db.register_project("demo", str(project_path))
-
-    result = write_clarify_artifact(project, "改进 doctor", quick=True)
-
-    payload = webui_mod.artifact_context_payload(result["context_path"])
-
-    assert payload["ok"] is True
-    assert payload["artifact_type"] == "clarify"
-    assert payload["artifact_path"] == result["artifact_path"]
-    action = next(item for item in payload["next_actions"] if item["id"] == "plan_from_spec")
-    assert result["artifact_path"] in action["suggested_command"]
-    assert "<spec_path>" not in action["suggested_command"]
-    assert action["executable"] is True
-    assert action["params"]["artifact_path"] == result["artifact_path"]
-    assert action["action"] == {
-        "type": "artifact_next_action",
-        "method": "POST",
-        "endpoint": "/api/artifacts/actions",
-        "payload": {
-            "project": "demo",
-            "context_path": result["context_path"],
-            "action_id": "plan_from_spec",
-        },
-    }
 
 
 def test_artifact_context_payload_resolves_plan_import_action_to_task_batch(tmp_path, monkeypatch):

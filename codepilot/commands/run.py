@@ -7,9 +7,6 @@ Shell/command helpers live in `run_shell.py`; git operations live in
 from __future__ import annotations
 
 import os
-import subprocess
-import tempfile
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -18,15 +15,8 @@ import click
 from rich.console import Console
 
 from codepilot.storage import database as db
-from codepilot.ai_support.service import (
-    _get_node_modules_path,
-    check_provider_availability,
-    normalize_agent_name,
-    resolve_dual_phase_agents,
-    resolve_cli_provider,
-)
 from codepilot.gateway.service import GatewayRequest, call_structured
-from codepilot.commands.status import _resolve_project, render_project_dashboard
+from codepilot.commands.status import _resolve_project, render_project_dashboard  # noqa: F401 (re-export)
 from codepilot.core.config import (
     load_project_config,
     resolve_planner,
@@ -34,29 +24,25 @@ from codepilot.core.config import (
 )
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import project_storage_root
-from codepilot.prompts import load_prompt as _load_prompt
-from codepilot.core.runtime import (
-    HEARTBEAT_INTERVAL_SECONDS,
+from codepilot.core.runtime import (  # noqa: F401 (re-export)
     clear_task_runtime,
-    get_stop_request,
     list_live_tasks,
     reap_stalled_tasks,
-    stop_process_tree,
     stop_worktree_leftovers,
-    tail_text,
-    update_task_runtime,
 )
-from codepilot.webapp.webhook import notify_task_event, notify_task_status
-from codepilot.feishu_bot import notify_feishu_task_event
+from codepilot.feishu_bot import notify_feishu_task_event  # noqa: F401 (re-export)
+from codepilot.webapp.webhook import notify_task_event, notify_task_status  # noqa: F401 (re-export)
 
 # Re-export shell + command helpers
 from codepilot.commands.run_shell import (  # noqa: F401
     PreflightSkipError,
     ShellInfo,
-    TaskCancelled,
     build_script_command,
     detect_best_shell,
     _run_command,
+)
+from codepilot.commands.run_live_runner import (  # noqa: F401
+    TaskCancelled,
     _run_command_live,
     _should_show_line,
     _summarize_output,
@@ -124,19 +110,25 @@ from codepilot.commands.run_builtin import (  # noqa: F401
     _run_builtin_executor,
 )
 from codepilot.commands.run_failure_triage import (  # noqa: F401
+    triage_deterministic_failure as _triage_deterministic_failure_impl,
+    triage_review_failure as _triage_review_failure_impl,
+)
+from codepilot.commands.run_failure_triage_apply import (  # noqa: F401
+    apply_deterministic_failure_triage as _apply_deterministic_failure_triage_impl,
+    apply_review_failure_triage as _apply_review_failure_triage_impl,
+)
+from codepilot.commands.run_failure_triage_decisions import (  # noqa: F401
+    _resolve_triage_project_context as _resolve_triage_project_context_impl,
+)
+from codepilot.commands.run_failure_triage_prompts import (  # noqa: F401
     _DETERMINISTIC_FAILURE_TRIAGE_CANDIDATE_LIMIT,
     _DETERMINISTIC_FAILURE_TRIAGE_SCHEMA,
     _REVIEW_FAILURE_TRIAGE_SCHEMA,
     _append_task_content,
     _build_deterministic_failure_triage_prompt,
     _format_triage_merge_note,
-    _trim_triage_text,
     _iter_triage_candidates as _iter_triage_candidates_impl,
-    _resolve_triage_project_context as _resolve_triage_project_context_impl,
-    apply_deterministic_failure_triage as _apply_deterministic_failure_triage_impl,
-    apply_review_failure_triage as _apply_review_failure_triage_impl,
-    triage_deterministic_failure as _triage_deterministic_failure_impl,
-    triage_review_failure as _triage_review_failure_impl,
+    _trim_triage_text,
 )
 from codepilot.commands.run_orchestrator import run_backlog as _run_backlog_orchestrated
 
@@ -153,7 +145,6 @@ def _find_dispatch_script(project_path: str | None = None) -> Optional[Path]:
     """Return the configured dispatch script if one exists."""
     candidates: list[Path] = []
 
-    import os
 
     env_path = os.environ.get("CODEPILOT_DISPATCH_PATH")
     if env_path:

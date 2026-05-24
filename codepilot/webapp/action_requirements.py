@@ -36,7 +36,8 @@ from codepilot.webapp.action_state import (
     _update_job,
     cancel_ui_job,
 )
-from codepilot.webapp.payloads import _now_iso, _task_payload
+from codepilot.webapp.payloads import _now_iso
+from codepilot.webapp.task_payloads import _task_payload
 
 
 _PLANNER_PID_RE = re.compile(r"\bPID=(\d+)\b")

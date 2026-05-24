@@ -8,15 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from codepilot.commands.inspect_signal_collectors import (
-    collect_code_metrics,
-    collect_dependency_health,
-    collect_failed_tasks,
-    collect_git_log,
-    collect_pytest_collect,
-    collect_ruff,
-    collect_todos,
-)
 
 
 InspectSignalCollectorScope = Literal["project_name", "project_path"]

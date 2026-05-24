@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, TypeVar, cast
+from typing import Optional, TypeVar
 
 from codepilot.storage.config import (
     default_db_path as _cfg_default_db_path,
@@ -25,25 +25,14 @@ from codepilot.storage.project_store import (
     fetch_projects as _fetch_projects,
     upsert_project_by_path as _upsert_project_by_path,
 )
-from codepilot.storage.schema_store import (
+from codepilot.storage.schema_store import (  # noqa: F401 (re-export SCHEMA_VERSION)
     SCHEMA_VERSION,
-    _BASELINE_SCHEMA,
-    _MIGRATIONS,
-    _SERVICE_STATES_SCHEMA,
-    _ensure_column,
     _ensure_service_states_schema,
-    _get_schema_version,
-    _has_column,
-    _has_table,
-    _record_migration,
     initialize_schema as _initialize_schema,
     load_schema_status as _load_schema_status,
 )
 from codepilot.storage.service_state_store import (
-    _decode_service_meta,
-    _is_missing_service_states_table,
     _normalize_service_scope,
-    _service_row_to_dict,
     delete_service_state_row as _delete_service_state_row,
     fetch_service_state as _fetch_service_state,
     insert_service_state_row_if_absent as _insert_service_state_row_if_absent,
@@ -77,7 +66,6 @@ from codepilot.storage.task_read_model import (
     query_tasks as _query_tasks,
 )
 from codepilot.storage.task_write_store import (
-    _normalize_depends_on_value,
     delete_task_with_logs as _delete_task_with_logs,
     insert_task_log_row as _insert_task_log_row,
     insert_task_row as _insert_task_row,

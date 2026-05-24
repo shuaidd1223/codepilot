@@ -90,7 +90,7 @@ def init_(
     project = result["project"]
     project_name = result["requested_name"]
     if not result["created"]:
-        echo(f"[yellow]项目已注册[/yellow]")
+        echo("[yellow]项目已注册[/yellow]")
         click.echo(f"  名称:   {project['name']}")
         click.echo(f"  路径:   {project['path']}")
         click.echo(f"  分支:   {project.get('base_branch') or '-'}")
@@ -118,7 +118,7 @@ def _update_config(config_file: Path, project_name: str) -> None:
     """生成或更新 AGENTS.toml 配置文件."""
     config_file = config_file.resolve()
     if config_file.exists():
-        echo(f"[dim]  已存在 AGENTS.toml，跳过生成[/dim]")
+        echo("[dim]  已存在 AGENTS.toml，跳过生成[/dim]")
         return
 
     content = config.DEFAULT_TEMPLATE.format(name=project_name)

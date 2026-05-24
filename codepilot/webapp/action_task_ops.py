@@ -15,7 +15,7 @@ from codepilot.core.task_template import (
 )
 from codepilot.storage import database as db
 from codepilot.webapp.action_state import _append_event
-from codepilot.webapp.payloads import _task_payload
+from codepilot.webapp.task_payloads import _task_payload
 
 
 def create_project_action(path: str, *, name: str = "", no_config: bool = False) -> dict:

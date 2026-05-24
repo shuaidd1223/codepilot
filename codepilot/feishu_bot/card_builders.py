@@ -16,7 +16,6 @@ from codepilot.feishu_bot.helpers import (
     _parse_iso_datetime,
     _project_service_status,
     _project_status_blocks,
-    _resolve_project,
     _runtime_service_state,
     _session_count,
     _session_followup_commands,
@@ -53,18 +52,12 @@ from codepilot.feishu_cards import (
 )
 from codepilot.storage import database as db
 from codepilot.webapp.action_task_ops import (
-    archive_task_action,
     batch_task_action,
-    cancel_task_action,
-    create_project_action,
     delete_project_action,
     delete_task_action,
-    project_service_action,
-    stop_task_action,
 )
-from codepilot.webapp.action_requirements import retry_task_action
 from codepilot.webapp.display_sort import sort_tasks_for_display
-from codepilot.webapp.payloads import _compose_log_text, _task_payload, task_detail_payload
+from codepilot.webapp.task_payloads import _compose_log_text, _task_payload, task_detail_payload
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +292,6 @@ def _submit_opencode_from_feishu(
 ) -> dict[str, Any]:
     from codepilot.feishu_bot.helpers import (
         _clear_pending_goal_text,
-        _feishu_session_title,
         _resolve_opencode_db_session,
         _save_active_opencode_session_id,
         _save_chat_project,
@@ -783,7 +775,6 @@ def build_task_log_card(task_id: int, *, prefix: str = "") -> dict[str, Any]:
     if not task:
         raise RuntimeError(f"任务 #{task_id} 不存在。")
     detail = task_detail_payload(task_id)
-    text = str(detail.get("log_text") or _compose_log_text(task) or "").strip()
     blocks: list[str | dict[str, Any]] = [
         *_section_note("日志摘要", "日志详情已通过富文本消息发送，卡片保留操作入口。"),
         *_column_panels(
@@ -817,7 +808,6 @@ def _build_task_log_reply(task_id: int, *, prefix: str = "") -> dict[str, Any]:
 
 def build_service_card(project_name: str, result: dict[str, Any], *, prefix: str = "", title: str = "任务执行服务") -> dict[str, Any]:
     status = result.get("status") if isinstance(result.get("status"), dict) else result
-    running = bool(status.get("running"))
     stopping = bool(status.get("stopping"))
     started_at = str(status.get("started_at") or "").strip()
     log_path = str(status.get("log") or "").strip()

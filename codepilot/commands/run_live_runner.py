@@ -92,7 +92,7 @@ def _summarize_output(output: str) -> list[str]:
                 summary.append(s[:120])
     # If no file-level info found, show last few meaningful lines
     if not summary:
-        meaningful = [l.strip() for l in lines if l.strip() and not l.strip().startswith(("import ", "from ", "def ", "class ", "    "))]
+        meaningful = [line.strip() for line in lines if line.strip() and not line.strip().startswith(("import ", "from ", "def ", "class ", "    "))]
         summary = meaningful[-5:]
     return summary[:15]
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import click
 from rich import box
-from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table

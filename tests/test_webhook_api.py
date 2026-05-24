@@ -13,7 +13,8 @@ from codepilot.storage import database as db
 from codepilot.webapp import server as webui_mod  # noqa: F401 - dashboard payload looks up this module dynamically.
 from codepilot.commands import run as run_cmd
 from codepilot.commands import webhook as webhook_cmd
-from codepilot.webapp.payloads import dashboard_payload, task_detail_payload
+from codepilot.webapp.payloads import dashboard_payload
+from codepilot.webapp.task_payloads import task_detail_payload
 from codepilot.webapp.webhook import start_webhook_server
 
 

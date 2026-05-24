@@ -752,7 +752,7 @@ def logs(task_id: int, tail: int, full: bool):
     if not task_logs:
         snippet = task.get("last_output") or ""
         if snippet:
-            echo(f"[cyan]最近输出[/cyan]")
+            echo("[cyan]最近输出[/cyan]")
             click.echo(snippet if full else _render_log_text(snippet, tail))
         else:
             echo("[yellow]这个任务还没有可用日志[/yellow]")

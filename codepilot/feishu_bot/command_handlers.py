@@ -16,7 +16,6 @@ from codepilot.feishu_bot.card_builders import (
     build_help_card,
     build_overview_card,
     build_project_command_error_card,
-    build_project_deleted_card,
     build_project_info_card,
     build_project_registered_card,
     build_projects_card,
@@ -34,13 +33,9 @@ from codepilot.feishu_bot.helpers import (
     _card_commands,
     _clear_pending_action_options,
     _clear_pending_goal_text,
-    _clear_pending_confirm,
     _CommandContext,
-    _load_chat_project,
     _load_pending_action_options,
     _load_pending_goal_text,
-    _load_pending_confirm,
-    _normalize_task_status_filter,
     _now_iso,
     _parse_tasks_command_args,
     _pending_delete_confirm,
@@ -50,8 +45,6 @@ from codepilot.feishu_bot.helpers import (
     _save_pending_action_options,
     _save_pending_confirm,
     _save_pending_goal_text,
-    _save_active_opencode_session_id,
-    _task_filter_label,
     _touch_chat_seen,
 )
 from codepilot.feishu_cards import (
@@ -60,18 +53,16 @@ from codepilot.feishu_cards import (
     _field,
     _field_block,
     _help_note,
-    _note,
     _plain_block,
     _reply_card,
     _section,
-    _section_note,
 )
 from codepilot.feishu_commands import (
     normalize_command_text as _normalize_command_text,
     parse_task_id as _parse_task_id,
     parse_task_ids as _parse_task_ids,
 )
-from codepilot.feishu_config import FeishuBotConfig, load_feishu_bot_config, validate_feishu_bot_config
+from codepilot.feishu_config import load_feishu_bot_config
 from codepilot.feishu_interactions import (
     card_action_chat_id as _card_action_chat_id,
     card_action_command as _card_action_command,
@@ -85,12 +76,10 @@ from codepilot.webapp.action_task_ops import (
     batch_task_action,
     cancel_task_action,
     create_project_action,
-    delete_project_action,
     project_service_action,
     stop_task_action,
 )
 from codepilot.webapp.action_requirements import retry_task_action
-from codepilot.webapp.payloads import _compose_log_text, task_detail_payload
 
 
 # ---------------------------------------------------------------------------

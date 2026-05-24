@@ -6,9 +6,6 @@ import json
 import re
 from typing import Optional
 
-def _normalize_text(text: str) -> str:
-    return " ".join(str(text or "").split())
-
 from codepilot.storage import database as db
 from codepilot.webapp.action_session_history import (
     _compact_session_text,
@@ -16,6 +13,10 @@ from codepilot.webapp.action_session_history import (
 )
 from codepilot.webapp.action_state import _append_event
 from codepilot.webapp.display_sort import sort_sessions_for_display
+
+
+def _normalize_text(text: str) -> str:
+    return " ".join(str(text or "").split())
 
 
 def _session_search_terms(query: str) -> list[str]:

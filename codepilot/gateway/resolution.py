@@ -11,7 +11,6 @@ require touching this module.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional
 
 from codepilot.ai_support.cli_families import CLI_FAMILIES, get_family
@@ -157,10 +156,10 @@ def _resolve_fallback_order(request: GatewayRequest) -> list[str]:
     configured: list[str] = []
     try:
         cfg = load_project_config(_provider_ref(request))
-    except (FileNotFoundError, PermissionError, IsADirectoryError) as exc:
+    except (FileNotFoundError, PermissionError, IsADirectoryError):
         # 配置文件不存在或无法读取时使用默认配置
         cfg = None
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         # 其他未预期的异常也降级到默认配置，避免阻塞主流程
         cfg = None
     if cfg is not None:

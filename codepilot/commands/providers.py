@@ -9,7 +9,6 @@ from rich.table import Table
 from codepilot.ai_support.service import (
     CLI_PROVIDERS,
     API_PROVIDERS,
-    list_available_providers,
     check_provider_availability,
 )
 from codepilot.core.output import terminal_console

@@ -21,7 +21,6 @@ from typing import Optional
 import click
 
 from codepilot.gateway.types import GatewayCallOptions
-from codepilot.storage import database as db
 from codepilot.ai_support.intent_rules import _heuristic_intent
 from codepilot.ai_support.interaction_controller import build_workflow_session_record
 from codepilot.commands import auto_project_resolution as _project_resolution

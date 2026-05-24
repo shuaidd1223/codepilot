@@ -12,7 +12,6 @@ from codepilot.binary_support.manager import (
     create_release_bundle,
     default_install_dir,
     install_binary,
-    read_project_version,
     restore_project_version,
     resolve_release_dir,
     resolve_release_inputs,
@@ -22,7 +21,6 @@ from codepilot.binary_support.manager import (
     _merge_release_inputs,
 )
 from codepilot.core.output import echo
-from codepilot.core.paths import global_storage_root
 
 
 @click.group("binary")

@@ -141,8 +141,6 @@ def _build_review_prompt(
     reviewer_notes = _bullet_lines(sections.get("Reviewer 职责") or "")
     goal = (sections.get("任务目标") or "").strip()
     forbidden = (sections.get("禁区") or "").strip()
-    not_in_scope = (sections.get("不涉及") or "").strip()
-
     lines = (
         [f"请审查当前仓库中为任务 #{task['id']} `{task['title']}` 产生的未提交改动。"]
         if chinese

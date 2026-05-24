@@ -20,13 +20,7 @@ from codepilot.webapp.display_sort import TASK_STATUS_ORDER, sort_tasks_for_disp
 from codepilot.core.runtime import runtime_summary
 from codepilot.core.config import resolve_project_config_reference
 from codepilot.webapp.task_payloads import (
-    _compose_log_text,
-    _parse_depends,
-    _read_text,
-    _tail_text,
     _task_payload,
-    task_detail_payload,
-    task_log_delta,
 )
 
 
@@ -524,7 +518,6 @@ def artifact_context_payload(context_path: str) -> dict:
     artifact_type = _artifact_type_from_context(ctx)
     project_info = _artifact_project_info(path.resolve())
     artifact_paths = _artifact_paths_from_context(ctx)
-    spec_path = _artifact_value(ctx, "spec")
     plan_path = _artifact_value(ctx, "plan")
     task_batch_path = _artifact_value(ctx, "task_batch")
     artifact_path = plan_path

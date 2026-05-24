@@ -18,12 +18,8 @@ from codepilot.commands.reviewer_output import ReviewerVerdict, format_findings_
 from codepilot.commands.run_shell import PreflightSkipError
 from codepilot.commands.run_builtin_core import (
     ExecutionResult,
-    _builtin_runtime_dir,
-    _builtin_review_requires_git,
-    _read_output_file,
     _resolve_dual_phase_agents_for_task,
     _runner_module,
-    _write_task_log,
 )
 from codepilot.commands.run_builtin_prompts import _build_builtin_prompt, _build_review_prompt
 

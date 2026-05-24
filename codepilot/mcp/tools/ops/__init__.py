@@ -17,7 +17,6 @@ from codepilot.mcp.tools._helpers import (  # noqa: F401
     invalid_arguments,
     resolve_project,
 )
-from codepilot.storage import database as db
 
 
 VALID_EXECUTORS = {"auto", "dispatch", "builtin"}

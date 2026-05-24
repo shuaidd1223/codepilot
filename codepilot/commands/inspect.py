@@ -7,7 +7,6 @@ import contextlib
 import io
 import json
 import re
-import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -29,7 +28,16 @@ from codepilot.commands.add import _resolve_project_strict
 from codepilot.commands import inspect_lifecycle, inspect_service, inspect_signals
 from codepilot.commands.inspect_workflow import ensure_candidate_id, write_inspect_workflow_context
 from codepilot.commands.inspect_signals import lint_fingerprint, lint_group_key
+from codepilot.commands.inspect_signal_collectors import (
+    collect_failed_tasks,
+    collect_git_log,
+    collect_pytest_collect,
+    collect_ruff,
+)
+from codepilot.commands.inspect_signal_collectors_code_metrics import collect_code_metrics
+from codepilot.commands.inspect_signal_collectors_dependency_health import collect_dependency_health
 from codepilot.commands.inspect_signal_collectors_shared import CODE_EXTS, SCAN_EXTS
+from codepilot.commands.inspect_signal_collectors_todos import collect_todos
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.core.config import load_project_config, resolve_planner
 from codepilot.core.output import echo
@@ -37,6 +45,11 @@ from codepilot.core.paths import global_storage_root
 from codepilot.core.runtime import codepilot_command, is_process_alive, stop_process_tree
 from codepilot.core.service_launcher import append_log_header, spawn_detached_command_via_launcher as _spawn_detached_command_via_launcher
 from codepilot.core.task_template import missing_task_template_sections
+from codepilot.commands.task_quality import (
+    INSPECT_FILLER_KEYWORDS as _GENERIC_FILLER_KEYWORDS,
+    evidence_grounded_in,
+    looks_generic,
+)
 
 INSPECT_STATE_DIR = global_storage_root() / "inspect"
 SKIPPED_SIGNAL = "（跳过）"
@@ -307,14 +320,6 @@ Return strict JSON in this shape:
 If nothing is worth surfacing, return: {{"candidates": []}}
 """
 
-
-collect_git_log = inspect_signals.collect_git_log
-collect_failed_tasks = inspect_signals.collect_failed_tasks
-collect_todos = inspect_signals.collect_todos
-collect_ruff = inspect_signals.collect_ruff
-collect_pytest_collect = inspect_signals.collect_pytest_collect
-collect_dependency_health = inspect_signals.collect_dependency_health
-collect_code_metrics = inspect_signals.collect_code_metrics
 
 InspectSignalSpec = inspect_signals.InspectSignalSpec
 InspectSignalResult = inspect_signals.InspectSignalResult
@@ -592,12 +597,6 @@ def _build_inspection_prompt(
         language_rules=language_rules,
     )
 
-
-from codepilot.commands.task_quality import (
-    INSPECT_FILLER_KEYWORDS as _GENERIC_FILLER_KEYWORDS,
-    evidence_grounded_in,
-    looks_generic,
-)
 
 
 def _is_empty_signal_content(content: str) -> bool:

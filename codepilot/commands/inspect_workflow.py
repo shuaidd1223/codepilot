@@ -24,7 +24,6 @@ from codepilot.core.workflow_state import (
     update_workflow_state,
     workflow_dirs,
 )
-from codepilot.storage import database as db
 
 
 _PROMOTE_PREFIX = "promote_inspect_report_"
