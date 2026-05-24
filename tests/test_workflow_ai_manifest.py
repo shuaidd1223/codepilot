@@ -123,12 +123,11 @@ def test_active_explanation_docs_are_bilingual_and_linked():
     root = Path(__file__).resolve().parents[1]
     pairs = [
         ("README.md", "README.en-US.md"),
-        ("docs/说明文档.zh-CN.md", "docs/说明文档.en-US.md"),
-        ("docs/操作文档.zh-CN.md", "docs/操作文档.en-US.md"),
-        ("docs/AI与Agent调用手册.zh-CN.md", "docs/AI与Agent调用手册.en-US.md"),
-        ("docs/Skill化集成指南.zh-CN.md", "docs/Skill化集成指南.en-US.md"),
-        ("docs/workflow-state.zh-CN.md", "docs/workflow-state.en-US.md"),
-        ("docs/project-services.md", "docs/project-services.en-US.md"),
+        ("docs/02-说明文档.zh-CN.md", "docs/02-overview.en-US.md"),
+        ("docs/03-操作文档.zh-CN.md", "docs/03-operation-guide.en-US.md"),
+        ("docs/04-AI与Agent调用手册.zh-CN.md", "docs/04-ai-agent-manual.en-US.md"),
+        ("docs/05-Skill化集成指南.zh-CN.md", "docs/05-skill-integration-guide.en-US.md"),
+        ("docs/07-workflow-state.zh-CN.md", "docs/07-workflow-state.en-US.md"),
         ("AI_USAGE.zh-CN.md", "AI_USAGE.en-US.md"),
     ]
 
@@ -148,16 +147,14 @@ def test_readme_navigation_lists_bilingual_active_docs():
     readme = (root / "README.md").read_text(encoding="utf-8")
     readme_en = (root / "README.en-US.md").read_text(encoding="utf-8")
     expected_links = [
-        "docs/说明文档.zh-CN.md",
-        "docs/说明文档.en-US.md",
-        "docs/操作文档.zh-CN.md",
-        "docs/操作文档.en-US.md",
-        "docs/AI与Agent调用手册.zh-CN.md",
-        "docs/AI与Agent调用手册.en-US.md",
-        "docs/Skill化集成指南.zh-CN.md",
-        "docs/Skill化集成指南.en-US.md",
-        "docs/project-services.md",
-        "docs/project-services.en-US.md",
+        "docs/02-说明文档.zh-CN.md",
+        "docs/02-overview.en-US.md",
+        "docs/03-操作文档.zh-CN.md",
+        "docs/03-operation-guide.en-US.md",
+        "docs/04-AI与Agent调用手册.zh-CN.md",
+        "docs/04-ai-agent-manual.en-US.md",
+        "docs/05-Skill化集成指南.zh-CN.md",
+        "docs/05-skill-integration-guide.en-US.md",
         "AI_USAGE.zh-CN.md",
         "AI_USAGE.en-US.md",
     ]

@@ -326,10 +326,10 @@ def _plan_next_actions(
             "suggested_command": f"codepilot add -p {project_name} -f {task_batch_arg}",
         },
         {
-            "id": "continue_clarify",
-            "label": "对计划中不清晰的部分进一步澄清",
+            "id": "replan",
+            "label": "重新规划以细化或补充内容",
             "risk": "low",
-            "suggested_command": f"codepilot clarify -p {project_name} \"{summary}\" --json",
+            "suggested_command": f"codepilot plan -p {project_name} \"{summary}\" --json",
         },
         {
             "id": "execute_directly",

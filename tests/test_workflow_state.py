@@ -372,8 +372,8 @@ def test_workflow_status_human_output_renders_structured_agent_actions(tmp_path,
 def test_workflow_next_list_returns_latest_next_actions_json(tmp_path, monkeypatch):
     project = _register_demo_project(tmp_path, monkeypatch)
 
-    clarify = CliRunner().invoke(main, ["clarify", "-p", "demo", "改进 doctor", "--json"])
-    assert clarify.exit_code == 0, clarify.output
+    plan = CliRunner().invoke(main, ["plan", "-p", "demo", "改进 doctor", "--json", "--no-wiki"])
+    assert plan.exit_code == 0, plan.output
 
     result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--list", "--json"])
 
@@ -383,36 +383,35 @@ def test_workflow_next_list_returns_latest_next_actions_json(tmp_path, monkeypat
     assert payload["command"] == "workflow next"
     data = payload["data"]
     assert data["project"] == "demo"
-    assert data["source"]["mode"] == "clarify"
-    assert any(action["id"] == "plan_from_spec" for action in data["next_actions"])
+    assert data["source"]["mode"] == "plan"
+    assert any(action["id"] == "import_tasks" for action in data["next_actions"])
     assert db.get_task_stats("demo")["total"] == 0
     assert Path(data["source"]["context_path"]).is_relative_to(Path(project["path"]))
 
 
-def test_workflow_next_executes_plan_from_spec_without_shelling_suggested_command(tmp_path, monkeypatch):
+def test_workflow_next_executes_import_tasks_from_plan_without_shelling_suggested_command(tmp_path, monkeypatch):
     project = _register_demo_project(tmp_path, monkeypatch)
-    clarify = CliRunner().invoke(main, ["clarify", "-p", "demo", "改进 doctor", "--json"])
-    assert clarify.exit_code == 0, clarify.output
-    clarify_data = json.loads(clarify.output)["data"]
-    context_path = Path(clarify_data["context_path"])
+    plan = CliRunner().invoke(main, ["plan", "-p", "demo", "改进 doctor", "--json", "--no-wiki"])
+    assert plan.exit_code == 0, plan.output
+    plan_data = json.loads(plan.output)["data"]
+    context_path = Path(plan_data["context_path"])
     context = json.loads(context_path.read_text(encoding="utf-8"))
     for action in context["next_actions"]:
-        if action["id"] == "plan_from_spec":
+        if action["id"] == "import_tasks":
             action["suggested_command"] = "codepilot run -p demo --once --json"
     context_path.write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", "plan_from_spec", "--json"])
+    result = CliRunner().invoke(main, ["workflow", "next", "-p", "demo", "--action", "import_tasks", "--json"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["ok"] is True
     data = payload["data"]
-    plan_result = data["result"]
-    assert data["action"]["id"] == "plan_from_spec"
-    assert plan_result["source"] == "spec"
-    assert plan_result["source_path"] == clarify_data["artifact_path"]
-    assert Path(plan_result["plan_path"]).exists()
-    assert Path(plan_result["plan_path"]).is_relative_to(Path(project["path"]))
+    import_result = data["result"]
+    assert data["action"]["id"] == "import_tasks"
+    assert import_result["source"] == "plan"
+    assert import_result["source_path"] == plan_data["artifact_path"]
+    assert len(import_result.get("tasks", [])) > 0
 
 
 def test_workflow_next_executes_import_tasks_from_task_batch_not_suggested_command(tmp_path, monkeypatch):

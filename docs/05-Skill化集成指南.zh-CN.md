@@ -135,9 +135,9 @@ CodePilot 启动的 OpenCode 使用用户级隔离运行时 `~/.codepilot/openco
 每次命令结构调整后，至少同步：
 
 - `README.md`
-- `docs/说明文档.zh-CN.md`
-- `docs/操作文档.zh-CN.md`
-- `docs/AI与Agent调用手册.zh-CN.md`
+- `docs/02-说明文档.zh-CN.md`
+- `docs/03-操作文档.zh-CN.md`
+- `docs/04-AI与Agent调用手册.zh-CN.md`
 - `docs/Skill化集成指南.zh-CN.md`
 - `AI_USAGE.zh-CN.md`
 - `AI_MANIFEST.json`
