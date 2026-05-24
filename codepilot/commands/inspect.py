@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import re
+import sys  # noqa: F401 (accessed via module attribute by tests)
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional

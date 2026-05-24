@@ -21,6 +21,7 @@ from codepilot.core.runtime import runtime_summary
 from codepilot.core.config import resolve_project_config_reference
 from codepilot.webapp.task_payloads import (
     _task_payload,
+    task_detail_payload,  # noqa: F401 (re-export)
 )
 
 

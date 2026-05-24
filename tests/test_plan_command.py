@@ -304,7 +304,7 @@ def test_ai_manifest_includes_plan_command():
 def test_plan_no_backlog_boundary_is_documented_for_agents():
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / "AI_MANIFEST.json").read_text(encoding="utf-8"))
-    doc = (root / "docs" / "AI与Agent调用手册.zh-CN.md").read_text(encoding="utf-8")
+    doc = (root / "docs" / "04-AI与Agent调用手册.zh-CN.md").read_text(encoding="utf-8")
     plan_command = next(cmd for cmd in manifest["commands"] if cmd["name"] == "plan")
     plan_output = next(
         item
@@ -316,6 +316,6 @@ def test_plan_no_backlog_boundary_is_documented_for_agents():
     assert "should not enter backlog" in plan_command["when_to_use"]
     assert "`plan` 的文本输入会生成可审查计划 artifact" in doc
     assert "默认只写入 `.codepilot/plans/plan-*.md`" in doc
-    assert "不会导入 backlog、不会启动执行器" in doc
+    assert "不创建 backlog、不启动执行器" in doc
     assert "`task_batch_path` 指向可导入的 tasks JSON" in doc
     assert "显式调用 `codepilot workflow next -p <项目名> --action import_tasks --json`" in doc
