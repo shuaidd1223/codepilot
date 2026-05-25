@@ -1,5 +1,7 @@
 /* Project-first tree sidebar: projects → (tasks, jobs). */
 /* global Vue, CP */
+const PROJECT_ORDER_STORAGE_KEY = 'cp-sidebar-project-order-v1';
+
 CP.Components.Sidebar = Vue.defineComponent({
   name: 'CpSidebar',
   inject: ['cp'],
@@ -9,10 +11,44 @@ CP.Components.Sidebar = Vue.defineComponent({
       visibleLeafCount: {},
       leafConfirm: { taskId: null, action: '' },
       projectRename: { project: '', name: '' },
+      projectOrder: [],
+      draggingProject: '',
+      dragOverProject: '',
+      suppressProjectRowClick: false,
     };
   },
   computed: {
     s() { return this.cp.state; },
+    orderedProjects() {
+      const rows = Array.isArray(this.s.projects) ? this.s.projects.slice() : [];
+      const order = Array.isArray(this.projectOrder) ? this.projectOrder : [];
+      if (!order.length) return rows;
+      const indexByName = new Map(order.map((name, index) => [name, index]));
+      return rows
+        .map((project, index) => ({ project, index }))
+        .sort((left, right) => {
+          const leftOrder = indexByName.has(left.project.name)
+            ? indexByName.get(left.project.name)
+            : Number.MAX_SAFE_INTEGER;
+          const rightOrder = indexByName.has(right.project.name)
+            ? indexByName.get(right.project.name)
+            : Number.MAX_SAFE_INTEGER;
+          if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+          return left.index - right.index;
+        })
+        .map((item) => item.project);
+    },
+  },
+  created() {
+    this.projectOrder = this.readProjectOrder();
+  },
+  watch: {
+    's.projects': {
+      handler() {
+        this.normalizeProjectOrder();
+      },
+      deep: false,
+    },
   },
   methods: {
     isExpanded(key, def) { return this.cp.isExpanded(key, def); },
@@ -20,13 +56,131 @@ CP.Components.Sidebar = Vue.defineComponent({
       ev.stopPropagation();
       this.cp.toggleProject(name);
     },
+    toggleProjectRow(name, ev) {
+      if (ev) ev.stopPropagation();
+      if (!name) return;
+      if (this.suppressProjectRowClick) {
+        this.suppressProjectRowClick = false;
+        return;
+      }
+      this.cp.toggleProject(name);
+      this.cp.setNav({ project: name, view: 'overview', id: null });
+    },
     toggleCategory(project, cat, ev) {
       ev.stopPropagation();
       this.cp.toggleCategory(project, cat);
     },
+    toggleCategoryRow(project, cat, ev) {
+      if (ev) ev.stopPropagation();
+      if (!project || !cat) return;
+      this.cp.toggleCategory(project, cat);
+      this.cp.setNav({ project, view: cat, id: null });
+    },
     isActive(match) {
       const n = this.s.nav;
       return Object.keys(match).every(k => n[k] === match[k]);
+    },
+    projectNames() {
+      return (Array.isArray(this.s.projects) ? this.s.projects : [])
+        .map((project) => project && project.name)
+        .filter(Boolean);
+    },
+    readProjectOrder() {
+      try {
+        const raw = localStorage.getItem(PROJECT_ORDER_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((name, index) => (
+          typeof name === 'string'
+          && name
+          && parsed.indexOf(name) === index
+        ));
+      } catch (_e) {
+        return [];
+      }
+    },
+    persistProjectOrder() {
+      try {
+        localStorage.setItem(PROJECT_ORDER_STORAGE_KEY, JSON.stringify(this.projectOrder));
+      } catch (_e) { /* ignore */ }
+    },
+    normalizeProjectOrder() {
+      const names = new Set(this.projectNames());
+      const nextOrder = (Array.isArray(this.projectOrder) ? this.projectOrder : [])
+        .filter((name, index, arr) => names.has(name) && arr.indexOf(name) === index);
+      if (nextOrder.length === this.projectOrder.length && nextOrder.every((name, index) => name === this.projectOrder[index])) return;
+      this.projectOrder = nextOrder;
+      this.persistProjectOrder();
+    },
+    onProjectDragStart(project, ev) {
+      if (!project || !project.name) return;
+      if (ev && ev.target && ev.target.closest && ev.target.closest('button,input')) {
+        ev.preventDefault();
+        return;
+      }
+      this.draggingProject = project.name;
+      this.dragOverProject = '';
+      if (ev && ev.dataTransfer) {
+        ev.dataTransfer.effectAllowed = 'move';
+        ev.dataTransfer.setData('text/plain', project.name);
+        ev.dataTransfer.setData('application/x-codepilot-project', project.name);
+      }
+    },
+    onProjectDragOver(project, ev) {
+      if (!project || !project.name || !this.draggingProject || this.draggingProject === project.name) return;
+      if (ev) {
+        ev.preventDefault();
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+      }
+      this.dragOverProject = project.name;
+    },
+    onProjectDragLeave(project, ev) {
+      if (!project || this.dragOverProject !== project.name) return;
+      const related = ev && ev.relatedTarget;
+      if (related && ev.currentTarget && ev.currentTarget.contains(related)) return;
+      this.dragOverProject = '';
+    },
+    onProjectDrop(project, ev) {
+      if (ev) ev.preventDefault();
+      const targetName = project && project.name;
+      const sourceName = this.draggingProject
+        || (ev && ev.dataTransfer && (ev.dataTransfer.getData('application/x-codepilot-project') || ev.dataTransfer.getData('text/plain')));
+      if (!sourceName || !targetName || sourceName === targetName) {
+        this.clearProjectDragState(true);
+        return;
+      }
+      const names = this.orderedProjects.map((item) => item.name).filter(Boolean);
+      const fromIndex = names.indexOf(sourceName);
+      const rawTargetIndex = names.indexOf(targetName);
+      if (fromIndex < 0 || rawTargetIndex < 0) {
+        this.clearProjectDragState(true);
+        return;
+      }
+      const [moved] = names.splice(fromIndex, 1);
+      let targetIndex = rawTargetIndex;
+      if (ev && ev.currentTarget && typeof ev.clientY === 'number') {
+        const rect = ev.currentTarget.getBoundingClientRect();
+        const dropAfter = ev.clientY > rect.top + rect.height / 2;
+        targetIndex = rawTargetIndex + (dropAfter ? 1 : 0);
+      }
+      if (fromIndex < targetIndex) targetIndex -= 1;
+      names.splice(Math.max(0, Math.min(targetIndex, names.length)), 0, moved);
+      this.projectOrder = names;
+      this.persistProjectOrder();
+      this.clearProjectDragState(true);
+    },
+    onProjectDragEnd() {
+      this.clearProjectDragState(true);
+    },
+    clearProjectDragState(suppressClick = false) {
+      this.draggingProject = '';
+      this.dragOverProject = '';
+      if (!suppressClick) return;
+      this.suppressProjectRowClick = true;
+      setTimeout(() => {
+        this.suppressProjectRowClick = false;
+      }, 0);
     },
     projectTasks(projName) {
       /* Read from the per-project map so this project's tasks never show
@@ -197,9 +351,18 @@ CP.Components.Sidebar = Vue.defineComponent({
         <div v-if="!s.projects.length" class="empty-block">还没有项目</div>
 
         <div v-else class="tree">
-          <div v-for="p in s.projects" :key="p.name" class="tree-project">
+          <div v-for="p in orderedProjects" :key="p.name" class="tree-project"
+               :class="{dragging: draggingProject === p.name, 'drag-over': dragOverProject === p.name}">
             <!-- Project node -->
-            <div class="tree-row tree-project-row" :class="{active: isActive({project: p.name, view: 'overview'})}" @click="cp.selectProject(p.name)">
+            <div class="tree-row tree-project-row"
+                 draggable="true"
+                 :class="{active: isActive({project: p.name, view: 'overview'})}"
+                 @dragstart="onProjectDragStart(p, $event)"
+                 @dragover="onProjectDragOver(p, $event)"
+                 @dragleave="onProjectDragLeave(p, $event)"
+                 @drop="onProjectDrop(p, $event)"
+                 @dragend="onProjectDragEnd"
+                 @click="toggleProjectRow(p.name, $event)">
               <button class="chevron" @click="toggleProject(p.name, $event)">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
                   :style="{transform: isExpanded(p.name) ? 'rotate(90deg)' : 'rotate(0deg)'}">
@@ -228,7 +391,7 @@ CP.Components.Sidebar = Vue.defineComponent({
             <!-- Children (only when expanded) -->
             <div v-show="isExpanded(p.name)" class="tree-children">
               <!-- Tasks category -->
-              <div class="tree-row tree-category-row" :class="{active: isActive({project: p.name, view: 'tasks'})}" @click="cp.selectCategory(p.name, 'tasks')">
+              <div class="tree-row tree-category-row" :class="{active: isActive({project: p.name, view: 'tasks'})}" @click="toggleCategoryRow(p.name, 'tasks', $event)">
                 <button class="chevron" @click="toggleCategory(p.name, 'tasks', $event)">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
                     :style="{transform: isExpanded(p.name + '/tasks') ? 'rotate(90deg)' : 'rotate(0deg)'}">
@@ -301,7 +464,7 @@ CP.Components.Sidebar = Vue.defineComponent({
               </div>
 
               <!-- Requirements / jobs category -->
-              <div class="tree-row tree-category-row" :class="{active: isActive({project: p.name, view: 'jobs'})}" @click="cp.selectCategory(p.name, 'jobs')">
+              <div class="tree-row tree-category-row" :class="{active: isActive({project: p.name, view: 'jobs'})}" @click="toggleCategoryRow(p.name, 'jobs', $event)">
                 <button class="chevron" @click="toggleCategory(p.name, 'jobs', $event)">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
                     :style="{transform: isExpanded(p.name + '/jobs') ? 'rotate(90deg)' : 'rotate(0deg)'}">

@@ -209,6 +209,25 @@ def test_sidebar_task_leaf_includes_quick_actions():
     assert "class=\"tree-inline-confirm\"" in sidebar
 
 
+def test_sidebar_projects_support_drag_sort_and_whole_row_toggle():
+    sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "PROJECT_ORDER_STORAGE_KEY = 'cp-sidebar-project-order-v1'" in sidebar
+    assert "orderedProjects()" in sidebar
+    assert "v-for=\"p in orderedProjects\"" in sidebar
+    assert "draggable=\"true\"" in sidebar
+    assert "onProjectDragStart(project, ev)" in sidebar
+    assert "onProjectDragOver(project, ev)" in sidebar
+    assert "onProjectDrop(project, ev)" in sidebar
+    assert "persistProjectOrder()" in sidebar
+    assert "@click=\"toggleProjectRow(p.name, $event)\"" in sidebar
+    assert "@click=\"toggleCategoryRow(p.name, 'tasks', $event)\"" in sidebar
+    assert "@click=\"toggleCategoryRow(p.name, 'jobs', $event)\"" in sidebar
+    assert ".tree-project.drag-over" in styles
+    assert ".tree-project-row[draggable=\"true\"]" in styles
+
+
 def test_sidebar_wires_project_rename_action():
     sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
     submission = Path("codepilot/web/boundaries/AppSubmissionBoundary.js").read_text(encoding="utf-8")
