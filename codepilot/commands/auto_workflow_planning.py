@@ -13,6 +13,7 @@ from typing import Callable
 import click
 
 from codepilot.core import progress_bus
+from codepilot.core.work_item import coerce_work_item
 from codepilot.commands.task_quality import evaluate_planning_breakdown as _evaluate_planning_breakdown
 from codepilot.storage import database as db
 
@@ -348,10 +349,15 @@ def create_tasks_from_breakdown(
     max_retries: int,
     build_task_markdown_from_plan: Callable[[dict], str],
     task_source: str = "user",
+    work_item: dict | None = None,
 ) -> list[dict]:
     created_tasks: list[dict] = []
     previous_task_id: int | None = None
     created_ids_by_index: list[int] = []
+    normalized_work_item = coerce_work_item(
+        work_item,
+        fallback_source=task_source or "user",
+    ) if work_item is not None else None
     for item in breakdown["tasks"]:
         task_spec = normalize_task_spec(dict(item))
         dep_indices = task_spec.get("depends_on_indices") or []
@@ -363,6 +369,15 @@ def create_tasks_from_breakdown(
         if not dep_ids and previous_task_id and not dep_indices:
             dep_ids = [previous_task_id]
         task_spec["agent"] = task_agent
+        task_work_item = None
+        task_source_value = task_source or "user"
+        if normalized_work_item is not None:
+            task_work_item = coerce_work_item(
+                normalized_work_item,
+                fallback_source=task_source_value,
+                fallback_raw_text=item.get("title") or "",
+            )
+            task_source_value = task_work_item["source"] or task_source_value
         task = db.create_task(
             project=project_name,
             title=item["title"],
@@ -372,7 +387,8 @@ def create_tasks_from_breakdown(
             depends_on=dep_ids or None,
             project_path=project_path,
             max_retries=max_retries,
-            source=task_source or "user",
+            source=task_source_value,
+            work_item=task_work_item,
         )
         _emit_planning_progress(
             f"已创建任务 #{task['id']}：{task['title']}",

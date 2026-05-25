@@ -22,6 +22,7 @@ from codepilot.ai_support.service import (
 from codepilot.core.config import resolve_project_config_reference
 from codepilot.core.output import echo
 from codepilot.core.task_template import missing_task_template_sections
+from codepilot.core.work_item import build_work_item
 
 
 MARKDOWN_BATCH_SUFFIXES = {".md", ".markdown"}
@@ -417,6 +418,13 @@ def _single_add(
         priority=priority,
         depends_on=dep_list,
         fallback_reason=fallback_reason,
+        source="cli",
+        work_item=build_work_item(
+            source="cli",
+            requester="cli",
+            raw_text=title,
+            callback={"type": "cli", "command": "codepilot add"},
+        ),
     )
 
     task_id = task["id"]
@@ -548,9 +556,15 @@ def _prepare_batch_add_items(
     return prepared_items
 
 
-def _create_batch_add_tasks(project: str, prepared_items: list[dict[str, object]]) -> list[dict]:
+def _create_batch_add_tasks(
+    project: str,
+    prepared_items: list[dict[str, object]],
+    *,
+    batch_file: Path | None = None,
+) -> list[dict]:
     results = []
     for item in prepared_items:
+        context_links = [str(batch_file)] if batch_file else []
         task = db.create_task(
             project=project,
             title=str(item["title"]),
@@ -558,6 +572,14 @@ def _create_batch_add_tasks(project: str, prepared_items: list[dict[str, object]
             agent=str(item["agent"]),
             priority=str(item["priority"]),
             depends_on=item.get("depends_on"),
+            source="task_file" if batch_file else "cli",
+            work_item=build_work_item(
+                source="task_file" if batch_file else "cli",
+                requester="cli",
+                context_links=context_links,
+                raw_text=item["title"],
+                callback={"type": "cli", "command": "codepilot add -f" if batch_file else "codepilot add"},
+            ),
         )
         results.append(task)
     return results
@@ -586,7 +608,7 @@ def import_task_batch_file(
         batch_suffix=batch_file.suffix.lower(),
         config_ref=config_ref,
     )
-    return _create_batch_add_tasks(project, prepared_items)
+    return _create_batch_add_tasks(project, prepared_items, batch_file=batch_file)
 
 
 def _batch_add(
@@ -628,7 +650,7 @@ def _batch_add(
         progress=_progress,
     )
 
-    results = _create_batch_add_tasks(project, prepared_items)
+    results = _create_batch_add_tasks(project, prepared_items, batch_file=batch_file)
     for task in results:
         echo(f"[green]+ #{task['id']}[/green]")
 

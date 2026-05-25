@@ -170,3 +170,54 @@ def test_create_tasks_from_breakdown_normalizes_planner_output(monkeypatch):
     assert "第一个任务" in rendered
     assert build_task_markdown_from_plan is not None
 
+
+def test_create_tasks_from_breakdown_persists_work_item_metadata(tmp_path, monkeypatch):
+    from codepilot.core.work_item import build_work_item
+    from codepilot.core.workflow_state import read_task_execution_artifacts
+    from codepilot.storage import database as db
+    from tests.workflow_testkit import init_test_db
+
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+
+    tasks = aw._create_tasks_from_breakdown(
+        breakdown={
+            "tasks": [
+                {
+                    "title": "统一来源模型",
+                    "goal": "保留入口来源元数据",
+                    "priority": "P2",
+                    "acceptance_criteria": ["任务保留来源"],
+                    "builder_notes": [],
+                    "reviewer_notes": [],
+                    "files": [],
+                    "notes": [],
+                }
+            ],
+        },
+        project_name="demo",
+        project_path=str(project_path),
+        task_agent="dual",
+        priority="P2",
+        max_retries=1,
+        task_source="cli",
+        work_item=build_work_item(
+            source="cli",
+            requester="cli",
+            raw_text="codepilot go 统一来源模型",
+            context_links=["cli://go"],
+            callback={"type": "cli"},
+        ),
+    )
+
+    assert tasks[0]["source"] == "cli"
+    artifact = read_task_execution_artifacts(project_path, tasks[0]["id"])
+    assert artifact is not None
+    work_item = artifact["metadata"]["work_item"]
+    assert work_item["source"] == "cli"
+    assert work_item["requester"] == "cli"
+    assert work_item["context_links"] == ["cli://go"]
+    assert work_item["callback"] == {"type": "cli"}
+    assert work_item["raw_text"] == "codepilot go 统一来源模型"

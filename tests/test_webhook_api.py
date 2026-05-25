@@ -77,6 +77,10 @@ def test_webhook_tasks_endpoint_creates_backlog_task(tmp_path, monkeypatch):
                 "priority": "P1",
                 "agent": "codex",
                 "max_retries": 1,
+                "requester": "ci-bot",
+                "context_links": ["https://ci.example.invalid/build/1"],
+                "callback": {"type": "webhook", "url": "https://ci.example.invalid/callback", "token": "secret"},
+                "secret_token": "do-not-copy",
             },
         )
     finally:
@@ -93,6 +97,16 @@ def test_webhook_tasks_endpoint_creates_backlog_task(tmp_path, monkeypatch):
     assert task["priority"] == "P1"
     assert task["source"] == "webhook"
     assert task["status"] == "backlog"
+    detail = task_detail_payload(task["id"])
+    work_item = detail["work_item"]
+    assert work_item["source"] == "webhook"
+    assert work_item["requester"] == "ci-bot"
+    assert work_item["context_links"] == ["https://ci.example.invalid/build/1"]
+    assert work_item["callback"]["type"] == "webhook"
+    assert work_item["callback"]["token"] == "[redacted]"
+    assert "来自 webhook 的任务" in work_item["raw_text_summary"]
+    assert "外部系统投递的任务内容" in work_item["raw_text"]
+    assert "do-not-copy" not in task["content"]
 
 
 def test_webhook_duplicate_delivery_reuses_active_task(tmp_path, monkeypatch):
@@ -242,4 +256,3 @@ def test_webhook_command_starts_server(monkeypatch):
     assert calls == [("0.0.0.0", 9999)]
     assert "CodePilot Webhook Server" in result.output
     assert "Webhook 服务已停止" in result.output
-

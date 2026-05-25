@@ -13,6 +13,7 @@ from codepilot.core.task_template import (
     missing_task_template_sections,
     unreplaced_task_template_placeholders,
 )
+from codepilot.core.work_item import build_work_item, coerce_work_item
 from codepilot.storage import database as db
 from codepilot.webapp.action_state import _append_event
 from codepilot.webapp.task_payloads import _task_payload
@@ -418,6 +419,13 @@ def _create_batch_import_tasks(project: str, normalized_items: list[dict]) -> li
             priority=item["priority"],
             agent=item["agent"] or None,
             mode="full",
+            task_source="task_file",
+            work_item=build_work_item(
+                source="task_file",
+                requester="web",
+                raw_text=item["title"],
+                callback={"type": "web_ui_import"},
+            ),
         )["task"]
         if item["depends_on"]:
             updated = db.update_task(task["id"], depends_on=item["depends_on"])
@@ -458,6 +466,8 @@ def create_task_action(
     agent: str | None = None,
     max_retries: int = 3,
     mode: str = "full",
+    task_source: str = "web",
+    work_item: dict | None = None,
 ) -> dict:
     db.init_db()
     project_info = db.get_project(project)
@@ -517,6 +527,20 @@ def create_task_action(
             " 字段规范见 /api/tasks/template 或 `codepilot ai template --format json`。"
         )
 
+    resolved_work_item = coerce_work_item(
+        work_item,
+        fallback_source=task_source or "web",
+        fallback_raw_text=normalized_title if normalized_mode == "ai_complete" else final_content,
+    )
+    if not resolved_work_item["requester"] and resolved_work_item["source"] == "web":
+        resolved_work_item = build_work_item(
+            source=resolved_work_item["source"],
+            requester="web",
+            context_links=resolved_work_item["context_links"],
+            callback=resolved_work_item["callback"] or {"type": "web_ui_task"},
+            raw_text=resolved_work_item["raw_text"],
+        )
+
     task = db.create_task(
         project=project,
         title=normalized_title,
@@ -525,7 +549,9 @@ def create_task_action(
         priority=normalized_priority,
         project_path=project_info["path"],
         max_retries=max(0, int(max_retries or 0)),
+        source=resolved_work_item["source"],
         fallback_reason=fallback_reason,
+        work_item=resolved_work_item,
     )
     msg = f"任务 #{task['id']} 已创建。"
     if fallback_reason:

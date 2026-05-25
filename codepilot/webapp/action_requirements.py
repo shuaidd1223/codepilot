@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from codepilot.storage import database as db
 from codepilot.commands.auto import normalize_requirement_text
+from codepilot.core.work_item import build_work_item, coerce_work_item
 from codepilot.core.workflow_state import (
     filter_consumed_workflow_next_actions,
     mark_workflow_actions_consumed,
@@ -121,6 +122,7 @@ class _RequirementJobContext:
     auto_commit: bool
     max_retries: int
     task_source: str
+    work_item: dict
 
 
 def retry_task_action(task_id: int) -> dict:
@@ -278,6 +280,13 @@ def _load_requirement_job_context(job_id: int) -> _RequirementJobContext:
     if not project_info:
         raise RuntimeError(f"项目 '{project}' 不存在。")
 
+    task_source = str(_job_request_value(request, {}, "task_source", "user"))
+    work_item = coerce_work_item(
+        request.get("work_item") if isinstance(request.get("work_item"), dict) else None,
+        fallback_source=task_source or "user",
+        fallback_raw_text=title,
+    )
+
     return _RequirementJobContext(
         job_id=job_id,
         job=job,
@@ -293,7 +302,8 @@ def _load_requirement_job_context(job_id: int) -> _RequirementJobContext:
         executor=str(_job_request_value(request, {}, "executor", "auto")),
         auto_commit=bool(_job_request_value(request, {}, "auto_commit", False)),
         max_retries=int(_job_request_value(request, {}, "max_retries", 3) or 3),
-        task_source=str(_job_request_value(request, {}, "task_source", "user")),
+        task_source=work_item["source"] or task_source or "user",
+        work_item=work_item,
     )
 
 
@@ -384,6 +394,7 @@ def _execute_requirement_planning(context: _RequirementJobContext, shell) -> dic
         max_retries=context.max_retries,
         json_mode=False,
         task_source=context.task_source,
+        work_item=context.work_item,
     )
 
 
@@ -510,7 +521,8 @@ def submit_requirement_action(
     auto_commit: bool = False,
     max_retries: int = 3,
     run_async: bool = True,
-    task_source: str = "user",
+    task_source: str = "web",
+    work_item: dict | None = None,
 ) -> dict:
     shell = _shell()
     db.init_db()
@@ -526,6 +538,17 @@ def submit_requirement_action(
     effective_planner = _effective_planner(project_info, planner)
 
     job_id = _next_job_id()
+    source = str((work_item or {}).get("source") or task_source or "web").strip() or "web"
+    callback = dict((work_item or {}).get("callback") or {})
+    callback.setdefault("type", "web_ui_job")
+    callback.setdefault("job_id", job_id)
+    normalized_work_item = build_work_item(
+        source=source,
+        requester=(work_item or {}).get("requester") or "web",
+        context_links=(work_item or {}).get("context_links"),
+        callback=callback,
+        raw_text=(work_item or {}).get("raw_text") or normalized_title,
+    )
     with shell._UI_LOCK:
         shell._UI_JOBS[job_id] = {
             "id": job_id,
@@ -558,7 +581,8 @@ def submit_requirement_action(
                 "executor": executor,
                 "auto_commit": bool(auto_commit),
                 "max_retries": int(max_retries),
-                "task_source": task_source or "user",
+                "task_source": normalized_work_item["source"] or source,
+                "work_item": normalized_work_item,
             },
         }
     _update_job(job_id)
@@ -608,18 +632,25 @@ def retry_job_action(job_id: int) -> dict:
         f"需求 #{job_id} 已发起重试：{request.get('title') or job.get('title') or ''}",
         project=str(request.get("project") or job.get("project") or ""),
     )
+    kwargs = {
+        "execute": bool(request.get("execute", True)),
+        "planner": str(request.get("planner") or job.get("planner") or "") or None,
+        "agent": request.get("agent") or None,
+        "priority": str(request.get("priority") or job.get("priority") or "P2"),
+        "max_tasks": int(request.get("max_tasks") or 5),
+        "executor": str(request.get("executor") or "auto"),
+        "auto_commit": bool(request.get("auto_commit", False)),
+        "max_retries": int(request.get("max_retries") or 3),
+        "run_async": True,
+    }
+    if "task_source" in request:
+        kwargs["task_source"] = str(request.get("task_source") or "web")
+    if isinstance(request.get("work_item"), dict):
+        kwargs["work_item"] = request.get("work_item")
     return submit_requirement_action(
         str(request.get("project") or job.get("project") or ""),
         str(request.get("title") or job.get("title") or ""),
-        execute=bool(request.get("execute", True)),
-        planner=str(request.get("planner") or job.get("planner") or "") or None,
-        agent=request.get("agent") or None,
-        priority=str(request.get("priority") or job.get("priority") or "P2"),
-        max_tasks=int(request.get("max_tasks") or 5),
-        executor=str(request.get("executor") or "auto"),
-        auto_commit=bool(request.get("auto_commit", False)),
-        max_retries=int(request.get("max_retries") or 3),
-        run_async=True,
+        **kwargs,
     )
 
 

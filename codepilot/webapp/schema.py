@@ -38,6 +38,17 @@ class TaskActions(TypedDict):
     delete: bool
 
 
+class WorkItemPayload(TypedDict):
+    """Normalized intake metadata attached to tasks."""
+
+    source: str
+    requester: str
+    context_links: list[Any]
+    callback: dict[str, Any]
+    raw_text: str
+    raw_text_summary: str
+
+
 class ReviewerAcCheck(TypedDict):
     """One AC row from a parsed reviewer verdict."""
 
@@ -97,6 +108,7 @@ class TaskListItem(TypedDict):
     priority: str
     agent: str
     source: str
+    work_item: WorkItemPayload
     phase: str
     runtime: str
     eta_seconds: Optional[int]
@@ -109,10 +121,14 @@ class TaskListItem(TypedDict):
     created_at: str
     started_at: str
     completed_at: str
+    updated_at: str
+    execution_status: str
     retry_count: int
     max_retries: int
     recovery_hints: list[str]
     actions: TaskActions
+    workflow_column_id: str
+    workflow_column_title: str
 
 
 # ── Task detail payload ───────────────────────────────────────────────────
@@ -128,6 +144,9 @@ class TaskDetail(TaskListItem):
     log_text: str
     logs: list[TaskLogEntry]
     latest_review: Optional[ReviewerVerdictSummary]
+    artifacts: dict[str, Any]
+    execution_artifact: Optional[dict[str, Any]]
+    timeline: list[dict[str, Any]]
 
 
 # ── Project-level payloads ────────────────────────────────────────────────
@@ -230,6 +249,8 @@ class DashboardPayload(TypedDict):
     projects: list[ProjectSummary]
     selected_project: Optional[str]
     tasks_by_project: dict[str, list[TaskListItem]]
+    task_board_by_project: dict[str, dict[str, Any]]
+    task_board: dict[str, Any]
     jobs_by_project: dict[str, list[dict]]
     tasks: list[TaskListItem]
     jobs: list[dict]    # Job schema still lives in webui; tracked separately.

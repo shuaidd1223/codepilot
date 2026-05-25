@@ -290,6 +290,7 @@ def _create_tasks_from_breakdown(
     priority: str,
     max_retries: int,
     task_source: str = "user",
+    work_item: dict | None = None,
 ) -> list[dict]:
     agent_language = _agent_language_for_project(project_path)
     return _planning_flow.create_tasks_from_breakdown(
@@ -300,6 +301,7 @@ def _create_tasks_from_breakdown(
         priority=priority,
         max_retries=max_retries,
         task_source=task_source,
+        work_item=work_item,
         build_task_markdown_from_plan=lambda item: _build_task_markdown_from_plan(item, language=agent_language),
     )
 
@@ -453,6 +455,7 @@ def _run_requirement_decision_phase(
     priority: str,
     execute: Optional[bool],
     task_source: str = "user",
+    work_item: dict | None = None,
 ) -> _RequirementDecisionResult:
     from codepilot.core.output import echo
 
@@ -478,6 +481,7 @@ def _run_requirement_decision_phase(
         priority=priority,
         max_retries=runtime.max_retries,
         task_source=task_source,
+        work_item=work_item,
     )
     will_execute = _should_execute(project_info, execute)
     payload = _build_requirement_payload(
@@ -576,6 +580,7 @@ def run_requirement_workflow(
     json_mode: bool = False,
     quiet: bool = False,
     task_source: str = "user",
+    work_item: dict | None = None,
 ) -> dict:
     """Plan one requirement (decision phase) and optionally execute it."""
     shell = _shell()
@@ -602,6 +607,7 @@ def run_requirement_workflow(
         priority=priority,
         execute=execute,
         task_source=task_source,
+        work_item=work_item,
     )
     if json_mode:
         payload = _execute_requirement_json_phase(

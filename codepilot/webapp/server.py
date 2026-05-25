@@ -880,6 +880,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             agent=body.get("agent") or None,
             max_retries=int(body.get("max_retries") or 3),
             mode=body.get("mode") or "full",
+            task_source="web",
+            work_item=body.get("work_item") if isinstance(body.get("work_item"), dict) else None,
         )
 
     def _handle_post_tasks_batch(self, body: dict) -> dict:
@@ -930,6 +932,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             auto_commit=bool(body.get("auto_commit", False)),
             max_retries=int(body.get("max_retries") or 3),
             run_async=bool(body.get("run_async", True)),
+            task_source="web",
+            work_item=body.get("work_item") if isinstance(body.get("work_item"), dict) else None,
         )
 
     def _handle_post_sessions(self, body: dict) -> dict:

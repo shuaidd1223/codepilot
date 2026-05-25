@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from codepilot.core.work_item import task_work_item_payload
 from codepilot.mcp.protocol import CodePilotToolError
 from codepilot.storage import database as db
 
@@ -174,4 +175,5 @@ def parse_depends_on(raw: Any) -> list[int]:
 def task_payload(task: dict[str, Any]) -> dict[str, Any]:
     payload = dict(task)
     payload["depends_on_ids"] = parse_depends_on(task.get("depends_on"))
+    payload["work_item"] = task_work_item_payload(task)
     return payload

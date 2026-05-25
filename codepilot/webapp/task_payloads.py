@@ -8,6 +8,7 @@ from pathlib import Path
 from codepilot.commands.reviewer_output import parse_reviewer_output
 from codepilot.core.runtime import runtime_summary
 from codepilot.core.task_template import missing_task_template_sections
+from codepilot.core.work_item import task_work_item_payload
 from codepilot.core.workflow_state import read_task_execution_artifacts, read_task_timeline_events
 from codepilot.storage import database as db
 
@@ -316,6 +317,7 @@ def _task_payload(task: dict) -> dict:
         "priority": task["priority"],
         "agent": task["agent"],
         "source": task.get("source") or "user",
+        "work_item": task_work_item_payload(task),
         "phase": task.get("run_phase") or "",
         "runtime": runtime_summary(task) if status == "in_progress" else "",
         "eta_seconds": eta_seconds,

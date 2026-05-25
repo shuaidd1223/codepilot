@@ -850,6 +850,38 @@ def test_create_task_empty_title_returns_error(ui_server):
         assert "error" in body
 
 
+# ─── POST /api/requirements ────────────────────────────────────────────────
+
+def test_requirement_endpoint_records_web_work_item_source(ui_server, monkeypatch):
+    captured = {}
+
+    def fake_run_requirement_workflow(**kwargs):
+        captured.update(kwargs)
+        return {"tasks": [], "summary": "ok"}
+
+    monkeypatch.setattr(webui_mod, "run_requirement_workflow", fake_run_requirement_workflow)
+
+    status, body = _post(
+        f"{ui_server}/api/requirements",
+        {
+            "project": "demo",
+            "title": "从 Web UI 提交需求",
+            "execute": False,
+            "run_async": False,
+        },
+    )
+
+    assert status == 200
+    request = body["job"]["request"]
+    assert request["task_source"] == "web"
+    assert request["work_item"]["source"] == "web"
+    assert request["work_item"]["requester"] == "web"
+    assert request["work_item"]["raw_text"] == "从 Web UI 提交需求"
+    assert request["work_item"]["callback"]["job_id"] == body["job"]["id"]
+    assert captured["task_source"] == "web"
+    assert captured["work_item"] == request["work_item"]
+
+
 # ─── POST /api/sessions/:id/messages routing ────────────────────────────────
 
 def test_goal_endpoint_is_removed(ui_server):

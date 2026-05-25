@@ -247,3 +247,29 @@ def test_submit_requirement_action_without_webui_server_uses_fallback_ui_state(t
     assert result["ok"] is True
     assert result["job"]["id"] == 1
     assert result["job"]["status"] in {"queued", "running", "succeeded", "attention"}
+
+
+def test_feishu_opencode_user_message_records_work_item_metadata(tmp_path, monkeypatch):
+    _setup_project(tmp_path, monkeypatch)
+    calls = []
+
+    def fake_run(project, text, *, source, external_session_id):
+        calls.append({"project": project, "text": text, "source": source, "external_session_id": external_session_id})
+        return {"ok": True, "message": "OpenCode 已处理。", "opencode_session_id": "ses-feishu"}
+
+    monkeypatch.setattr("codepilot.opencode.session.run_opencode_message", fake_run)
+
+    handle_command_text("use demo", chat_id="chat-work-item")
+    reply = handle_command_text("需求 优化来源记录", chat_id="chat-work-item")
+
+    session = db.list_sessions(project="demo")[0]
+    user_message = next(item for item in db.list_session_messages(session["id"]) if item["role"] == "user")
+    metadata = json.loads(user_message["metadata"])
+    work_item = metadata["work_item"]
+
+    assert reply["type"] == "interactive"
+    assert calls[0]["source"] == "feishu"
+    assert work_item["source"] == "feishu"
+    assert work_item["requester"] == "chat-work-item"
+    assert work_item["callback"] == {"type": "feishu_chat", "chat_id": "chat-work-item"}
+    assert work_item["raw_text"] == "优化来源记录"

@@ -714,8 +714,16 @@ def create_task(
     source: str = "user",
     dedup_key: Optional[str] = None,
     fallback_reason: Optional[str] = None,
+    work_item: Optional[dict] = None,
 ) -> dict:
     """Create a task or return the existing active duplicate."""
+    normalized_work_item = None
+    if work_item is not None:
+        from codepilot.core.work_item import coerce_work_item
+
+        normalized_work_item = coerce_work_item(work_item, fallback_source=source, fallback_raw_text=title)
+        source = normalized_work_item["source"] or source or "user"
+
     dedup_key = dedup_key or compute_dedup_key(project, title, content)
     resolved_project_path = _resolve_project_path(project, project_path)
 
@@ -743,6 +751,10 @@ def create_task(
         )
     _invalidate_task_caches()
     created = get_task(task_id)
+    if normalized_work_item is not None and created:
+        from codepilot.core.work_item import persist_task_work_item
+
+        persist_task_work_item(created, normalized_work_item)
     _record_task_created_timeline(created)
     return created
 

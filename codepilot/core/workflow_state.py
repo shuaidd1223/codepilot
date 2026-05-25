@@ -55,8 +55,48 @@ def workflow_dirs(project_path: str | Path) -> dict[str, Path]:
     }
 
 
+def _git_info_dir(project_root: Path) -> Path | None:
+    dotgit = project_root / ".git"
+    if dotgit.is_dir():
+        return dotgit / "info"
+    if not dotgit.is_file():
+        return None
+    try:
+        text = dotgit.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    prefix = "gitdir:"
+    if not text.lower().startswith(prefix):
+        return None
+    raw_git_dir = text[len(prefix):].strip()
+    git_dir = Path(raw_git_dir)
+    if not git_dir.is_absolute():
+        git_dir = (project_root / git_dir).resolve()
+    return git_dir / "info"
+
+
+def _ensure_codepilot_git_excluded(project_path: str | Path) -> None:
+    """Keep project-local CodePilot artifacts out of user worktree status."""
+    project_root = Path(project_path).expanduser().resolve()
+    info_dir = _git_info_dir(project_root)
+    if info_dir is None:
+        return
+    try:
+        info_dir.mkdir(parents=True, exist_ok=True)
+        exclude_path = info_dir / "exclude"
+        text = exclude_path.read_text(encoding="utf-8", errors="replace") if exclude_path.exists() else ""
+        entries = {line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")}
+        if ".codepilot/" in entries or ".codepilot" in entries or "/.codepilot/" in entries:
+            return
+        separator = "" if not text or text.endswith(("\n", "\r")) else "\n"
+        exclude_path.write_text(f"{text}{separator}.codepilot/\n", encoding="utf-8")
+    except OSError:
+        return
+
+
 def ensure_workflow_dirs(project_path: str | Path) -> dict[str, Path]:
     """Create workflow directories and return their paths."""
+    _ensure_codepilot_git_excluded(project_path)
     dirs = workflow_dirs(project_path)
     for path in dirs.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -221,6 +261,7 @@ def append_task_timeline_event(
     if clean_event not in TASK_TIMELINE_EVENTS:
         raise ValueError(f"unsupported task timeline event: {event!r}")
 
+    _ensure_codepilot_git_excluded(project_path)
     path = task_execution_artifact_path(project_path, task_id)
     current = _read_json(path) or {}
     now = _now_iso()
@@ -315,6 +356,7 @@ def write_task_execution_artifacts(
     diffs and large logs stay in git/log files, which keeps this safe for the
     direct-workspace execution mode and avoids a database migration.
     """
+    _ensure_codepilot_git_excluded(project_path)
     path = task_execution_artifact_path(project_path, task_id)
     current = _read_json(path) or {}
     now = _now_iso()

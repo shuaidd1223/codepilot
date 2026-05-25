@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from codepilot.core.work_item import build_work_item
 from codepilot.storage import database as db
 from codepilot.core.config import load_config
 
@@ -49,6 +50,42 @@ def _normalize_max_retries(value: object) -> int:
     return max(0, max_retries)
 
 
+def _webhook_requester(payload: dict[str, Any]) -> str:
+    for key in ("requester", "sender", "actor", "user", "username"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return "webhook"
+
+
+def _webhook_context_links(payload: dict[str, Any]) -> list[Any]:
+    raw = payload.get("context_links")
+    if raw in (None, ""):
+        raw = payload.get("links")
+    links = raw if isinstance(raw, list) else ([raw] if raw not in (None, "") else [])
+    for key in ("url", "html_url", "link"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            links.append(value)
+    return links
+
+
+def _webhook_callback(payload: dict[str, Any]) -> Any:
+    callback = payload.get("callback")
+    if callback not in (None, ""):
+        return callback
+    callback_url = str(payload.get("callback_url") or "").strip()
+    return {"type": "webhook", "url": callback_url} if callback_url else {"type": "webhook"}
+
+
+def _webhook_raw_text(title: str, content: object) -> str:
+    parts = [title]
+    content_text = str(content or "").strip()
+    if content_text and content_text != title:
+        parts.append(content_text)
+    return "\n\n".join(parts)
+
+
 def create_webhook_task(payload: dict[str, Any]) -> dict:
     """Create one backlog task from a webhook POST payload."""
     db.init_db()
@@ -80,6 +117,13 @@ def create_webhook_task(payload: dict[str, Any]) -> dict:
         project_path=project_info["path"],
         max_retries=_normalize_max_retries(payload.get("max_retries")),
         source="webhook",
+        work_item=build_work_item(
+            source="webhook",
+            requester=_webhook_requester(payload),
+            context_links=_webhook_context_links(payload),
+            callback=_webhook_callback(payload),
+            raw_text=_webhook_raw_text(title, content),
+        ),
     )
     return {"ok": True, "task": task, "message": f"任务 #{task['id']} 已创建。"}
 
@@ -659,4 +703,3 @@ def _send_desktop_notification(
             return _run_windows_msg()
         return False
     return False
-

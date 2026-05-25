@@ -77,6 +77,14 @@ def test_task_tool_input_schemas_capture_required_fields():
     create_props = _tool_by_name("create_task")["inputSchema"]["properties"]
     assert create_props["project"] == {"type": "string"}
     assert create_props["title"] == {"type": "string"}
+    assert create_props["requester"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+        "default": None,
+    }
+    assert create_props["raw_text"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+        "default": None,
+    }
     assert create_props["depends_on"] == {
         "anyOf": [
             {"type": "array", "items": {"type": "integer"}},
@@ -136,6 +144,10 @@ def test_task_tools_round_trip_create_list_show_and_archive(tmp_path, monkeypatc
             "content": complete_content,
             "priority": "P1",
             "depends_on": [1, 2],
+            "requester": "mcp-client",
+            "context_links": ["mcp://client/request/1"],
+            "callback": {"type": "mcp", "token": "secret"},
+            "raw_text": "请创建 MCP 任务工具",
         },
     )
 
@@ -143,14 +155,21 @@ def test_task_tools_round_trip_create_list_show_and_archive(tmp_path, monkeypatc
     assert created["task"]["project"] == "demo"
     assert created["task"]["priority"] == "P1"
     assert created["task"]["depends_on_ids"] == [1, 2]
+    assert created["task"]["work_item"]["source"] == "mcp"
+    assert created["task"]["work_item"]["requester"] == "mcp-client"
+    assert created["task"]["work_item"]["context_links"] == ["mcp://client/request/1"]
+    assert created["task"]["work_item"]["callback"]["token"] == "[redacted]"
+    assert created["task"]["work_item"]["raw_text"] == "请创建 MCP 任务工具"
 
     listed = server.call_tool("list_tasks", {"project": "demo", "status": "backlog"})
     assert listed["count"] == 1
     assert listed["tasks"][0]["id"] == created["task"]["id"]
+    assert listed["tasks"][0]["work_item"]["raw_text_summary"] == "请创建 MCP 任务工具"
 
     shown = server.call_tool("show_task", {"task_id": created["task"]["id"]})
     assert shown["task"]["title"] == "实现 MCP 任务工具"
     assert shown["task"]["depends_on_ids"] == [1, 2]
+    assert shown["task"]["work_item"]["source"] == "mcp"
 
     db.update_task(created["task"]["id"], status="done")
     archived = server.call_tool("archive_task", {"task_id": created["task"]["id"]})

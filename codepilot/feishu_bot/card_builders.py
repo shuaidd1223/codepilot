@@ -6,6 +6,7 @@ import math
 from datetime import datetime
 from typing import Any
 
+from codepilot.core.work_item import build_work_item
 from codepilot.feishu_bot import notification_cards as _notification_cards
 from codepilot.feishu_bot.batch_action_cards import build_batch_task_action_card
 from codepilot.feishu_bot.constants import _PENDING_CONFIRM_TTL_SECONDS
@@ -310,7 +311,19 @@ def _submit_opencode_from_feishu(
     if chat_id and canonical_project:
         _save_chat_project(chat_id, canonical_project)
         _save_active_opencode_session_id(chat_id, resolved_session_id)
-    db.create_session_message(resolved_session_id, "user", content)
+    db.create_session_message(
+        resolved_session_id,
+        "user",
+        content,
+        metadata={
+            "work_item": build_work_item(
+                source="feishu",
+                requester=chat_id or "feishu",
+                raw_text=content,
+                callback={"type": "feishu_chat", "chat_id": chat_id},
+            ),
+        },
+    )
 
     result = run_opencode_message(
         canonical_project,

@@ -18,6 +18,7 @@ from typing import Optional
 
 import click
 
+from codepilot.core.work_item import build_work_item
 from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
     normalize_requirement_text,
     _project_config,
@@ -178,6 +179,13 @@ def auto(
                 auto_commit=auto_commit,
                 max_retries=max_retries,
                 json_mode=json_mode,
+                task_source="cli",
+                work_item=build_work_item(
+                    source="cli",
+                    requester="cli",
+                    raw_text=title,
+                    callback={"type": "cli", "command": "codepilot auto"},
+                ),
             )
         except click.ClickException:
             raise
@@ -255,6 +263,7 @@ def go(
             max_retries=max_retries,
         )
 
+        raw_requirement_text = text
         text = _augment_requirement_with_wiki_context(text, project_info=project_info, use_wiki=use_wiki)
         try:
             run_requirement_workflow(
@@ -269,6 +278,13 @@ def go(
                 auto_commit=effective["auto_commit"],
                 max_retries=effective["max_retries"],
                 json_mode=json_mode,
+                task_source="cli",
+                work_item=build_work_item(
+                    source="cli",
+                    requester="cli",
+                    raw_text=raw_requirement_text,
+                    callback={"type": "cli", "command": "codepilot go"},
+                ),
             )
         except click.ClickException:
             raise
