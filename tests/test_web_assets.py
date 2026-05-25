@@ -120,7 +120,14 @@ def test_task_detail_component_keeps_single_computed_block():
 def test_task_detail_keeps_single_live_log_panel():
     source = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")
 
-    assert "实时日志" in source
+    assert "执行过程" in source
+    assert "task-phase-log-list" in source
+    assert "phase_logs" in source
+    assert "loadPhaseLog(phase)" in source
+    assert "/phase-logs/${encodeURIComponent(phase.key)}" in source
+    assert "加载原始日志" in source
+    assert "showFullTaskContent" in source
+    assert "task-content-block" in source
     assert "实时进度" not in source
     assert "<cp-live-log" not in source
 
@@ -169,6 +176,24 @@ def test_task_detail_renders_task_timeline_summary():
     assert "formatTimelineEvent" in source
     assert ".timeline-event-row" in styles
     assert ".timeline-event-dot" in styles
+
+
+def test_task_detail_phase_log_panel_has_collapsible_styles():
+    source = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "isPhaseExpanded(phase)" in source
+    assert "togglePhase(phase)" in source
+    assert "phase.default_expanded" in source
+    assert "phase.active" in source
+    assert 'class="task-phase-run-indicator"' in source
+    assert ".task-process-block" in styles
+    assert ".task-phase-run-indicator" in styles
+    assert ".task-phase-log.status-failed" in styles
+    assert ".task-phase-log.status-running" in styles
+    assert ".phase-active-spinner" in styles
+    assert ".task-phase-log-head .task-phase-log-meta { display: none; }" in styles
+    assert ".task-content-block.is-collapsed" in styles
 
 
 def test_task_detail_action_warns_when_api_reports_service_error():

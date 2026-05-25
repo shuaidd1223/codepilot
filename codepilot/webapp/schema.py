@@ -91,6 +91,32 @@ class TaskLogEntry(TypedDict):
     review: Optional[ReviewerVerdictBlock]
 
 
+class TaskPhaseLogEntry(TypedDict):
+    """One task-detail process phase with lazy raw-log metadata."""
+
+    key: str
+    index: int
+    kind: str
+    phase: str
+    label: str
+    round: Optional[int]
+    agent: str
+    status: str
+    active: bool
+    exit_code: Optional[int]
+    started_at: str
+    finished_at: str
+    duration: Optional[int]
+    summary: str
+    output_excerpt: str
+    raw_available: bool
+    raw_source: str
+    raw_size: int
+    raw_filename: str
+    default_expanded: bool
+    review: Optional[ReviewerVerdictBlock]
+
+
 # ── List-view task payload (dashboard) ────────────────────────────────────
 
 
@@ -143,6 +169,7 @@ class TaskDetail(TaskListItem):
     current_log_path: str
     log_text: str
     logs: list[TaskLogEntry]
+    phase_logs: list[TaskPhaseLogEntry]
     latest_review: Optional[ReviewerVerdictSummary]
     artifacts: dict[str, Any]
     execution_artifact: Optional[dict[str, Any]]

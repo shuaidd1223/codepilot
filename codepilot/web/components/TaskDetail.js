@@ -3,11 +3,30 @@
 CP.Components.TaskDetail = Vue.defineComponent({
   name: 'CpTaskDetail',
   inject: ['cp'],
+  data() {
+    return {
+      expandedPhaseKeys: {},
+      phaseRawLogs: {},
+      phaseRawLoading: {},
+      phaseRawErrors: {},
+      showFullTaskContent: false,
+    };
+  },
   computed: {
     s() { return this.cp.state; },
     task() { return this.s.taskDetail; },
+    taskId() { return this.task && this.task.id; },
     logText() {
-      return (this.s.taskLog && this.s.taskLog.text) || '';
+      const streamed = (this.s.taskLog && this.s.taskLog.text) || '';
+      if (streamed) return streamed;
+      return (this.task && this.task.log_text) || '';
+    },
+    phaseLogs() {
+      const task = this.task;
+      return (task && Array.isArray(task.phase_logs)) ? task.phase_logs : [];
+    },
+    processPhases() {
+      return this.phaseLogs.filter(phase => phase && phase.key);
     },
     logFileName() {
       const task = this.task;
@@ -151,8 +170,113 @@ CP.Components.TaskDetail = Vue.defineComponent({
         '- 处理方式：按 `codepilot ai template --format json` 的 schema 补齐 `content`，或删除后重新导入。',
       ].join('\n');
     },
+    taskContentLong() {
+      const text = String(this.taskContentText || '');
+      return text.length > 1800 || text.split(/\r?\n/).length > 36;
+    },
+    taskContentCollapsed() {
+      return this.taskContentLong && !this.showFullTaskContent;
+    },
+  },
+  watch: {
+    taskId() {
+      this.resetTaskDetailUi();
+    },
   },
   methods: {
+    resetTaskDetailUi() {
+      this.expandedPhaseKeys = {};
+      this.phaseRawLogs = {};
+      this.phaseRawLoading = {};
+      this.phaseRawErrors = {};
+      this.showFullTaskContent = false;
+    },
+    isPhaseExpanded(phase) {
+      if (!phase || !phase.key) return false;
+      if (Object.prototype.hasOwnProperty.call(this.expandedPhaseKeys, phase.key)) {
+        return !!this.expandedPhaseKeys[phase.key];
+      }
+      return !!phase.default_expanded;
+    },
+    togglePhase(phase) {
+      if (!phase || !phase.key) return;
+      const next = !this.isPhaseExpanded(phase);
+      this.expandedPhaseKeys = { ...this.expandedPhaseKeys, [phase.key]: next };
+    },
+    phaseLogState(phase) {
+      if (!phase || !phase.key) return null;
+      return this.phaseRawLogs[phase.key] || null;
+    },
+    phaseLogText(phase) {
+      if (!phase) return '';
+      if (phase.active) return (this.s.taskLog && this.s.taskLog.text) || '';
+      const state = this.phaseLogState(phase);
+      return (state && state.text) || '';
+    },
+    phaseLogDone(phase) {
+      if (!phase) return true;
+      if (phase.active) return false;
+      const state = this.phaseLogState(phase);
+      return !!(state && state.done);
+    },
+    phaseLogTitle(phase) {
+      const label = (phase && phase.label) || 'Phase';
+      const filename = (phase && phase.raw_filename) || this.logFileName;
+      return `${label} · ${filename || 'log'}`;
+    },
+    phaseStatusLabel(phase) {
+      const status = String((phase && phase.status) || '');
+      const labels = {
+        done: '完成',
+        failed: '失败',
+        running: '运行中',
+        unknown: '待确认',
+      };
+      return labels[status] || status || '-';
+    },
+    phaseLineCount(phase) {
+      const text = this.phaseLogText(phase);
+      return text ? text.split(/\r?\n/).length : 0;
+    },
+    formatBytes(bytes) {
+      const n = Number(bytes);
+      if (!Number.isFinite(n) || n <= 0) return '0 B';
+      if (n < 1024) return `${Math.round(n)} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+      return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    },
+    async loadPhaseLog(phase) {
+      if (!phase || !phase.key || !this.task || !phase.raw_available) return;
+      if (this.phaseRawLoading[phase.key]) return;
+      const current = this.phaseRawLogs[phase.key] || { text: '', nextOffset: 0, done: false };
+      if (current.done && current.text) return;
+      this.phaseRawLoading = { ...this.phaseRawLoading, [phase.key]: true };
+      this.phaseRawErrors = { ...this.phaseRawErrors, [phase.key]: '' };
+      try {
+        let state = { ...current };
+        let guard = 64;
+        while (guard-- > 0 && !state.done) {
+          const offset = Number.isFinite(state.nextOffset) ? state.nextOffset : 0;
+          const data = await CP.api.get(`/api/tasks/${this.task.id}/phase-logs/${encodeURIComponent(phase.key)}?offset=${offset}`);
+          const chunk = (data && typeof data.text === 'string') ? data.text : '';
+          const nextOffset = Number.isFinite(data && data.next_offset) ? data.next_offset : offset;
+          state = {
+            text: `${state.text || ''}${chunk}`,
+            nextOffset,
+            size: Number.isFinite(data && data.size) ? data.size : state.size,
+            done: !!(data && data.done),
+            source: (data && data.source) || phase.raw_source || '',
+          };
+          this.phaseRawLogs = { ...this.phaseRawLogs, [phase.key]: state };
+          if (state.done || (!chunk && nextOffset <= offset)) break;
+        }
+      } catch (err) {
+        const message = (err && err.message) ? err.message : '阶段日志加载失败';
+        this.phaseRawErrors = { ...this.phaseRawErrors, [phase.key]: message };
+      } finally {
+        this.phaseRawLoading = { ...this.phaseRawLoading, [phase.key]: false };
+      }
+    },
     async action(id, act) {
       if (act === 'split') {
         const ok = await this.cp.confirm({
@@ -323,9 +447,16 @@ CP.Components.TaskDetail = Vue.defineComponent({
             <div class="block-label">失败原因</div>
             <cp-markdown :text="task.error_message"></cp-markdown>
           </div>
-          <div class="block">
+          <div class="block task-content-block" :class="{ 'is-collapsed': taskContentCollapsed }">
             <div class="block-label">任务说明</div>
-            <cp-markdown :text="taskContentText"></cp-markdown>
+            <div class="task-content-md">
+              <cp-markdown :text="taskContentText"></cp-markdown>
+            </div>
+            <button v-if="taskContentLong"
+                    class="btn btn-outline btn-sm task-content-toggle"
+                    @click="showFullTaskContent = !showFullTaskContent">
+              {{ showFullTaskContent ? '收起任务说明' : '展开完整任务说明' }}
+            </button>
           </div>
           <div v-if="task.status === 'in_progress'" class="task-run-status">
             <span class="task-run-status-label">{{ runStatusLabel }}</span>
@@ -333,6 +464,63 @@ CP.Components.TaskDetail = Vue.defineComponent({
             <span v-if="isRunIdle" class="task-run-status-idle">
               <span class="idle-dot"></span>等待响应 · 静默 {{ runIdleSeconds }}s
             </span>
+          </div>
+          <div class="block task-process-block">
+            <div class="task-process-head">
+              <div>
+                <div class="block-label">执行过程</div>
+                <div class="tiny muted">按阶段查看 builder/reviewer 过程，原始日志按需加载</div>
+              </div>
+              <div class="chip-row task-process-stats">
+                <cp-chip tiny tone="info">{{ processPhases.length }} 阶段</cp-chip>
+              </div>
+            </div>
+            <div v-if="processPhases.length" class="task-phase-log-list">
+              <section v-for="phase in processPhases"
+                       :key="phase.key"
+                       class="task-phase-log"
+                       :class="'status-' + (phase.status || 'unknown')">
+                <button type="button" class="task-phase-log-head" @click="togglePhase(phase)">
+                  <span class="task-phase-caret">{{ isPhaseExpanded(phase) ? 'v' : '>' }}</span>
+                  <span class="task-phase-run-indicator">
+                    <span v-if="phase.active" class="phase-active-spinner"></span>
+                  </span>
+                  <span class="task-phase-log-title">{{ phase.label || phase.phase || 'Phase' }}</span>
+                  <span class="task-phase-log-meta">{{ phase.agent || '-' }}</span>
+                  <span class="task-phase-log-status">{{ phaseStatusLabel(phase) }}</span>
+                  <span v-if="phase.exit_code !== null && phase.exit_code !== undefined" class="task-phase-log-meta">exit {{ phase.exit_code }}</span>
+                  <span v-if="phase.duration !== null && phase.duration !== undefined" class="task-phase-log-meta">{{ phase.duration }}s</span>
+                  <span v-if="phase.raw_available" class="task-phase-log-meta">{{ formatBytes(phase.raw_size) }}</span>
+                </button>
+                <div v-if="isPhaseExpanded(phase)" class="task-phase-log-body">
+                  <div class="task-phase-log-summary">{{ phase.summary || '-' }}</div>
+                  <div v-if="phase.active && !phaseLogText(phase)" class="task-phase-log-loading">
+                    <span class="phase-active-spinner"></span>等待实时输出
+                  </div>
+                  <div v-else-if="!phase.active && !phaseLogText(phase)" class="task-phase-log-actions">
+                    <button v-if="phase.raw_available"
+                            class="btn btn-outline btn-sm"
+                            :disabled="phaseRawLoading[phase.key]"
+                            @click.stop="loadPhaseLog(phase)">
+                      <span v-if="phaseRawLoading[phase.key]" class="spinner tiny-spinner"></span>
+                      加载原始日志
+                    </button>
+                    <span v-else class="tiny muted">没有可加载的原始日志</span>
+                  </div>
+                  <div v-if="phaseRawErrors[phase.key]" class="tiny danger-text">{{ phaseRawErrors[phase.key] }}</div>
+                  <cp-agent-log v-if="phaseLogText(phase)"
+                                :text="phaseLogText(phase)"
+                                :title="phaseLogTitle(phase)"
+                                :done="phaseLogDone(phase)"
+                                tall
+                                :follow="phase.active"></cp-agent-log>
+                  <div v-if="phaseLogText(phase)" class="tiny muted task-phase-log-foot">
+                    {{ phaseLineCount(phase) }} 行
+                  </div>
+                </div>
+              </section>
+            </div>
+            <div v-else class="tiny muted">暂无阶段日志</div>
           </div>
           <div v-if="hasExecutionArtifacts" class="block artifact-review-block">
             <div class="block-label">Diff 审查</div>
@@ -385,25 +573,6 @@ CP.Components.TaskDetail = Vue.defineComponent({
                 </div>
               </div>
             </div>
-          </div>
-          <div class="block block-log-stream">
-            <div class="task-log-head">
-              <div class="min-w grow">
-                <div class="block-label">实时日志</div>
-                <div class="tiny muted">{{ logSummaryText }}</div>
-              </div>
-              <div class="chip-row task-log-stats">
-                <cp-chip tiny tone="info">{{ logStats.lines }} 行</cp-chip>
-                <cp-chip v-if="logStats.tools" tiny tone="primary">工具 {{ logStats.tools }}</cp-chip>
-                <cp-chip v-if="logStats.diffs" tiny tone="success">Diff {{ logStats.diffs }}</cp-chip>
-                <cp-chip v-if="logStats.warns" tiny tone="warning">关注 {{ logStats.warns }}</cp-chip>
-              </div>
-            </div>
-            <cp-agent-log
-              :text="logText"
-              :title="logTitle"
-              :done="s.taskLog.done"
-              tall follow></cp-agent-log>
           </div>
           <div v-if="task.delivery_record" class="block">
             <div class="block-label">交付记录</div>

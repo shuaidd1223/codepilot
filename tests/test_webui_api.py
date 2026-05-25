@@ -698,6 +698,118 @@ def test_task_detail_exposes_timeline_and_legacy_empty_fallback(ui_server):
     assert claimed["artifact_path"] == ".codepilot/artifacts/tasks/task-timeline.json"
 
 
+def test_task_detail_exposes_phase_logs_and_lazy_raw_console(ui_server):
+    project = db.get_project("demo")
+    project_path = Path(project["path"])
+    runs_dir = project_path / ".codepilot" / "runs"
+    runs_dir.mkdir(parents=True)
+    task = db.create_task("demo", "multi phase detail", content=_COMPLIANT_TASK_CONTENT, agent="dual")
+    builder_console = runs_dir / f"task-{task['id']}-builder-r1-test.console.md"
+    reviewer_console = runs_dir / f"task-{task['id']}-review-r1-test.console.md"
+    builder_console.write_bytes(b"builder raw line 1\nbuilder raw line 2\n")
+    reviewer_console.write_bytes(b"reviewer raw line 1\nVERDICT: PASS\n")
+
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        run_phase="builder",
+        active_pid=111,
+        current_log_path=str(builder_console),
+        heartbeat_at="2026-05-25T09:00:05",
+        started_at="2026-05-25T09:00:00",
+    )
+    db.create_task_log(
+        task["id"],
+        "codex",
+        "builder",
+        output="builder structured summary",
+        exit_code=0,
+        started_at="2026-05-25T09:00:00",
+        finished_at="2026-05-25T09:01:00",
+        duration=60,
+    )
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        run_phase="reviewer",
+        active_pid=222,
+        current_log_path=str(reviewer_console),
+        heartbeat_at="2026-05-25T09:01:05",
+    )
+    db.create_task_log(
+        task["id"],
+        "codex-review",
+        "reviewer",
+        output="reviewer structured summary\nVERDICT: PASS",
+        exit_code=0,
+        started_at="2026-05-25T09:01:00",
+        finished_at="2026-05-25T09:02:00",
+        duration=60,
+    )
+    db.update_task(
+        task["id"],
+        status="done",
+        run_phase="reviewer",
+        active_pid=None,
+        current_log_path=str(reviewer_console),
+        completed_at="2026-05-25T09:02:00",
+    )
+
+    status, body = _get(f"{ui_server}/api/tasks/{task['id']}")
+
+    assert status == 200
+    phases = body["phase_logs"]
+    assert [phase["label"] for phase in phases] == ["Builder R1", "Reviewer R1"]
+    assert [phase["status"] for phase in phases] == ["done", "done"]
+    assert all(phase["raw_available"] for phase in phases)
+    assert all(not phase["default_expanded"] for phase in phases)
+    assert "builder raw line 1" not in json.dumps(body, ensure_ascii=False)
+
+    builder_key = urllib.parse.quote(phases[0]["key"], safe="")
+    status, raw = _get(f"{ui_server}/api/tasks/{task['id']}/phase-logs/{builder_key}")
+
+    assert status == 200
+    assert raw["text"] == "builder raw line 1\nbuilder raw line 2\n"
+    assert raw["done"] is True
+    assert raw["source"] == "file"
+    assert "path" not in raw
+
+
+def test_task_phase_log_endpoint_rejects_unknown_keys_and_unsafe_paths(ui_server, tmp_path):
+    task = db.create_task("demo", "unsafe phase path", content=_COMPLIANT_TASK_CONTENT, agent="codex")
+    outside = tmp_path / "outside" / f"task-{task['id']}-builder-r1-test.console.md"
+    outside.parent.mkdir()
+    outside.write_text("must not be exposed", encoding="utf-8")
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        run_phase="builder",
+        active_pid=333,
+        current_log_path=str(outside),
+        heartbeat_at="2026-05-25T09:00:00",
+    )
+    db.create_task_log(
+        task["id"],
+        "codex",
+        "builder",
+        output="",
+        exit_code=0,
+        started_at="2026-05-25T09:00:00",
+        finished_at="2026-05-25T09:01:00",
+    )
+
+    status, body = _get(f"{ui_server}/api/tasks/{task['id']}")
+
+    assert status == 200
+    assert body["phase_logs"][0]["raw_available"] is False
+    assert body["phase_logs"][0]["raw_source"] == "none"
+
+    status, raw = _get(f"{ui_server}/api/tasks/{task['id']}/phase-logs/no-such-phase")
+
+    assert status == 404
+    assert "不存在" in raw["error"]
+
+
 def test_task_log_endpoint_returns_delta_from_offset(ui_server, tmp_path):
     task = db.create_task("demo", "log task", agent="codex")
     log_path = tmp_path / "task.log"

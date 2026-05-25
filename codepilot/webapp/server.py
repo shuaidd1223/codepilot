@@ -102,6 +102,7 @@ from codepilot.webapp.task_payloads import (  # noqa: F401 (re-export)
     _tail_text,
     _task_payload,
     task_detail_payload,
+    task_phase_log_delta,
     task_log_delta,
     workflow_board_payload,
 )
@@ -795,6 +796,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, status=404)
         return True
 
+    def _dispatch_get_task_phase_log(self, path: str, parsed: ParseResult) -> bool:
+        match = re.fullmatch(r"/api/tasks/(\d+)/phase-logs/([^/]+)", path)
+        if not match:
+            return False
+        try:
+            self._send_json(
+                task_phase_log_delta(
+                    int(match.group(1)),
+                    unquote(match.group(2)),
+                    offset=self._query_int(parsed, "offset", 0),
+                )
+            )
+        except RuntimeError as exc:
+            self._send_json({"error": str(exc)}, status=404)
+        return True
+
     def _dispatch_get_session_detail(self, path: str) -> bool:
         match = re.fullmatch(r"/api/sessions/(\d+)", path)
         if not match:
@@ -841,6 +858,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if self._dispatch_get_project_workflow(path):
             return True
         if self._dispatch_get_project_detail(path):
+            return True
+        if self._dispatch_get_task_phase_log(path, parsed):
             return True
         if self._dispatch_get_task_detail(path):
             return True

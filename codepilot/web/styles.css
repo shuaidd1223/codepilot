@@ -1065,6 +1065,144 @@ p { margin: 0; }
   margin-top: 0;
   justify-content: flex-end;
 }
+.task-content-block {
+  position: relative;
+}
+.task-content-md {
+  position: relative;
+}
+.task-content-block.is-collapsed .task-content-md {
+  max-height: 360px;
+  overflow: hidden;
+}
+.task-content-block.is-collapsed .task-content-md::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 76px;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, hsl(var(--card)));
+}
+.task-content-toggle {
+  margin-top: 10px;
+}
+.task-process-block {
+  border-color: hsl(var(--info) / .24);
+}
+.task-process-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.task-process-stats {
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+.task-phase-log-list {
+  display: grid;
+  gap: 8px;
+}
+.task-phase-log {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--background) / .7);
+  overflow: hidden;
+}
+.task-phase-log.status-done {
+  border-color: hsl(var(--success) / .22);
+}
+.task-phase-log.status-failed {
+  border-color: hsl(var(--destructive) / .35);
+  background: hsl(var(--destructive) / .04);
+}
+.task-phase-log.status-running {
+  border-color: hsl(var(--info) / .35);
+  background: hsl(var(--info) / .05);
+}
+.task-phase-log-head {
+  width: 100%;
+  min-height: 42px;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--foreground));
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 18px 14px minmax(120px, 1fr) repeat(5, max-content);
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+.task-phase-caret {
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.task-phase-run-indicator {
+  width: 14px;
+  min-width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.task-phase-log-title {
+  min-width: 0;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-phase-log-meta,
+.task-phase-log-status {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.task-phase-log-status {
+  color: hsl(var(--foreground) / .76);
+  font-weight: 650;
+}
+.task-phase-log.status-failed .task-phase-log-status {
+  color: hsl(var(--destructive));
+}
+.task-phase-log.status-running .task-phase-log-status {
+  color: hsl(var(--info));
+}
+.task-phase-log-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 10px 10px 42px;
+}
+.task-phase-log-summary {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+.task-phase-log-actions,
+.task-phase-log-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+.task-phase-log-foot {
+  text-align: right;
+}
+.phase-active-spinner {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: hsl(var(--info));
+  box-shadow: 0 0 0 0 hsl(var(--info) / .45);
+  animation: phase-pulse 1.35s ease-in-out infinite;
+}
+.danger-text {
+  color: hsl(var(--destructive));
+}
 .kv-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -3643,6 +3781,11 @@ textarea {
   .chat-header.chat-header-compact .btn { margin-left: auto; }
   .task-log-head { flex-direction: column; }
   .task-log-stats { justify-content: flex-start; }
+  .task-process-head { flex-direction: column; align-items: stretch; }
+  .task-process-stats { justify-content: flex-start; }
+  .task-phase-log-head { grid-template-columns: 18px 14px minmax(0, 1fr) max-content; }
+  .task-phase-log-head .task-phase-log-meta { display: none; }
+  .task-phase-log-body { padding-left: 10px; }
   .timeline-event-row { grid-template-columns: 10px minmax(110px, max-content) minmax(78px, max-content) minmax(0, 1fr); }
   .timeline-event-artifact { grid-column: 4; }
   .agent-log-head { flex-wrap: wrap; row-gap: 6px; }
