@@ -38,7 +38,6 @@ CP.AgentLogInteractionBoundary = CP.AgentLogInteractionBoundary || (() => {
     vm.$nextTick(() => {
       if (!vm.textLength) vm.unreadLines = 0;
       if (vm.followEnabled && vm.stickToBottom) vm._scrollToBottom();
-      vm._scheduleEnhance();
     });
   }
 

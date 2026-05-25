@@ -648,9 +648,10 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       const type = String((event && event.type) || 'summary');
       const msg = String((event && event.message) || '');
       const delta = String((extra && extra.content_delta) || '');
+      const error = String((extra && extra.error) || '');
       const tools = Array.isArray(extra && extra.tool_calls) ? extra.tool_calls : [];
       const latestTool = tools.length ? ` tools=${tools.map((tool) => tool.name || tool.tool || '-').join(',')}` : '';
-      const body = delta || msg || String((extra && extra.error) || '');
+      const body = type === 'error' ? (error || delta || msg) : (delta || msg || error);
       return `[${ts}] ${type}${latestTool}${body ? ` ${body}` : ''}`;
     }
 
@@ -692,7 +693,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         const idx = state.sessionMessages.findIndex((msg) => Number(msg.id) === messageId);
         if (idx >= 0) {
           const current = state.sessionMessages[idx] || {};
-          const content = nextRun.content_snapshot || current.content || '';
+          const content = nextRun.content_snapshot || (status === 'error' ? nextRun.error : '') || current.content || '';
           const finalIntent = status === 'done'
             ? 'opencode'
             : (status === 'error' ? 'error' : (status === 'cancelled' ? 'cancelled' : 'streaming'));

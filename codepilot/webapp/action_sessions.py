@@ -258,6 +258,17 @@ def _run_session_message_stream(
             intent=final_intent,
             error="" if ok else final_message,
         )
+        _emit_session_run_event(
+            project=project,
+            session_id=session_id,
+            assistant_message_id=assistant_message_id,
+            event_type=final_status,
+            status=final_status,
+            content_snapshot=final_message,
+            tool_calls=tool_calls,
+            opencode_session_id=opencode_session_id,
+            error="" if ok else final_message,
+        )
     except Exception as exc:
         final_message = f"OpenCode 执行失败：{exc}"
         _update_streaming_message(

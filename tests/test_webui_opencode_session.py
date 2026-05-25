@@ -245,3 +245,50 @@ def test_webui_session_message_async_records_stream_error(tmp_path: Path, monkey
     _poll_until(_check_error_poll)
     updated = db.list_session_messages(session["id"])[1]
     assert "provider missing" in updated["content"]
+
+
+def test_webui_session_message_async_emits_final_error_content_for_live_ui(tmp_path: Path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+    session = db.create_session("demo", title="chat")
+    emitted = []
+
+    def fake_stream(*_args, **kwargs):
+        kwargs["on_event"](
+            {
+                "type": "error",
+                "status": "error",
+                "content_snapshot": "",
+                "error": "OpenCode 执行失败：provider missing",
+            }
+        )
+        return {"ok": False, "intent": "error", "message": "OpenCode 执行失败：provider missing"}
+
+    def fake_emit(**payload):
+        emitted.append(payload)
+
+    monkeypatch.setattr("codepilot.opencode.session.run_opencode_message_stream", fake_stream)
+    monkeypatch.setattr("codepilot.core.progress_bus.emit", fake_emit)
+
+    from codepilot.webapp.action_sessions import send_session_message_action
+
+    result = send_session_message_action(session["id"], "你好", run_async=True)
+    assistant_id = result["assistant_message_id"]
+
+    def _has_final_error_event():
+        return any(
+            item.get("event_type") == "error"
+            and (item.get("extra") or {}).get("assistant_message_id") == assistant_id
+            and (item.get("extra") or {}).get("content_snapshot") == "OpenCode 执行失败：provider missing"
+            for item in emitted
+        )
+
+    _poll_until(_has_final_error_event)
+    final_errors = [
+        item
+        for item in emitted
+        if item.get("event_type") == "error"
+        and (item.get("extra") or {}).get("assistant_message_id") == assistant_id
+        and (item.get("extra") or {}).get("content_snapshot") == "OpenCode 执行失败：provider missing"
+    ]
+    assert final_errors
+    assert final_errors[-1]["extra"]["error"] == "OpenCode 执行失败：provider missing"

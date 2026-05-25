@@ -45,6 +45,14 @@ def _service_scope() -> str:
     return "_global"
 
 
+def _command_name_hint() -> str:
+    argv0 = os.path.splitext(os.path.basename(str(sys.argv[0] or "")))[0].lower()
+    home_name = os.path.basename(os.path.normpath(os.environ.get("CODEPILOT_HOME", ""))).lower()
+    if argv0 == "codepilot-dev" or home_name == ".codepilot-dev":
+        return "codepilot-dev"
+    return "codepilot"
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -341,7 +349,7 @@ def start_cmd(host: str | None, port: int | None, open_browser: bool, start_daem
     url = f"http://{resolved_host}:{resolved_port}/"
     echo(f"[green]Web UI 已启动[/green]  PID={proc.pid}  {url}")
     echo(f"[dim]日志: {LOG_FILE}[/dim]")
-    echo("[dim]停止: codepilot ui stop[/dim]")
+    echo(f"[dim]停止: {_command_name_hint()} ui stop[/dim]")
 
     if start_daemon:
         _ensure_daemon_started(project)

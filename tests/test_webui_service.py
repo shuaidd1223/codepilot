@@ -120,6 +120,34 @@ def test_webui_start_ensures_daemon_service(tmp_path, monkeypatch):
     assert "Web UI 已启动" in result.output
     assert "项目 demo 任务执行服务已后台启动" in result.output
 
+
+def test_webui_start_hint_uses_codepilot_dev_when_dev_home_is_active(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / ".codepilot-dev"))
+    monkeypatch.setenv("CODEPILOT_WEBUI_PORT", "8767")
+    monkeypatch.setattr(
+        svc,
+        "ensure_service_running_if_enabled",
+        lambda project_ref=None: {"enabled": False, "running": False, "started": False},
+    )
+
+    class _FakeProc:
+        pid = 5678
+        returncode = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(svc, "_spawn_detached", lambda host, port, project="": _FakeProc())
+    monkeypatch.setattr(svc.time, "sleep", lambda _: None)
+
+    result = CliRunner().invoke(svc.webui, ["start", "--no-open", "--no-daemon"])
+
+    assert result.exit_code == 0, result.output
+    assert "http://127.0.0.1:8767/" in result.output
+    assert "停止: codepilot-dev ui stop" in result.output
+
+
 def test_webui_start_passes_project_config_to_feishu_autostart(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

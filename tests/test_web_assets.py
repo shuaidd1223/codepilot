@@ -476,6 +476,8 @@ def test_chat_view_wires_streaming_session_runs_and_stop_action():
     assert "async function stopSessionRun" in session_boundary
     assert "handleSessionRunEvent(event)" in app_state
     assert "event.stage === 'session-run'" in app_state
+    assert "type === 'error' ? (error || delta || msg)" in app_state
+    assert "type === 'error' ? (String(extra.error || '') || extra.content_delta || item.message)" in chat
     assert "sessionRuns: {}" in app_state
     assert "opencodeRuntime" in app_state
     assert ".session-process-panel" in styles
@@ -643,6 +645,7 @@ def test_agent_log_splits_rendering_and_interaction_state_into_boundaries():
     assert "CP.AgentLogInteractionBoundary = CP.AgentLogInteractionBoundary || (() => {" in interaction_boundary
     assert "CP.AgentLogBoundaryContract = CP.AgentLogBoundaryContract || (() => {" in contract_boundary
     assert "function createAdapter(options = {}) {" in contract_boundary
+    assert "_scheduleEnhance" not in interaction_boundary
 
 
 def test_agent_log_contract_exposes_stable_adapter_surface():

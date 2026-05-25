@@ -564,6 +564,68 @@ def test_run_opencode_message_stream_reports_stderr_failure_and_clears_stale_ses
     assert not (state.get("meta") or {}).get("opencode_session_id")
 
 
+def test_run_opencode_message_stream_reports_stdout_error_event_when_stderr_empty(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _isolate_opencode_runtime(tmp_path, monkeypatch)
+    register_project(tmp_path, monkeypatch)
+    events = []
+
+    class FakeStdout:
+        def __init__(self):
+            self.lines = [
+                json.dumps(
+                    {
+                        "type": "error",
+                        "sessionID": "ses_failed",
+                        "error": {
+                            "name": "UnknownError",
+                            "data": {
+                                "message": "Model not found: opencode/minimax-m2.5-free",
+                            },
+                        },
+                    }
+                )
+                + "\n"
+            ]
+
+        def readline(self):
+            if not self.lines:
+                return ""
+            return self.lines.pop(0)
+
+    class FakeProcess:
+        def __init__(self, *_args, **_kwargs):
+            self.returncode = 1
+            self.stdout = FakeStdout()
+            self.stderr = SimpleNamespace(read=lambda: "")
+
+        def poll(self):
+            return 0 if not self.stdout.lines else None
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr("codepilot.opencode.session.subprocess.Popen", FakeProcess)
+
+    from codepilot.opencode.session import run_opencode_message_stream
+
+    result = run_opencode_message_stream(
+        "demo",
+        "你好",
+        source="web",
+        external_session_id="stdout-error",
+        on_event=events.append,
+    )
+
+    assert result["ok"] is False
+    assert "退出码 1" in result["message"]
+    assert "Model not found: opencode/minimax-m2.5-free" in result["message"]
+    assert "没有错误输出" not in result["message"]
+    assert events[-1]["error"] == result["message"]
+
+
 def test_run_opencode_message_stream_can_be_cancelled(tmp_path: Path, monkeypatch):
     _isolate_opencode_runtime(tmp_path, monkeypatch)
     register_project(tmp_path, monkeypatch)

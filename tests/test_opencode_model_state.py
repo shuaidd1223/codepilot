@@ -146,6 +146,20 @@ def test_unpersisted_builtin_default_session_does_not_override_project_config(tm
     assert resolve_project_model_selection("demo", project_path, db_path=opencode_db) == {}
 
 
+def test_saved_builtin_default_model_does_not_override_project_config(tmp_path: Path):
+    db.init_db()
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    save_project_model_selection("demo", {"provider_id": "opencode", "model_id": "minimax-m2.5-free"})
+
+    assert load_saved_project_model("demo") == {
+        "provider_id": "opencode",
+        "model_id": "minimax-m2.5-free",
+    }
+    assert resolve_project_model_selection("demo", project_path, db_path=tmp_path / "missing.db") == {}
+
+
 def test_sync_latest_project_model_persists_project_selection(tmp_path: Path):
     db.init_db()
     project_path = tmp_path / "project"

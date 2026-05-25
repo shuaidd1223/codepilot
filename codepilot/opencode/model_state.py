@@ -24,7 +24,7 @@ def resolve_project_model_selection(
 ) -> dict[str, str]:
     """Return CodePilot's saved project model, falling back to OpenCode session state."""
     saved = load_saved_project_model(project_scope)
-    if saved:
+    if saved and not _is_builtin_default_model(saved):
         return saved
     latest = load_latest_project_model(project_path, db_path=db_path)
     if _is_builtin_default_model(latest):

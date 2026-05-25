@@ -50,12 +50,16 @@ class _StreamState:
     session_id: str
     assistant_parts: list[str] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    error_parts: list[str] = field(default_factory=list)
 
     def content_snapshot(self) -> str:
         return "".join(self.assistant_parts)
 
     def reply(self) -> str:
         return _trim_text(self.content_snapshot().strip(), 4000)
+
+    def error_snapshot(self) -> str:
+        return "\n".join(dict.fromkeys(part.strip() for part in self.error_parts if part.strip()))
 
 
 def run_opencode_message(
@@ -374,6 +378,9 @@ def _apply_stream_line(
     parsed_event = _loads_json_line(raw_line)
     if parsed_event is None:
         return
+    error_text = _find_error_text(parsed_event)
+    if error_text:
+        state.error_parts.append(error_text)
     next_session_id = _find_session_id(parsed_event)
     if next_session_id:
         state.session_id = next_session_id
@@ -482,7 +489,7 @@ def _stream_failure_result(
     state: _StreamState,
     on_event: StreamCallback | None,
 ) -> dict[str, Any]:
-    detail = _trim_text(_read_stderr(proc), 800)
+    detail = _stream_failure_detail(proc, state)
     cleanup_note = _clear_stale_session_state(
         context.scope,
         previous_session_id=context.previous_session_id,
@@ -494,6 +501,14 @@ def _stream_failure_result(
     result = _error(f"OpenCode 执行失败（退出码 {return_code}）：{message_body}")
     _emit_stream_error(context, state, on_event, result["message"])
     return result
+
+
+def _stream_failure_detail(proc: Any, state: _StreamState) -> str:
+    stderr_detail = _trim_text(_read_stderr(proc), 800)
+    stdout_detail = _trim_text(state.error_snapshot(), 800)
+    if stderr_detail and stdout_detail and stdout_detail not in stderr_detail:
+        return _trim_text(f"{stderr_detail}\n{stdout_detail}", 800)
+    return stderr_detail or stdout_detail
 
 
 def _persist_stream_session(context: _StreamContext, state: _StreamState) -> None:
@@ -806,6 +821,40 @@ def _find_assistant_text(event: dict[str, Any]) -> str:
     if isinstance(text, str) and "assistant" in str(event.get("type") or "").lower():
         return text
     return ""
+
+
+def _find_error_text(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    parts: list[str] = []
+    if "error" in value:
+        error_text = _error_value_text(value.get("error"))
+        if error_text:
+            parts.append(error_text)
+    if "error" in str(value.get("type") or "").lower():
+        for key in ("message", "text"):
+            raw = value.get(key)
+            if isinstance(raw, str) and raw.strip():
+                parts.append(raw.strip())
+    return "\n".join(dict.fromkeys(parts))
+
+
+def _error_value_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict):
+        return ""
+    parts: list[str] = []
+    data = value.get("data")
+    if isinstance(data, dict):
+        raw = data.get("message")
+        if isinstance(raw, str) and raw.strip():
+            parts.append(raw.strip())
+    for key in ("message", "name"):
+        raw = value.get(key)
+        if isinstance(raw, str) and raw.strip():
+            parts.append(raw.strip())
+    return "\n".join(dict.fromkeys(parts))
 
 
 def _find_tool_name(value: Any) -> str:

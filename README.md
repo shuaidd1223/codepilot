@@ -668,6 +668,15 @@ model = "gpt-5.4"
 迁移提示：旧版 `[agents] codex_cmd / claude_cmd` 已删除，加载时会抛 `ConfigError` 并给出
 迁移示例。运行 `codepilot config sync -p <项目名>` 可一键重写旧文件到新格式。
 
+### 源码 / 安装入口隔离
+
+在本仓库开发和测试当前源码时使用 `codepilot-dev`，不要用已安装的 `codepilot` 代替。
+
+- `codepilot-dev`：源码开发入口，默认 `CODEPILOT_HOME=%USERPROFILE%\.codepilot-dev`，Web UI 默认端口 `8767`。
+- `codepilot`：正式安装入口，默认 `CODEPILOT_HOME=%USERPROFILE%\.codepilot`，Web UI 默认端口 `8766`。
+- 智能体在本仓库做源码验证、Web UI 调试、会话测试时应使用 `codepilot-dev ui ...`、`codepilot-dev status -p codepilot-dev`、`codepilot-dev chat -p codepilot-dev -a opencode`。
+- 只有明确要验证已安装二进制或发布包行为时，才运行 `codepilot ...`。
+
 ### OpenCode 专用模式
 
 `codepilot chat -a opencode` 使用官方 OpenCode 二进制作为可更新内核，同时由 CodePilot 在启动前生成

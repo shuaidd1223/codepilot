@@ -43,11 +43,14 @@
 - fallback_cli_order = `["codex", "opencode"]`：codex 不可用时自动降级到 opencode
 
 ### 关键入口
-- CLI 入口：`codepilot`（通过 pyproject.toml 定义）
+- 源码开发入口：`codepilot-dev`。所有在本仓库验证当前源码改动的智能体必须优先使用它，例如 `codepilot-dev ui start/status/restart/stop`、`codepilot-dev status -p codepilot-dev`。
+- 正式安装入口：`codepilot`。仅在明确验证已安装版本、冻结二进制或发布包行为时使用；不要用它验证当前工作区源码改动。
+- 入口隔离：`codepilot-dev` 默认使用 `~/.codepilot-dev` 和 Web UI 端口 `8767`；`codepilot` 默认使用 `~/.codepilot` 和 Web UI 端口 `8766`。不要混用两者的状态、日志或端口。
+- Python 包 CLI 入口：`codepilot`（通过 pyproject.toml 定义）；仓库内命令行验证仍使用上面的 `codepilot-dev` wrapper。
 - MCP 工具通过 `codepilot.mcp` 包提供
-- OpenCode 交互入口：`codepilot chat -a opencode`，由 CodePilot 注入隔离配置、MCP、模型和权限
-- Web UI：`codepilot ui start`
-- 飞书机器人：`codepilot feishu start`
+- OpenCode 交互入口：源码验证用 `codepilot-dev chat -p codepilot-dev -a opencode`，由 CodePilot 注入隔离配置、MCP、模型和权限
+- Web UI：源码验证用 `codepilot-dev ui start`（默认 8767）；安装版验证才用 `codepilot ui start`（默认 8766）
+- 飞书机器人：源码验证用 `codepilot-dev feishu start`
 
 ### 重要约束
 - 不要在 `AGENTS.toml` 中配置 `codex_cmd` / `claude_cmd`（旧格式已废弃）

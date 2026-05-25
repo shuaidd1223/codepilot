@@ -120,7 +120,7 @@ CP.Components.SessionChatPanel = Vue.defineComponent({
         const ts = (item.timestamp || '').slice(11, 19) || '--:--:--';
         const type = item.type || 'summary';
         const extra = item.extra || {};
-        const body = extra.content_delta || item.message || extra.error || '';
+        const body = type === 'error' ? (String(extra.error || '') || extra.content_delta || item.message) : (extra.content_delta || item.message || extra.error || '');
         return `[${ts}] ${type}${body ? ' ' + body : ''}`;
       }).join('\n');
     },
