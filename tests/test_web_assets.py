@@ -550,6 +550,27 @@ def test_web_ui_views_share_console_toolbar_contract():
     assert ".detail-grid" in styles
 
 
+def test_tasks_view_renders_workflow_board_from_backend_payload():
+    tasks_view = Path("codepilot/web/components/TasksView.js").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+    state_boundary = Path("codepilot/web/boundaries/StateBoundary.js").read_text(encoding="utf-8")
+    task_payloads = Path("codepilot/webapp/task_payloads.py").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "taskBoard" in app_state
+    assert "task_board_by_project" in app_state
+    assert "taskBoardByProject" in app_state
+    assert "pivotProjectAliases" in state_boundary
+    assert "workflow_board_payload" in task_payloads
+    assert "WORKFLOW_BOARD_COLUMNS" in task_payloads
+    assert "boardColumns()" in tasks_view
+    assert "workflow-board" in tasks_view
+    assert "workflow-card-actions" in tasks_view
+    assert "filter(t => t.status" not in tasks_view
+    assert ".workflow-board" in styles
+    assert ".workflow-column" in styles
+
+
 def test_sessions_view_wires_history_search():
     sessions = Path("codepilot/web/components/SessionsView.js").read_text(encoding="utf-8")
     styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")

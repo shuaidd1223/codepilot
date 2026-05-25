@@ -68,8 +68,17 @@ CP.StateBoundary.viewToCategory = (view, categoryViews = CP.StateBoundary.CATEGO
   return null;
 };
 
+CP.StateBoundary.emptyTaskBoard = (project = '') => ({
+  project,
+  columns: [],
+  counts: {},
+  total: 0,
+  sort: { column_order: [] },
+});
+
 CP.StateBoundary.pivotProjectAliases = (state, project) => {
   state.tasks = (project && state.tasksByProject[project]) || [];
+  state.taskBoard = (project && state.taskBoardByProject[project]) || CP.StateBoundary.emptyTaskBoard(project || '');
   state.jobs = (project && state.jobsByProject[project]) || [];
 };
 

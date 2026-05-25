@@ -480,6 +480,97 @@ def test_project_detail_endpoint(ui_server):
     }
 
 
+def test_project_detail_endpoint_returns_empty_workflow_board(ui_server):
+    status, body = _get(f"{ui_server}/api/projects/demo")
+
+    assert status == 200
+    board = body["task_board"]
+    assert board == body["task_board_by_project"]["demo"]
+    assert board["project"] == "demo"
+    assert board["total"] == 0
+    assert board["sort"]["column_order"] == ["backlog", "ready", "running", "review", "blocked", "done"]
+    assert [column["id"] for column in board["columns"]] == board["sort"]["column_order"]
+    assert [column["title"] for column in board["columns"]] == [
+        "Backlog",
+        "Ready",
+        "Running",
+        "Review",
+        "Blocked",
+        "Done",
+    ]
+    assert board["counts"] == {
+        "backlog": 0,
+        "ready": 0,
+        "running": 0,
+        "review": 0,
+        "blocked": 0,
+        "done": 0,
+    }
+    assert all(column["count"] == 0 and column["tasks"] == [] for column in board["columns"])
+
+
+def test_project_detail_workflow_board_groups_task_states(ui_server):
+    backlog = db.create_task("demo", "missing acceptance criteria", content="", agent="codex")
+    ready = db.create_task("demo", "ready to run", content=_COMPLIANT_TASK_CONTENT, agent="codex", priority="P1")
+    running = db.create_task("demo", "builder running", content=_COMPLIANT_TASK_CONTENT, agent="codex")
+    db.update_task(
+        running["id"],
+        status="in_progress",
+        run_phase="builder",
+        started_at="2026-05-25T09:00:00",
+        heartbeat_at="2026-05-25T09:01:00",
+        last_output="editing files",
+    )
+    review = db.create_task("demo", "review running", content=_COMPLIANT_TASK_CONTENT, agent="dual")
+    db.update_task(
+        review["id"],
+        status="in_progress",
+        run_phase="reviewer",
+        started_at="2026-05-25T09:02:00",
+        heartbeat_at="2026-05-25T09:03:00",
+        last_output="checking acceptance criteria",
+    )
+    failed = db.create_task("demo", "tests failed", content=_COMPLIANT_TASK_CONTENT, agent="codex")
+    db.update_task(
+        failed["id"],
+        status="failed",
+        run_phase="builder",
+        error_message="pytest failed: 1 failed",
+        completed_at="2026-05-25T09:04:00",
+    )
+    done = db.create_task("demo", "verified", content=_COMPLIANT_TASK_CONTENT, agent="codex")
+    db.update_task(
+        done["id"],
+        status="done",
+        run_phase="merge",
+        delivery_record="VERDICT: PASS",
+        completed_at="2026-05-25T09:05:00",
+    )
+
+    status, body = _get(f"{ui_server}/api/projects/demo")
+
+    assert status == 200
+    columns = {column["id"]: column for column in body["task_board"]["columns"]}
+    assert [task["id"] for task in columns["backlog"]["tasks"]] == [backlog["id"]]
+    assert [task["id"] for task in columns["ready"]["tasks"]] == [ready["id"]]
+    assert [task["id"] for task in columns["running"]["tasks"]] == [running["id"]]
+    assert [task["id"] for task in columns["review"]["tasks"]] == [review["id"]]
+    assert [task["id"] for task in columns["blocked"]["tasks"]] == [failed["id"]]
+    assert [task["id"] for task in columns["done"]["tasks"]] == [done["id"]]
+
+    failed_card = columns["blocked"]["tasks"][0]
+    assert failed_card["workflow_column_id"] == "blocked"
+    assert failed_card["blocked_reason"] == "pytest failed: 1 failed"
+    assert failed_card["execution_status"] == "failed:builder"
+    assert failed_card["updated_at"] == "2026-05-25T09:04:00"
+    assert failed_card["actions"]["retry"] is True
+
+    running_card = columns["running"]["tasks"][0]
+    assert running_card["execution_status"] == "in_progress:builder"
+    assert running_card["updated_at"] == "2026-05-25T09:01:00"
+    assert running_card["actions"]["stop"] is True
+
+
 def test_project_permission_endpoint_updates_agents_toml(ui_server):
     project = db.get_project("demo")
     config_path = Path(project["path"]) / "AGENTS.toml"

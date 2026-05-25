@@ -92,6 +92,7 @@ from codepilot.webapp.payloads import (  # noqa: F401 (re-export)
     project_workflow_payload,
 )
 from codepilot.webapp.task_payloads import (  # noqa: F401 (re-export)
+    WORKFLOW_BOARD_COLUMNS,
     _compose_log_text,
     _parse_depends,
     _read_text,
@@ -99,6 +100,7 @@ from codepilot.webapp.task_payloads import (  # noqa: F401 (re-export)
     _task_payload,
     task_detail_payload,
     task_log_delta,
+    workflow_board_payload,
 )
 from codepilot.webapp.action_workflow import (  # noqa: F401 (re-export)
     execute_workflow_auto_action,

@@ -22,6 +22,7 @@ from codepilot.core.config import resolve_project_config_reference
 from codepilot.webapp.task_payloads import (
     _task_payload,
     task_detail_payload,  # noqa: F401 (re-export)
+    workflow_board_payload,
 )
 
 
@@ -335,6 +336,7 @@ def dashboard_payload(selected_project: str | None = None) -> dict:
     project_rows = db.list_projects()
 
     tasks_by_project: dict[str, list[dict]] = {}
+    task_board_by_project: dict[str, dict] = {}
     jobs_by_project: dict[str, list[dict]] = {}
     for proj in project_rows:
         name = proj["name"]
@@ -344,6 +346,7 @@ def dashboard_payload(selected_project: str | None = None) -> dict:
             if str(task.get("status") or "") != "archived"
         ]
         tasks_by_project[name] = [_task_payload(task) for task in raw_tasks]
+        task_board_by_project[name] = workflow_board_payload(name, raw_tasks)
         try:
             jobs_by_project[name] = shell.list_ui_jobs(name)
         except Exception:  # noqa: BLE001
@@ -359,9 +362,11 @@ def dashboard_payload(selected_project: str | None = None) -> dict:
         "projects": projects,
         "selected_project": resolved,
         "tasks_by_project": tasks_by_project,
+        "task_board_by_project": task_board_by_project,
         "jobs_by_project": jobs_by_project,
         # Back-compat aliases for the currently-selected project.
         "tasks": tasks_by_project.get(resolved, []) if resolved else [],
+        "task_board": task_board_by_project.get(resolved) if resolved else workflow_board_payload("", []),
         "jobs": jobs_by_project.get(resolved, []) if resolved else [],
         "events": shell.list_ui_events(resolved),
     }

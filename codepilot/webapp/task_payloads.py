@@ -7,7 +7,50 @@ from pathlib import Path
 
 from codepilot.commands.reviewer_output import parse_reviewer_output
 from codepilot.core.runtime import runtime_summary
+from codepilot.core.task_template import missing_task_template_sections
 from codepilot.storage import database as db
+
+
+WORKFLOW_BOARD_COLUMNS = (
+    {
+        "id": "backlog",
+        "title": "Backlog",
+        "description": "已创建但缺少可执行任务模板或验收信息。",
+        "tone": "neutral",
+    },
+    {
+        "id": "ready",
+        "title": "Ready",
+        "description": "验收标准和验证命令齐全，可由执行器领取。",
+        "tone": "primary",
+    },
+    {
+        "id": "running",
+        "title": "Running",
+        "description": "正在由 daemon 或手动 run 执行。",
+        "tone": "info",
+    },
+    {
+        "id": "review",
+        "title": "Review",
+        "description": "正在审查阶段，需要查看日志或 reviewer verdict。",
+        "tone": "warning",
+    },
+    {
+        "id": "blocked",
+        "title": "Blocked",
+        "description": "缺配置、执行失败、测试失败或等待人工处理。",
+        "tone": "danger",
+    },
+    {
+        "id": "done",
+        "title": "Done",
+        "description": "已完成并通过验证。",
+        "tone": "success",
+    },
+)
+
+_WORKFLOW_COLUMN_IDS = tuple(column["id"] for column in WORKFLOW_BOARD_COLUMNS)
 
 
 def _tail_text(text: str, *, max_lines: int = 160, max_chars: int = 20000) -> str:
@@ -176,6 +219,60 @@ def _derive_recovery_hints(task: dict) -> list[str]:
     return hints
 
 
+def _recent_task_update(task: dict) -> str:
+    for key in ("completed_at", "heartbeat_at", "started_at", "created_at"):
+        value = str(task.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _execution_status(task: dict) -> str:
+    status = str(task.get("status") or "").strip()
+    phase = str(task.get("run_phase") or "").strip()
+    if status and phase:
+        return f"{status}:{phase}"
+    return status or phase
+
+
+def _task_ready_for_execution(task: dict) -> bool:
+    content = str(task.get("content") or "")
+    if not content.strip():
+        return False
+    return not missing_task_template_sections(content)
+
+
+def _workflow_blocked_reason(task: dict, payload: dict) -> str:
+    status = str(task.get("status") or "").strip()
+    if payload.get("blocked_reason"):
+        return str(payload["blocked_reason"])
+    if payload.get("skip_reason"):
+        return str(payload["skip_reason"])
+    if payload.get("error_message"):
+        return str(payload["error_message"])
+    if status == "cancelled":
+        return str(task.get("error_message") or task.get("stop_reason") or "任务已取消。")
+    if status == "failed":
+        return str(task.get("last_output") or "任务执行失败，请查看日志。")
+    return ""
+
+
+def _workflow_column_id(task: dict, payload: dict) -> str:
+    status = str(task.get("status") or "").strip()
+    phase = str(task.get("run_phase") or "").strip().lower()
+    if status in {"done", "archived"}:
+        return "done"
+    if status in {"failed", "cancelled"}:
+        return "blocked"
+    if status in {"in_progress", "running"}:
+        return "review" if "review" in phase else "running"
+    if status == "backlog":
+        if _workflow_blocked_reason(task, payload):
+            return "blocked"
+        return "ready" if _task_ready_for_execution(task) else "backlog"
+    return "backlog"
+
+
 def _task_payload(task: dict) -> dict:
     status = task["status"]
 
@@ -210,7 +307,7 @@ def _task_payload(task: dict) -> dict:
             blocked_reason = detail["reason"]
             suggested_actions = detail["suggested_actions"]
 
-    return {
+    payload = {
         "id": task["id"],
         "project": task["project"],
         "title": task["title"],
@@ -230,6 +327,8 @@ def _task_payload(task: dict) -> dict:
         "created_at": task.get("created_at") or "",
         "started_at": task.get("started_at") or "",
         "completed_at": task.get("completed_at") or "",
+        "updated_at": _recent_task_update(task),
+        "execution_status": _execution_status(task),
         "retry_count": int(task.get("retry_count") or 0),
         "max_retries": int(task.get("max_retries") or 0),
         "recovery_hints": _derive_recovery_hints(task),
@@ -240,6 +339,48 @@ def _task_payload(task: dict) -> dict:
             "cancel": status in {"backlog", "failed"},
             "archive": status == "done",
             "delete": status in {"backlog", "cancelled", "done", "archived"},
+        },
+    }
+    column_id = _workflow_column_id(task, payload)
+    payload["workflow_column_id"] = column_id
+    payload["workflow_column_title"] = next(
+        (column["title"] for column in WORKFLOW_BOARD_COLUMNS if column["id"] == column_id),
+        column_id,
+    )
+    payload["blocked_reason"] = _workflow_blocked_reason(task, payload)
+    return payload
+
+
+def workflow_board_payload(project: str, tasks: list[dict]) -> dict:
+    columns = {
+        column["id"]: {
+            **column,
+            "count": 0,
+            "tasks": [],
+        }
+        for column in WORKFLOW_BOARD_COLUMNS
+    }
+    total = 0
+    for sort_index, task in enumerate(tasks):
+        card = _task_payload(task)
+        column_id = str(card.get("workflow_column_id") or "backlog")
+        if column_id not in columns:
+            column_id = "backlog"
+            card["workflow_column_id"] = column_id
+            card["workflow_column_title"] = "Backlog"
+        card["sort_index"] = sort_index
+        columns[column_id]["tasks"].append(card)
+        columns[column_id]["count"] += 1
+        total += 1
+
+    return {
+        "project": project,
+        "columns": [columns[column_id] for column_id in _WORKFLOW_COLUMN_IDS],
+        "counts": {column_id: columns[column_id]["count"] for column_id in _WORKFLOW_COLUMN_IDS},
+        "total": total,
+        "sort": {
+            "column_order": list(_WORKFLOW_COLUMN_IDS),
+            "task_order": "display_sort:status_priority_created_at_done_completed_desc",
         },
     }
 

@@ -11,6 +11,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
     const state = reactive({
       projects: [], tasks: [], jobs: [], events: [], sessions: [],
       tasksByProject: {}, jobsByProject: {},
+      taskBoard: { project: '', columns: [], counts: {}, total: 0, sort: { column_order: [] } },
+      taskBoardByProject: {},
 
       nav: { project: null, view: 'overview', id: null },
       expanded: {},
@@ -369,6 +371,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         state.projects = data.projects || [];
         state.events = data.events || [];
         state.tasksByProject = data.tasks_by_project || {};
+        state.taskBoardByProject = data.task_board_by_project || {};
         state.jobsByProject = data.jobs_by_project || {};
         const active = state.nav.project || data.selected_project || null;
         CP.StateBoundary.pivotProjectAliases(state, active);

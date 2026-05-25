@@ -781,6 +781,140 @@ p { margin: 0; }
   gap: 4px;
   flex-shrink: 0;
 }
+.workflow-board {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(210px, 1fr));
+  gap: 10px;
+  align-items: start;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.workflow-column {
+  --column-accent: hsl(var(--muted-foreground) / .32);
+  min-width: 210px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-raised));
+  box-shadow: var(--shadow-sm);
+}
+.workflow-column.tone-primary { --column-accent: hsl(var(--primary) / .68); }
+.workflow-column.tone-info { --column-accent: hsl(var(--info) / .68); }
+.workflow-column.tone-warning { --column-accent: hsl(var(--warning) / .76); }
+.workflow-column.tone-danger { --column-accent: hsl(var(--destructive) / .68); }
+.workflow-column.tone-success { --column-accent: hsl(var(--success) / .68); }
+.workflow-column-head {
+  min-height: 78px;
+  padding: 12px;
+  border-bottom: 1px solid hsl(var(--border));
+  border-top: 3px solid var(--column-accent);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.workflow-column-head h3 {
+  font-size: 13px;
+  line-height: 1.35;
+}
+.workflow-column-head p {
+  margin-top: 3px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.35;
+}
+.workflow-column-count {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+.workflow-column-empty {
+  margin: 10px;
+  padding: 16px 10px;
+  border: 1px dashed hsl(var(--border));
+  border-radius: 7px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-align: center;
+}
+.workflow-task-card {
+  position: relative;
+  margin: 10px;
+  padding: 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 7px;
+  background: hsl(var(--card));
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  transition: border-color .14s, box-shadow .14s, background .14s;
+}
+.workflow-task-card:hover {
+  border-color: hsl(var(--primary) / .45);
+  background: hsl(var(--accent) / .22);
+  box-shadow: var(--shadow-sm);
+}
+.workflow-card-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  word-break: break-word;
+}
+.workflow-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.35;
+}
+.workflow-card-blocked {
+  padding: 7px 8px;
+  border-left: 3px solid hsl(var(--warning));
+  border-radius: 0 6px 6px 0;
+  background: hsl(var(--warning) / .12);
+  color: hsl(38 92% 30%);
+  font-size: 11px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+[data-theme="dark"] .workflow-card-blocked {
+  color: hsl(var(--warning));
+}
+.workflow-card-preview {
+  color: hsl(var(--foreground) / .78);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.workflow-card-preview.preview-warning { color: hsl(38 92% 36%); }
+[data-theme="dark"] .workflow-card-preview.preview-warning { color: hsl(var(--warning)); }
+.workflow-card-preview.preview-danger { color: hsl(var(--destructive)); }
+.workflow-card-actions {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-top: 2px;
+}
+.workflow-card-actions .btn-sm {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+}
 .inline-quick-confirm {
   position: absolute;
   right: calc(100% + 8px);
@@ -793,6 +927,10 @@ p { margin: 0; }
   background: hsl(var(--card));
   box-shadow: var(--shadow-md);
   z-index: 20;
+}
+.inline-quick-confirm.workflow-inline-confirm {
+  right: 0;
+  top: calc(100% + 2px);
 }
 .inline-quick-confirm-text {
   font-size: 11px;
@@ -3319,6 +3457,7 @@ textarea {
 }
 @media (max-width: 960px) {
   .view { padding: 20px; }
+  .workflow-board { grid-template-columns: repeat(3, minmax(210px, 1fr)); }
   .service-grid { grid-template-columns: 1fr; }
   .main-header { padding: 10px 18px; }
   .grid-2 { grid-template-columns: 1fr; }
@@ -3343,6 +3482,7 @@ textarea {
   .shell { grid-template-columns: 1fr; }
   .sidebar { display: none; }
   .view { padding: 16px 12px 24px; gap: 12px; }
+  .workflow-board { grid-template-columns: 1fr; overflow-x: visible; }
   .main-header { align-items: flex-start; flex-direction: column; gap: 8px; }
   .main-header .row { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
   .task-item { flex-direction: column; gap: 10px; }
