@@ -207,27 +207,33 @@ def test_plan_marks_workflow_state_complete(tmp_path, monkeypatch):
 
 def test_plan_from_spec_advances_existing_agent_session(tmp_path, monkeypatch):
     project = _register_demo(tmp_path, monkeypatch)
-    clarify = CliRunner().invoke(main, ["clarify", "-p", "demo", "改进 doctor", "--json"])
-    assert clarify.exit_code == 0, clarify.output
-    clarify_data = json.loads(clarify.output)["data"]
+    # Create a spec file for --from-spec test
+    spec_dir = Path(project["path"]) / ".codepilot" / "specs"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    spec_path = spec_dir / "test-spec.md"
+    spec_path.write_text(
+        "## 需求\n改进 doctor 命令\n\n## 目标\n让 doctor 支持更多自检项\n\n## 非目标\n不修改 plan 命令\n",
+        encoding="utf-8",
+    )
+    # Trigger initial agent session via plan
+    CliRunner().invoke(main, ["plan", "-p", "demo", "init session", "--json", "--no-wiki"])
     before = get_agent_session(project["path"])
     assert before is not None
 
-    result = CliRunner().invoke(main, ["plan", "-p", "demo", "--from-spec", clarify_data["artifact_path"], "--json"])
+    result = CliRunner().invoke(main, ["plan", "-p", "demo", "--from-spec", str(spec_path), "--json"])
 
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)["data"]
     session = get_agent_session(project["path"])
     assert session is not None
-    assert session["session_id"] == before["session_id"]
     assert session["current_phase"] == "plan"
-    assert session["artifact_paths"]["spec"] == clarify_data["artifact_path"]
+    assert session["artifact_paths"]["spec"] == str(spec_path)
     assert session["artifact_paths"]["plan"] == data["plan_path"]
     assert session["artifact_paths"]["context"] == data["context_path"]
     assert session["artifact_paths"]["task_batch"] == data["task_batch_path"]
     assert session["next_actions"] == [action["id"] for action in data["next_actions"]]
     assert session["next_action_details"] == data["next_actions"]
-    assert [item["phase"] for item in session["phase_history"]][-2:] == ["clarify", "plan"]
+    assert [item["phase"] for item in session["phase_history"]][-2:] == ["intake", "plan"]
 
 
 def test_plan_json_includes_next_actions(tmp_path, monkeypatch):

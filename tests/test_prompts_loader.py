@@ -65,11 +65,10 @@ def test_load_prompt_cache_is_language_specific(monkeypatch):
 
 
 def test_load_prompt_preserves_missing_keys():
-    text = prompts.load_prompt("clarify", title="only title supplied")
+    text = prompts.load_prompt("task_single", title="only title supplied")
     assert "only title supplied" in text
-    # context and history_block left as placeholders for later assembly.
-    assert "{context}" in text
-    assert "{history_block}" in text
+    # project_context left as placeholder for later assembly.
+    assert "{project_context}" in text
 
 
 def test_load_prompt_raises_for_unknown_name():

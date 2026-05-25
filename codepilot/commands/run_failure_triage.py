@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from typing import Callable
 
+from codepilot.commands.run_failure_triage_apply import (
+    _apply_replan_decision,  # noqa: F401 (re-export)
+    _apply_retry_with_hint_decision,  # noqa: F401 (re-export)
+    _fallback_review_failure_result,  # noqa: F401 (re-export)
+    _override_review_failure_discard_decision,  # noqa: F401 (re-export)
+    apply_review_failure_triage,  # noqa: F401 (re-export)
+)
 from codepilot.commands.run_failure_triage_decisions import (
     _TriageEvidence,
     _classify_triage_action,
