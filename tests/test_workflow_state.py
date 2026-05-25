@@ -182,6 +182,82 @@ def test_task_timeline_events_round_trip_and_legacy_fallback(tmp_path):
     assert payload["artifacts"] == {}
 
 
+def test_task_database_hooks_record_compact_timeline_events(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    task = db.create_task(
+        "demo",
+        "关键节点 timeline",
+        "content",
+        agent="codex",
+        priority="P1",
+        source="planner",
+    )
+
+    db.update_task(
+        task["id"],
+        status="in_progress",
+        started_at="2026-05-25T10:00:00",
+        heartbeat_at="2026-05-25T10:00:01",
+        run_phase="builder",
+        active_pid=1234,
+        current_log_path=str(tmp_path / "task.log"),
+    )
+    db.create_task_log(
+        task["id"],
+        "codex",
+        "reviewer",
+        output="SECRET_TOKEN=should-not-enter-timeline\n" + "full output\n" * 200,
+        exit_code=0,
+        started_at="2026-05-25T10:05:00",
+        finished_at="2026-05-25T10:06:00",
+        duration=60,
+    )
+    db.update_task(
+        task["id"],
+        status="done",
+        completed_at="2026-05-25T10:07:00",
+        delivery_record="VERDICT: PASS",
+    )
+
+    timeline = read_task_timeline_events(project["path"], task["id"])
+
+    assert [item["event"] for item in timeline] == [
+        "created",
+        "planned",
+        "claimed",
+        "agent_started",
+        "agent_started",
+        "reviewed",
+        "done",
+    ]
+    assert timeline[2]["actor"] == "codex"
+    assert timeline[3]["source"] == "codepilot.runtime"
+    assert timeline[5]["message"] == "reviewer 阶段结束 exit=0"
+    assert timeline[-1]["message"] == "VERDICT: PASS"
+    assert "SECRET_TOKEN" not in json.dumps(timeline, ensure_ascii=False)
+    assert all(len(item["message"]) <= 500 for item in timeline)
+
+
+def test_task_timeline_redacts_secret_like_failure_messages(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    task = db.create_task("demo", "redact timeline", "content", agent="codex")
+
+    db.update_task(
+        task["id"],
+        status="failed",
+        completed_at="2026-05-25T10:08:00",
+        error_message="OPENAI_API_KEY=sk-test-secret PASSWORD: hunter2 Authorization: Bearer abcdefghijk",
+    )
+
+    timeline = read_task_timeline_events(project["path"], task["id"])
+    failed = next(item for item in timeline if item["event"] == "failed")
+
+    assert "[redacted]" in failed["message"]
+    assert "sk-test-secret" not in failed["message"]
+    assert "hunter2" not in failed["message"]
+    assert "abcdefghijk" not in failed["message"]
+
+
 def test_workflow_status_cli_returns_active_state_json(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

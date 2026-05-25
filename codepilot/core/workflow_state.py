@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import uuid
 from datetime import datetime
@@ -27,6 +28,13 @@ TASK_TIMELINE_EVENTS = frozenset(
         "failed",
     }
 )
+_TIMELINE_SECRET_ASSIGNMENT_RE = re.compile(
+    r"\b([A-Z0-9_.-]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API[_-]?KEY|APP[_-]?SECRET|PRIVATE[_-]?KEY)[A-Z0-9_.-]*)"
+    r"\s*([:=])\s*(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+    re.IGNORECASE,
+)
+_TIMELINE_BEARER_RE = re.compile(r"\b(Bearer\s+)[A-Za-z0-9._~+/\-]+=*", re.IGNORECASE)
+_TIMELINE_SK_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{6,}\b")
 
 
 def _now_iso() -> str:
@@ -131,6 +139,17 @@ def _compact_timeline_text(value: Any, *, limit: int = 500) -> str:
     return text[:limit]
 
 
+def _redact_timeline_secrets(text: str) -> str:
+    text = _TIMELINE_SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}[redacted]", text)
+    text = _TIMELINE_BEARER_RE.sub(lambda match: f"{match.group(1)}[redacted]", text)
+    return _TIMELINE_SK_RE.sub("[redacted]", text)
+
+
+def _safe_timeline_text(value: Any, *, limit: int = 500) -> str:
+    text = " ".join(str(value or "").split())
+    return _redact_timeline_secrets(text)[:limit]
+
+
 def _coerce_task_timeline(raw_timeline: Any) -> list[dict[str, str]]:
     if not isinstance(raw_timeline, list):
         return []
@@ -148,10 +167,10 @@ def _coerce_task_timeline(raw_timeline: Any) -> list[dict[str, str]]:
             {
                 "time": timestamp,
                 "event": event,
-                "actor": _compact_timeline_text(item.get("actor"), limit=80),
-                "source": _compact_timeline_text(item.get("source"), limit=120),
-                "message": _compact_timeline_text(item.get("message"), limit=500),
-                "artifact_path": _compact_timeline_text(item.get("artifact_path"), limit=500),
+                "actor": _safe_timeline_text(item.get("actor"), limit=80),
+                "source": _safe_timeline_text(item.get("source"), limit=120),
+                "message": _safe_timeline_text(item.get("message"), limit=500),
+                "artifact_path": _safe_timeline_text(item.get("artifact_path"), limit=500),
             }
         )
     return events
@@ -207,10 +226,10 @@ def append_task_timeline_event(
     record = {
         "time": _compact_timeline_text(time or now, limit=80),
         "event": clean_event,
-        "actor": _compact_timeline_text(actor, limit=80),
-        "source": _compact_timeline_text(source, limit=120),
-        "message": _compact_timeline_text(message, limit=500),
-        "artifact_path": _compact_timeline_text(artifact_path, limit=500),
+        "actor": _safe_timeline_text(actor, limit=80),
+        "source": _safe_timeline_text(source, limit=120),
+        "message": _safe_timeline_text(message, limit=500),
+        "artifact_path": _safe_timeline_text(artifact_path, limit=500),
     }
     timeline = _coerce_task_timeline(current.get("timeline"))
     timeline.append(record)
