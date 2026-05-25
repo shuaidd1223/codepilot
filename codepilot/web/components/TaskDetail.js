@@ -111,6 +111,11 @@ CP.Components.TaskDetail = Vue.defineComponent({
       const a = this.executionArtifacts;
       return !!(a.patch || a.validation || a.review);
     },
+    timelineEvents() {
+      const t = this.task;
+      const items = (t && Array.isArray(t.timeline)) ? t.timeline : [];
+      return items.filter(item => item && item.time && item.event);
+    },
     patchArtifact() {
       return this.executionArtifacts.patch || null;
     },
@@ -180,6 +185,22 @@ CP.Components.TaskDetail = Vue.defineComponent({
       if (['fail', 'failed'].includes(status)) return 'bad';
       if (['empty', 'none', 'not_run'].includes(status)) return 'muted';
       return 'neutral';
+    },
+    formatTimelineEvent(item) {
+      const labels = {
+        created: 'Created',
+        planned: 'Planned',
+        claimed: 'Claimed',
+        agent_started: 'Agent',
+        diff_detected: 'Diff',
+        validated: 'Validation',
+        reviewed: 'Review',
+        blocked: 'Blocked',
+        done: 'Done',
+        failed: 'Failed',
+      };
+      const key = String((item && item.event) || '').trim();
+      return labels[key] || key || '-';
     },
   },
   template: `
@@ -280,6 +301,19 @@ CP.Components.TaskDetail = Vue.defineComponent({
               <span class="task-kv-key">日志文件</span>
               <code class="task-inline-code" :title="task.current_log_path || '-'">{{ task.current_log_path || '-' }}</code>
             </div>
+          </div>
+          <div class="block task-timeline-block">
+            <div class="block-label">任务时间线</div>
+            <div v-if="timelineEvents.length" class="timeline-event-list">
+              <div v-for="(item, idx) in timelineEvents" :key="idx" class="timeline-event-row">
+                <span class="timeline-event-dot" :class="'event-' + (item.event || 'event')"></span>
+                <span class="timeline-event-time">{{ $cp.fmtTime(item.time) || item.time || '-' }}</span>
+                <span class="timeline-event-kind">{{ formatTimelineEvent(item) }}</span>
+                <span class="timeline-event-message">{{ item.message || '-' }}</span>
+                <code v-if="item.artifact_path" class="timeline-event-artifact" :title="item.artifact_path">{{ item.artifact_path }}</code>
+              </div>
+            </div>
+            <div v-else class="tiny muted">暂无 timeline 事件</div>
           </div>
           <div v-if="task.skip_reason" class="block warning">
             <div class="block-label">预检跳过（未消耗重试次数，下一轮会自动重试）</div>

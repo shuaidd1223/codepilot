@@ -9,7 +9,7 @@ from click.testing import CliRunner
 import codepilot.commands.trace as trace_cmd
 from codepilot.cli import main
 from codepilot.commands.trace import collect_trace_events
-from codepilot.core.workflow_state import start_workflow
+from codepilot.core.workflow_state import append_task_timeline_event, start_workflow
 from codepilot.storage import database as db
 from tests.workflow_testkit import init_test_db
 
@@ -87,12 +87,58 @@ def test_trace_command_outputs_json(tmp_path, monkeypatch):
 
 def test_trace_task_filter_excludes_service_and_workflow_events(tmp_path, monkeypatch):
     project, task = _seed_trace(tmp_path, monkeypatch)
+    append_task_timeline_event(
+        project["path"],
+        task["id"],
+        event="validated",
+        actor="builtin",
+        source="codepilot.run",
+        message="pytest passed",
+        artifact_path=".codepilot/artifacts/tasks/task-1-execution.json",
+        time="2026-04-29 10:06:00",
+    )
 
     events = collect_trace_events(project, task_id=task["id"], limit=0)
 
     assert events
-    assert {event["source"] for event in events} == {"task", "task_log"}
+    assert {event["source"] for event in events} == {"task", "task_log", "task_timeline"}
     assert all(event["task_id"] == task["id"] for event in events)
+    timeline = next(event for event in events if event["event"] == "task_timeline.validated")
+    assert timeline["event"] == "task_timeline.validated"
+    assert timeline["message"] == "#1 pytest passed"
+    assert timeline["detail"] == ".codepilot/artifacts/tasks/task-1-execution.json"
+
+
+def test_trace_command_filters_json_by_task_id_with_timeline(tmp_path, monkeypatch):
+    project, task = _seed_trace(tmp_path, monkeypatch)
+    other = db.create_task("demo", "其他任务", "content", agent="codex", priority="P2")
+    append_task_timeline_event(
+        project["path"],
+        task["id"],
+        event="reviewed",
+        actor="reviewer",
+        source="codepilot.run",
+        message="VERDICT: PASS",
+        time="2026-04-29 10:07:00",
+    )
+    append_task_timeline_event(
+        project["path"],
+        other["id"],
+        event="failed",
+        actor="builder",
+        source="codepilot.run",
+        message="unrelated",
+        time="2026-04-29 10:08:00",
+    )
+
+    result = CliRunner().invoke(main, ["trace", "-p", "demo", "--task", str(task["id"]), "--limit", "0", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["task_id"] == task["id"]
+    assert payload["data"]["events"]
+    assert all(event["task_id"] == task["id"] for event in payload["data"]["events"])
+    assert any(event["event"] == "task_timeline.reviewed" for event in payload["data"]["events"])
 
 
 def test_collect_trace_events_respects_optional_project_sources(tmp_path, monkeypatch):

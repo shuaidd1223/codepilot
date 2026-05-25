@@ -13,7 +13,7 @@ from rich.table import Table
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.commands.status import _short_text
 from codepilot.core.output import echo, terminal_console
-from codepilot.core.workflow_state import workflow_dirs
+from codepilot.core.workflow_state import read_task_timeline_events, workflow_dirs
 from codepilot.storage import database as db
 
 
@@ -187,6 +187,27 @@ def _collect_task_events(project: str, tasks: list[dict[str, Any]]) -> list[dict
     return events
 
 
+def _task_timeline_events(project: str, project_path: str | Path, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for task in tasks:
+        tid = int(task["id"])
+        task_project_path = str(task.get("project_path") or project_path)
+        for item in read_task_timeline_events(task_project_path, tid):
+            events.append(
+                _event(
+                    timestamp=str(item.get("time") or ""),
+                    source="task_timeline",
+                    event=f"task_timeline.{item.get('event') or 'event'}",
+                    project=project,
+                    task_id=tid,
+                    status=str(item.get("event") or ""),
+                    message=f"#{tid} {item.get('message') or ''}".strip(),
+                    detail=str(item.get("artifact_path") or ""),
+                )
+            )
+    return events
+
+
 def _service_events(project: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for state in db.list_service_states():
@@ -282,6 +303,8 @@ def collect_trace_events(
     project_path = project_info["path"]
     tasks = _filter_tasks(db.list_tasks(project=project), task_id)
     events = _collect_task_events(project, tasks)
+    if task_id is not None:
+        events.extend(_task_timeline_events(project, project_path, tasks))
 
     if task_id is None:
         if include_services:

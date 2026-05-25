@@ -159,6 +159,18 @@ def test_task_detail_renders_structured_reviewer_verdict():
     assert ".ac-status-chip.ac-status-fail" in styles
 
 
+def test_task_detail_renders_task_timeline_summary():
+    source = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "timelineEvents()" in source
+    assert "任务时间线" in source
+    assert "timeline-event-row" in source
+    assert "formatTimelineEvent" in source
+    assert ".timeline-event-row" in styles
+    assert ".timeline-event-dot" in styles
+
+
 def test_task_detail_action_warns_when_api_reports_service_error():
     source = Path("codepilot/web/boundaries/TaskDetailBoundary.js").read_text(encoding="utf-8")
 

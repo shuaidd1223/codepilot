@@ -8,7 +8,7 @@ from pathlib import Path
 from codepilot.commands.reviewer_output import parse_reviewer_output
 from codepilot.core.runtime import runtime_summary
 from codepilot.core.task_template import missing_task_template_sections
-from codepilot.core.workflow_state import read_task_execution_artifacts
+from codepilot.core.workflow_state import read_task_execution_artifacts, read_task_timeline_events
 from codepilot.storage import database as db
 
 
@@ -447,6 +447,7 @@ def task_detail_payload(task_id: int) -> dict:
         execution_artifact = read_task_execution_artifacts(project_path, task_id)
         if execution_artifact:
             artifacts = dict(execution_artifact.get("artifacts") or {})
+    timeline = read_task_timeline_events(project_path, task_id) if project_path else []
     if latest_review is not None and "review" not in artifacts:
         artifacts["review"] = {
             "kind": "review",
@@ -469,6 +470,7 @@ def task_detail_payload(task_id: int) -> dict:
             "latest_review": latest_review,
             "artifacts": artifacts,
             "execution_artifact": execution_artifact,
+            "timeline": timeline,
         }
     )
     return payload

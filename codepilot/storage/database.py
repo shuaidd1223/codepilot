@@ -470,6 +470,196 @@ def _record_task_update_memory(task: dict, changed_fields: set[str], project_inf
     )
 
 
+def _task_timeline_project_path(task: dict, project_info: Optional[dict] = None) -> str:
+    project_path = str(task.get("project_path") or "").strip()
+    if project_path:
+        return project_path
+    project_name = str(task.get("project") or "").strip()
+    if not project_name:
+        return ""
+    project_info = project_info or get_project(project_name)
+    return str((project_info or {}).get("path") or "").strip()
+
+
+def _append_task_timeline(
+    task: dict | None,
+    *,
+    event: str,
+    actor: str = "",
+    source: str = "",
+    message: str = "",
+    artifact_path: str = "",
+    timestamp: str | None = None,
+    project_info: Optional[dict] = None,
+) -> None:
+    if not task:
+        return
+    try:
+        task_id = int(task.get("id") or 0)
+    except (TypeError, ValueError):
+        return
+    if task_id <= 0:
+        return
+    project_path = _task_timeline_project_path(task, project_info=project_info)
+    if not project_path:
+        return
+    try:
+        from codepilot.core.workflow_state import append_task_timeline_event
+
+        append_task_timeline_event(
+            project_path,
+            task_id,
+            event=event,
+            actor=actor or str(task.get("agent") or ""),
+            source=source or "codepilot.task",
+            message=message,
+            artifact_path=artifact_path,
+            time=timestamp,
+        )
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _record_task_created_timeline(task: dict | None) -> None:
+    if not task:
+        return
+    task_id = int(task.get("id") or 0)
+    title = str(task.get("title") or "").strip()
+    source = str(task.get("source") or "user").strip()
+    _append_task_timeline(
+        task,
+        event="created",
+        source="codepilot.task.create",
+        message=f"任务 #{task_id} 已创建：{title}" if title else f"任务 #{task_id} 已创建",
+        timestamp=str(task.get("created_at") or "") or None,
+    )
+    if source and source not in {"user", "webhook"}:
+        _append_task_timeline(
+            task,
+            event="planned",
+            actor=source,
+            source="codepilot.task.create",
+            message=f"任务 #{task_id} 来自 {source} 规划/导入",
+            timestamp=str(task.get("created_at") or "") or None,
+        )
+
+
+def _record_task_update_timeline(before: dict | None, task: dict | None, changed_fields: set[str]) -> None:
+    if not task:
+        return
+    before = before or {}
+    status = str(task.get("status") or "").strip()
+    previous_status = str(before.get("status") or "").strip()
+    phase = str(task.get("run_phase") or "").strip()
+    task_id = int(task.get("id") or 0)
+    actor = str(task.get("agent") or "runner")
+    log_path = str(task.get("current_log_path") or "")
+
+    if "status" in changed_fields and status == "in_progress" and previous_status != "in_progress":
+        _append_task_timeline(
+            task,
+            event="claimed",
+            actor=actor,
+            source="codepilot.task.update",
+            message=f"任务 #{task_id} 已领取执行",
+            artifact_path=log_path,
+            timestamp=str(task.get("started_at") or task.get("heartbeat_at") or "") or None,
+        )
+
+    runtime_changed = changed_fields & {"active_pid", "current_log_path", "run_phase"}
+    if status == "in_progress" and runtime_changed and (task.get("active_pid") or log_path):
+        if (
+            str(before.get("active_pid") or "") != str(task.get("active_pid") or "")
+            or str(before.get("current_log_path") or "") != log_path
+            or str(before.get("run_phase") or "") != phase
+        ):
+            _append_task_timeline(
+                task,
+                event="agent_started",
+                actor=actor,
+                source="codepilot.runtime",
+                message=f"任务 #{task_id} agent 启动阶段：{phase or 'runtime'}",
+                artifact_path=log_path,
+                timestamp=str(task.get("heartbeat_at") or "") or None,
+            )
+
+    if status == "backlog" and "error_message" in changed_fields and str(task.get("error_message") or "").strip():
+        _append_task_timeline(
+            task,
+            event="blocked",
+            actor="runner",
+            source="codepilot.task.update",
+            message=str(task.get("error_message") or "")[:500],
+            artifact_path=log_path,
+            timestamp=str(task.get("heartbeat_at") or task.get("completed_at") or "") or None,
+        )
+
+    if "status" in changed_fields and status == "done":
+        _append_task_timeline(
+            task,
+            event="done",
+            actor="runner",
+            source="codepilot.task.update",
+            message=_task_update_summary(task)[:500] or f"任务 #{task_id} 已完成",
+            artifact_path=log_path,
+            timestamp=str(task.get("completed_at") or "") or None,
+        )
+
+    if "status" in changed_fields and status == "failed":
+        _append_task_timeline(
+            task,
+            event="failed",
+            actor="runner",
+            source="codepilot.task.update",
+            message=_task_update_summary(task)[:500] or f"任务 #{task_id} 失败",
+            artifact_path=log_path,
+            timestamp=str(task.get("completed_at") or "") or None,
+        )
+
+    if "status" in changed_fields and status == "cancelled":
+        _append_task_timeline(
+            task,
+            event="blocked",
+            actor="runner",
+            source="codepilot.task.update",
+            message=_task_update_summary(task)[:500] or f"任务 #{task_id} 已取消",
+            artifact_path=log_path,
+            timestamp=str(task.get("completed_at") or "") or None,
+        )
+
+
+def _record_task_log_timeline(task_id: int, log: dict) -> None:
+    task = get_task(task_id)
+    if not task:
+        return
+    phase = str(log.get("phase") or "").strip()
+    agent = str(log.get("agent") or task.get("agent") or "").strip()
+    log_path = str(task.get("current_log_path") or "")
+    if log.get("started_at"):
+        _append_task_timeline(
+            task,
+            event="agent_started",
+            actor=agent,
+            source="codepilot.task_log",
+            message=f"{phase or 'phase'} 阶段开始",
+            artifact_path=log_path,
+            timestamp=str(log.get("started_at") or ""),
+        )
+    phase_key = f"{phase} {agent}".lower()
+    if "review" in phase_key and log.get("finished_at"):
+        exit_code = log.get("exit_code")
+        suffix = f" exit={exit_code}" if exit_code is not None else ""
+        _append_task_timeline(
+            task,
+            event="reviewed",
+            actor=agent or "reviewer",
+            source="codepilot.task_log",
+            message=f"{phase or 'reviewer'} 阶段结束{suffix}",
+            artifact_path=log_path,
+            timestamp=str(log.get("finished_at") or ""),
+        )
+
+
 def _publish_task_updated_event(task: Optional[dict], changed_fields: set[str]) -> None:
     if not task or not (changed_fields & _TASK_EVENT_FIELDS):
         return
@@ -552,7 +742,9 @@ def create_task(
             fallback_reason=fallback_reason,
         )
     _invalidate_task_caches()
-    return get_task(task_id)
+    created = get_task(task_id)
+    _record_task_created_timeline(created)
+    return created
 
 
 def existing_dedup_keys(project: str) -> set[str]:
@@ -592,11 +784,13 @@ def update_task(task_id: int, **fields) -> Optional[dict]:
     if not updates:
         return get_task(task_id)
 
+    before = get_task(task_id)
     with get_write_conn() as conn:
         _update_task_fields(conn, task_id, updates)
     _invalidate_task_caches()
     updated = get_task(task_id)
     _publish_task_updated_event(updated, set(updates))
+    _record_task_update_timeline(before, updated, set(updates))
     return updated
 
 
@@ -606,6 +800,7 @@ def update_task_if_status(task_id: int, expected_status: str, **fields) -> Optio
     if not updates:
         return get_task(task_id)
 
+    before = get_task(task_id)
     set_clause = ", ".join(f"{column} = ?" for column in updates)
     values = list(updates.values()) + [task_id, expected_status]
     with get_write_conn() as conn:
@@ -618,6 +813,7 @@ def update_task_if_status(task_id: int, expected_status: str, **fields) -> Optio
     updated = get_task(task_id)
     if changed:
         _publish_task_updated_event(updated, set(updates))
+        _record_task_update_timeline(before, updated, set(updates))
     return updated
 
 
@@ -806,6 +1002,7 @@ def create_task_log(
             duration=duration,
         )
     _cache_invalidate("task_logs")
+    _record_task_log_timeline(task_id, result)
     return result
 
 

@@ -13,6 +13,20 @@ from typing import Any
 
 _ACTIVE_STATE_FILE = "active-workflow.json"
 _AGENT_SESSION_FILE = "agent-session.json"
+TASK_TIMELINE_EVENTS = frozenset(
+    {
+        "created",
+        "planned",
+        "claimed",
+        "agent_started",
+        "diff_detected",
+        "validated",
+        "reviewed",
+        "blocked",
+        "done",
+        "failed",
+    }
+)
 
 
 def _now_iso() -> str:
@@ -112,6 +126,37 @@ def _coerce_execution_artifacts(raw_artifacts: Any) -> dict[str, Any]:
     return artifacts
 
 
+def _compact_timeline_text(value: Any, *, limit: int = 500) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:limit]
+
+
+def _coerce_task_timeline(raw_timeline: Any) -> list[dict[str, str]]:
+    if not isinstance(raw_timeline, list):
+        return []
+    events: list[dict[str, str]] = []
+    for item in raw_timeline:
+        if not isinstance(item, dict):
+            continue
+        event = str(item.get("event") or item.get("type") or "").strip().lower()
+        if event not in TASK_TIMELINE_EVENTS:
+            continue
+        timestamp = _compact_timeline_text(item.get("time") or item.get("timestamp"), limit=80)
+        if not timestamp:
+            continue
+        events.append(
+            {
+                "time": timestamp,
+                "event": event,
+                "actor": _compact_timeline_text(item.get("actor"), limit=80),
+                "source": _compact_timeline_text(item.get("source"), limit=120),
+                "message": _compact_timeline_text(item.get("message"), limit=500),
+                "artifact_path": _compact_timeline_text(item.get("artifact_path"), limit=500),
+            }
+        )
+    return events
+
+
 def read_task_execution_artifacts(project_path: str | Path, task_id: int | str) -> dict[str, Any] | None:
     """Read a task execution artifact summary; corrupt or missing returns None."""
     path = task_execution_artifact_path(project_path, task_id)
@@ -124,7 +169,114 @@ def read_task_execution_artifacts(project_path: str | Path, task_id: int | str) 
         payload["task_id"] = int(task_id)
     payload["artifact_path"] = str(path)
     payload["artifacts"] = _coerce_execution_artifacts(payload.get("artifacts"))
+    payload["timeline"] = _coerce_task_timeline(payload.get("timeline"))
     return payload
+
+
+def read_task_timeline_events(project_path: str | Path, task_id: int | str) -> list[dict[str, str]]:
+    """Read the compact per-task audit timeline; missing legacy data returns an empty list."""
+    payload = _read_json(task_execution_artifact_path(project_path, task_id))
+    if payload is None:
+        return []
+    return _coerce_task_timeline(payload.get("timeline"))
+
+
+def append_task_timeline_event(
+    project_path: str | Path,
+    task_id: int | str,
+    *,
+    event: str,
+    actor: str = "",
+    source: str = "",
+    message: str = "",
+    artifact_path: str | Path | None = None,
+    time: str | None = None,
+) -> dict[str, str]:
+    """Append one compact task timeline event to the project-local artifact.
+
+    Timeline is an audit trail only. It stores short facts and file pointers,
+    never large command output or model transcripts.
+    """
+    clean_event = str(event or "").strip().lower()
+    if clean_event not in TASK_TIMELINE_EVENTS:
+        raise ValueError(f"unsupported task timeline event: {event!r}")
+
+    path = task_execution_artifact_path(project_path, task_id)
+    current = _read_json(path) or {}
+    now = _now_iso()
+    record = {
+        "time": _compact_timeline_text(time or now, limit=80),
+        "event": clean_event,
+        "actor": _compact_timeline_text(actor, limit=80),
+        "source": _compact_timeline_text(source, limit=120),
+        "message": _compact_timeline_text(message, limit=500),
+        "artifact_path": _compact_timeline_text(artifact_path, limit=500),
+    }
+    timeline = _coerce_task_timeline(current.get("timeline"))
+    timeline.append(record)
+    payload: dict[str, Any] = {
+        "task_id": int(task_id),
+        "status": str(current.get("status") or ""),
+        "source": str(current.get("source") or ""),
+        "executor": str(current.get("executor") or ""),
+        "created_at": str(current.get("created_at") or now),
+        "updated_at": now,
+        "artifact_path": str(path),
+        "artifacts": _coerce_execution_artifacts(current.get("artifacts")),
+        "metadata": dict(current.get("metadata") or {}) if isinstance(current.get("metadata"), dict) else {},
+        "timeline": timeline,
+    }
+    _atomic_write_json(path, payload)
+    return record
+
+
+def _artifact_summary(artifact: dict[str, Any], *, fallback: str) -> str:
+    summary = _compact_timeline_text(artifact.get("summary"), limit=220)
+    if summary:
+        return summary
+    status = _compact_timeline_text(artifact.get("status") or artifact.get("verdict"), limit=80)
+    return f"{fallback}: {status}" if status else fallback
+
+
+def _append_artifact_timeline_events(
+    project_path: str | Path,
+    task_id: int,
+    artifacts: dict[str, Any],
+    artifact_path: Path,
+) -> None:
+    patch = artifacts.get("patch")
+    if isinstance(patch, dict) and not patch.get("empty"):
+        append_task_timeline_event(
+            project_path,
+            task_id,
+            event="diff_detected",
+            actor="runner",
+            source="codepilot.execution_artifact",
+            message=_artifact_summary(patch, fallback="Diff detected"),
+            artifact_path=str(artifact_path),
+        )
+    validation = artifacts.get("validation")
+    if isinstance(validation, dict):
+        append_task_timeline_event(
+            project_path,
+            task_id,
+            event="validated",
+            actor="runner",
+            source="codepilot.execution_artifact",
+            message=_artifact_summary(validation, fallback="Validation recorded"),
+            artifact_path=str(artifact_path),
+        )
+    review = artifacts.get("review")
+    if isinstance(review, dict):
+        append_task_timeline_event(
+            project_path,
+            task_id,
+            event="reviewed",
+            actor="reviewer",
+            source="codepilot.execution_artifact",
+            message=_artifact_summary(review, fallback="Review recorded"),
+            artifact_path=str(artifact_path),
+        )
 
 
 def write_task_execution_artifacts(
@@ -151,6 +303,7 @@ def write_task_execution_artifacts(
     merged_metadata = dict(current.get("metadata") or {}) if isinstance(current.get("metadata"), dict) else {}
     if metadata:
         merged_metadata.update(dict(metadata))
+    timeline = _coerce_task_timeline(current.get("timeline"))
 
     clean_task_id = int(task_id)
     payload: dict[str, Any] = {
@@ -163,8 +316,13 @@ def write_task_execution_artifacts(
         "artifact_path": str(path),
         "artifacts": merged_artifacts,
         "metadata": merged_metadata,
+        "timeline": timeline,
     }
     _atomic_write_json(path, payload)
+    try:
+        _append_artifact_timeline_events(project_path, clean_task_id, _coerce_execution_artifacts(artifacts or {}), path)
+    except Exception:
+        pass
     return payload
 
 

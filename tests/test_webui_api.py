@@ -19,7 +19,7 @@ from codepilot.storage import database as db
 from codepilot.commands import daemon as daemon_cmd
 from codepilot.commands import inspect as inspect_cmd
 from codepilot.core import progress_bus
-from codepilot.core.workflow_state import write_task_execution_artifacts
+from codepilot.core.workflow_state import append_task_timeline_event, task_execution_artifact_path, write_task_execution_artifacts
 from codepilot.core.web_events import publish_task_state_event
 from codepilot.webapp import server as webui_mod
 from codepilot.core import runtime as runtime_mod
@@ -656,6 +656,46 @@ def test_task_detail_exposes_execution_artifact_summary(ui_server):
     assert artifacts["patch"]["files"][0]["path"] == "codepilot/webapp/task_payloads.py"
     assert artifacts["validation"]["checks"][0]["exit_code"] == 0
     assert artifacts["review"]["verdict"] == "pass"
+
+
+def test_task_detail_exposes_timeline_and_legacy_empty_fallback(ui_server):
+    project = db.get_project("demo")
+    legacy = db.create_task("demo", "legacy detail without timeline", agent="dual")
+    task_execution_artifact_path(project["path"], legacy["id"]).unlink(missing_ok=True)
+
+    status, body = _get(f"{ui_server}/api/tasks/{legacy['id']}")
+
+    assert status == 200
+    assert body["timeline"] == []
+
+    task = db.create_task("demo", "timeline detail", agent="dual")
+    append_task_timeline_event(
+        project["path"],
+        task["id"],
+        event="claimed",
+        actor="daemon",
+        source="codepilot.run",
+        message="任务进入执行队列",
+        artifact_path=".codepilot/artifacts/tasks/task-timeline.json",
+        time="2026-05-25T09:00:00",
+    )
+    append_task_timeline_event(
+        project["path"],
+        task["id"],
+        event="done",
+        actor="runner",
+        source="codepilot.run",
+        message="任务完成",
+        time="2026-05-25T09:05:00",
+    )
+
+    status, body = _get(f"{ui_server}/api/tasks/{task['id']}")
+
+    assert status == 200
+    assert [item["event"] for item in body["timeline"]] == ["created", "claimed", "done"]
+    claimed = next(item for item in body["timeline"] if item["event"] == "claimed")
+    assert claimed["message"] == "任务进入执行队列"
+    assert claimed["artifact_path"] == ".codepilot/artifacts/tasks/task-timeline.json"
 
 
 def test_task_log_endpoint_returns_delta_from_offset(ui_server, tmp_path):

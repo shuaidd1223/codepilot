@@ -4,6 +4,11 @@ The in-process progress bus is enough for work started by the Web UI itself,
 but project daemons and task runners live in independent processes. This
 module gives those processes a tiny local transport: publish one JSON event to
 the Web UI's internal HTTP endpoint when it is available.
+
+Connections are reused across calls to avoid TIME_WAIT flooding when events
+arrive at high frequency (e.g. streaming task logs). If the connection breaks
+or the Web UI moves to a different port, the next call automatically
+reconnects.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import threading
 from typing import Any
 
 from codepilot.storage import database as db
@@ -20,6 +26,11 @@ DEFAULT_WEB_UI_HOST = "127.0.0.1"
 DEFAULT_WEB_UI_PORT = 8766
 WEBUI_SERVICE = "webui"
 WEBUI_SCOPE = "_global"
+
+_CONN_LOCK = threading.Lock()
+_conn_target: tuple[str, int] | None = None
+_conn: http.client.HTTPConnection | None = None
+_conn_failures: int = 0
 
 
 def _truthy_env(name: str) -> bool:
@@ -46,18 +57,80 @@ def _webui_host_port() -> tuple[str, int]:
     return host, port
 
 
+def _get_conn(host: str, port: int, timeout: float) -> http.client.HTTPConnection | None:
+    """Return a persistent connection, reconnecting if the target has changed or the
+    previous connection is dead."""
+    global _conn, _conn_target, _conn_failures
+
+    target = (host, int(port))
+    with _CONN_LOCK:
+        if _conn is not None and _conn_target == target:
+            # Fast path: reuse existing connection (check if socket still alive).
+            try:
+                if _conn.sock is not None:
+                    return _conn
+            except Exception:
+                pass
+            # Socket is gone — tear down and rebuild.
+            try:
+                _conn.close()
+            except Exception:
+                pass
+            _conn = None
+
+        # Reset failure count when target changes (Web UI restarted on same port).
+        if _conn is None and _conn_target != target:
+            _conn_failures = 0
+        _conn_target = target
+
+        try:
+            _conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        except Exception:
+            _conn = None
+            return None
+        return _conn
+
+
+def _close_conn() -> None:
+    """Close and forget the persistent connection (called on failure)."""
+    global _conn, _conn_failures
+    with _CONN_LOCK:
+        try:
+            if _conn is not None:
+                _conn.close()
+        except Exception:
+            pass
+        _conn = None
+        _conn_failures += 1
+
+
 def publish_web_event(payload: dict[str, Any], *, timeout: float = 0.25) -> bool:
     """Publish *payload* to the running Web UI event hub.
 
     Delivery is best-effort by design. If the Web UI is not running, task state
     still persists in SQLite and the dashboard can read a fresh snapshot on the
     next page load.
+
+    Uses a persistent HTTP connection so high-frequency events (e.g. streaming
+    task logs) don't flood the OS with ephemeral TCP connections.
     """
+    global _conn_failures
+
     if not _web_event_delivery_allowed():
         return False
     host, port = _webui_host_port()
     body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
-    conn = http.client.HTTPConnection(host, int(port), timeout=max(float(timeout), 0.05))
+    eff_timeout = max(float(timeout), 0.05)
+
+    # Back off rapidly when the connection keeps failing, so a stuck daemon
+    # doesn't burn CPU retrying in a tight loop.
+    if _conn_failures >= 8:
+        return False
+
+    conn = _get_conn(host, port, eff_timeout)
+    if conn is None:
+        return False
+
     try:
         conn.request(
             "POST",
@@ -70,14 +143,14 @@ def publish_web_event(payload: dict[str, Any], *, timeout: float = 0.25) -> bool
         )
         response = conn.getresponse()
         response.read()
-        return 200 <= int(response.status) < 300
+        ok = 200 <= int(response.status) < 300
+        if ok:
+            with _CONN_LOCK:
+                _conn_failures = 0
+        return ok
     except Exception:
+        _close_conn()
         return False
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 
 def _task_event_payload(

@@ -10,6 +10,7 @@ from codepilot.core.event_plugins import register_jsonl_sink
 from codepilot.cli import main
 from codepilot.core.memory import read_memory_candidates, read_memory_events
 from codepilot.core.workflow_state import (
+    append_task_timeline_event,
     advance_agent_phase,
     cleanup_agent_session,
     cleanup_workflow_states,
@@ -19,6 +20,7 @@ from codepilot.core.workflow_state import (
     fail_agent_session,
     get_agent_session,
     read_task_execution_artifacts,
+    read_task_timeline_events,
     read_workflow_state,
     start_workflow,
     task_execution_artifact_path,
@@ -145,6 +147,39 @@ def test_task_execution_artifacts_round_trip_project_local_summary(tmp_path):
     assert payload["artifacts"]["patch"]["empty"] is True
     assert payload["artifacts"]["validation"]["checks"][0]["exit_code"] == 0
     assert payload["artifacts"]["review"]["verdict"] == "pass"
+
+
+def test_task_timeline_events_round_trip_and_legacy_fallback(tmp_path):
+    legacy = write_task_execution_artifacts(tmp_path, 8, status="done", source="legacy")
+    assert "timeline" not in legacy or legacy["timeline"] == []
+    assert read_task_timeline_events(tmp_path, 8) == []
+
+    event = append_task_timeline_event(
+        tmp_path,
+        8,
+        event="validated",
+        actor="builtin",
+        source="codepilot.run",
+        message="pytest tests/test_workflow_state.py -q passed",
+        artifact_path=".codepilot/artifacts/tasks/task-8-execution.json",
+        time="2026-05-25T09:30:00",
+    )
+
+    assert event == {
+        "time": "2026-05-25T09:30:00",
+        "event": "validated",
+        "actor": "builtin",
+        "source": "codepilot.run",
+        "message": "pytest tests/test_workflow_state.py -q passed",
+        "artifact_path": ".codepilot/artifacts/tasks/task-8-execution.json",
+    }
+    timeline = read_task_timeline_events(tmp_path, 8)
+    assert timeline == [event]
+
+    payload = read_task_execution_artifacts(tmp_path, 8)
+    assert payload is not None
+    assert payload["timeline"] == [event]
+    assert payload["artifacts"] == {}
 
 
 def test_workflow_status_cli_returns_active_state_json(tmp_path, monkeypatch):

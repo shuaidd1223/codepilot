@@ -24,7 +24,9 @@ import pkgutil
 import re
 import sys
 import threading
+import time
 import webbrowser
+from collections import defaultdict
 from importlib import resources
 from functools import lru_cache
 from http import HTTPStatus
@@ -355,6 +357,10 @@ def _save_uploaded_file(project_name: str, filename: str, data: bytes) -> dict:
     }
 
 
+class RateLimitError(RuntimeError):
+    """Raised when a client exceeds the per-IP event rate limit."""
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "CodePilotUI/0.2"
 
@@ -408,10 +414,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as exc:
             raise RuntimeError("请求体不是合法 JSON。") from exc
 
+    # ── per-client rate limiter for /internal/events ──────────────────────
+    # Every call records a timestamp; if a client exceeds the burst limit
+    # within the sliding window we reject with 429.  This prevents a runaway
+    # daemon / orchestrator subprocess from saturating the web server's
+    # thread pool with short-lived HTTP connections.
+    _rate_window_sec: float = 1.0
+    _rate_max_requests: int = 200  # per window per client
+    _rate_buckets: dict[str, list[float]] = defaultdict(list)
+    _rate_lock = threading.Lock()
+
+    @classmethod
+    def _check_rate_limit(cls, remote_host: str) -> bool:
+        """Return True if *remote_host* is within the rate limit."""
+        now = time.monotonic()
+        with cls._rate_lock:
+            bucket = cls._rate_buckets[remote_host]
+            # Evict stale entries outside the sliding window.
+            cutoff = now - cls._rate_window_sec
+            while bucket and bucket[0] < cutoff:
+                bucket.pop(0)
+            if len(bucket) >= cls._rate_max_requests:
+                return False
+            bucket.append(now)
+            # Periodic cleanup: drop empty buckets so memory doesn't grow
+            # unbounded across many client addresses.
+            if len(cls._rate_buckets) > 128:
+                cls._rate_buckets = defaultdict(list, {
+                    k: v for k, v in cls._rate_buckets.items() if v
+                })
+            return True
+
     def _handle_post_internal_event(self, body: dict) -> dict:
         remote_host = str((self.client_address or ("", 0))[0] or "")
         if remote_host not in {"127.0.0.1", "::1", "localhost"}:
             raise RuntimeError("internal event endpoint only accepts local requests")
+        if not self._check_rate_limit(remote_host):
+            raise RateLimitError("event rate limit exceeded — slow down")
         stage = str(body.get("stage") or "").strip()
         if not stage:
             raise RuntimeError("event.stage is required")
@@ -1067,6 +1106,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "未找到接口。"}, status=404)
                 return
             self._send_json(payload)
+            return
+        except RateLimitError as exc:
+            self._send_json({"error": str(exc)}, status=429)
             return
         except (RuntimeError, ValueError) as exc:
             self._send_json({"error": str(exc)}, status=400)
