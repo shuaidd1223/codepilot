@@ -16,6 +16,13 @@ from codepilot.ai_support.cli_families import (
     normalize_family_name,
     planner_family_names,
 )
+from codepilot.ai_support.executor_contract import (
+    EXECUTOR_CONTRACT_PHASES,
+    ExecutorFallbackReason,
+    classify_executor_fallback_reason,
+    get_executor_contract,
+    reserved_executor_contract_names,
+)
 from codepilot.ai_support.providers import CLI_COMMAND_ENV_VARS, CLI_PROVIDERS
 from codepilot.ai_support.service import normalize_agent_name
 
@@ -107,3 +114,38 @@ def test_normalize_agent_name_preserves_existing_claude_codex_behaviour():
     assert normalize_agent_name("claude") == "claude"
     assert normalize_agent_name("codex") == "codex"
     assert normalize_agent_name("dual") == "dual"
+
+
+def test_default_families_expose_executor_contract_mapping():
+    for family_name, family in CLI_FAMILIES.items():
+        contract = get_executor_contract(family_name)
+
+        assert contract is not None
+        assert contract.family == family.name
+        assert contract.provider_key == family.provider_key
+        assert contract.command_env_var == family.env_var
+        assert contract.phases == EXECUTOR_CONTRACT_PHASES
+        assert contract.stage_handlers["prepare"]
+        assert contract.stage_handlers["execute"]
+        assert contract.stage_handlers["review"]
+
+
+def test_aider_is_reserved_as_future_executor_without_joining_runtime_registry():
+    assert "aider" in reserved_executor_contract_names()
+    assert "aider" not in CLI_FAMILIES
+    assert get_family("aider") is None
+
+
+def test_fallback_reason_classifier_covers_acceptance_paths():
+    assert (
+        classify_executor_fallback_reason("codex", "command not found: codex")
+        == ExecutorFallbackReason.EXECUTOR_UNAVAILABLE
+    )
+    assert (
+        classify_executor_fallback_reason("codex", "process timed out after 60s")
+        == ExecutorFallbackReason.TIMEOUT
+    )
+    assert (
+        classify_executor_fallback_reason("claude", "Permission denied by policy")
+        == ExecutorFallbackReason.PERMISSION_DENIED
+    )

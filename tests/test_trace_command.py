@@ -7,6 +7,7 @@ import json
 from click.testing import CliRunner
 
 import codepilot.commands.trace as trace_cmd
+from codepilot.ai_support.executor_contract import format_executor_telemetry_marker
 from codepilot.cli import main
 from codepilot.commands.trace import collect_trace_events
 from codepilot.core.workflow_state import append_task_timeline_event, start_workflow
@@ -148,6 +149,42 @@ def test_collect_trace_events_respects_optional_project_sources(tmp_path, monkey
 
     assert events
     assert {event["source"] for event in events} == {"task", "task_log"}
+
+
+def test_trace_json_exposes_executor_fallback_telemetry(tmp_path, monkeypatch):
+    project, task = _seed_trace(tmp_path, monkeypatch)
+    db.create_task_log(
+        task["id"],
+        "codex",
+        "builder-tooling-failure",
+        output="codex failed\n"
+        + format_executor_telemetry_marker(
+            {
+                "executor_family": "codex",
+                "executor_model": "",
+                "fallback_reason": "executor_unavailable",
+                "fallback_path": ["codex", "claude"],
+                "failed_executor": {"family": "codex", "model": "", "label": "codex"},
+                "fallback_executor": {"family": "claude", "model": "sonnet", "label": "claude"},
+            }
+        ),
+        exit_code=1,
+        started_at="2026-04-29 10:06:00",
+        finished_at="2026-04-29 10:06:05",
+        duration=5,
+    )
+
+    events = collect_trace_events(project, task_id=task["id"], limit=0)
+
+    finished = next(
+        event
+        for event in events
+        if event["event"] == "task_log.finished" and event["phase"] == "builder-tooling-failure"
+    )
+    assert finished["executor_family"] == "codex"
+    assert finished["executor_model"] == ""
+    assert finished["fallback_reason"] == "executor_unavailable"
+    assert finished["fallback_path"] == ["codex", "claude"]
 
 
 def test_collect_trace_events_delegates_collection_branches():

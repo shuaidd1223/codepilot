@@ -12,6 +12,7 @@ from rich.table import Table
 
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.commands.status import _short_text
+from codepilot.ai_support.executor_contract import executor_telemetry_trace_fields
 from codepilot.core.output import echo, terminal_console
 from codepilot.core.workflow_state import read_task_timeline_events, workflow_dirs
 from codepilot.storage import database as db
@@ -41,8 +42,9 @@ def _event(
     status: str = "",
     phase: str = "",
     detail: str = "",
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "timestamp": str(timestamp or ""),
         "source": source,
         "event": event,
@@ -53,6 +55,9 @@ def _event(
         "message": message,
         "detail": detail,
     }
+    if extra:
+        payload.update(extra)
+    return payload
 
 
 def _workflow_states(project_path: str | Path) -> list[dict[str, Any]]:
@@ -147,6 +152,8 @@ def _task_log_events(project: str, task_id: int) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for log in db.list_task_logs(task_id):
         phase = str(log.get("phase") or "")
+        output = str(log.get("output") or "")
+        telemetry_fields = executor_telemetry_trace_fields(output)
         if log.get("started_at"):
             events.append(
                 _event(
@@ -157,7 +164,8 @@ def _task_log_events(project: str, task_id: int) -> list[dict[str, Any]]:
                     task_id=task_id,
                     phase=phase,
                     message=f"#{task_id} 阶段开始：{phase}",
-                    detail=str(log.get("output") or ""),
+                    detail=output,
+                    extra=telemetry_fields,
                 )
             )
         if log.get("finished_at"):
@@ -172,7 +180,8 @@ def _task_log_events(project: str, task_id: int) -> list[dict[str, Any]]:
                     phase=phase,
                     status=f"exit={exit_code}" if exit_code is not None else "",
                     message=f"#{task_id} 阶段结束：{phase}",
-                    detail=str(log.get("output") or ""),
+                    detail=output,
+                    extra=telemetry_fields,
                 )
             )
     return events

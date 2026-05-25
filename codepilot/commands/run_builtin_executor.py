@@ -9,6 +9,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from codepilot.ai_support.executor_contract import (
+    ExecutorFallbackReason,
+    append_executor_telemetry_marker,
+    build_executor_fallback_telemetry,
+    classify_executor_fallback_reason,
+)
 from codepilot.ai_support.family_runtime import build_env_for_family
 from codepilot.ai_support.service import _get_node_modules_path, normalize_agent_name
 from codepilot.core.config import AgentsConfig, load_project_config
@@ -65,26 +71,6 @@ def _resolve_builtin_phase_agent(
     return _resolve_builtin_single_agent(normalized)
 
 
-_BUILTIN_TOOLING_FAILURE_PATTERNS = (
-    "requires a newer version of codex",
-    "please upgrade to the latest app or cli",
-    "invalid_request_error",
-    "unsupported model",
-    "model_not_found",
-    "unknown model",
-    "当前无法使用 codex",
-    "没有找到 `codex`",
-    "command not found",
-    "not recognized as",
-    "no such file or directory",
-    "[errno 22] invalid argument",
-    "invalid argument",
-    "authentication failed",
-    "login required",
-    "api key",
-)
-
-
 def _agent_label_runner(agent_label: str) -> str:
     """Collapse persisted phase labels like ``codex-review`` to runner names."""
     label = str(agent_label or "").strip().lower()
@@ -99,22 +85,9 @@ def _agent_label_runner(agent_label: str) -> str:
 
 def _is_builtin_agent_tooling_failure(agent_label: str, output: str) -> bool:
     """Return whether a phase failed because its CLI/model is unavailable."""
-    text = str(output or "").lower()
-    if not text:
-        return False
-    runner = _agent_label_runner(agent_label)
-    if runner == "codex":
-        return any(pattern in text for pattern in _BUILTIN_TOOLING_FAILURE_PATTERNS)
-    return any(
-        pattern in text
-        for pattern in (
-            "command not found",
-            "not recognized as",
-            "no such file or directory",
-            "authentication failed",
-            "login required",
-            "api key",
-        )
+    return (
+        classify_executor_fallback_reason(agent_label, output)
+        is not ExecutorFallbackReason.NONE
     )
 
 
@@ -165,6 +138,31 @@ def _expected_phase_agent_label(
     if phase == "reviewer":
         return "codex-review" if runner == "codex" else f"{runner}-review"
     return "codex" if runner == "codex" else runner
+
+
+def _phase_model_for_agent_label(ctx: "_ExecutorContext", phase: str, agent_label: str) -> str:
+    """Return the configured model for the initial phase agent when known."""
+    try:
+        runner, model = _resolve_builtin_phase_agent(
+            ctx.task.get("agent", "dual"),
+            phase,
+            task=ctx.task,
+            project_ref=ctx.config_ref,
+        )
+    except Exception:
+        return ""
+    if _agent_label_runner(agent_label) == runner:
+        return model or ""
+    return ""
+
+
+def _model_for_agent_override(agent_mode: str) -> str:
+    """Return the explicit model component for a fallback override."""
+    try:
+        _runner, model = _resolve_builtin_single_agent(agent_mode)
+    except Exception:
+        return ""
+    return model or ""
 
 
 @dataclass
@@ -473,11 +471,19 @@ def _run_phase_with_tooling_fallback(
     if not fallback_agent:
         return agent, exit_code, output, started
 
+    telemetry = build_executor_fallback_telemetry(
+        phase=phase,
+        failed_agent=agent,
+        failed_model=_phase_model_for_agent_label(ctx, phase, agent),
+        fallback_agent=fallback_agent,
+        fallback_model=_model_for_agent_override(fallback_agent),
+        output=output,
+    )
     runner_mod._write_task_log(
         ctx.task["id"],
         agent,
         f"{phase_name}-tooling-failure",
-        output,
+        append_executor_telemetry_marker(output, telemetry),
         exit_code,
         started,
     )
@@ -495,6 +501,12 @@ def _run_phase_with_tooling_fallback(
             "phase_kind": phase,
             "failed_agent": agent,
             "fallback_agent": fallback_agent,
+            "executor_family": telemetry["executor_family"],
+            "executor_model": telemetry["executor_model"],
+            "fallback_reason": telemetry["fallback_reason"],
+            "fallback_path": telemetry["fallback_path"],
+            "failed_executor": telemetry["failed_executor"],
+            "fallback_executor": telemetry["fallback_executor"],
         },
     )
 
