@@ -1,30 +1,12 @@
 from __future__ import annotations
 
-import json
-import sys
-import types
 from pathlib import Path
-from zipfile import ZipFile
 
-import click
 import pytest
-from click.testing import CliRunner
 
-from codepilot.ai_support.agent_support import ai_guide_markdown, command_manifest
-from codepilot.binary_support import manager as binary_mod
-from codepilot.binary_support import paths as binary_paths_mod
 from codepilot.storage import database as db
-from codepilot.ai_support import service as ai_mod
-from codepilot.core import progress_bus
-from codepilot.gateway.service import GatewayResponse
-from codepilot.core import runtime as runtime_mod
-from codepilot.webapp import server as webui_mod
-from codepilot.cli import main
-from codepilot.commands import add as add_cmd
-from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
 from codepilot.commands import run_git as run_git_cmd
-from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
 
 
@@ -582,7 +564,7 @@ def test_run_backlog_creates_task_branch_and_checks_out_base_after_merge(tmp_pat
 
 
 @pytest.mark.slow
-def test_run_backlog_requeues_when_merge_back_fails_with_uncommitted_changes(tmp_path, monkeypatch):
+def test_run_backlog_marks_failed_when_merge_back_fails_with_uncommitted_changes(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
@@ -611,10 +593,12 @@ def test_run_backlog_requeues_when_merge_back_fails_with_uncommitted_changes(tmp
     current = db.get_task(task["id"])
     expected_branch = run_cmd._task_branch_name(task["id"], task["title"])
 
-    assert stats["requeued"] == 1
-    assert current["status"] == "backlog"
-    assert current["retry_count"] == 1
-    assert "回合并失败" in (current["error_message"] or "")
+    assert stats["failed"] == 1
+    assert stats["requeued"] == 0
+    assert current["status"] == "failed"
+    assert current["retry_count"] == 0
+    assert "merge/finalize" in (current["error_message"] or "")
+    assert "任务分支存在未提交改动" in (current["error_message"] or "")
     assert current["worktree_path"] == str(project_path.resolve())
     assert (project_path / "dirty.txt").exists() is True
 

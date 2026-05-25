@@ -11,8 +11,8 @@
 1. 优先使用非交互命令。
 2. 需要结构化结果时优先使用 `--json` 或 `codepilot ai manifest`。
 3. 提交高层需求时直接调用 `codepilot "需求文本"` 或 `codepilot go "需求文本"`。
-4. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态这类问题应作为问答处理。
-5. `chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP，可直接输入问题、需求或操作意图。
+4. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态由智能体选择 CodePilot status/task/trace 工具读取。
+5. `chat`、Web UI 会话和飞书自由文本统一进入 OpenCode 智能体并带上 CodePilot MCP 工具；CodePilot 不预先分流自由文本。
 6. 任务运维统一使用 `codepilot task ...`。
 7. 发布统一使用 `codepilot binary ...`。
 8. 外部 AI 直接投递任务前必须读取 `codepilot ai template --format json`。
@@ -180,4 +180,3 @@ codepilot ai template --format guide
 - `codepilot binary ...`
 - `codepilot task ...`
 - `codepilot ui <start|status|logs|stop|restart>`
-

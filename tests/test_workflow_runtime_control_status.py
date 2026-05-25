@@ -4,27 +4,16 @@ import json
 import subprocess
 import sys
 import types
-from pathlib import Path
-from zipfile import ZipFile
 
-import click
 import pytest
 from click.testing import CliRunner
 
-from codepilot.ai_support.agent_support import ai_guide_markdown, command_manifest
-from codepilot.binary_support import manager as binary_mod
-from codepilot.binary_support import paths as binary_paths_mod
 from codepilot.storage import database as db
 from codepilot.ai_support import service as ai_mod
 from codepilot.core import progress_bus
-from codepilot.gateway.service import GatewayResponse
 from codepilot.core import runtime as runtime_mod
-from codepilot.webapp import server as webui_mod
 from codepilot.cli import main
-from codepilot.commands import add as add_cmd
-from codepilot.commands import auto as auto_cmd
 from codepilot.commands import run as run_cmd
-from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
 
 
@@ -320,11 +309,9 @@ def test_run_command_live_writes_idle_heartbeat_when_subprocess_is_silent(tmp_pa
         )
 
     assert exit_code == 0
-    assert "子进程仍在运行" in output
 
     body = log_path.read_text(encoding="utf-8", errors="replace")
-    assert "子进程仍在运行" in body
-    assert "暂无新的标准输出" in body
+    assert "子进程仍在运行" not in body
     assert "## Result" in body
 
     stream_chunks = [
@@ -332,8 +319,14 @@ def test_run_command_live_writes_idle_heartbeat_when_subprocess_is_silent(tmp_pa
         for event in events
         if (event.get("extra") or {}).get("task_log_stream")
     ]
-    assert any("子进程仍在运行" in chunk for chunk in stream_chunks)
-    assert any("子进程仍在运行" in (update.get("last_output") or "") for update in runtime_updates)
+    assert not any("子进程仍在运行" in chunk for chunk in stream_chunks)
+    run_status_events = [
+        event for event in events
+        if (event.get("extra") or {}).get("source") == "task_run_status"
+    ]
+    assert run_status_events
+    assert any((event.get("extra") or {}).get("silent_seconds", 0) >= 0 for event in run_status_events)
+    assert runtime_updates
 
 
 def test_run_command_live_writes_timeout_status_to_log(tmp_path, monkeypatch):

@@ -14,7 +14,7 @@ Event shape (``dict``):
 
 * ``timestamp`` (ISO string)
 * ``task_id`` (int or None — None for pre-task signals like planner progress)
-* ``stage`` (``planner`` | ``recon`` | ``clarify`` | ``builder`` | ``reviewer``
+* ``stage`` (``planner`` | ``recon`` | ``analysis`` | ``builder`` | ``reviewer``
   | ``commit`` | ``merge`` | ``system``)
 * ``type`` (optional ``phase_start`` | ``heartbeat`` | ``phase_end`` | ``error``)
 * ``level`` (``info`` | ``warning`` | ``error`` | ``heartbeat``)

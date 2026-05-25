@@ -68,7 +68,7 @@ def test_renderer_renders_llm_heartbeat_summary(_reset_state):
     buf = _reset_state
     with cli_progress.cli_renderer():
         progress_bus.emit(
-            stage="clarify",
+            stage="analysis",
             level="heartbeat",
             message="provider 生成中",
             extra={
@@ -79,7 +79,7 @@ def test_renderer_renders_llm_heartbeat_summary(_reset_state):
             },
         )
     rendered = buf.getvalue()
-    assert "<clarify>" in rendered
+    assert "<analysis>" in rendered
     assert "claude-sonnet" in rendered
     assert "2.4s" in rendered
     assert "~180 tokens" in rendered

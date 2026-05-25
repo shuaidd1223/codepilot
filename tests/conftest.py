@@ -23,7 +23,24 @@ from codepilot.core.console_encoding import configure_console_encoding
 configure_console_encoding()
 os.environ.setdefault("CODEPILOT_DESKTOP_NOTIFY", "0")
 
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-e2e-sandbox",
+        action="store_true",
+        default=False,
+        help="Run E2E checks against D:\\tmp\\test-codepilot.",
+    )
+    parser.addoption(
+        "--run-browser-e2e",
+        action="store_true",
+        default=False,
+        help="Run optional Playwright browser checks for sandbox E2E tests.",
+    )
+
+
 # Re-export the MCP stdio smoke fixture from its dedicated module.
 # Test files that depend on it only need to mention the fixture name;
 # pytest discovers it via conftest.py.
 from tests.mcp_stdio_shim import mcp_stdio_smoke_server  # noqa: E402, F401
+from tests.ai_gateway_testkit import gateway_state  # noqa: E402, F401

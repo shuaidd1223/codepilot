@@ -36,7 +36,6 @@ GLOBAL_CONFIG_PATH_ENV = "CODEPILOT_GLOBAL_CONFIG_PATH"
 __all__ = [
     "AgentsConfig",
     "AutomationConfig",
-    "ClassifierConfig",
     "ConfigError",
     "DEFAULT_AGENT_COMMANDS",
     "DEFAULT_FALLBACK_CLI_ORDER",
@@ -204,15 +203,6 @@ class InspectConfig:
 
 
 @dataclass
-class ClassifierConfig:
-    """[classifier] 意图分类器配置. provider 留空则走本地 codex CLI."""
-    provider: str = ""  # API provider key (如 openai-gpt4o / claude-haiku / deepseek) 或空走本地
-    model: str = ""  # 可选：覆盖 provider 默认模型
-    enabled: bool = True  # 关闭则所有输入直接当需求处理
-    timeout: int = 30
-
-
-@dataclass
 class ProviderAPIConfig:
     """单个 Provider 的 API 配置."""
     enabled: bool = True
@@ -235,7 +225,6 @@ class AgentsConfig:
     shell: ShellConfig = field(default_factory=ShellConfig)
     dispatch: DispatchConfig = field(default_factory=DispatchConfig)
     automation: AutomationConfig = field(default_factory=AutomationConfig)
-    classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
     inspect: InspectConfig = field(default_factory=InspectConfig)
     notifications: dict = field(default_factory=dict)
     feishu_bot: dict = field(default_factory=dict)

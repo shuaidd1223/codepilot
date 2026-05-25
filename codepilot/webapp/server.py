@@ -45,7 +45,6 @@ from codepilot.webapp.action_requirements import (  # noqa: F401 (re-export)
     retry_job_action,
     retry_task_action,
     split_task_action,
-    submit_goal_action,
     submit_requirement_action,
 )
 from codepilot.webapp.action_session_records import (  # noqa: F401 (re-export)
@@ -60,7 +59,6 @@ from codepilot.webapp.action_sessions import (  # noqa: F401 (re-export)
     update_project_permission_action,
 )
 from codepilot.webapp.action_state import (  # noqa: F401 (re-export)
-    _GOAL_MAX_BYTES,
     _MAX_EVENTS,
     _MAX_JOB_LOG_LINES,
     _append_event,
@@ -825,17 +823,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": "未找到页面。"}, status=404)
 
-    def _handle_post_goal(self, body: dict) -> dict:
-        return submit_goal_action(
-            body.get("project") or "",
-            body.get("text") or "",
-            category=body.get("category") or "auto",
-            qa_history=body.get("qa_history") if isinstance(body.get("qa_history"), list) else [],
-            original_title=(body.get("original_title") or "").strip(),
-            clarify_answers=body.get("clarify_answers") if isinstance(body.get("clarify_answers"), list) else [],
-            clarify_questions=body.get("clarify_questions") if isinstance(body.get("clarify_questions"), list) else [],
-        )
-
     def _handle_post_projects(self, body: dict) -> dict:
         return create_project_action(
             body.get("path") or "",
@@ -902,10 +889,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             auto_commit=bool(body.get("auto_commit", False)),
             max_retries=int(body.get("max_retries") or 3),
             run_async=bool(body.get("run_async", True)),
-            qa_history=body.get("qa_history") if isinstance(body.get("qa_history"), list) else [],
-            original_title=(body.get("original_title") or "").strip(),
-            clarify_answers=body.get("clarify_answers") if isinstance(body.get("clarify_answers"), list) else [],
-            clarify_questions=body.get("clarify_questions") if isinstance(body.get("clarify_questions"), list) else [],
         )
 
     def _handle_post_sessions(self, body: dict) -> dict:
@@ -932,7 +915,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Handle POST endpoints with exact paths; return ``None`` if unmatched."""
         handlers: dict[str, Callable[[dict], dict]] = {
             "/internal/events": self._handle_post_internal_event,
-            "/api/goal": self._handle_post_goal,
             "/api/projects": self._handle_post_projects,
             "/api/tasks": self._handle_post_tasks,
             "/api/tasks/batch": self._handle_post_tasks_batch,
@@ -1017,8 +999,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             text = _append_file_refs_to_text(text, file_refs)
 
         kwargs = {
-            "category": body.get("category") or "auto",
-            "clarify_answers": body.get("clarify_answers") if isinstance(body.get("clarify_answers"), list) else [],
             "run_async": bool(body.get("run_async", True)),
         }
         if isinstance(body.get("runtime"), dict):

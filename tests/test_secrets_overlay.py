@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from codepilot.core import config as config_mod
 from codepilot.core.config import (
     SECRETS_FILENAME,
     SECRETS_PATH_ENV,

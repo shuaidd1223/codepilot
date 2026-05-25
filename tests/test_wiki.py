@@ -80,7 +80,7 @@ def test_wiki_rejects_secret_like_content(tmp_path, monkeypatch):
 
 
 def test_wiki_lint_reports_missing_metadata(tmp_path, monkeypatch):
-    project = _register_demo(tmp_path, monkeypatch)
+    _register_demo(tmp_path, monkeypatch)
     wiki_dir = tmp_path / "project" / ".codepilot" / "wiki"
     wiki_dir.mkdir(parents=True)
     (wiki_dir / "broken.md").write_text("body only\n", encoding="utf-8")

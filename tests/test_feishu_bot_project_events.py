@@ -223,9 +223,8 @@ def test_feishu_handle_event_cli_emits_clean_json_even_with_stdout_noise(tmp_pat
     last_line = [line for line in result.output.splitlines() if line.strip()][-1]
     assert json.loads(last_line) == {"type": "text", "text": "ok"}
 
-def test_submit_goal_action_without_webui_server_uses_fallback_ui_state(tmp_path, monkeypatch):
+def test_submit_requirement_action_without_webui_server_uses_fallback_ui_state(tmp_path, monkeypatch):
     _setup_project(tmp_path, monkeypatch)
-    import sys
     from codepilot.webapp import actions as web_actions
 
     monkeypatch.setitem(sys.modules, "codepilot.webapp.server", None)
@@ -233,10 +232,6 @@ def test_submit_goal_action_without_webui_server_uses_fallback_ui_state(tmp_path
     web_actions._UI_JOBS.clear()
     web_actions._UI_EVENTS.clear()
 
-    monkeypatch.setattr(
-        "codepilot.webapp.actions.assess_requirement_for_planning",
-        lambda title, **kwargs: {"status": "ready", "refined_title": title},
-    )
     monkeypatch.setattr(
         web_actions,
         "run_requirement_workflow",
@@ -247,7 +242,7 @@ def test_submit_goal_action_without_webui_server_uses_fallback_ui_state(tmp_path
         lambda job_id, project_info: type("Proc", (), {"pid": 4321})(),
     )
 
-    result = web_actions.submit_goal_action("demo", "帮我整理任务说明", category="requirement")
+    result = web_actions.submit_requirement_action("demo", "帮我整理任务说明", run_async=True)
 
     assert result["ok"] is True
     assert result["job"]["id"] == 1

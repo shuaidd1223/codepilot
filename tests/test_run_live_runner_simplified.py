@@ -30,7 +30,6 @@ def test_processor_has_no_markdown_live_writer():
 
 def test_emit_writes_raw_text_directly():
     """emit() writes raw text directly — no ~~~text wrapping, no role sections."""
-    import codepilot.commands.run_live_runner as rlr
 
     handle = io.StringIO()
     output = _LiveOutputProcessor(

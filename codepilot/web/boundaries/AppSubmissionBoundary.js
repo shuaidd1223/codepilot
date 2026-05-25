@@ -1,5 +1,5 @@
 /* Submission/project-actions boundary extracted from AppStateBoundary.
- * Owns goal/composer submits, batch task import, and project/service actions. */
+ * Owns project, service, and job actions. */
 /* global CP */
 
 window.CP = window.CP || {};
@@ -10,140 +10,10 @@ CP.createAppSubmissionBoundary = (options = {}) => {
   const runScopedAction = options.runScopedAction || (async (_key, runner) => runner());
   const ACTION_KEYS = options.ACTION_KEYS || {};
   const loadDashboard = options.loadDashboard || (async () => {});
-  const selectTask = options.selectTask || (() => {});
   const selectProject = options.selectProject || (() => {});
   const setNav = options.setNav || (() => {});
   const confirmDialog = options.confirmDialog || (async () => false);
   const deleteProjectDraft = options.deleteProjectDraft || (() => {});
-
-  async function submitGoal() {
-    if (!state.nav.project) {
-      pushToast('先选择一个项目', 'error');
-      return;
-    }
-    const text = state.goalText.trim();
-    if (!text) {
-      pushToast('输入不能为空', 'error');
-      return;
-    }
-    await runScopedAction(ACTION_KEYS.GOAL_SUBMIT, async () => {
-      state.answer = null;
-      try {
-        const payload = {
-          project: state.nav.project,
-          text,
-          category: state.goalCategory,
-        };
-        const out = await CP.api.post('/api/goal', payload);
-        if (out.intent === 'question' || out.intent === 'command') {
-          state.answer = out.message || '完成';
-        } else {
-          pushToast(out.message || '提交成功', 'success');
-          await loadDashboard();
-        }
-        state.goalText = '';
-      } catch (err) {
-        pushToast(err.message, 'error');
-      }
-    });
-  }
-
-  async function submitComposer() {
-    if (!state.nav.project) {
-      pushToast('先选择一个项目', 'error');
-      return;
-    }
-    const title = state.composer.title.trim();
-    if (!title) {
-      pushToast('标题不能为空', 'error');
-      return;
-    }
-    await runScopedAction(ACTION_KEYS.COMPOSER_SUBMIT, async () => {
-      const payload = {
-        project: state.nav.project,
-        title,
-        content: state.composer.content,
-        priority: state.composer.priority,
-        agent: state.composer.agent,
-        planner: state.composer.planner,
-        execute: state.composer.execute,
-      };
-      try {
-        let out;
-        if (state.composerMode === 'task' || state.composerMode === 'task_ai') {
-          payload.mode = state.composerMode === 'task_ai' ? 'ai_complete' : 'full';
-          if (state.composerMode === 'task_ai') {
-            payload.content = '';
-          }
-          out = await CP.api.post('/api/tasks', payload);
-          if (out.task) selectTask(state.nav.project, out.task.id);
-          state.composer.content = '';
-        } else {
-          out = await CP.api.post('/api/requirements', payload);
-        }
-        state.composer.title = '';
-        pushToast(out.message || '提交成功', 'success');
-        await loadDashboard();
-      } catch (err) {
-        pushToast(err.message, 'error');
-      }
-    });
-  }
-
-  async function loadTaskTemplateSchema({ force = false } = {}) {
-    if (state.taskTemplateLoading) return state.taskTemplateSchema;
-    if (!force && state.taskTemplateSchema) return state.taskTemplateSchema;
-    state.taskTemplateLoading = true;
-    state.taskTemplateError = '';
-    try {
-      const out = await CP.api.get('/api/task-template');
-      state.taskTemplateSchema = out.schema || null;
-      return state.taskTemplateSchema;
-    } catch (err) {
-      state.taskTemplateError = err.message || '模板 schema 加载失败';
-      return null;
-    } finally {
-      state.taskTemplateLoading = false;
-    }
-  }
-
-  async function submitTaskBatch(validation = null) {
-    if (!state.nav.project) {
-      pushToast('先选择一个项目', 'error');
-      return;
-    }
-    const raw = String((state.batchComposer && state.batchComposer.raw) || '').trim();
-    if (!raw) {
-      pushToast('先粘贴批量任务 JSON', 'error');
-      return;
-    }
-
-    const resolvedValidation = validation || CP.validateTaskBatchImport(raw, state.taskTemplateSchema);
-    if (!resolvedValidation.valid) {
-      const firstInvalidItem = (resolvedValidation.items || []).find((item) => !item.ok && item.errors && item.errors.length);
-      const firstError = resolvedValidation.parseError
-        || (resolvedValidation.globalErrors && resolvedValidation.globalErrors[0])
-        || (firstInvalidItem && firstInvalidItem.errors && firstInvalidItem.errors[0])
-        || '当前批量任务不符合模板 schema。';
-      pushToast(firstError, 'error');
-      return;
-    }
-
-    await runScopedAction(ACTION_KEYS.TASK_BATCH_IMPORT, async () => {
-      try {
-        const out = await CP.api.post('/api/tasks/import', {
-          project: state.nav.project,
-          items: resolvedValidation.items.map((item) => item.raw),
-        });
-        state.batchComposer.raw = '';
-        pushToast(out.message || '批量导入成功', 'success');
-        await loadDashboard();
-        if (out.tasks && out.tasks.length) selectTask(state.nav.project, out.tasks[0].id);
-      } catch (err) {
-        pushToast(err.message, 'error');
-      }
-    });
-  }
 
   function toggleProjectForm(open = null) {
     state.projectForm.open = open == null ? !state.projectForm.open : !!open;
@@ -248,10 +118,6 @@ CP.createAppSubmissionBoundary = (options = {}) => {
   }
 
   return {
-    submitGoal,
-    submitComposer,
-    loadTaskTemplateSchema,
-    submitTaskBatch,
     toggleProjectForm,
     submitProject,
     deleteProject,

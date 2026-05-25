@@ -5,7 +5,6 @@ import types
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from codepilot.commands import daemon as daemon_cmd
 from codepilot.core.config import AgentsConfig, tomllib

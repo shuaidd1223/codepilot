@@ -35,7 +35,7 @@ EVENT_SCHEMAS = (
     },
     {
         "type": "workflow.changed",
-        "description": "clarify/plan/go 等工作流状态发生变化。",
+        "description": "plan/inspect/go 等工作流状态发生变化。",
         "required_fields": ["schema_version", "id", "type", "source", "project", "timestamp", "payload"],
         "payload_fields": ["mode", "phase", "state_path"],
     },

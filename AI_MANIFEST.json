@@ -14,10 +14,10 @@
     "Prefer non-interactive commands and avoid chat mode unless a persistent conversation is explicitly needed.",
     "When structured output is needed, prefer `hud --json`, `status --json`, `task show --json`, `doctor --json`, `task find --json`, or `ai manifest`.",
     "To submit a natural-language requirement, call `codepilot \"requirement text\"` or `codepilot go \"requirement text\"`.",
-    "Chat, Web UI sessions, and Feishu free text all route through OpenCode + CodePilot MCP; free text may express a question, requirement, or operation intent.",
-    "Call `clarify` / `plan` or MCP tools explicitly when deterministic artifacts are required.",
-    "Advance `clarify` / `plan` `next_actions` with `workflow next --list` / `workflow next --action <id>`; `workflow next --auto` only chooses policy-allowed actions and defaults do not create or import tasks; treat `suggested_command` as display/review metadata only.",
-    "If the user asks about project state, task counts, completion ratio, failed tasks, running tasks, or service status, treat it as a question and let CodePilot read local task/project data.",
+    "Chat, Web UI sessions, and Feishu free text route through the OpenCode agent; CodePilot provides MCP workflow tools and project constraints.",
+    "Call `plan`, `inspect --write-workflow`, or MCP workflow tools explicitly when deterministic artifacts are required.",
+    "Advance `plan` / `inspect` `next_actions` with `workflow next --list` / `workflow next --action <id>`; `workflow next --auto` only chooses policy-allowed actions and defaults do not create or import tasks; treat `suggested_command` as display/review metadata only.",
+    "For project state, task counts, completion ratio, failed tasks, running tasks, or service status, let the agent choose `status`, `hud`, `task`, or `trace` tools.",
     "For release artifacts, prefer `codepilot binary prepare --version <version>`.",
     "If a task is running, inspect its phase with `codepilot status -p <project-name> -v` before deciding whether to view logs or stop it.",
     "If a failed task needs a full repair loop, prefer `codepilot build-fix -p <project-name> --task-id <task_id> --json`; use `codepilot task retry <task_id>` only to requeue it."
@@ -192,7 +192,7 @@
     {
       "name": "goal",
       "syntax": "codepilot \"requirement text\"",
-      "purpose": "Submit a natural-language requirement for CodePilot to classify, plan, and optionally execute.",
+      "purpose": "Submit a natural-language requirement for planning and optional execution.",
       "when_to_use": "Use when another AI wants CodePilot to own the implementation workflow.",
       "examples": [
         "codepilot \"Fix task retry logic and add tests\""
@@ -200,11 +200,10 @@
     },
     {
       "name": "go",
-      "syntax": "codepilot go <requirement-or-question> [--project <project-name>]",
-      "purpose": "Explicit natural-language entrypoint for questions, planning, and execution.",
+      "syntax": "codepilot go <requirement> [--project <project-name>]",
+      "purpose": "Explicit requirement entrypoint for planning and execution.",
       "when_to_use": "Use when project/planner/executor options must be explicit.",
       "examples": [
-        "codepilot go \"How many tasks are complete?\" -p <project-name>",
         "codepilot go \"Fix task retry logic and add tests\" -p <project-name>"
       ]
     },
@@ -321,15 +320,6 @@
       ]
     },
     {
-      "name": "clarify",
-      "syntax": "codepilot clarify [-p <project-name>] [--quick|--standard] <requirement> [--json]",
-      "purpose": "Generate a pre-execution requirement specification artifact.",
-      "when_to_use": "Use when a requirement is still vague but should not create tasks yet.",
-      "examples": [
-        "codepilot clarify -p <project-name> \"Improve doctor\" --json"
-      ]
-    },
-    {
       "name": "plan",
       "syntax": "codepilot plan [-p <project-name>] <requirement> [--from-spec <path>] [--use-wiki|--no-wiki] [--json]",
       "purpose": "Generate a reviewable plan artifact with scope, risks, verification matrix, and task candidates.",
@@ -351,7 +341,7 @@
       "name": "workflow_status",
       "syntax": "codepilot workflow status -p <project-name> [--mode <mode>] --json",
       "purpose": "Read latest or mode-specific workflow state and agent session context, including artifact paths, next-action source, and auto_policy.",
-      "when_to_use": "Use before advancing a clarify/plan/inspect artifact or when inspecting current workflow state.",
+      "when_to_use": "Use before advancing a plan/inspect artifact or when inspecting current workflow state.",
       "examples": [
         "codepilot workflow status -p <project-name> --json",
         "codepilot workflow status -p <project-name> --mode plan --json"
@@ -361,7 +351,7 @@
       "name": "workflow_next",
       "syntax": "codepilot workflow next -p <project-name> [--mode <mode>] [--list | --action <id> | --auto] [--allow-high-risk] --json",
       "purpose": "List, safely execute, or policy-auto-advance artifact next_actions through a fixed allowlist; it never executes suggested_command strings.",
-      "when_to_use": "Use after clarify/plan/inspect returns next_actions and an external agent needs to advance by action id or let CodePilot choose policy-allowed auto actions. Defaults do not create inspect tasks or import plan tasks unless AGENTS.toml opts in.",
+      "when_to_use": "Use after plan/inspect returns next_actions and an external agent needs to advance by action id or let CodePilot choose policy-allowed auto actions. Defaults do not create inspect tasks or import plan tasks unless AGENTS.toml opts in.",
       "examples": [
         "codepilot workflow next -p <project-name> --list --json",
         "codepilot workflow next -p <project-name> --auto --json",
@@ -534,10 +524,10 @@
     {
       "name": "Use the OpenCode workflow in chat or Feishu",
       "steps": [
-        "Ask questions directly, such as `How many tasks are done?`.",
+        "Ask about project state directly; the OpenCode agent chooses CodePilot MCP tools.",
         "Submit requirements as natural language; OpenCode can call CodePilot MCP planning and task tools.",
         "Use explicit operations like `retry 123` or `tasks failed`, or describe the operation in natural language.",
-        "Call `clarify` / `plan` explicitly when deterministic artifacts are needed."
+        "Call `plan` explicitly when deterministic artifacts are needed."
       ]
     },
     {

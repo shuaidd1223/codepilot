@@ -677,51 +677,29 @@ def test_create_task_empty_title_returns_error(ui_server):
         assert "error" in body
 
 
-# ─── POST /api/goal /api/sessions/:id/messages routing ─────────────────────
+# ─── POST /api/sessions/:id/messages routing ────────────────────────────────
 
-def test_goal_endpoint_normalizes_non_list_qa_history(ui_server, monkeypatch):
-    captured = {}
-
-    def fake_submit_goal(project, text, *, category="auto", qa_history=None, original_title="", clarify_answers=None, clarify_questions=None):
-        captured.update({
-            "project": project,
-            "text": text,
-            "category": category,
-            "qa_history": qa_history,
-            "original_title": original_title,
-            "clarify_answers": clarify_answers,
-            "clarify_questions": clarify_questions,
-        })
-        return {"ok": True, "intent": "question", "message": "ok"}
-
-    monkeypatch.setattr(webui_mod, "submit_goal_action", fake_submit_goal)
-
+def test_goal_endpoint_is_removed(ui_server):
     status, body = _post(f"{ui_server}/api/goal", {
         "project": "demo",
         "text": "hello",
         "category": "auto",
-        "qa_history": "not-a-list",
-        "original_title": "raw",
     })
 
-    assert status == 200
-    assert body["ok"] is True
-    assert captured["qa_history"] == []
-    assert captured["clarify_answers"] == []
-    assert captured["clarify_questions"] == []
+    assert status == 404
+    assert "未找到接口" in body["error"]
 
 
 def test_session_message_endpoint_routes_to_action_with_async_default(ui_server, monkeypatch):
     session = db.create_session("demo", title="chat")
     captured = {}
 
-    def fake_send_session_message(session_id, text, *, category="auto", clarify_answers=None, run_async=False):
+    def fake_send_session_message(session_id, text, *, run_async=False, runtime_config=None):
         captured.update({
             "session_id": session_id,
             "text": text,
-            "category": category,
-            "clarify_answers": clarify_answers,
             "run_async": run_async,
+            "runtime_config": runtime_config,
         })
         return {
             "ok": True,
@@ -736,7 +714,6 @@ def test_session_message_endpoint_routes_to_action_with_async_default(ui_server,
 
     status, body = _post(f"{ui_server}/api/sessions/{session['id']}/messages", {
         "text": "hello session",
-        "category": "question",
     })
 
     assert status == 200
@@ -744,9 +721,8 @@ def test_session_message_endpoint_routes_to_action_with_async_default(ui_server,
     assert captured == {
         "session_id": session["id"],
         "text": "hello session",
-        "category": "question",
-        "clarify_answers": [],
         "run_async": True,
+        "runtime_config": None,
     }
 
 
@@ -754,7 +730,7 @@ def test_session_message_endpoint_can_force_sync_mode(ui_server, monkeypatch):
     session = db.create_session("demo", title="chat")
     captured = {}
 
-    def fake_send_session_message(session_id, text, *, category="auto", clarify_answers=None, run_async=False):
+    def fake_send_session_message(session_id, text, *, run_async=False, runtime_config=None):
         captured["run_async"] = run_async
         return {"ok": True, "intent": "opencode", "message": "sync", "task_ids": []}
 

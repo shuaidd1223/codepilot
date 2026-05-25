@@ -86,7 +86,6 @@ def build_agents_config_from_dict(
     """Build an ``AgentsConfig`` from raw TOML data."""
     from codepilot.core.config import (
         AutomationConfig,
-        ClassifierConfig,
         DispatchConfig,
         InspectConfig,
         ProjectConfig,
@@ -98,7 +97,6 @@ def build_agents_config_from_dict(
     _check_legacy_agent_command_keys(agents)
     dispatch = data.get("dispatch", {})
     automation = data.get("automation", {})
-    classifier = data.get("classifier", {})
     inspect = data.get("inspect", {})
     notifications = data.get("notifications", {})
     feishu_bot = data.get("feishu_bot", {})
@@ -199,12 +197,6 @@ def build_agents_config_from_dict(
             agent_language=agent_language,
             scheduled_agents=scheduled_agents,
             event_agents=event_agents,
-        ),
-        classifier=ClassifierConfig(
-            provider=classifier.get("provider", ""),
-            model=classifier.get("model", ""),
-            enabled=classifier.get("enabled", True),
-            timeout=classifier.get("timeout", 30),
         ),
         inspect=InspectConfig(
             enabled=inspect.get("enabled", False),

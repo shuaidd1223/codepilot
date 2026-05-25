@@ -1,4 +1,4 @@
-"""Prompt templates and JSON schemas used by planner / classifier.
+"""Prompt templates and JSON schemas used by planners.
 
 The prose bodies of these templates now live in :mod:`codepilot.prompts`
 (one ``.md`` file per template) so they can be tweaked without touching
@@ -159,4 +159,3 @@ RECON_PROMPT_TEMPLATE = _load_prompt("task_recon")
 
 
 TASK_BREAKDOWN_PROMPT_TEMPLATE = _load_prompt("task_breakdown")
-

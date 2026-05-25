@@ -35,7 +35,6 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       pendingTasks: {},
       dark: false,
       toasts: [], toastSeq: 0,
-      answer: null,
       confirmDialog: {
         open: false,
         title: '',
@@ -50,20 +49,13 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       daemonHealth: { alive: true, running: false, pid: 0, reason: '', stale_seconds: 0 },
       aiStatus: { ok: true, providers: {}, balances: {}, usage: {} },
 
-      goalText: '', goalCategory: 'auto',
       projectForm: { open: false, path: '', name: '', noConfig: false },
-      composerMode: 'question',
-      composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
       opencodeRuntime: {
         agentMode: 'codepilot',
         permissionMode: 'ask',
       },
-      taskTemplateSchema: null,
-      taskTemplateLoading: false,
-      taskTemplateError: '',
-      batchComposer: { raw: '' },
       projectDrafts: {},
-      chatText: '', chatCategory: 'auto',
+      chatText: '',
     });
 
     const feedbackBoundary = CP.createAppFeedbackBoundary({ state });
@@ -163,37 +155,21 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
     function defaultProjectDraft() {
       return {
-        answer: null,
-        goalText: '',
-        goalCategory: 'auto',
-        goalClarify: null,
-        composerMode: 'question',
         activeProjectSessionId: null,
         opencodeRuntime: {
           agentMode: 'codepilot',
           permissionMode: 'ask',
         },
-        composer: { title: '', content: '', priority: 'P2', agent: 'auto', planner: 'codex', execute: true },
-        composerClarify: null,
-        batchComposer: { raw: '' },
         chatText: '',
-        chatCategory: 'auto',
       };
     }
 
     function normalizeProjectDraft(draft) {
       const fallback = defaultProjectDraft();
       const source = (draft && typeof draft === 'object') ? draft : {};
-      const composer = (source.composer && typeof source.composer === 'object') ? source.composer : {};
       const opencodeRuntime = (source.opencodeRuntime && typeof source.opencodeRuntime === 'object') ? source.opencodeRuntime : {};
-      const batchComposer = (source.batchComposer && typeof source.batchComposer === 'object') ? source.batchComposer : {};
       const activeProjectSessionId = Number(source.activeProjectSessionId);
       return {
-        answer: source.answer == null ? null : String(source.answer),
-        goalText: typeof source.goalText === 'string' ? source.goalText : fallback.goalText,
-        goalCategory: typeof source.goalCategory === 'string' ? source.goalCategory : fallback.goalCategory,
-        goalClarify: cloneProjectDraftValue(source.goalClarify || null),
-        composerMode: typeof source.composerMode === 'string' ? source.composerMode : fallback.composerMode,
         activeProjectSessionId: Number.isFinite(activeProjectSessionId) && activeProjectSessionId > 0
           ? activeProjectSessionId
           : fallback.activeProjectSessionId,
@@ -209,37 +185,15 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
             return allowed.includes(raw) ? raw : fallback.opencodeRuntime.permissionMode;
           })(),
         },
-        composer: {
-          title: typeof composer.title === 'string' ? composer.title : fallback.composer.title,
-          content: typeof composer.content === 'string' ? composer.content : fallback.composer.content,
-          priority: typeof composer.priority === 'string' ? composer.priority : fallback.composer.priority,
-          agent: typeof composer.agent === 'string' ? composer.agent : fallback.composer.agent,
-          planner: typeof composer.planner === 'string' ? composer.planner : fallback.composer.planner,
-          execute: typeof composer.execute === 'boolean' ? composer.execute : fallback.composer.execute,
-        },
-        composerClarify: cloneProjectDraftValue(source.composerClarify || null),
-        batchComposer: {
-          raw: typeof batchComposer.raw === 'string' ? batchComposer.raw : fallback.batchComposer.raw,
-        },
         chatText: typeof source.chatText === 'string' ? source.chatText : fallback.chatText,
-        chatCategory: typeof source.chatCategory === 'string' ? source.chatCategory : fallback.chatCategory,
       };
     }
 
     function currentProjectDraftSnapshot() {
       return {
-        answer: state.answer,
-        goalText: state.goalText,
-        goalCategory: state.goalCategory,
-        goalClarify: cloneProjectDraftValue(state.goalClarify),
-        composerMode: state.composerMode,
         activeProjectSessionId: state.activeProjectSessionId,
         opencodeRuntime: cloneProjectDraftValue(state.opencodeRuntime),
-        composer: cloneProjectDraftValue(state.composer),
-        composerClarify: cloneProjectDraftValue(state.composerClarify),
-        batchComposer: cloneProjectDraftValue(state.batchComposer),
         chatText: state.chatText,
-        chatCategory: state.chatCategory,
       };
     }
 
@@ -266,18 +220,9 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
     function loadProjectDraft(project = state.nav.project) {
       const draft = normalizeProjectDraft(project ? state.projectDrafts[project] : null);
-      state.answer = draft.answer;
-      state.goalText = draft.goalText;
-      state.goalCategory = draft.goalCategory;
-      state.goalClarify = draft.goalClarify;
-      state.composerMode = draft.composerMode;
       state.activeProjectSessionId = draft.activeProjectSessionId;
       state.opencodeRuntime = draft.opencodeRuntime;
-      state.composer = draft.composer;
-      state.composerClarify = draft.composerClarify;
-      state.batchComposer = draft.batchComposer;
       state.chatText = draft.chatText;
-      state.chatCategory = draft.chatCategory;
     }
 
     function deleteProjectDraft(project) {
@@ -518,8 +463,6 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         confirmDialog,
         setNav,
         openProjectCategory,
-        buildClarifyStateFromPayload,
-        syncSessionClarifyDraft,
       });
       return sessionBoundary;
     }
@@ -548,16 +491,8 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       return ensureSessionBoundary().stopSessionRun(messageId);
     }
 
-    async function cancelSessionClarify(sessionId) {
-      return ensureSessionBoundary().cancelSessionClarify(sessionId);
-    }
-
     async function deleteSession() {
       return ensureSessionBoundary().deleteSession();
-    }
-
-    async function submitClarifyAnswer(sessionId, answerText = '') {
-      return ensureSessionBoundary().submitClarifyAnswer(sessionId, answerText);
     }
 
     async function taskAction(taskId, action) {
@@ -576,31 +511,12 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         runScopedAction,
         ACTION_KEYS,
         loadDashboard,
-        selectTask,
         selectProject,
         setNav,
         confirmDialog,
-        buildClarifyStateFromPayload,
-        renderClarifyMessage,
         deleteProjectDraft,
       });
       return submissionBoundary;
-    }
-
-    async function submitGoal() {
-      return ensureSubmissionBoundary().submitGoal();
-    }
-
-    async function submitComposer() {
-      return ensureSubmissionBoundary().submitComposer();
-    }
-
-    async function loadTaskTemplateSchema(options = {}) {
-      return ensureSubmissionBoundary().loadTaskTemplateSchema(options);
-    }
-
-    async function submitTaskBatch(validation = null) {
-      return ensureSubmissionBoundary().submitTaskBatch(validation);
     }
 
     function toggleProjectForm(open = null) {
@@ -938,7 +854,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
           return;
         }
         if (event.key === '/') {
-          const input = document.querySelector('.chat-input-bar input, .goal-input input, input[placeholder]');
+          const input = document.querySelector('.chat-textarea');
           if (input) {
             input.focus();
             event.preventDefault();
@@ -1001,18 +917,9 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       }
 
       watch(() => [
-        state.answer,
-        state.goalText,
-        state.goalCategory,
-        state.goalClarify,
-        state.composerMode,
         state.activeProjectSessionId,
         state.opencodeRuntime,
-        state.composer,
-        state.composerClarify,
-        state.batchComposer,
         state.chatText,
-        state.chatCategory,
       ], queueProjectDraftSave, { deep: true });
 
       loadDashboard().then(() => {
@@ -1099,16 +1006,13 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       toggleAuto, toggleDark,
 
       loadDashboard, loadTaskDetail, loadTaskLog, loadSessions, loadSessionChat, loadDaemonHealth, loadAIStatus,
-      loadTaskTemplateSchema,
 
-      taskAction, submitGoal, submitComposer, submitTaskBatch,
+      taskAction,
       taskBatchAction,
       toggleProjectForm, submitProject, deleteProject,
       projectService, jobAction,
       runInspectWorkflow, workflowAction, workflowAutoAction,
       newSession, sendChat, sendEmbeddedChat, stopSessionRun, deleteSession,
-      submitClarifyAnswer,
-      cancelGoalClarify, cancelComposerClarify, cancelSessionClarify,
 
       isTaskPending: (taskId) => !!state.pendingTasks[taskId],
       taskPendingAction: (taskId) => state.pendingTasks[taskId] || '',

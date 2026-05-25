@@ -458,8 +458,8 @@ def _existing_inspector_titles(project: str) -> set[str]:
 
 def _call_llm(
     prompt: str,
-    classifier_provider: str,
-    classifier_model: str,
+    llm_provider: str,
+    llm_model: str,
     api_key: Optional[str],
     base_url: Optional[str],
     project_path: str,
@@ -467,13 +467,13 @@ def _call_llm(
     planner: str = "claude",
     stream_callback: Callable[[str], None] | None = None,
 ) -> dict:
-    # 1) Prefer the configured classifier provider (API with key).
-    if classifier_provider and classifier_provider in API_PROVIDERS:
+    # 1) Prefer an explicit API provider when supplied by the caller.
+    if llm_provider and llm_provider in API_PROVIDERS:
         from dataclasses import replace
 
-        provider = replace(API_PROVIDERS[classifier_provider])
-        if classifier_model:
-            provider.model = classifier_model
+        provider = replace(API_PROVIDERS[llm_provider])
+        if llm_model:
+            provider.model = llm_model
             if hasattr(provider, "auto_model_selection"):
                 provider.auto_model_selection = False
         if api_key:
@@ -482,7 +482,7 @@ def _call_llm(
             provider.base_url = base_url
         if provider.requires_api_key() and not provider.resolve_api_key():
             mark_provider_unavailable(
-                classifier_provider,
+                llm_provider,
                 provider,
                 "missing api key",
                 source="inspect",
@@ -493,7 +493,7 @@ def _call_llm(
                 raw = _run_api_provider(provider, prompt).strip()
             except Exception as exc:
                 mark_provider_unavailable(
-                    classifier_provider,
+                    llm_provider,
                     provider,
                     str(exc),
                     source="inspect",
@@ -1365,8 +1365,8 @@ def run_inspection(
     try:
         payload = _call_llm(
             prompt,
-            classifier_provider=provider_key,
-            classifier_model=model,
+            llm_provider=provider_key,
+            llm_model=model,
             api_key=api_key,
             base_url=base_url,
             project_path=str(project_path),

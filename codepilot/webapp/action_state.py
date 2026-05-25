@@ -13,7 +13,6 @@ from codepilot.webapp.payloads import _now_iso
 
 _MAX_EVENTS = 40
 _MAX_JOB_LOG_LINES = 50
-_GOAL_MAX_BYTES = 4096
 _JOB_SERVICE = "webui_job"
 _JOB_HISTORY_LIMIT = 200
 _ACTIVE_JOB_STATUSES = {"queued", "running", "planning", "cancelling"}
@@ -77,26 +76,6 @@ def _emit_ui_state_event(kind: str, *, project: str | None = None, task_id: int 
     except Exception:  # noqa: BLE001
         # 发送 UI 状态事件失败不应阻止主流程
         pass
-
-
-def _normalize_goal_category(category: str | None) -> str:
-    normalized = (category or "auto").lower()
-    valid_categories = {"auto", "question", "task", "requirement", "command"}
-    if normalized not in valid_categories:
-        return "auto"
-    return normalized
-
-
-def _format_numbered_questions(questions: list[dict], render_questions) -> str:
-    return render_questions(questions)
-
-
-def _extract_job_task_ids(result: dict) -> list[int]:
-    job = result.get("job")
-    if not isinstance(job, dict):
-        return []
-    task_ids = job.get("task_ids") or []
-    return task_ids if isinstance(task_ids, list) else []
 
 
 def _job_scope(job_id: int) -> str:

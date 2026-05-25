@@ -12,7 +12,7 @@ from codepilot.gateway.entrypoints import run_gateway_entry, validate_request_mo
 from codepilot.gateway.errors import aggregate_errors, build_combined_failure
 from codepilot.gateway.types import GatewayMode, GatewayRequest, GatewayResponse
 from tests.ai_gateway_assertions import assert_failure_response
-from tests.ai_gateway_testkit import FakeAPIProvider, STRUCTURED_SCHEMA, gateway_state
+from tests.ai_gateway_testkit import FakeAPIProvider, STRUCTURED_SCHEMA
 
 
 def _structured_mode() -> GatewayMode:
@@ -173,7 +173,7 @@ def test_call_structured_reports_combined_error_when_both_fail(gateway_state, mo
         GatewayRequest(
             prompt="hi",
             schema=STRUCTURED_SCHEMA,
-            classifier_provider="localcustom",
+            llm_provider="localcustom",
             planner="codex",
         )
     )

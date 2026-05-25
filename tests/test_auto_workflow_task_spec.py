@@ -7,7 +7,6 @@ render with meaningful values instead of "待评估 / 未设定" placeholders.
 
 from __future__ import annotations
 
-import pytest
 
 from codepilot.commands import auto_workflow as aw
 

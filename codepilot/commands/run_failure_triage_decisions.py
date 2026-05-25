@@ -45,8 +45,8 @@ class _TriageEvidence:
     project_path: str
     config_ref: str
     planner: object
-    classifier_provider: str
-    classifier_model: str
+    llm_provider: str
+    llm_model: str
     api_key: str | None
     base_url: str | None
     timeout: int
@@ -78,13 +78,11 @@ def _collect_triage_evidence(
     if not project_path:
         return None
 
-    classifier = getattr(config, "classifier", None)
-    provider_key = getattr(classifier, "provider", "") if classifier else ""
-    model = getattr(classifier, "model", "") if classifier else ""
-    timeout = int(getattr(classifier, "timeout", 30) or 30)
-    api_key = config.get_provider_api_key(provider_key) if config and provider_key else None
-    provider_cfg = config.providers.get(provider_key) if config and provider_key else None
-    base_url = provider_cfg.base_url if provider_cfg else None
+    provider_key = ""
+    model = ""
+    timeout = 30
+    api_key = None
+    base_url = None
     planner = resolve_planner_fn(config, "automation")
     prompt = prompt_builder(
         task,
@@ -100,8 +98,8 @@ def _collect_triage_evidence(
         project_path=project_path,
         config_ref=config_ref,
         planner=planner,
-        classifier_provider=provider_key,
-        classifier_model=model,
+        llm_provider=provider_key,
+        llm_model=model,
         api_key=api_key,
         base_url=base_url,
         timeout=timeout,
@@ -133,13 +131,11 @@ def _collect_review_failure_evidence(
     if not project_path:
         return None
 
-    classifier = getattr(config, "classifier", None)
-    provider_key = getattr(classifier, "provider", "") if classifier else ""
-    model = getattr(classifier, "model", "") if classifier else ""
-    timeout = int(getattr(classifier, "timeout", 30) or 30)
-    api_key = config.get_provider_api_key(provider_key) if config and provider_key else None
-    provider_cfg = config.providers.get(provider_key) if config and provider_key else None
-    base_url = provider_cfg.base_url if provider_cfg else None
+    provider_key = ""
+    model = ""
+    timeout = 30
+    api_key = None
+    base_url = None
     planner = resolve_planner_fn(config, "automation")
     try:
         reviewer_verdict = parse_reviewer_output(review_output or "")
@@ -162,15 +158,15 @@ def _collect_review_failure_evidence(
         project_path=project_path,
         config_ref=config_ref,
         planner=planner,
-        classifier_provider=provider_key,
-        classifier_model=model,
+        llm_provider=provider_key,
+        llm_model=model,
         api_key=api_key,
         base_url=base_url,
         timeout=timeout,
     )
 
 
-def _classify_triage_action(
+def _decide_triage_action(
     evidence: _TriageEvidence,
     *,
     schema: dict,
@@ -182,8 +178,8 @@ def _classify_triage_action(
             gateway_request_cls(
                 prompt=evidence.prompt,
                 schema=schema,
-                classifier_provider=evidence.classifier_provider,
-                classifier_model=evidence.classifier_model,
+                llm_provider=evidence.llm_provider,
+                llm_model=evidence.llm_model,
                 api_key=evidence.api_key,
                 base_url=evidence.base_url,
                 project_path=evidence.project_path,

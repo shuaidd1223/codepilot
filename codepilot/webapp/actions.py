@@ -16,10 +16,7 @@ from __future__ import annotations
 import threading
 
 from codepilot.commands.auto import (  # noqa: F401 - patched in tests
-    classify_entry_intent,
-    command_intent_guidance,
     normalize_requirement_text,
-    resolve_shared_gateway_options,
     run_requirement_workflow,
 )
 
@@ -30,3 +27,5 @@ _UI_LOCK = threading.Lock()
 _UI_JOB_SEQ = 0
 _UI_JOBS: dict[int, dict] = {}
 _UI_EVENTS: list[dict] = []
+
+from codepilot.webapp.action_requirements import submit_requirement_action  # noqa: E402,F401

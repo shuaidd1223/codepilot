@@ -11,8 +11,8 @@ This guide is for other AI agents. For the latest machine-readable command list,
 1. Prefer non-interactive commands.
 2. Prefer `--json` or `codepilot ai manifest` when structured output is needed.
 3. Submit high-level requirements with `codepilot "requirement text"` or `codepilot go "requirement text"`.
-4. Treat questions about project status, task counts, completion, failed tasks, running tasks, or service status as Q&A.
-5. `chat`, Web UI sessions, and Feishu free text enter OpenCode + CodePilot MCP and can receive questions, requirements, or operation intent directly.
+4. For project status, task counts, completion, failed tasks, running tasks, or service status, let the agent choose CodePilot status/task/trace tools.
+5. `chat`, Web UI sessions, and Feishu free text enter the OpenCode agent with CodePilot MCP tools; CodePilot does not pre-route free text.
 6. Use `codepilot task ...` for task operations.
 7. Use `codepilot binary ...` for releases.
 8. External AI systems must read `codepilot ai template --format json` before submitting tasks directly.
@@ -77,4 +77,3 @@ Required rules:
 3. Each `tasks.md` section must be a complete task template.
 4. `add -t "title"` and `tasks.txt` call AI to generate content and validate it.
 5. `--no-ai` / `--allow-empty` are removed; empty placeholder tasks are not allowed.
-

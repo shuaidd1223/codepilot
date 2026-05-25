@@ -51,7 +51,7 @@ def _slugify(text: str) -> str:
 
 def _summary(requirement: str) -> str:
     compact = re.sub(r"\s+", " ", requirement.strip())
-    return compact[:160] if compact else "待澄清需求"
+    return compact[:160] if compact else "待细化需求"
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -89,7 +89,7 @@ def _read_spec(project_path: Path, from_spec: str) -> tuple[Path, str]:
 
 
 def _summary_from_spec(spec_text: str) -> str:
-    title = re.search(r"^#\s+Clarify Spec:\s*(.+?)\s*$", spec_text, re.MULTILINE)
+    title = re.search(r"^#\s+(?:Agent\s+)?Spec:\s*(.+?)\s*$", spec_text, re.MULTILINE | re.IGNORECASE)
     if title and title.group(1).strip():
         return _summary(title.group(1))
     goal = _extract_section(spec_text, "目标")

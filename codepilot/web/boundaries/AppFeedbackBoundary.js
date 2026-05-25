@@ -12,9 +12,6 @@ CP.createAppFeedbackBoundary = (options = {}) => {
   const toastTimers = new Map();
 
   const ACTION_KEYS = Object.freeze({
-    GOAL_SUBMIT: 'goal.submit',
-    COMPOSER_SUBMIT: 'composer.submit',
-    TASK_BATCH_IMPORT: 'tasks.import',
     SESSION_SEND: 'session.send',
     SESSION_STOP: 'session.stop',
     SESSION_DELETE: 'session.delete',
@@ -22,9 +19,6 @@ CP.createAppFeedbackBoundary = (options = {}) => {
   });
 
   const refreshBlockingActions = new Set([
-    ACTION_KEYS.GOAL_SUBMIT,
-    ACTION_KEYS.COMPOSER_SUBMIT,
-    ACTION_KEYS.TASK_BATCH_IMPORT,
     ACTION_KEYS.SESSION_SEND,
     ACTION_KEYS.SESSION_STOP,
     ACTION_KEYS.SESSION_DELETE,

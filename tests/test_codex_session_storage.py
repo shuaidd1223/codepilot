@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 
-import pytest
 
 from codepilot.codex.session_storage import (
     codex_session_exists,

@@ -166,7 +166,8 @@ CP.createTaskDetailBoundary = (options = {}) => {
     state.pendingTasks[taskId] = action;
     try {
       const out = await CP.api.post(`/api/tasks/${taskId}/${action}`, {});
-      pushToast(out.message || '操作完成', 'success');
+      const toastType = (out && (out.ok === false || out.service_error)) ? 'warning' : 'success';
+      pushToast(out.message || '操作完成', toastType);
       if (out && out.task) {
         CP.StateBoundary.mergeTaskIntoState(state, out.task);
         if (state.nav.view === 'task' && state.nav.id === taskId) {

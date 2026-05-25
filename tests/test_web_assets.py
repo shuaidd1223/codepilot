@@ -159,6 +159,14 @@ def test_task_detail_renders_structured_reviewer_verdict():
     assert ".ac-status-chip.ac-status-fail" in styles
 
 
+def test_task_detail_action_warns_when_api_reports_service_error():
+    source = Path("codepilot/web/boundaries/TaskDetailBoundary.js").read_text(encoding="utf-8")
+
+    assert "out.service_error" in source
+    assert "out.ok === false" in source
+    assert "pushToast(out.message || '操作完成', toastType)" in source
+
+
 def test_task_detail_template_avoids_nested_backticks_in_vue_bindings():
     source = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")
 
@@ -234,10 +242,10 @@ def test_web_ui_bootstrap_wires_app_state_boundary_before_mount():
     app = Path("codepilot/web/app.js").read_text(encoding="utf-8")
 
     assert "<script src=\"/static/boundaries/AppFeedbackBoundary.js\"></script>" in index_html
-    assert "<script src=\"/static/boundaries/AppClarifyBoundary.js\"></script>" in index_html
     assert "<script src=\"/static/boundaries/AppSessionBoundary.js\"></script>" in index_html
     assert "<script src=\"/static/boundaries/AppSubmissionBoundary.js\"></script>" in index_html
     assert "<script src=\"/static/boundaries/AppStateBoundary.js\"></script>" in index_html
+    assert "AppClarifyBoundary.js" not in index_html
     assert "setup: CP.AppStateBoundary.setup," in app
 
 
@@ -308,13 +316,20 @@ def test_app_state_keeps_project_form_drafts_scoped_by_project():
     assert "saveProjectDraft(prevProject);" in app_state
     assert "loadProjectDraft(partial.project);" in app_state
     for marker in (
-        "goalText: state.goalText",
-        "goalCategory: state.goalCategory",
-        "composerMode: state.composerMode",
-        "composer: cloneProjectDraftValue(state.composer)",
-        "batchComposer: cloneProjectDraftValue(state.batchComposer)",
+        "activeProjectSessionId: state.activeProjectSessionId",
+        "opencodeRuntime: cloneProjectDraftValue(state.opencodeRuntime)",
+        "chatText: state.chatText",
     ):
         assert marker in app_state
+    for removed in (
+        "goalText",
+        "goalCategory",
+        "composerMode",
+        "batchComposer",
+        "goalClarify",
+        "composerClarify",
+    ):
+        assert removed not in app_state
 
 
 def test_web_ui_uses_in_app_confirm_dialog_instead_of_browser_dialogs():
@@ -345,17 +360,28 @@ def test_web_ui_wires_plugin_diff_assets():
     assert "CP.ensureMonaco" not in utils
 
 
+def test_render_output_keeps_diff_and_ansi_logs_in_code_blocks():
+    utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
+
+    render_output_body = utils.split("CP.renderOutput = (text) => {", 1)[1].split("CP.fmtTime", 1)[0]
+    assert "if (looksDiff || hasAnsi) {" in render_output_body
+    assert "&& !hasMd" not in render_output_body
+    assert "CP._MD_SIGNAL_RE" not in utils
+
+
 def test_web_ui_action_protocol_exposes_scoped_pending_keys():
     feedback_boundary = Path("codepilot/web/boundaries/AppFeedbackBoundary.js").read_text(encoding="utf-8")
     app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
 
     assert "const ACTION_KEYS = Object.freeze({" in feedback_boundary
-    assert "GOAL_SUBMIT: 'goal.submit'" in feedback_boundary
-    assert "COMPOSER_SUBMIT: 'composer.submit'" in feedback_boundary
     assert "SESSION_SEND: 'session.send'" in feedback_boundary
+    assert "SESSION_STOP: 'session.stop'" in feedback_boundary
     assert "SESSION_DELETE: 'session.delete'" in feedback_boundary
-    assert "SESSION_CLARIFY_REPLY: 'session.clarify.reply'" in feedback_boundary
-    assert "SESSION_CLARIFY_CANCEL: 'session.clarify.cancel'" in feedback_boundary
+    assert "JOB_ACTION: 'job.action'" in feedback_boundary
+    assert "GOAL_SUBMIT" not in feedback_boundary
+    assert "COMPOSER_SUBMIT" not in feedback_boundary
+    assert "TASK_BATCH_IMPORT" not in feedback_boundary
+    assert "CLARIFY" not in feedback_boundary
     assert "const feedbackBoundary = CP.createAppFeedbackBoundary({ state });" in app_state
     assert "isActionPending: (actionKey) => isActionPending(actionKey)," in app_state
     assert "ACTION_KEYS," in app_state
@@ -382,17 +408,32 @@ def test_web_ui_wires_requirement_job_actions_and_filtered_events():
     assert "cancelling: '停止中'" in utils
 
 
-def test_form_components_use_scoped_action_pending_instead_of_global_sending():
-    goal = Path("codepilot/web/components/GoalInput.js").read_text(encoding="utf-8")
-    composer = Path("codepilot/web/components/Composer.js").read_text(encoding="utf-8")
+def test_web_ui_removes_legacy_intake_components_and_goal_route():
+    index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+    submission_boundary = Path("codepilot/web/boundaries/AppSubmissionBoundary.js").read_text(encoding="utf-8")
+    server = Path("codepilot/webapp/server.py").read_text(encoding="utf-8")
+    requirements = Path("codepilot/webapp/action_requirements.py").read_text(encoding="utf-8")
+    sessions = Path("codepilot/webapp/action_sessions.py").read_text(encoding="utf-8")
     chat = Path("codepilot/web/components/ChatView.js").read_text(encoding="utf-8")
 
-    assert "goalPending()" in goal
-    assert "composerPending()" in composer
+    assert not Path("codepilot/web/components/GoalInput.js").exists()
+    assert not Path("codepilot/web/components/Composer.js").exists()
+    assert not Path("codepilot/web/components/TaskBatchImport.js").exists()
+    assert "GoalInput.js" not in index_html
+    assert "Composer.js" not in index_html
+    assert "TaskBatchImport.js" not in index_html
+    assert "submitGoal" not in app_state
+    assert "submitComposer" not in app_state
+    assert "submitTaskBatch" not in app_state
+    assert "submitGoal" not in submission_boundary
+    assert "/api/goal" not in server
+    assert "submit_goal_action" not in requirements
+    assert "_dispatch_goal" not in requirements
+    assert "_dispatch_session_message" not in sessions
+    assert "_SessionDispatchContext" not in sessions
     assert "chatPending()" in chat
     assert "deletePending()" in chat
-    assert "s.sending" not in goal
-    assert "s.sending" not in composer
     assert "s.sending" not in chat
 
 
@@ -444,7 +485,6 @@ def test_project_view_uses_unified_workbench_layout():
     assert "project-metrics-panel" in project_view
     assert "会话就是和 OpenCode 的交互" in project_view
     assert "intake-segmented" not in project_view
-    assert "s.composerMode === 'batch'" not in project_view
     assert "cp-composer" not in project_view
     assert "cp-task-batch-import" not in project_view
     assert ".project-workbench-grid" in styles
@@ -476,6 +516,9 @@ def test_project_workbench_embeds_streaming_session_chat_instead_of_goal_form():
     assert "activeProjectSessionId" in app_state
     assert "selectEmbeddedSession" in app_state
     assert "openSessionPage" in app_state
+    assert "document.querySelector('.chat-textarea')" in app_state
+    assert ".goal-input" not in app_state
+    assert "input[placeholder]" not in app_state
 
 
 def test_sidebar_removes_session_category_with_advanced_page_escape():
@@ -520,76 +563,34 @@ def test_sessions_view_wires_history_search():
     assert ".session-snippet" in styles
 
 
-def test_web_ui_wires_structured_clarification_fields_and_cancel_actions():
+def test_web_ui_removes_legacy_clarification_frontend():
     index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
     utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
-    fields = Path("codepilot/web/components/ClarifyFields.js").read_text(encoding="utf-8")
-    goal = Path("codepilot/web/components/GoalInput.js").read_text(encoding="utf-8")
-    composer = Path("codepilot/web/components/Composer.js").read_text(encoding="utf-8")
     chat = Path("codepilot/web/components/ChatView.js").read_text(encoding="utf-8")
-    clarify_boundary = Path("codepilot/web/boundaries/AppClarifyBoundary.js").read_text(encoding="utf-8")
     session_boundary = Path("codepilot/web/boundaries/AppSessionBoundary.js").read_text(encoding="utf-8")
     app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
 
-    assert "<script src=\"/static/components/ClarifyFields.js\"></script>" in index_html
-    assert "<script src=\"/static/boundaries/AppClarifyBoundary.js\"></script>" in index_html
+    assert "ClarifyFields.js" not in index_html
+    assert "AppClarifyBoundary.js" not in index_html
     assert "<script src=\"/static/boundaries/AppSessionBoundary.js\"></script>" in index_html
-    assert "CP.normalizeClarifyQuestion" in utils
-    assert "CP.createClarifyAnswerState" in utils
-    assert "CP.exportClarifyAnswers" in utils
-    assert "CP.Components.ClarifyFields" in fields
-    assert "<cp-clarify-fields" in goal
-    assert "<cp-clarify-fields" in composer
+    assert "normalizeClarifyQuestion" not in utils
+    assert "createClarifyAnswerState" not in utils
+    assert "exportClarifyAnswers" not in utils
     assert "<cp-clarify-fields" not in chat
-    assert "cancelGoalClarify" in clarify_boundary
-    assert "cancelComposerClarify" in clarify_boundary
-    assert "cancelSessionClarify" in session_boundary
-    assert "function legacyClarifyQuestionsFromMessage(message)" in clarify_boundary
-    assert "legacy_q${questions.length + 1}" in clarify_boundary
-    assert "const clarifyBoundary = CP.createAppClarifyBoundary({ state, pushToast });" in app_state
+    assert "cancelSessionClarify" not in session_boundary
+    assert "submitClarifyAnswer" not in app_state
+    assert "cancelGoalClarify" not in app_state
+    assert "cancelComposerClarify" not in app_state
+    assert "cancelSessionClarify" not in app_state
 
 
-def test_clarify_fields_scope_radio_groups_and_single_free_text_override():
-    utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
-    fields = Path("codepilot/web/components/ClarifyFields.js").read_text(encoding="utf-8")
-    goal = Path("codepilot/web/components/GoalInput.js").read_text(encoding="utf-8")
-    composer = Path("codepilot/web/components/Composer.js").read_text(encoding="utf-8")
-    chat = Path("codepilot/web/components/ChatView.js").read_text(encoding="utf-8")
-
-    assert "emits: ['update:answers']" in fields
-    assert "groupPrefix" in fields
-    assert "radioName(question)" in fields
-    assert ':name="radioName(q)"' in fields
-    assert "commitState(question, nextState)" in fields
-    assert "this.$emit('update:answers', answers);" in fields
-    assert "updateFreeText(question, value)" in fields
-    assert "@update:answers=\"updateClarifyAnswers\"" in goal
-    assert "@update:answers=\"updateClarifyAnswers\"" in composer
-    assert "@update:answers=\"updateClarifyAnswers\"" not in chat
-    assert "q.type === 'single' && q.allow_free_text && text" in utils
-
-
-def test_batch_task_import_component_remains_registered_but_not_on_opencode_workspace():
+def test_batch_task_import_component_removed_from_web_bundle():
     index_html = Path("codepilot/web/index.html").read_text(encoding="utf-8")
-    project_view = Path("codepilot/web/components/ProjectView.js").read_text(encoding="utf-8")
-    batch_component = Path("codepilot/web/components/TaskBatchImport.js").read_text(encoding="utf-8")
     utils = Path("codepilot/web/utils.js").read_text(encoding="utf-8")
 
-    assert "<script src=\"/static/components/TaskBatchImport.js\"></script>" in index_html
-    assert "<cp-task-batch-import></cp-task-batch-import>" not in project_view
-    assert "CP.Components.TaskBatchImport" in batch_component
-    assert "loadTaskTemplateSchema();" in batch_component
-    assert "submitTaskBatch(this.validation);" in batch_component
-    assert "CP.validateTaskBatchImport" in utils
-
-
-def test_batch_task_import_panel_shows_full_template_structure():
-    batch_component = Path("codepilot/web/components/TaskBatchImport.js").read_text(encoding="utf-8")
-
-    assert "templateHeadings()" in batch_component
-    assert "schema.template_markdown" in batch_component
-    assert "完整模板结构" in batch_component
-    assert "v-for=\"label in templateHeadings\"" in batch_component
+    assert "TaskBatchImport.js" not in index_html
+    assert "CP.Components.TaskBatchImport" not in utils
+    assert "validateTaskBatchImport" not in utils
 
 
 def test_agent_log_splits_rendering_and_interaction_state_into_boundaries():

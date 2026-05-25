@@ -10,8 +10,8 @@ from typing import Callable, Optional
 class GatewayRequest:
     prompt: str
     schema: Optional[dict] = None
-    classifier_provider: str = ""
-    classifier_model: str = ""
+    llm_provider: str = ""
+    llm_model: str = ""
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     project_path: str = ""
@@ -23,10 +23,10 @@ class GatewayRequest:
 
 @dataclass(frozen=True)
 class GatewayCallOptions:
-    """Reusable fallback options shared by chat / clarify callsites."""
+    """Reusable fallback options shared by structured LLM callsites."""
 
-    classifier_provider: str = ""
-    classifier_model: str = ""
+    llm_provider: str = ""
+    llm_model: str = ""
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     project_path: str = ""

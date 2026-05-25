@@ -64,18 +64,18 @@ def _planner_to_family_name(planner: str) -> str:
 
 def resolve_api_call(request: GatewayRequest) -> Optional[ResolvedAPICall]:
     """Resolve an API call candidate; return ``None`` when API path is not usable."""
-    if not request.classifier_provider:
+    if not request.llm_provider:
         return None
 
     from codepilot.ai_support.providers import API_PROVIDERS, resolve_api_provider
 
-    provider_key = request.classifier_provider
+    provider_key = request.llm_provider
     if provider_key not in API_PROVIDERS:
         return None
 
     provider = resolve_api_provider(provider_key, _provider_ref(request))
-    if request.classifier_model:
-        provider.model = request.classifier_model
+    if request.llm_model:
+        provider.model = request.llm_model
         if hasattr(provider, "auto_model_selection"):
             provider.auto_model_selection = False
     if request.api_key:

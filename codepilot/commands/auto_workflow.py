@@ -20,8 +20,7 @@ from typing import Optional
 
 import click
 
-from codepilot.gateway.types import GatewayCallOptions
-from codepilot.ai_support.intent_rules import _heuristic_intent
+from codepilot.storage import database as db  # noqa: F401 (re-export for tests)
 from codepilot.ai_support.interaction_controller import build_workflow_session_record
 from codepilot.commands import auto_project_resolution as _project_resolution
 from codepilot.commands import auto_workflow_planning as _planning_flow
@@ -96,84 +95,6 @@ def _project_config(project_info: dict):
 def _provider_context(project_info: dict) -> str:
     """Prefer an explicitly stored AGENTS.toml path when resolving CLI providers."""
     return str(resolve_project_config_reference(project_info) or project_info["path"])
-
-
-def _classifier_runtime(project_info: dict) -> dict:
-    """Resolve shared classifier runtime options for chat/go/webui entries."""
-    cfg = _project_config(project_info)
-    classifier_cfg = getattr(cfg, "classifier", None) if cfg else None
-    enabled = bool(classifier_cfg and classifier_cfg.enabled)
-    provider = (classifier_cfg.provider or "") if enabled else ""
-    model = (classifier_cfg.model or "") if enabled else ""
-    timeout = int(classifier_cfg.timeout or 30) if enabled else 30
-    api_key = None
-    base_url = None
-    if cfg and provider:
-        api_key = cfg.get_provider_api_key(provider)
-        provider_cfg = cfg.providers.get(provider)
-        base_url = provider_cfg.base_url if provider_cfg else None
-    return {
-        "config": cfg,
-        "project_path": project_info.get("path", ""),
-        "config_ref": _provider_context(project_info),
-        "classifier_provider": provider,
-        "classifier_model": model,
-        "classifier_timeout": timeout,
-        "api_key": api_key,
-        "base_url": base_url,
-    }
-
-
-def resolve_shared_gateway_options(project_info: dict) -> GatewayCallOptions:
-    """Build one shared gateway context for classifier + question-answer paths."""
-    runtime = _classifier_runtime(project_info)
-    return GatewayCallOptions(
-        classifier_provider=runtime["classifier_provider"],
-        classifier_model=runtime["classifier_model"],
-        api_key=runtime["api_key"],
-        base_url=runtime["base_url"],
-        project_path=runtime["project_path"],
-        config_ref=runtime["config_ref"],
-        planner="claude",
-        timeout=runtime["classifier_timeout"] or 30,
-    )
-
-
-def classify_entry_intent(
-    text: str,
-    *,
-    project_info: dict,
-    category: str = "auto",
-    gateway_options: Optional[GatewayCallOptions] = None,
-    default_intent: str = "requirement",
-) -> str:
-    """Classify user input intent using the shared auto/chat/webui chain."""
-    forced = (category or "auto").strip().lower()
-    valid = {"question", "task", "requirement", "command"}
-    if forced in valid:
-        return forced
-
-    try:
-        guess = _heuristic_intent(text)
-    except Exception:
-        guess = None
-    fallback = (default_intent or "").strip().lower()
-    return guess if guess in valid else (fallback if fallback in valid else "")
-
-
-def command_intent_guidance(*, include_release: bool = False) -> str:
-    """Return consistent guidance when input is classified as CLI command intent."""
-    lines = [
-        "这看起来是在调用 codepilot 自身命令，请在终端直接执行：",
-        "  状态总览:  codepilot status -p <项目> -v",
-        "  任务日志:  codepilot task logs <task_id>",
-        "  重试任务:  codepilot task retry <task_id>",
-        "  停止任务:  codepilot task stop <task_id>",
-        "  触发巡检:  codepilot inspect -p <项目>",
-    ]
-    if include_release:
-        lines.append("  发布打包:  codepilot binary prepare --version <版本>")
-    return "\n".join(lines)
 
 
 def _has_explicit_automation_task_agent(project_info: dict, cfg=None) -> bool:

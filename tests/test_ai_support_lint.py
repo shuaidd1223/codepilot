@@ -18,8 +18,6 @@ def test_selected_python_modules_have_no_unused_symbols() -> None:
             "codepilot/ai_support/opencode_runtime.py",
             "codepilot/ai_support/prompts.py",
             "codepilot/ai_support/providers.py",
-            "codepilot/ai_support/classifier.py",
-            "codepilot/ai_support/clarification_protocol.py",
             "codepilot/commands/add.py",
         ],
         cwd=repo_root,

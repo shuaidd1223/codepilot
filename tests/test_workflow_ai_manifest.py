@@ -1,32 +1,14 @@
 from __future__ import annotations
 
 import json
-import sys
-import types
 from pathlib import Path
-from zipfile import ZipFile
 import re
 
-import click
-import pytest
 from click.testing import CliRunner
 
 from codepilot.ai_support.agent_support import ai_guide_markdown, command_manifest
-from codepilot.binary_support import manager as binary_mod
-from codepilot.binary_support import paths as binary_paths_mod
 from codepilot.core.task_template import missing_task_template_sections, unreplaced_task_template_placeholders
-from codepilot.storage import database as db
-from codepilot.ai_support import service as ai_mod
-from codepilot.core import progress_bus
-from codepilot.gateway.service import GatewayResponse
-from codepilot.core import runtime as runtime_mod
-from codepilot.webapp import server as webui_mod
 from codepilot.cli import main
-from codepilot.commands import add as add_cmd
-from codepilot.commands import auto as auto_cmd
-from codepilot.commands import run as run_cmd
-from codepilot.core.config import load_project_config
-from tests.workflow_testkit import init_test_db as _init_test_db
 
 
 def test_ai_manifest_command_outputs_machine_readable_json():
@@ -108,6 +90,12 @@ def test_ai_manifest_advertises_workflow_safe_next_entrypoints():
     commands = {item["name"]: item for item in payload["commands"]}
     structured_commands = {item["command"] for item in payload["structured_outputs"]}
 
+    serialized = json.dumps(payload, ensure_ascii=False).lower()
+    assert "clarify" not in serialized
+    assert "classif" not in serialized
+    assert "intent classifier" not in serialized
+    assert "question" not in commands["go"]["purpose"].lower()
+    assert "agent" in payload["calling_principles"][3].lower()
     assert commands["workflow_status"]["syntax"] == "codepilot workflow status -p <project-name> [--mode <mode>] --json"
     assert commands["workflow_next"]["syntax"] == (
         "codepilot workflow next -p <project-name> [--mode <mode>] "
@@ -191,6 +179,8 @@ def test_ai_prompt_command_outputs_short_agent_prompt():
     assert result.exit_code == 0
     assert "codepilot \"requirement text\"" in result.output
     assert "codepilot binary prepare --version <version>" in result.output
+    assert "clarify" not in result.output.lower()
+    assert "classif" not in result.output.lower()
 
 
 def test_ai_template_default_outputs_raw_markdown():

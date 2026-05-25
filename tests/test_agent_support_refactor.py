@@ -8,11 +8,8 @@ from types import SimpleNamespace
 from click.testing import CliRunner
 
 from codepilot.ai_support import agent_support
-from codepilot.cli import main
-from codepilot.commands import auto as auto_mod
 from codepilot.commands import inspect as inspect_cmd
 from codepilot.storage import database as db
-from tests.ai_gateway_testkit import FakeCLIProvider, StreamingSchemaSubprocess
 from tests.workflow_testkit import init_test_db
 
 
@@ -152,8 +149,8 @@ def test_inspect_keeps_streaming_cli_fallback_without_legacy_classifier(tmp_path
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["classifier_provider"] == ""
-    assert captured["classifier_model"] == ""
+    assert captured["llm_provider"] == ""
+    assert captured["llm_model"] == ""
     assert "L" in result.output
     assert "候选总数" in result.output
     assert result.output.index("L") < result.output.index("候选总数")

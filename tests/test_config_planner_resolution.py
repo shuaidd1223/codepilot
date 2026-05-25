@@ -77,10 +77,7 @@ def test_config_empty_dict_uses_declared_defaults():
     assert cfg.inspect.priority == "P3"
     assert cfg.inspect.planner is None
 
-    assert cfg.classifier.provider == ""
-    assert cfg.classifier.model == ""
-    assert cfg.classifier.enabled is True
-    assert cfg.classifier.timeout == 30
+    assert not hasattr(cfg, "classifier")
     assert cfg.webhook_provider == "auto"
     assert cfg.webhook_secret == ""
 

@@ -1,29 +1,8 @@
 from __future__ import annotations
 
-import json
-import sys
-import types
-from pathlib import Path
-from zipfile import ZipFile
 
-import click
-import pytest
-from click.testing import CliRunner
 
-from codepilot.ai_support.agent_support import ai_guide_markdown, command_manifest
-from codepilot.binary_support import manager as binary_mod
-from codepilot.binary_support import paths as binary_paths_mod
 from codepilot.storage import database as db
-from codepilot.ai_support import service as ai_mod
-from codepilot.core import progress_bus
-from codepilot.gateway.service import GatewayResponse
-from codepilot.core import runtime as runtime_mod
-from codepilot.webapp import server as webui_mod
-from codepilot.cli import main
-from codepilot.commands import add as add_cmd
-from codepilot.commands import auto as auto_cmd
-from codepilot.commands import run as run_cmd
-from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
 
 
@@ -135,9 +114,9 @@ def test_materialize_inspection_skips_duplicate_fingerprint(tmp_path, monkeypatc
          "rationale": ""},
         fingerprint=fp,
     )
-    first = db.create_task("demo", "fix F401", content=content,
-                           source="inspector", dedup_key="first-key", priority="P3",
-                           project_path=str(project_path))
+    db.create_task("demo", "fix F401", content=content,
+                   source="inspector", dedup_key="first-key", priority="P3",
+                   project_path=str(project_path))
 
     created, skipped = _materialize_inspection_output(
         [{"title": "fix F401 again", "goal": "\u6e05\u7406 F401", "priority": "P3",
@@ -151,4 +130,3 @@ def test_materialize_inspection_skips_duplicate_fingerprint(tmp_path, monkeypatc
     )
     assert len(created) == 0
     assert any("duplicate_fingerprint" in s.get("reason", "") for s in skipped)
-

@@ -50,14 +50,14 @@ _SIMPLE_TASK_KEYWORDS = (
     "摘要",
     "summarize",
     "translate",
-    "classify",
+    "categorize",
 )
 
 _DEEPSEEK_COMPLEX_DIFFICULTIES = {"hard", "xhard"}
 
 
-def classify_prompt_difficulty(prompt: str, system_prompt: Optional[str] = None) -> str:
-    """Small deterministic heuristic for routing cost/quality-sensitive API calls."""
+def estimate_prompt_difficulty(prompt: str, system_prompt: Optional[str] = None) -> str:
+    """Small deterministic heuristic for cost/quality-sensitive API calls."""
     text = f"{system_prompt or ''}\n{prompt or ''}".lower()
     char_count = len(text)
     score = 0
@@ -136,7 +136,7 @@ def build_api_request_profile(
     system_prompt: Optional[str] = None,
 ) -> APIRequestProfile:
     base_model = str(getattr(provider, "model", "") or "").strip()
-    difficulty = classify_prompt_difficulty(prompt, system_prompt)
+    difficulty = estimate_prompt_difficulty(prompt, system_prompt)
     model = base_model
     thinking = ""
     reasoning_effort = ""

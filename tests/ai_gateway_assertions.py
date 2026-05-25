@@ -5,8 +5,8 @@ from codepilot.gateway.types import GatewayCallOptions, GatewayRequest, GatewayR
 
 def make_gateway_options(
     *,
-    classifier_provider: str = "openai",
-    classifier_model: str = "gpt-x",
+    llm_provider: str = "openai",
+    llm_model: str = "gpt-x",
     api_key: str = "sk-1",
     base_url: str = "https://models.example.invalid/v1",
     project_path: str = "D:/demo/project",
@@ -15,8 +15,8 @@ def make_gateway_options(
     timeout: int = 42,
 ) -> GatewayCallOptions:
     return GatewayCallOptions(
-        classifier_provider=classifier_provider,
-        classifier_model=classifier_model,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
         api_key=api_key,
         base_url=base_url,
         project_path=project_path,
@@ -35,8 +35,8 @@ def assert_request_matches_options(
 ) -> None:
     assert request.prompt == prompt
     assert request.schema == schema
-    assert request.classifier_provider == options.classifier_provider
-    assert request.classifier_model == options.classifier_model
+    assert request.llm_provider == options.llm_provider
+    assert request.llm_model == options.llm_model
     assert request.api_key == options.api_key
     assert request.base_url == options.base_url
     assert request.project_path == options.project_path

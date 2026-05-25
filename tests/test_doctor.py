@@ -82,7 +82,7 @@ planner = "codex"
     assert not any(item.severity == "error" for item in results if item.name.startswith("api_key_"))
 
 
-def test_check_api_keys_classifier_enabled_requires_its_provider_bucket(_isolate_sources, monkeypatch):
+def test_check_api_keys_ignores_legacy_classifier_section(_isolate_sources, monkeypatch):
     _project(
         _isolate_sources,
         monkeypatch,
@@ -99,38 +99,6 @@ claude = "claude"
 planner = "codex"
 
 [classifier]
-enabled = true
-provider = "openai-gpt4o"
-""".strip(),
-    )
-
-    results = doctor_mod._check_api_keys()
-    openai = _bucket(results, "api_key_openai_api_key")
-
-    assert openai.ok is False
-    assert openai.severity == "error"
-    assert "当前配置必需" in openai.detail
-    assert "openai-gpt4o" in openai.detail
-
-
-def test_check_api_keys_disabled_classifier_does_not_require_provider_bucket(_isolate_sources, monkeypatch):
-    _project(
-        _isolate_sources,
-        monkeypatch,
-        """
-[project]
-name = "demo"
-base_branch = "dev"
-
-[agents.commands]
-codex = "codex"
-claude = "claude"
-
-[automation]
-planner = "codex"
-
-[classifier]
-enabled = false
 provider = "openai-gpt4o"
 """.strip(),
     )
@@ -627,4 +595,3 @@ planner = "codex"
     assert payload["data"]["event_delivery"]["delivered"] == 0
     assert payload["data"]["event_delivery"]["results"][0]["status"] == "disabled"
     assert not (project / ".codepilot" / "events" / "events.jsonl").exists()
-

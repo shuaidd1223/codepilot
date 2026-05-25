@@ -22,7 +22,6 @@ from tests.ai_gateway_testkit import (
     FakeCLIProvider,
     StreamingSchemaSubprocess,
     STRUCTURED_SCHEMA,
-    gateway_state,
 )
 
 
@@ -360,19 +359,19 @@ def test_execute_text_cli_candidate_decodes_non_utf8_stderr(monkeypatch):
         (
             "openai",
             {"needs_key": True, "api_key": "sk-test"},
-            {"classifier_provider": "openai", "api_key": "sk-test", "planner": "claude"},
+            {"llm_provider": "openai", "api_key": "sk-test", "planner": "claude"},
             {"source": "api:openai", "api_calls": 1, "cli_calls": 0, "cli_name": ""},
         ),
         (
             "openai",
             {"needs_key": True, "api_key": ""},
-            {"classifier_provider": "openai", "planner": "claude"},
+            {"llm_provider": "openai", "planner": "claude"},
             {"source": "cli:claude", "api_calls": 0, "cli_calls": 1, "cli_name": "claude"},
         ),
         (
             "localcustom",
             {"needs_key": False, "raises": True},
-            {"classifier_provider": "localcustom", "planner": "codex"},
+            {"llm_provider": "localcustom", "planner": "codex"},
             {"source": "cli:codex", "api_calls": 1, "cli_calls": 1, "cli_name": "codex"},
         ),
     ],
@@ -425,7 +424,7 @@ def test_call_structured_marks_unavailable_api_before_cli_fallback(gateway_state
         GatewayRequest(
             prompt="hi",
             schema=STRUCTURED_SCHEMA,
-            classifier_provider="localcustom",
+            llm_provider="localcustom",
             planner="codex",
             project_path="D:/project",
         )
@@ -456,7 +455,7 @@ def test_call_structured_falls_back_to_cli_when_api_returns_non_json(gateway_sta
         GatewayRequest(
             prompt="hi",
             schema=STRUCTURED_SCHEMA,
-            classifier_provider="openai",
+            llm_provider="openai",
             planner="claude",
             project_path="D:/project",
             config_ref="D:/config/AGENTS.toml",
@@ -494,7 +493,7 @@ def test_call_text_prefers_api_when_key_available(gateway_state):
     resp = ai_gateway.call_text(
         GatewayRequest(
             prompt="hi",
-            classifier_provider="openai",
+            llm_provider="openai",
             api_key="sk-test",
             planner="claude",
         )
@@ -541,7 +540,7 @@ def test_call_text_marks_api_failure_then_runs_project_codex_cli(gateway_state, 
     resp = ai_gateway.call_text(
         GatewayRequest(
             prompt="hi",
-            classifier_provider="localcustom",
+            llm_provider="localcustom",
             planner="codex",
             project_path="D:/project",
             config_ref="D:/config/AGENTS.toml",

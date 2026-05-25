@@ -18,8 +18,8 @@ def build_request(
     return GatewayRequest(
         prompt=prompt,
         schema=schema,
-        classifier_provider=opts.classifier_provider,
-        classifier_model=opts.classifier_model,
+        llm_provider=opts.llm_provider,
+        llm_model=opts.llm_model,
         api_key=opts.api_key,
         base_url=opts.base_url,
         project_path=opts.project_path,

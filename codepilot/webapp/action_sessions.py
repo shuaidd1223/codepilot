@@ -2,56 +2,28 @@
 
 from __future__ import annotations
 
-import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from codepilot.storage import database as db
-from codepilot.ai_support.interaction_controller import (
-    build_workflow_session_record,
-    resolve_turn_intent,
-)
-from codepilot.webapp.action_requirements import (
-    _answer_project_question,
-    _submit_requirement_from_message,
-)
 from codepilot.webapp.action_session_history import (
-    _augment_text_with_session_context,
     _session_message_payload,
 )
 
 
 def _normalize_text(text: str) -> str:
-    return " ".join(str(text or "").split())
+    return str(text or "").strip()
+
+
+def _session_title_from_text(text: str) -> str:
+    normalized = " ".join(str(text or "").split())
+    return normalized[:40] + ("…" if len(normalized) > 40 else "")
 
 
 _SESSION_RUNS_LOCK = threading.Lock()
 _SESSION_RUNS: dict[tuple[int, int], "_ActiveSessionRun"] = {}
-
-
-def _actions():
-    return sys.modules["codepilot.webapp.actions"]
-
-
-@dataclass(frozen=True)
-class _SessionDispatchContext:
-    session_id: int
-    project: str
-    project_info: dict
-    planner: str
-    text: str
-    session_context: str
-    session_history: list[dict]
-    category: str
-    gateway_options: object
-    forced_intent: Optional[str]
-
-
-@dataclass(frozen=True)
-class _SessionDispatchDecision:
-    intent: str
 
 
 @dataclass
@@ -61,125 +33,6 @@ class _ActiveSessionRun:
     project: str
     stop_event: threading.Event
     thread: threading.Thread
-
-
-def _session_payload(
-    intent: str,
-    message: str,
-    *,
-    task_ids: Optional[list[int]] = None,
-    questions: Optional[list[dict]] = None,
-    refined_title: str = "",
-    workflow_session: Optional[dict] = None,
-) -> dict:
-    payload: dict = {
-        "ok": True,
-        "intent": intent,
-        "message": message,
-        "task_ids": task_ids or [],
-    }
-    if questions is not None:
-        payload["questions"] = questions
-    if refined_title:
-        payload["refined_title"] = refined_title
-    if workflow_session is not None:
-        payload["workflow_session"] = dict(workflow_session)
-    return payload
-
-
-def _dispatch_session_command(ctx: _SessionDispatchContext) -> dict:
-    reply = _actions().command_intent_guidance()
-    db.create_session_message(ctx.session_id, "assistant", reply, intent="command")
-    return _session_payload(
-        "command", reply,
-        workflow_session=build_workflow_session_record(
-            phase="command", intent="command", next_action="guidance",
-        ),
-    )
-
-
-def _dispatch_session_question(ctx: _SessionDispatchContext) -> dict:
-    reply = _answer_project_question(
-        ctx.project_info,
-        ctx.text,
-        gateway_options=ctx.gateway_options,
-        history=ctx.session_history,
-    )
-    db.create_session_message(ctx.session_id, "assistant", reply, intent="question")
-    return _session_payload(
-        "question", reply,
-        workflow_session=build_workflow_session_record(
-            phase="question", intent="question", next_action="answer",
-        ),
-    )
-
-
-def _dispatch_session_requirement(ctx: _SessionDispatchContext, *, intent: str) -> dict:
-    refined = ctx.text
-    planning_text = _augment_text_with_session_context(refined, ctx.session_context)
-    max_tasks = 1 if intent == "task" else 5
-    _, reply, task_ids = _submit_requirement_from_message(
-        ctx.project,
-        planning_text,
-        planner=ctx.planner,
-        max_tasks=max_tasks,
-    )
-    db.create_session_message(ctx.session_id, "assistant", reply, intent=intent, task_ids=task_ids)
-    return _session_payload(
-        intent, reply, refined_title=refined, task_ids=task_ids,
-        workflow_session=build_workflow_session_record(
-            phase="plan", intent=intent, next_action="execute",
-        ),
-    )
-
-
-def _resolve_session_dispatch_decision(
-    ctx: _SessionDispatchContext,
-    existing_messages: list[dict],
-) -> _SessionDispatchDecision:
-    actions = _actions()
-    intent = resolve_turn_intent(
-        ctx.text,
-        category=ctx.category,
-        forced_intent=ctx.forced_intent,
-        classify_fn=actions.classify_entry_intent,
-        classify_kwargs={
-            "project_info": ctx.project_info,
-            "category": ctx.category,
-            "gateway_options": ctx.gateway_options,
-        },
-        fallback_intent="question",
-    )
-    return _SessionDispatchDecision(intent=intent)
-
-
-def _session_requirement_confirmation_payload(intent: str) -> dict:
-    label = "任务" if intent == "task" else "需求"
-    prefix = "任务" if intent == "task" else "需求"
-    symbol = "!" if intent == "task" else "#"
-    return _session_payload(
-        "confirm",
-        f"这条消息更像要创建{label}，但当前不会直接执行。请明确发送 `{prefix} <内容>` 或 `{symbol} <内容>` 再继续。",
-        workflow_session=build_workflow_session_record(
-            phase="intake", intent=intent, next_action="confirm",
-        ),
-    )
-
-
-def _dispatch_session_message(ctx: _SessionDispatchContext, existing_messages: list[dict]) -> dict:
-    decision = _resolve_session_dispatch_decision(ctx, existing_messages)
-    if ctx.category == "auto" and not ctx.forced_intent and decision.intent in {"requirement", "task"}:
-        db.create_session_message(ctx.session_id, "user", ctx.text)
-        reply = _session_requirement_confirmation_payload(decision.intent)
-        db.create_session_message(ctx.session_id, "assistant", reply["message"], intent="confirm")
-        return reply
-
-    db.create_session_message(ctx.session_id, "user", ctx.text)
-    if decision.intent == "command":
-        return _dispatch_session_command(ctx)
-    if decision.intent == "question":
-        return _dispatch_session_question(ctx)
-    return _dispatch_session_requirement(ctx, intent=decision.intent)
 
 
 def _emit_session_run_event(
@@ -476,7 +329,6 @@ def send_session_message_action(
     session_id: int,
     text: str,
     *,
-    category: str = "auto",
     run_async: bool = False,
     runtime_config: Optional[dict] = None,
 ) -> dict:
@@ -494,8 +346,7 @@ def send_session_message_action(
         raise RuntimeError("输入不能为空。")
     existing_messages = db.list_session_messages(session_id)
     if not existing_messages:
-        short_title = text[:40] + ("…" if len(text) > 40 else "")
-        db.update_session(session_id, title=short_title)
+        db.update_session(session_id, title=_session_title_from_text(text))
     user_message = db.create_session_message(
         session_id, "user", text,
         metadata={"workflow_phase": "intake"},

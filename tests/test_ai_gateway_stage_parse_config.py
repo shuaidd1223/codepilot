@@ -11,7 +11,6 @@ from tests.ai_gateway_testkit import (
     FakeAPIProvider,
     FakeCLIProvider,
     STRUCTURED_SCHEMA,
-    gateway_state,
 )
 
 
@@ -31,8 +30,8 @@ def test_resolve_api_call_applies_overrides_and_prefers_config_ref(monkeypatch):
     resolved = resolve_api_call(
         GatewayRequest(
             prompt="hi",
-            classifier_provider="openai",
-            classifier_model="custom-model",
+            llm_provider="openai",
+            llm_model="custom-model",
             api_key="sk-custom",
             base_url="https://models.example.invalid/v1",
             project_path="D:/project",
@@ -69,7 +68,7 @@ def test_resolve_api_call_returns_none_when_required_key_missing(monkeypatch):
     resolved = resolve_api_call(
         GatewayRequest(
             prompt="hi",
-            classifier_provider="openai",
+            llm_provider="openai",
         )
     )
 
@@ -131,8 +130,8 @@ def test_call_structured_applies_api_overrides(gateway_state):
         GatewayRequest(
             prompt="hi",
             schema=STRUCTURED_SCHEMA,
-            classifier_provider="openai",
-            classifier_model="custom-model",
+            llm_provider="openai",
+            llm_model="custom-model",
             api_key="sk-custom",
             base_url="https://models.example.invalid/v1",
             planner="claude",
@@ -165,7 +164,7 @@ def test_call_structured_uses_provider_model_from_project_config(gateway_state, 
         GatewayRequest(
             prompt="hi",
             schema=STRUCTURED_SCHEMA,
-            classifier_provider="openai",
+            llm_provider="openai",
             project_path=str(tmp_path),
             planner="claude",
         )

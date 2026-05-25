@@ -7,7 +7,6 @@ read from it instead of maintaining parallel if/else ladders.
 
 from __future__ import annotations
 
-import pytest
 
 from codepilot.ai_support.cli_families import (
     CLI_FAMILIES,

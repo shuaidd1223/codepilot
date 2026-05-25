@@ -27,7 +27,9 @@ from codepilot.storage.project_store import (
 )
 from codepilot.storage.schema_store import (  # noqa: F401 (re-export SCHEMA_VERSION)
     SCHEMA_VERSION,
+    _MIGRATIONS,
     _ensure_service_states_schema,
+    _has_column,
     initialize_schema as _initialize_schema,
     load_schema_status as _load_schema_status,
 )

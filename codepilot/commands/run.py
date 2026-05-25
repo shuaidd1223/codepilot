@@ -26,10 +26,15 @@ from codepilot.core.output import echo, safe
 from codepilot.core.paths import project_storage_root
 from codepilot.core.runtime import (  # noqa: F401 (re-export)
     clear_task_runtime,
+    get_stop_request,
     list_live_tasks,
     reap_stalled_tasks,
+    stop_process_tree,
     stop_worktree_leftovers,
+    update_task_runtime,
 )
+from codepilot.ai_support.providers import resolve_cli_provider  # noqa: F401 (re-export)
+from codepilot.ai_support.service import check_provider_availability  # noqa: F401 (re-export)
 from codepilot.feishu_bot import notify_feishu_task_event  # noqa: F401 (re-export)
 from codepilot.webapp.webhook import notify_task_event, notify_task_status  # noqa: F401 (re-export)
 

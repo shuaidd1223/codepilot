@@ -52,10 +52,6 @@ def test_load_project_config_merges_global_defaults_with_local_overrides(tmp_pat
 planner = "claude"
 task_agent = "codex"
 
-[classifier]
-provider = "openai-gpt4o"
-timeout = 60
-
 [providers.openai-gpt4o]
 model = "gpt-5.4"
 base_url = "https://global.example/v1"
@@ -67,9 +63,6 @@ base_url = "https://global.example/v1"
 [automation]
 task_agent = "dual"
 
-[classifier]
-timeout = 15
-
 [providers.openai-gpt4o]
 model = "gpt-4o-mini"
 """.strip(),
@@ -79,8 +72,7 @@ model = "gpt-4o-mini"
     assert cfg is not None
     assert cfg.automation.planner == "claude"
     assert cfg.automation.task_agent == "dual"
-    assert cfg.classifier.provider == "openai-gpt4o"
-    assert cfg.classifier.timeout == 15
+    assert not hasattr(cfg, "classifier")
     assert cfg.providers["openai-gpt4o"].model == "gpt-4o-mini"
     assert cfg.providers["openai-gpt4o"].base_url == "https://global.example/v1"
 
@@ -189,4 +181,3 @@ def test_config_sync_global_writes_tool_root_config(tmp_path, monkeypatch):
     assert "[project]" in content
     assert "[automation]" in content
     assert "[providers]" in content
-

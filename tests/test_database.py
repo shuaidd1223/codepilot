@@ -276,8 +276,8 @@ class TestTaskLogs:
         db.create_task_log(tid, agent="test", phase="run", output="step 2")
         logs = db.list_task_logs(tid)
         assert len(logs) == 2
-        assert any("step 1" in l["output"] for l in logs)
-        assert any("step 2" in l["output"] for l in logs)
+        assert any("step 1" in entry["output"] for entry in logs)
+        assert any("step 2" in entry["output"] for entry in logs)
 
     def test_list_task_logs_returns_empty_for_missing_task(self, tmp_db: Path):
         assert db.list_task_logs(99999) == []
@@ -289,7 +289,7 @@ class TestTaskLogs:
         db.create_task_log(tid, agent="test", phase="error", output="oops")
         logs = db.list_task_logs(tid)
         assert len(logs) == 2
-        assert any("hello" in l["output"] for l in logs)
+        assert any("hello" in entry["output"] for entry in logs)
 
 
 # ── 服务状态 ────────────────────────────────────────────────────────────
@@ -349,6 +349,5 @@ class TestQueryCache:
         db.register_project("no-cache", str(tmp_db.parent))
         result = db._cache_get(("get_project", "no-cache"))
         assert result is db._CACHE_MISS
-
 
 

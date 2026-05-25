@@ -39,7 +39,7 @@ def _register_demo_project(tmp_path, monkeypatch):
 def test_workflow_state_create_read_update_and_directory_convention(tmp_path):
     state = start_workflow(
         tmp_path,
-        mode="clarify",
+        mode="plan",
         session_id="session-1",
         current_phase="collecting",
     )
@@ -51,7 +51,7 @@ def test_workflow_state_create_read_update_and_directory_convention(tmp_path):
     assert dirs["specs"].is_dir()
     assert dirs["plans"].is_dir()
 
-    assert state["mode"] == "clarify"
+    assert state["mode"] == "plan"
     assert state["active"] is True
     assert state["current_phase"] == "collecting"
     assert state["session_id"] == "session-1"
@@ -60,12 +60,12 @@ def test_workflow_state_create_read_update_and_directory_convention(tmp_path):
     assert state["artifact_paths"]["plan"] == str(tmp_path / ".codepilot" / "plans" / "session-1.md")
     assert state["completed_at"] is None
 
-    by_mode = read_workflow_state(tmp_path, mode="clarify")
+    by_mode = read_workflow_state(tmp_path, mode="plan")
     active = read_workflow_state(tmp_path)
     assert by_mode == state
     assert active == state
 
-    updated = update_workflow_state(tmp_path, "clarify", current_phase="questions_ready")
+    updated = update_workflow_state(tmp_path, "plan", current_phase="questions_ready")
 
     assert updated["started_at"] == state["started_at"]
     assert updated["updated_at"] >= state["updated_at"]
@@ -94,10 +94,10 @@ def test_workflow_state_corrupt_json_is_tolerated(tmp_path):
     state_dir = tmp_path / ".codepilot" / "state"
     state_dir.mkdir(parents=True)
     (state_dir / "active-workflow.json").write_text("{not-json", encoding="utf-8")
-    (state_dir / "clarify-state.json").write_text("{not-json", encoding="utf-8")
+    (state_dir / "plan-state.json").write_text("{not-json", encoding="utf-8")
 
     assert read_workflow_state(tmp_path) is None
-    assert read_workflow_state(tmp_path, mode="clarify") is None
+    assert read_workflow_state(tmp_path, mode="plan") is None
 
 
 def test_workflow_status_cli_returns_active_state_json(tmp_path, monkeypatch):
@@ -105,7 +105,7 @@ def test_workflow_status_cli_returns_active_state_json(tmp_path, monkeypatch):
     project_path = tmp_path / "project"
     project_path.mkdir()
     db.register_project("demo", str(project_path))
-    start_workflow(project_path, mode="clarify", session_id="session-cli", current_phase="drafting")
+    start_workflow(project_path, mode="plan", session_id="session-cli", current_phase="drafting")
 
     result = CliRunner().invoke(main, ["workflow", "status", "-p", "demo", "--json"])
 
@@ -114,7 +114,7 @@ def test_workflow_status_cli_returns_active_state_json(tmp_path, monkeypatch):
     assert payload["ok"] is True
     assert payload["command"] == "workflow status"
     assert payload["data"]["project"] == "demo"
-    assert payload["data"]["state"]["mode"] == "clarify"
+    assert payload["data"]["state"]["mode"] == "plan"
     assert payload["data"]["state"]["current_phase"] == "drafting"
     assert payload["data"]["auto_policy"] == {
         "allow_create_inspect_tasks": False,
@@ -223,16 +223,16 @@ def test_agent_session_create_and_read(tmp_path):
 def test_agent_session_advance_phase_appends_history(tmp_path):
     create_agent_session(tmp_path, goal="修复登录 bug")
 
-    advanced = advance_agent_phase(tmp_path, "clarify")
-    assert advanced["current_phase"] == "clarify"
+    advanced = advance_agent_phase(tmp_path, "plan")
+    assert advanced["current_phase"] == "plan"
     assert len(advanced["phase_history"]) == 2
     assert advanced["phase_history"][0]["phase"] == "intake"
     assert advanced["phase_history"][0]["exited_at"] is not None
-    assert advanced["phase_history"][1]["phase"] == "clarify"
+    assert advanced["phase_history"][1]["phase"] == "plan"
     assert advanced["phase_history"][1]["exited_at"] is None
 
     session = get_agent_session(tmp_path)
-    assert session["current_phase"] == "clarify"
+    assert session["current_phase"] == "plan"
     assert len(session["phase_history"]) == 2
 
 
@@ -295,7 +295,7 @@ def test_workflow_status_cli_json_contains_agent_session(tmp_path, monkeypatch):
     db.register_project("demo", str(project_path))
 
     create_agent_session(project_path, goal="测试 CLI JSON")
-    start_workflow(project_path, mode="clarify", session_id="s-cli", current_phase="drafting")
+    start_workflow(project_path, mode="plan", session_id="s-cli", current_phase="drafting")
 
     result = CliRunner().invoke(main, ["workflow", "status", "-p", "demo", "--json"])
     assert result.exit_code == 0, result.output
@@ -313,7 +313,7 @@ def test_workflow_status_cli_json_contains_agent_session(tmp_path, monkeypatch):
 
     mode_state = payload["data"]["state"]
     assert mode_state is not None
-    assert mode_state["mode"] == "clarify"
+    assert mode_state["mode"] == "plan"
     assert mode_state["current_phase"] == "drafting"
 
 

@@ -1,8 +1,4 @@
-"""AI orchestration: planner (schema prompts), task breakdown, agent selection.
-
-Providers, prompts and classifier live in companion modules and are re-exported
-here so existing `from codepilot.ai_support.service import X` imports keep working.
-"""
+"""AI orchestration: planner prompts, task breakdown, and agent selection."""
 
 from __future__ import annotations
 
@@ -36,11 +32,6 @@ from codepilot.ai_support.providers import (  # noqa: F401 (re-export)
 from codepilot.ai_support.prompts import (  # noqa: F401 (re-export)
     AgentConfig,
     TASK_PROMPT_TEMPLATE,
-)
-from codepilot.ai_support.classifier import (  # noqa: F401 (re-export)
-    _heuristic_intent,
-    answer_question_via_api,
-    classify_intent,
 )
 from codepilot.ai_support.result_parse import (
     extract_error_hint as _extract_error_hint_core,

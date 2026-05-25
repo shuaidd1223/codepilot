@@ -17,7 +17,7 @@ from codepilot.commands.run_failure_triage_apply import (
 )
 from codepilot.commands.run_failure_triage_decisions import (
     _TriageEvidence,
-    _classify_triage_action,
+    _decide_triage_action,
     _collect_review_failure_evidence as _collect_review_failure_evidence_impl,
     _collect_triage_evidence as _collect_triage_evidence_impl,
     _map_review_failure_decision,
@@ -140,16 +140,16 @@ def triage_deterministic_failure(
     if not evidence:
         return None
 
-    classified = _classify_triage_action(
+    triage_decision = _decide_triage_action(
         evidence,
         schema=_DETERMINISTIC_FAILURE_TRIAGE_SCHEMA,
         call_structured_fn=call_structured_fn,
         gateway_request_cls=gateway_request_cls,
     )
-    if not classified:
+    if not triage_decision:
         return None
 
-    payload, source = classified
+    payload, source = triage_decision
     return _map_triage_decision(
         task,
         error_message=error_message,
@@ -188,16 +188,16 @@ def triage_review_failure(
     if not evidence:
         return None
 
-    classified = _classify_triage_action(
+    triage_decision = _decide_triage_action(
         evidence,
         schema=_REVIEW_FAILURE_TRIAGE_SCHEMA,
         call_structured_fn=call_structured_fn,
         gateway_request_cls=gateway_request_cls,
     )
-    if not classified:
+    if not triage_decision:
         return None
 
-    payload, source = classified
+    payload, source = triage_decision
     return _map_review_failure_decision(
         task,
         error_message=error_message,

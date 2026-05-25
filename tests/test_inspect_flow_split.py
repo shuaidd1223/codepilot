@@ -640,7 +640,7 @@ def test_run_inspection_llm_error_includes_quality_summary(tmp_path, monkeypatch
     ]
 
 
-def test_run_inspection_skips_classifier_provider_by_default(tmp_path, monkeypatch):
+def test_run_inspection_skips_llm_provider_by_default(tmp_path, monkeypatch):
     project = tmp_path / "repo"
     project.mkdir()
     captured: dict[str, object] = {}
@@ -676,9 +676,9 @@ def test_run_inspection_skips_classifier_provider_by_default(tmp_path, monkeypat
         )(),
     )
 
-    def _capture_llm(_prompt, classifier_provider, classifier_model, *_args, **_kwargs):
-        captured["classifier_provider"] = classifier_provider
-        captured["classifier_model"] = classifier_model
+    def _capture_llm(_prompt, llm_provider, llm_model, *_args, **_kwargs):
+        captured["llm_provider"] = llm_provider
+        captured["llm_model"] = llm_model
         return {"candidates": []}
 
     monkeypatch.setattr(inspect_cmd, "_call_llm", _capture_llm)
@@ -686,7 +686,7 @@ def test_run_inspection_skips_classifier_provider_by_default(tmp_path, monkeypat
     result = inspect_cmd.run_inspection({"name": "demo", "path": str(project)}, dry_run=True)
 
     assert result["candidates_total"] == 0
-    assert captured == {"classifier_provider": "", "classifier_model": ""}
+    assert captured == {"llm_provider": "", "llm_model": ""}
 
 
 @pytest.mark.parametrize("dry_run", [True, False])

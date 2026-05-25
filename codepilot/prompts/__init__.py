@@ -1,10 +1,10 @@
 """File-backed prompt templates.
 
 Historically every prompt was hard-coded inside whichever module used it
-(``ai_prompts.py``, ``ai_classifier.py``, ``ai_clarify.py``,
-``commands/run.py``). That made it impossible to tune a prompt without
-editing and redeploying Python, and it meant the same instruction block
-could drift across three modules without anyone noticing.
+(``ai_prompts.py``, provider adapters, ``commands/run.py``). That made it
+impossible to tune a prompt without editing and redeploying Python, and it
+meant the same instruction block could drift across modules without anyone
+noticing.
 
 This package stores each prompt as a plain Markdown file so they can be
 reviewed, diffed, and even A/B'd without touching code. The loader uses

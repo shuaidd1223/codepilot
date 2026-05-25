@@ -12,9 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from click.testing import CliRunner
 
-from codepilot.cli import main as cli_main
 from codepilot.core.config import ConfigError
 
 
@@ -224,7 +222,6 @@ planner = "codex"
     from codepilot.commands.auto_project_resolution import resolve_project_for_prompt
 
     # Simulate answering 'n' to decline the auto-fix
-    original_confirm = click.confirm
     monkeypatch.setattr("click.confirm", lambda *a, **kw: False)
 
     with pytest.raises(click.ClickException) as excinfo:

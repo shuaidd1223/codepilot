@@ -181,8 +181,8 @@ def test_inspect_planner_dispatches_opencode(monkeypatch):
     # Directly drive _call_llm with planner="opencode" and no API classifier.
     result = inspect_mod._call_llm(
         prompt="demo",
-        classifier_provider="",
-        classifier_model="",
+        llm_provider="",
+        llm_model="",
         api_key=None,
         base_url=None,
         project_path="D:/demo",
@@ -208,8 +208,8 @@ def test_inspect_planner_still_defaults_to_claude(monkeypatch):
 
     inspect_mod._call_llm(
         prompt="demo",
-        classifier_provider="",
-        classifier_model="",
+        llm_provider="",
+        llm_model="",
         api_key=None,
         base_url=None,
         project_path="D:/demo",
@@ -279,29 +279,6 @@ def test_auto_workflow_accepts_opencode_for_builtin_executor():
     src = _inspect.getsource(auto_workflow._resolve_task_agent)
     assert '"opencode"' in src
     assert "请改用 codex、claude、claude-node、opencode 或 dual。" in src
-
-
-def test_local_question_answer_agent_iterates_registry(monkeypatch):
-    """_has_local_question_answer_agent must read from cli_families registry,
-    not a hardcoded loop, so opencode counts as a local fallback."""
-    from codepilot.ai_support import question_runtime
-
-    class _FakeProvider:
-        def __init__(self, exe):
-            self._exe = exe
-        def find_executable(self):
-            return self._exe
-
-    fake_providers = {
-        "claude": _FakeProvider(""),
-        "codex": _FakeProvider(""),
-        "opencode": _FakeProvider("/usr/local/bin/opencode"),
-    }
-    monkeypatch.setattr(question_runtime, "CLI_PROVIDERS", fake_providers)
-    assert question_runtime._has_local_question_answer_agent() is True
-
-    fake_providers["opencode"] = _FakeProvider("")
-    assert question_runtime._has_local_question_answer_agent() is False
 
 
 def test_builtin_fallback_candidates_include_opencode():

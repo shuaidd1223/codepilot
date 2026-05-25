@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timedelta
 
-import pytest
 
 from codepilot.storage import database as db
 from codepilot.core import progress_bus
@@ -115,17 +113,17 @@ def test_progress_bus_llm_context_scopes_and_restores_metadata():
 
     with progress_bus.subscription(lambda _event: None):
         assert progress_bus.has_subscribers() is True
-        with progress_bus.llm_context(task_id=9, stage="planner", label="意图分类"):
+        with progress_bus.llm_context(task_id=9, stage="planner", label="计划准备"):
             assert progress_bus.current_llm_context() == {
                 "task_id": 9,
                 "stage": "planner",
-                "label": "意图分类",
+                "label": "计划准备",
             }
-            with progress_bus.llm_context(stage="clarify"):
+            with progress_bus.llm_context(stage="analysis"):
                 assert progress_bus.current_llm_context() == {
                     "task_id": 9,
-                    "stage": "clarify",
-                    "label": "意图分类",
+                    "stage": "analysis",
+                    "label": "计划准备",
                 }
 
     assert progress_bus.has_subscribers() is False
@@ -434,4 +432,3 @@ def test_windows_desktop_notification_falls_back_to_msg(monkeypatch):
     assert calls[0][0] == "powershell.exe"
     assert "ToastGeneric" in calls[0][-1]
     assert calls[1][0] == "msg.exe"
-

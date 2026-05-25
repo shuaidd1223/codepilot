@@ -23,8 +23,8 @@ This guide is for other AI agents. For the latest machine-readable command list,
 1. Prefer non-interactive commands.
 2. Prefer `--json` or `{_cmd(command, "ai manifest")}` when structured output is needed.
 3. Submit high-level requirements with `{command} "requirement text"` or `{_cmd(command, 'go "requirement text"')}`.
-4. Treat questions about project status, task counts, completion, failed tasks, running tasks, or service status as Q&A.
-5. `chat`, Web UI sessions, and Feishu free text enter OpenCode + CodePilot MCP and can receive questions, requirements, or operation intent directly.
+4. For project status, task counts, completion, failed tasks, running tasks, or service status, let the agent choose CodePilot status/task/trace tools.
+5. `chat`, Web UI sessions, and Feishu free text enter the OpenCode agent with CodePilot MCP tools; CodePilot does not pre-route free text.
 6. Use `{_cmd(command, "task ...")}` for task operations.
 7. Use `{_cmd(command, "binary ...")}` for releases.
 8. External AI systems must read `{_cmd(command, "ai template --format json")}` before submitting tasks directly.
@@ -103,8 +103,8 @@ Required rules:
 1. 优先使用非交互命令。
 2. 需要结构化结果时优先使用 `--json` 或 `{_cmd(command, "ai manifest")}`。
 3. 提交高层需求时直接调用 `{command} "需求文本"` 或 `{_cmd(command, 'go "需求文本"')}`。
-4. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态这类问题应作为问答处理。
-5. `chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP，可直接输入问题、需求或操作意图。
+4. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态由智能体选择 CodePilot status/task/trace 工具读取。
+5. `chat`、Web UI 会话和飞书自由文本统一进入 OpenCode 智能体并带上 CodePilot MCP 工具；CodePilot 不预先分流自由文本。
 6. 任务运维统一使用 `{_cmd(command, "task ...")}`。
 7. 发布统一使用 `{_cmd(command, "binary ...")}`。
 8. 外部 AI 直接投递任务前必须读取 `{_cmd(command, "ai template --format json")}`。
@@ -285,8 +285,8 @@ retry 123
 4. 看到任务处于 `in_progress` 时，先查 `status -v` 和 `task logs`，不要盲目重复触发 `run`。
 5. 任务失败后，如需修复闭环优先使用 `{_cmd(command, "build-fix -p <项目名> --task-id <task_id> --json")}`；只需人工重新排队时使用 `{_cmd(command, "task retry <task_id>")}`。
 6. 准备发布包时，优先使用 `{_cmd(command, "binary prepare --version <版本号>")}`。
-7. `chat`、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP，可直接输入问题、需求或操作意图。
-8. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态这类问题应作为问答处理；CodePilot 会优先读取本地运行数据。
+7. `chat`、Web UI 会话和飞书自由文本统一进入 OpenCode 智能体并带上 CodePilot MCP 工具。
+8. 项目状态、任务数量、完成度、失败任务、运行中任务、服务状态由智能体选择 CodePilot 工具读取本地数据。
 
 ## 推荐命令
 
@@ -557,8 +557,8 @@ def ai_prompt_text(*, command_name: str = "codepilot", language: str = "en") -> 
         return (
             "You are calling CodePilot, a local engineering workflow CLI. Prefer non-interactive commands. "
             f"Submit requirements directly with `{command} \"requirement text\"`. "
-            "chat, Web UI sessions, and Feishu free text enter OpenCode + CodePilot MCP and can receive questions, requirements, or operation intent directly. "
-            "Treat project status, task counts, completion, failed tasks, running tasks, and service status as Q&A. "
+            "chat, Web UI sessions, and Feishu free text enter the OpenCode agent with CodePilot MCP tools; CodePilot does not pre-route free text. "
+            "For project status, task counts, completion, failed tasks, running tasks, and service status, choose CodePilot status/task/trace tools. "
             f"For failed-task repair loops, prefer `{_cmd(command, 'build-fix -p <project-name> --task-id <task_id> --json')}`. "
             "If you must submit tasks directly without the planner, provide complete task-template content; "
             f"read `{_cmd(command, 'ai template --format json')}` first. "
@@ -574,8 +574,8 @@ def ai_prompt_text(*, command_name: str = "codepilot", language: str = "en") -> 
     return (
         "你正在调用 CodePilot 这个本地 CLI。优先使用非交互命令。"
         f"提交需求时直接用 `{command} \"需求文本\"`。"
-        "chat、Web UI 会话和飞书自由文本统一进入 OpenCode + CodePilot MCP，可以直接表达问题、需求或操作意图；"
-        "项目状态、任务数量、完成度、失败任务、运行中任务和服务状态问题应作为问答处理。"
+        "chat、Web UI 会话和飞书自由文本统一进入 OpenCode 智能体并带上 CodePilot MCP 工具；CodePilot 不预先分流自由文本。"
+        "项目状态、任务数量、完成度、失败任务、运行中任务和服务状态由智能体选择 CodePilot 工具读取。"
         f"失败任务需要修复闭环时优先用 `{_cmd(command, 'build-fix -p <项目名> --task-id <task_id> --json')}`。"
         "如果你必须自己写任务（不走规划器），必须按 task-template 提供完整 content，"
         f"先用 `{_cmd(command, 'ai template --format json')}` 拿 schema 再投递；"

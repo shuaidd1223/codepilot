@@ -35,10 +35,12 @@ def _init_test_db(tmp_path, monkeypatch):
 
 def _init_git_repo(project_path: Path, branch: str = "main") -> None:
     """Create a small Python project inside a fresh git repo."""
-    run = lambda *args: subprocess.run(
-        list(args), cwd=project_path, check=True,
-        capture_output=True, text=True,
-    )
+    def run(*args):
+        return subprocess.run(
+            list(args), cwd=project_path, check=True,
+            capture_output=True, text=True,
+        )
+
     run("git", "init", "-b", branch)
     run("git", "config", "user.name", "TestBot")
     run("git", "config", "user.email", "bot@test.local")
@@ -228,4 +230,3 @@ def test_self_iteration_review_fail_not_merged(tmp_path, monkeypatch):
     assert "bad change" not in readme
 
     assert stats["done"] == 0
-

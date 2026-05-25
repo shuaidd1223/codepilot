@@ -104,7 +104,7 @@ def test_facade_call_structured_prompt_builds_request_with_shared_options(monkey
 def test_facade_call_text_prompt_builds_request_with_shared_options(monkeypatch):
     captured = {}
     options = make_gateway_options(
-        classifier_model="gpt-y",
+        llm_model="gpt-y",
         api_key="sk-2",
         base_url="https://models.example.invalid/v2",
         timeout=44,

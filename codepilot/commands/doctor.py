@@ -525,7 +525,7 @@ def _check_bundled_cli_tools(
 
 def _check_api_keys() -> list[CheckResult]:
     """Check API key availability for commonly used providers."""
-    from codepilot.ai_support.service import API_PROVIDERS, normalize_agent_name
+    from codepilot.ai_support.service import API_PROVIDERS
     from codepilot.ai_support.providers import resolve_api_provider
     from codepilot.core.config import load_config
 
@@ -533,16 +533,6 @@ def _check_api_keys() -> list[CheckResult]:
     cfg = load_config()
     key_groups: dict[str, dict[str, object]] = {}
     required_provider = ""
-
-    if cfg and cfg.classifier.enabled:
-        classifier_provider = normalize_agent_name((cfg.classifier.provider or "").strip())
-        if classifier_provider in API_PROVIDERS:
-            required_candidate = resolve_api_provider(
-                classifier_provider,
-                cfg.config_file_path,
-            )
-            if required_candidate.requires_api_key():
-                required_provider = classifier_provider
 
     for key, base_provider in API_PROVIDERS.items():
         provider = resolve_api_provider(key, cfg.config_file_path if cfg else None)

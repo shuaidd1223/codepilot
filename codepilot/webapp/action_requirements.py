@@ -8,7 +8,7 @@ import sys
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from codepilot.storage import database as db
 from codepilot.commands.auto import normalize_requirement_text
@@ -16,22 +16,14 @@ from codepilot.core.workflow_state import (
     filter_consumed_workflow_next_actions,
     mark_workflow_actions_consumed,
 )
-from codepilot.ai_support.interaction_controller import (
-    build_workflow_session_record,
-    parse_intent_prefix,
-    resolve_turn_intent,
-)
 from codepilot.webapp.action_state import (
-    _GOAL_MAX_BYTES,
     _MAX_JOB_LOG_LINES,
     _append_event,
     _get_job,
     _emit_ui_state_event,
     _effective_planner,
-    _extract_job_task_ids,
     _is_job_cancel_requested,
     _next_job_id,
-    _normalize_goal_category,
     _shell,
     _update_job,
     cancel_ui_job,
@@ -50,42 +42,6 @@ def _actions():
     return module
 
 
-def _answer_project_question(project_info: dict, question: str, *, gateway_options=None, history: Optional[list[dict]] = None) -> str:
-    from codepilot.ai_support.service import answer_question_via_api
-
-    shared_gateway_options = gateway_options or _actions().resolve_shared_gateway_options(project_info)
-    try:
-        answer = answer_question_via_api(
-            provider_key=shared_gateway_options.classifier_provider,
-            question=question,
-            gateway_options=shared_gateway_options,
-            history=history,
-        )
-    except Exception as exc:
-        answer = f"回答失败：{exc}"
-    return answer or "未获得回答"
-
-
-def _submit_requirement_from_message(
-    project: str,
-    refined_title: str,
-    *,
-    planner: str,
-    max_tasks: int,
-) -> tuple[dict, str, list[int]]:
-    result = _actions().submit_requirement_action(
-        project,
-        refined_title,
-        execute=True,
-        planner=planner,
-        max_tasks=max_tasks,
-        run_async=True,
-        clarify=False,
-    )
-    reply = result.get("message") or "需求已提交"
-    return result, reply, _extract_job_task_ids(result)
-
-
 def _request_task_service_start(project: str) -> tuple[dict | None, str]:
     try:
         from codepilot.commands.daemon import request_daemon_service_start
@@ -93,6 +49,13 @@ def _request_task_service_start(project: str) -> tuple[dict | None, str]:
         return request_daemon_service_start(project), ""
     except Exception as exc:
         return None, str(exc)
+
+
+def _task_service_start_failure_message(task_id: int, project_name: str, action_label: str, service_error: str) -> str:
+    return (
+        f"任务 #{task_id} 已{action_label}，但任务执行服务启动失败：{service_error}。"
+        f"请手动运行 `codepilot daemon -p {project_name}`。"
+    )
 
 
 def _append_requirement_job_log(job_id: int, line: str, *, project: str | None = None) -> None:
@@ -142,17 +105,6 @@ def _start_requirement_job_process(job_id: int, project_info: dict) -> subproces
 
 
 @dataclass(frozen=True)
-class _GoalDispatchContext:
-    project: str
-    project_info: dict
-    planner: str
-    text: str
-    category: str
-    gateway_options: object
-    forced_intent: Optional[str]
-
-
-@dataclass(frozen=True)
 class _RequirementJobContext:
     job_id: int
     job: dict
@@ -185,13 +137,13 @@ def retry_task_action(task_id: int) -> dict:
     project_name = task["project"]
     service_status, service_error = _request_task_service_start(project_name)
     if service_error:
+        message = _task_service_start_failure_message(task_id, project_name, "重试", service_error)
         _append_event(
-            f"任务 #{task_id} 已重试，但任务执行服务启动失败：{service_error}",
-            level="error",
+            message,
+            level="warning",
             project=project_name,
             task_id=task_id,
         )
-        message = f"任务 #{task_id} 已重试，但任务执行服务启动失败：{service_error}"
     else:
         suffix = "已启动" if service_status and service_status.get("started") else "已在运行"
         _append_event(f"任务 #{task_id} 已重试，任务执行服务{suffix}。", project=project_name, task_id=task_id)
@@ -222,13 +174,13 @@ def promote_task_action(task_id: int) -> dict:
     project_name = task["project"]
     service_status, service_error = _request_task_service_start(project_name)
     if service_error:
+        message = _task_service_start_failure_message(task_id, project_name, "提升到 P0", service_error)
         _append_event(
-            f"任务 #{task_id} 已插队到 P0，但任务执行服务启动失败：{service_error}",
-            level="error",
+            message,
+            level="warning",
             project=project_name,
             task_id=task_id,
         )
-        message = f"任务 #{task_id} 已提升到 P0，但任务执行服务启动失败：{service_error}"
     else:
         suffix = "已启动" if service_status and service_status.get("started") else "已在运行"
         _append_event(f"任务 #{task_id} 已插队到 P0，任务执行服务{suffix}。", project=project_name, task_id=task_id)
@@ -279,7 +231,6 @@ def split_task_action(task_id: int) -> dict:
         execute=False,
         max_tasks=5,
         run_async=True,
-        clarify=False,
     )
     result["intent"] = "split"
     result["original_task_id"] = task_id
@@ -669,98 +620,7 @@ def retry_job_action(job_id: int) -> dict:
         auto_commit=bool(request.get("auto_commit", False)),
         max_retries=int(request.get("max_retries") or 3),
         run_async=True,
-        clarify=False,
     )
-
-
-def _dispatch_goal_command(ctx: _GoalDispatchContext) -> dict:
-    _append_event(f"收到命令类输入（已提示用户使用 CLI）：{ctx.text[:60]}", project=ctx.project)
-    return {
-        "ok": True,
-        "intent": "command",
-        "message": _actions().command_intent_guidance(),
-        "workflow_session": build_workflow_session_record(
-            phase="command", intent="command", next_action="guidance",
-        ),
-    }
-
-
-def _dispatch_goal_question(ctx: _GoalDispatchContext) -> dict:
-    answer = _answer_project_question(
-        ctx.project_info,
-        ctx.text,
-        gateway_options=ctx.gateway_options,
-    )
-    _append_event(f"回答问题：{ctx.text[:60]}", project=ctx.project)
-    return {
-        "ok": True,
-        "intent": "question",
-        "message": answer,
-        "workflow_session": build_workflow_session_record(
-            phase="question", intent="question", next_action="answer",
-        ),
-    }
-
-
-def _dispatch_goal_requirement(ctx: _GoalDispatchContext, *, intent: str) -> dict:
-    refined = ctx.text
-    max_tasks = 1 if intent == "task" else 5
-    result, _, _ = _submit_requirement_from_message(
-        ctx.project,
-        refined,
-        planner=ctx.planner,
-        max_tasks=max_tasks,
-    )
-    result["intent"] = intent
-    result["refined_title"] = refined
-    result["workflow_session"] = build_workflow_session_record(
-        phase="plan", intent=intent, next_action="execute",
-    )
-    return result
-
-
-def _requirement_confirmation_payload(intent: str) -> dict:
-    label = "任务" if intent == "task" else "需求"
-    prefix = "任务" if intent == "task" else "需求"
-    symbol = "!" if intent == "task" else "#"
-    return {
-        "ok": True,
-        "intent": "confirm",
-        "message": (
-            f"这条消息更像要创建{label}，但当前不会直接执行。"
-            f"如果你确认要创建，请明确发送 `{prefix} <内容>` 或 `{symbol} <内容>`。"
-        ),
-        "workflow_session": build_workflow_session_record(
-            phase="intake", intent=intent, next_action="confirm",
-        ),
-    }
-
-
-def _resolve_goal_intent(ctx: _GoalDispatchContext) -> str:
-    actions = _actions()
-    return resolve_turn_intent(
-        ctx.text,
-        category=ctx.category,
-        forced_intent=ctx.forced_intent,
-        classify_fn=actions.classify_entry_intent,
-        classify_kwargs={
-            "project_info": ctx.project_info,
-            "category": ctx.category,
-            "gateway_options": ctx.gateway_options,
-        },
-        fallback_intent="question",
-    )
-
-
-def _dispatch_goal_by_intent(ctx: _GoalDispatchContext) -> dict:
-    intent = _resolve_goal_intent(ctx)
-    if ctx.category == "auto" and not ctx.forced_intent and intent in {"requirement", "task"}:
-        return _requirement_confirmation_payload(intent)
-    if intent == "command":
-        return _dispatch_goal_command(ctx)
-    if intent == "question":
-        return _dispatch_goal_question(ctx)
-    return _dispatch_goal_requirement(ctx, intent=intent)
 
 
 def artifact_next_actions_for_type(artifact_type: str) -> list[dict]:
@@ -965,34 +825,3 @@ def execute_artifact_next_action(
     if result.get("plan_path"):
         payload["plan_path"] = result["plan_path"]
     return payload
-
-
-def submit_goal_action(
-    project: str,
-    text: str,
-    *,
-    category: str = "auto",
-) -> dict:
-    """POST /api/goal — validate payload then delegate to intent handlers."""
-    db.init_db()
-    project_info = db.get_project(project)
-    if not project_info:
-        raise RuntimeError(f"项目 '{project}' 不存在。")
-    text = normalize_requirement_text(text)
-    if not text:
-        raise RuntimeError("输入不能为空。")
-    if len(text.encode("utf-8")) > _GOAL_MAX_BYTES:
-        raise RuntimeError(f"输入超过 {_GOAL_MAX_BYTES // 1024}KB 限制。")
-    forced_intent, payload_text = parse_intent_prefix(text)
-    text = normalize_requirement_text(payload_text if forced_intent else text)
-
-    ctx = _GoalDispatchContext(
-        project=project,
-        project_info=project_info,
-        planner=_effective_planner(project_info),
-        text=text,
-        category=_normalize_goal_category(category),
-        gateway_options=_actions().resolve_shared_gateway_options(project_info),
-        forced_intent=forced_intent,
-    )
-    return _actions()._dispatch_goal_by_intent(ctx)

@@ -1,17 +1,15 @@
-"""Natural-language workflow entrypoints and interactive chat mode.
+"""Natural-language workflow entrypoints.
 
 The planning/execution pipeline lives in :mod:`codepilot.commands.auto_workflow`
-and the interactive REPL lives in :mod:`codepilot.commands.auto_chat`. This
 module is the public shell: it re-exports the implementation APIs so historical
 imports (``from codepilot.commands.auto import run_requirement_workflow``,
-``from codepilot.commands.auto import run_chat_session``, etc.) keep working,
-and it owns the click command definitions (``auto``, ``go``, ``chat``).
+etc.) keep working, and it owns the click command definitions (``auto``, ``go``).
 
-Functions from :mod:`codepilot.ai`, :mod:`codepilot.commands.status` and
+Functions from :mod:`codepilot.ai_support.service`, :mod:`codepilot.commands.status` and
 :mod:`codepilot.commands.run` are also re-exported here so tests that
 monkeypatch them via ``codepilot.commands.auto`` (e.g.
 ``monkeypatch.setattr(auto_cmd, "generate_task_breakdown", ...)``) continue to
-drive the behavior observed inside the workflow and chat helpers.
+drive the behavior observed inside the workflow helpers.
 """
 
 from __future__ import annotations
@@ -20,20 +18,7 @@ from typing import Optional
 
 import click
 
-from codepilot.ai_support.interaction_controller import (
-    resolve_turn_intent,
-)
-from codepilot.commands.auto_chat import (  # noqa: F401 (re-export)
-    _Spinner,
-    _chat_help,
-    _parse_intent_prefix,
-    _start_chat_ui,
-    run_chat_session,
-)
 from codepilot.commands.auto_workflow import (  # noqa: F401 (re-export)
-    classify_entry_intent,
-    command_intent_guidance,
-    resolve_shared_gateway_options,
     normalize_requirement_text,
     _project_config,
     _provider_context,
@@ -55,20 +40,12 @@ def _ai_module():
     return ai_module
 
 
-def answer_question_via_api(*args, **kwargs):  # noqa: F401 (re-export)
-    return _ai_module().answer_question_via_api(*args, **kwargs)
-
-
 def build_task_markdown_from_plan(*args, **kwargs):  # noqa: F401 (re-export)
     return _ai_module().build_task_markdown_from_plan(*args, **kwargs)
 
 
 def check_provider_availability(*args, **kwargs):  # noqa: F401 (re-export)
     return _ai_module().check_provider_availability(*args, **kwargs)
-
-
-def classify_intent(*args, **kwargs):  # noqa: F401 (re-export)
-    return _ai_module().classify_intent(*args, **kwargs)
 
 
 def generate_task_breakdown(*args, **kwargs):  # noqa: F401 (re-export)
@@ -242,7 +219,7 @@ def go(
     use_wiki: bool,
     json_mode: bool,
 ):
-    """接收纯文本需求，判定复杂度后自动规划或直接执行."""
+    """接收显式纯文本需求，进入工作流规划或执行."""
     json_mode = _json_mode(ctx, json_mode)
     text = " ".join(requirement).strip()
     if not text:
@@ -278,35 +255,7 @@ def go(
             max_retries=max_retries,
         )
 
-        shared_gateway_options = resolve_shared_gateway_options(project_info)
-        intent = resolve_turn_intent(
-            text,
-            category="auto",
-            classify_fn=classify_entry_intent,
-            classify_kwargs={
-                "project_info": project_info,
-                "category": "auto",
-                "gateway_options": shared_gateway_options,
-            },
-            fallback_intent="requirement",
-        )
-        if intent == "command":
-            click.echo(command_intent_guidance(include_release=True))
-            return
-        if intent == "question":
-            try:
-                answer = answer_question_via_api(
-                    provider_key=shared_gateway_options.classifier_provider,
-                    question=text,
-                    gateway_options=shared_gateway_options,
-                )
-            except Exception as exc:
-                answer = f"回答失败：{exc}"
-            click.echo(answer or "未获得回答")
-            return
-
         text = _augment_requirement_with_wiki_context(text, project_info=project_info, use_wiki=use_wiki)
-        max_tasks_override = 1 if intent == "task" else effective["max_tasks"]
         try:
             run_requirement_workflow(
                 project_info=project_info,
@@ -314,7 +263,7 @@ def go(
                 planner=effective["planner"],
                 task_agent=task_agent,
                 priority=priority,
-                max_tasks=max_tasks_override,
+                max_tasks=effective["max_tasks"],
                 execute=execute,
                 executor=effective["executor"],
                 auto_commit=effective["auto_commit"],
@@ -325,62 +274,3 @@ def go(
             raise
         except Exception as exc:
             raise click.ClickException(str(exc)) from exc
-
-
-@click.command("chat")
-@click.option("--project", help="项目名称；不指定则自动识别当前项目")
-@click.option("--planner", default=None, help="规划器；默认读取配置或使用 codex")
-@click.option("--agent", "task_agent", default=None, help="默认创建任务时使用哪个智能体，如 codex / claude / dual")
-@click.option("--execute/--no-execute", default=None, help="默认是否自动执行；默认跟随配置")
-@click.option(
-    "--executor",
-    type=click.Choice(["auto", "dispatch", "builtin"], case_sensitive=False),
-    default=None,
-    help="执行器类型；默认跟随配置",
-)
-@click.option("--auto-commit/--no-auto-commit", default=None, help="是否自动提交；默认跟随配置")
-@click.option("--max-tasks", type=int, default=0, help="最大拆分任务数；0 表示读取配置")
-@click.option("--max-retries", type=int, default=0, help="最大重试次数；0 表示读取配置")
-@click.option("--ui/--no-ui", "enable_ui", default=True, help="是否自动启动 Web UI（默认开启）")
-@click.option("--ui-port", type=int, default=8766, help="Web UI 端口")
-@click.pass_context
-def chat(
-    ctx: click.Context,
-    project: Optional[str],
-    planner: Optional[str],
-    task_agent: Optional[str],
-    execute: Optional[bool],
-    executor: Optional[str],
-    auto_commit: Optional[bool],
-    max_tasks: int,
-    max_retries: int,
-    enable_ui: bool,
-    ui_port: int,
-):
-    """启动交互式自然语言会话."""
-    root_obj = _root_options(ctx)
-    project = project or root_obj.get("direct_project")
-    planner = planner or root_obj.get("planner")
-    task_agent = task_agent or root_obj.get("agent")
-    if execute is None:
-        execute = root_obj.get("execute")
-    executor = executor or root_obj.get("executor")
-    if auto_commit is None:
-        auto_commit = root_obj.get("auto_commit")
-    if not max_tasks:
-        max_tasks = root_obj.get("max_tasks", 0)
-    if not max_retries:
-        max_retries = root_obj.get("max_retries", 0)
-
-    run_chat_session(
-        project=project,
-        planner=planner,
-        task_agent=task_agent,
-        execute=execute,
-        executor=executor,
-        auto_commit=auto_commit,
-        max_tasks=max_tasks,
-        max_retries=max_retries,
-        enable_ui=enable_ui,
-        ui_port=ui_port,
-    )

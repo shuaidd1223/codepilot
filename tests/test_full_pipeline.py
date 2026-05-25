@@ -6,11 +6,9 @@ They exercise the real DB, real git operations, and real CLI entry points.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -59,7 +57,7 @@ def _setup(tmp_path, monkeypatch):
 
 def test_requirement_planning_creates_subtasks(tmp_path, monkeypatch):
     """run_requirement_workflow should create tasks from AI breakdown."""
-    project_path = _setup(tmp_path, monkeypatch)
+    _setup(tmp_path, monkeypatch)
 
     breakdown = {
         "summary": "测试拆分",
@@ -95,7 +93,7 @@ def test_builtin_executor_commits_and_merges_to_base(tmp_path, monkeypatch):
     project_path = _setup(tmp_path, monkeypatch)
 
     # Create a task
-    task = db.create_task("demo", "add hello.txt", agent="codex", max_retries=1)
+    db.create_task("demo", "add hello.txt", agent="codex", max_retries=1)
 
     # Mock the builtin executor: simulate writing a file + staging + committing
     def fake_run_builtin(task_dict, project, task_file, auto_commit=True, **kwargs):
@@ -159,14 +157,14 @@ def test_failed_execution_keeps_feature_branch(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_cmd, "_run_builtin_executor", fake_run_builtin)
 
-    stats = run_cmd.run_backlog("demo", once=True, limit=1, executor="builtin")
+    run_cmd.run_backlog("demo", once=True, limit=1, executor="builtin")
 
     # Task should be requeued or failed, NOT done
     updated = db.get_task(task["id"])
     assert updated["status"] in ("backlog", "failed")
 
     # Failed tasks preserve feature branch for debugging (not merged to dev)
-    branches = subprocess.run(
+    subprocess.run(
         ["git", "branch", "--list", "feat/task-*"],
         cwd=str(project_path), capture_output=True, text=True,
     )
@@ -178,7 +176,7 @@ def test_failed_execution_keeps_feature_branch(tmp_path, monkeypatch):
 
 def test_duplicate_requirement_does_not_double_create(tmp_path, monkeypatch):
     """Submitting the same requirement twice should not create duplicate tasks."""
-    project_path = _setup(tmp_path, monkeypatch)
+    _setup(tmp_path, monkeypatch)
 
     breakdown = {
         "summary": "唯一任务",
@@ -206,7 +204,7 @@ def test_duplicate_requirement_does_not_double_create(tmp_path, monkeypatch):
 
 def test_cli_plain_text_plan_and_execute(tmp_path, monkeypatch):
     """codepilot 'requirement' should plan, create task, and attempt execution."""
-    project_path = _setup(tmp_path, monkeypatch)
+    _setup(tmp_path, monkeypatch)
 
     breakdown = {
         "summary": "快速任务",
@@ -244,4 +242,3 @@ def test_cli_plain_text_plan_and_execute(tmp_path, monkeypatch):
     tasks = db.list_tasks(project="demo")
     done_tasks = [t for t in tasks if t["status"] == "done"]
     assert len(done_tasks) >= 1
-

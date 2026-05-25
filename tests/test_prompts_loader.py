@@ -14,16 +14,15 @@ def setup_function(_):
 
 
 def test_load_prompt_returns_raw_when_no_kwargs():
-    text = prompts.load_prompt("intent")
-    # The intent template contains the placeholder verbatim, without
-    # substitution having run.
-    assert "{text}" in text
+    text = prompts.load_prompt("task_single")
+
+    assert "{title}" in text
 
 
 def test_load_prompt_substitutes_kwargs():
-    text = prompts.load_prompt("intent", text="hello world")
+    text = prompts.load_prompt("task_single", title="hello world")
     assert "hello world" in text
-    assert "{text}" not in text
+    assert "{title}" not in text
 
 
 def test_load_prompt_defaults_to_english_variant():
@@ -106,8 +105,6 @@ def test_load_prompt_is_cached(tmp_path, monkeypatch):
     a performance guarantee for webui / auto-workflow hot paths."""
     reads: list[str] = []
 
-    original_open = prompts._PROMPTS_DIR  # ensure module loaded
-
     from pathlib import Path
 
     real_read_text = Path.read_text
@@ -119,10 +116,10 @@ def test_load_prompt_is_cached(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", _tracking_read_text)
     prompts.clear_cache()
 
-    prompts.load_prompt("intent")
-    prompts.load_prompt("intent")
-    prompts.load_prompt("intent")
+    prompts.load_prompt("task_single")
+    prompts.load_prompt("task_single")
+    prompts.load_prompt("task_single")
 
     # Only the first call should have hit read_text for that file.
-    intent_reads = [r for r in reads if r.endswith("intent.en.md")]
-    assert len(intent_reads) == 1
+    task_reads = [r for r in reads if r.endswith("task_single.en.md")]
+    assert len(task_reads) == 1

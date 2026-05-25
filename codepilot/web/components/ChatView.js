@@ -378,7 +378,7 @@ CP.Components.SessionChatPanel = Vue.defineComponent({
           </div>
           <div v-for="m in messages" :key="m.id" class="chat-row" :class="m.role">
             <div class="bubble" :class="[m.role, m.intent === 'streaming' ? 'streaming' : '']">
-              <div v-if="m.intent === 'opencode' || m.intent === 'streaming'" class="clarify-head">
+              <div v-if="m.intent === 'opencode' || m.intent === 'streaming'" class="agent-head">
                 OpenCode
                 <span v-if="sessionRunForMessage(m)" class="session-run-state">{{ runStatusLabel(sessionRunForMessage(m)) }}</span>
               </div>

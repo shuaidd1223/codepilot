@@ -98,13 +98,13 @@ def test_plan_text_input_json_contract_records_artifacts_without_backlog(tmp_pat
     assert db.get_task_stats("demo")["total"] == before
 
 
-def test_plan_from_spec_consumes_clarify_spec(tmp_path, monkeypatch):
+def test_plan_from_spec_consumes_agent_spec(tmp_path, monkeypatch):
     project = _register_demo(tmp_path, monkeypatch)
     spec_dir = Path(project["path"]) / ".codepilot" / "specs"
     spec_dir.mkdir(parents=True)
     spec_path = spec_dir / "example.md"
     spec_path.write_text(
-        "# Clarify Spec: 改进 doctor\n\n"
+        "# Agent Spec: 改进 doctor\n\n"
         "## 目标\n- 增强 doctor 的服务检查。\n\n"
         "## 验收标准\n- JSON 输出包含服务状态。\n",
         encoding="utf-8",

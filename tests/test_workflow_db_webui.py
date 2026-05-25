@@ -2,32 +2,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import sys
-import types
-from pathlib import Path
-from zipfile import ZipFile
 
-import click
 import pytest
 from click.testing import CliRunner
 
-from codepilot.ai_support.agent_support import ai_guide_markdown, command_manifest
-from codepilot.binary_support import manager as binary_mod
-from codepilot.binary_support import paths as binary_paths_mod
 from codepilot.storage import database as db
 from codepilot.storage import session_store as db_session_store
-from codepilot.ai_support import service as ai_mod
-from codepilot.core import progress_bus
-from codepilot.gateway.service import GatewayResponse
-from codepilot.core import runtime as runtime_mod
 from codepilot.webapp import action_requirements as requirement_actions
 from codepilot.webapp import server as webui_mod
 from codepilot.cli import main
-from codepilot.commands import add as add_cmd
 from codepilot.commands import auto as auto_cmd
-from codepilot.commands import run as run_cmd
 from codepilot.commands.plan import write_plan_artifact
-from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
 
 
@@ -386,6 +371,72 @@ def test_webui_retry_and_promote_actions_update_task_state(tmp_path, monkeypatch
     assert current["priority"] == "P0"
     assert service_calls[1] == "demo"
     assert promoted["service"]["pid"] == 7654
+
+
+def test_webui_retry_and_promote_warn_when_daemon_start_fails(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "task A", agent="codex", priority="P2", max_retries=3)
+    db.update_task(task["id"], status="failed", retry_count=2, error_message="boom")
+    monkeypatch.setattr(
+        "codepilot.webapp.action_requirements._request_task_service_start",
+        lambda project: (None, "daemon unavailable"),
+    )
+    with webui_mod._UI_LOCK:
+        webui_mod._UI_EVENTS.clear()
+
+    retried = webui_mod.retry_task_action(task["id"])
+    assert retried["ok"] is True
+    assert retried["service_error"] == "daemon unavailable"
+    assert "任务执行服务启动失败" in retried["message"]
+    assert "codepilot daemon -p demo" in retried["message"]
+    assert db.get_task(task["id"])["status"] == "backlog"
+    assert webui_mod._UI_EVENTS[-1]["level"] == "warning"
+
+    promoted = webui_mod.promote_task_action(task["id"])
+    assert promoted["ok"] is True
+    assert promoted["service_error"] == "daemon unavailable"
+    assert "任务执行服务启动失败" in promoted["message"]
+    assert "codepilot daemon -p demo" in promoted["message"]
+    assert db.get_task(task["id"])["priority"] == "P0"
+    assert webui_mod._UI_EVENTS[-1]["level"] == "warning"
+
+
+def test_webui_recovery_hints_use_valid_task_ids_for_reviewer_tool_failure(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "review tool failure", agent="dual")
+    db.update_task(
+        task["id"],
+        status="failed",
+        error_message="Builder 已完成但 Reviewer 工具失败，可以重试 review、切换 reviewer 或人工接受/提交补丁",
+    )
+
+    payload = webui_mod._task_payload(db.get_task(task["id"]))
+    hints = payload["recovery_hints"]
+
+    assert f"codepilot task retry {task['id']}" in "\n".join(hints)
+    assert f"codepilot task done {task['id']} -m \"review accepted\"" in "\n".join(hints)
+    assert any("切换 reviewer" in hint for hint in hints)
+    assert all("task retry #" not in hint for hint in hints)
+    assert all("#{task_id}" not in hint for hint in hints)
+
+
+def test_webui_recovery_hints_interpolate_backlog_review_command_failure_id(tmp_path, monkeypatch):
+    _init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "review command failed", agent="dual")
+    db.update_task(task["id"], status="backlog", error_message="review 命令执行失败：exit=1")
+
+    payload = webui_mod._task_payload(db.get_task(task["id"]))
+
+    assert payload["recovery_hints"] == [f"重试: codepilot task retry {task['id']}"]
 
 
 def test_webui_cancel_archive_delete_actions_follow_status_rules(tmp_path, monkeypatch):
@@ -815,7 +866,6 @@ def test_webui_requirement_job_cancel_and_retry_actions(tmp_path, monkeypatch):
             "auto_commit": False,
             "max_retries": 2,
             "run_async": True,
-            "clarify": False,
         }
     ]
 

@@ -44,7 +44,7 @@ def test_webui_session_message_uses_opencode_adapter(tmp_path: Path, monkeypatch
 
     from codepilot.webapp.action_sessions import send_session_message_action
 
-    result = send_session_message_action(session["id"], "帮我看一下任务状态", category="requirement")
+    result = send_session_message_action(session["id"], "帮我看一下任务状态")
 
     assert result["intent"] == "opencode"
     assert result["message"] == "OpenCode 已处理。"
@@ -60,6 +60,33 @@ def test_webui_session_message_uses_opencode_adapter(tmp_path: Path, monkeypatch
     messages = db.list_session_messages(session["id"])
     assert [item["role"] for item in messages] == ["user", "assistant"]
     assert messages[1]["intent"] == "opencode"
+
+
+def test_webui_session_message_preserves_multiline_chat_text(tmp_path: Path, monkeypatch):
+    register_project(tmp_path, monkeypatch)
+    session = db.create_session("demo", title="chat")
+    calls = []
+
+    def fake_run(project, text, *, source, external_session_id, agent=None):
+        calls.append(text)
+        return {
+            "ok": True,
+            "intent": "opencode",
+            "message": "done",
+            "opencode_session_id": "ses_multiline",
+            "tool_calls": [],
+        }
+
+    monkeypatch.setattr("codepilot.opencode.session.run_opencode_message", fake_run)
+
+    from codepilot.webapp.action_sessions import send_session_message_action
+
+    raw_text = "  分析这段代码：\n\n```python\nprint('hi')\n```\n  "
+    send_session_message_action(session["id"], raw_text)
+
+    assert calls == ["分析这段代码：\n\n```python\nprint('hi')\n```"]
+    messages = db.list_session_messages(session["id"])
+    assert messages[0]["content"] == calls[0]
 
 
 def test_webui_session_message_injects_runtime_config_without_rewriting_user_message(tmp_path: Path, monkeypatch):

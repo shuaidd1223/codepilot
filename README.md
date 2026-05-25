@@ -726,6 +726,7 @@ simple_model = "deepseek-v4-flash"
 - Skill 化集成指南：[中文](docs/05-Skill化集成指南.zh-CN.md) / [English](docs/05-skill-integration-guide.en-US.md)
 - 项目服务说明：[中文](docs/06-项目服务改造说明.zh-CN.md) / [English](docs/06-project-services.en-US.md)
 - 工作流状态约定：[中文](docs/07-workflow-state.zh-CN.md) / [English](docs/07-workflow-state.en-US.md)
+- 编程工作流优化 TODO：[中文](docs/12-programming-workflow-todo.zh-CN.md)
 - 静态 AI 调用手册：[中文](AI_USAGE.zh-CN.md) / [English](AI_USAGE.en-US.md)
 
 ## 给其他 AI / Agent 的标准入口

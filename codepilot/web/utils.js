@@ -136,103 +136,6 @@ CP.taskPhaseProgress = (task) => {
   };
 };
 
-CP._clarifyText = (value) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
-CP._clarifyQuestionId = (idx) => `q${idx + 1}`;
-CP._clarifyOptionId = (idx) => `opt${idx + 1}`;
-CP.normalizeClarifyQuestion = (question, idx = 0) => {
-  if (typeof question === 'string') {
-    const text = CP._clarifyText(question);
-    if (!text) return null;
-    return { id: CP._clarifyQuestionId(idx), type: 'text', text, options: [], allow_free_text: false };
-  }
-  if (!question || typeof question !== 'object') return null;
-  const text = CP._clarifyText(question.text || question.question || question.label);
-  if (!text) return null;
-  let type = CP._clarifyText(question.type || 'text').toLowerCase();
-  if (!['text', 'single', 'multi'].includes(type)) type = 'text';
-  const options = Array.isArray(question.options)
-    ? question.options
-      .map((opt, optIdx) => {
-        if (typeof opt === 'string') {
-          const label = CP._clarifyText(opt);
-          if (!label) return null;
-          return { id: CP._clarifyOptionId(optIdx), label };
-        }
-        if (!opt || typeof opt !== 'object') return null;
-        const label = CP._clarifyText(opt.label || opt.text || opt.value);
-        if (!label) return null;
-        return { id: CP._clarifyText(opt.id || opt.value || CP._clarifyOptionId(optIdx)), label };
-      })
-      .filter(Boolean)
-    : [];
-  if ((type === 'single' || type === 'multi') && !options.length) type = 'text';
-  return {
-    id: CP._clarifyText(question.id || question.question_id || CP._clarifyQuestionId(idx)),
-    type,
-    text,
-    options,
-    allow_free_text: type === 'text' ? false : !!(question.allow_free_text ?? true),
-  };
-};
-CP.normalizeClarifyQuestions = (questions) =>
-  (Array.isArray(questions) ? questions : []).map((q, idx) => CP.normalizeClarifyQuestion(q, idx)).filter(Boolean);
-CP.createClarifyAnswerState = (questions, existing = {}) => {
-  const state = {};
-  for (const q of CP.normalizeClarifyQuestions(questions)) {
-    const prev = existing && typeof existing === 'object' ? existing[q.id] || {} : {};
-    const optionIds = new Set((q.options || []).map(opt => CP._clarifyText(opt && opt.id)).filter(Boolean));
-    const selected = Array.isArray(prev.selectedOptionIds)
-      ? prev.selectedOptionIds.map(x => CP._clarifyText(x)).filter(Boolean)
-      : [];
-    const text = CP._clarifyText(prev.text);
-    const normalizedSelected = selected.filter(id => !optionIds.size || optionIds.has(id));
-    state[q.id] = {
-      selectedOptionIds: q.type === 'single'
-        ? ((q.allow_free_text && text) ? [] : normalizedSelected.slice(0, 1))
-        : normalizedSelected,
-      text,
-    };
-  }
-  return state;
-};
-CP.exportClarifyAnswers = (questions, answers) => {
-  const out = [];
-  for (const q of CP.normalizeClarifyQuestions(questions)) {
-    const state = (answers && answers[q.id]) || {};
-    const optionIds = new Set((q.options || []).map(opt => CP._clarifyText(opt && opt.id)).filter(Boolean));
-    const selected = Array.isArray(state.selectedOptionIds)
-      ? state.selectedOptionIds.map(x => CP._clarifyText(x)).filter(Boolean)
-      : [];
-    const text = CP._clarifyText(state.text);
-    const normalizedSelected = selected.filter(id => !optionIds.size || optionIds.has(id));
-    const exportedSelected = q.type === 'single' && q.allow_free_text && text
-      ? []
-      : (q.type === 'single' ? normalizedSelected.slice(0, 1) : normalizedSelected);
-    if (!exportedSelected.length && !text) continue;
-    out.push({
-      question_id: q.id,
-      selected_option_ids: exportedSelected,
-      free_text: text,
-    });
-  }
-  return out;
-};
-CP.clarifyQuestionText = (question) => {
-  const q = CP.normalizeClarifyQuestion(question, 0);
-  return q ? q.text : '';
-};
-CP.clarifyQuestionsText = (questions) => {
-  const lines = [];
-  for (const [idx, q] of CP.normalizeClarifyQuestions(questions).entries()) {
-    lines.push(`${idx + 1}. ${q.text}`);
-    if (q.type === 'single' || q.type === 'multi') {
-      q.options.forEach((opt, optIdx) => lines.push(`   ${optIdx + 1}. ${opt.label}`));
-      if (q.allow_free_text) lines.push('   其他：可直接手动输入文本');
-    }
-  }
-  return lines.join('\n');
-};
-
 CP.escapeHtml = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -392,145 +295,23 @@ CP.renderMarkdown = (text) => {
   return html;
 };
 
-/* Markdown-signal regex: headings, fenced code, emphasis, links, tables,
- * ordered/unordered list markers. Used to decide whether raw CLI output
- * (which would be mangled by markdown parsing of leading +/- as bullets)
- * should be force-wrapped in a fenced code block instead. */
-CP._MD_SIGNAL_RE = /(^|\n)(#{1,6}\s|```|\*\*\S|__\S|^\s*\|.+\|\s*$|^\s*\d+\.\s|^\s*[-*+]\s\S)/;
-
 /* Smart renderer for any textual output block.
- *   - If the text contains markdown signals → markdown render (AI output).
  *   - If it looks like a unified diff / has ANSI escapes → wrap in a fenced
  *     code block so markdown doesn't turn "+foo" / "- bar" into bullets,
  *     and so hljs still colours the diff or ansi_up still renders CLI
  *     colours (via CP.renderCode inside the code fence).
- *   - Otherwise plain markdown parse (mostly pass-through for prose). */
+ *   - Otherwise markdown render (mostly pass-through for prose / AI output). */
 CP.renderOutput = (text) => {
   if (text == null || text === '') return '';
   const raw = String(text);
   const looksDiff = CP._DIFF_RE.test(raw);
   const hasAnsi = CP._ANSI_RE.test(raw);
-  const hasMd = CP._MD_SIGNAL_RE.test(raw);
-  if ((looksDiff || hasAnsi) && !hasMd) {
+  if (looksDiff || hasAnsi) {
     const lang = looksDiff ? 'diff' : '';
     const fenced = '```' + lang + '\n' + raw.replace(/```/g, '`\u200b``') + '\n```';
     return CP.renderMarkdown(fenced);
   }
   return CP.renderMarkdown(raw);
-};
-
-CP._taskTemplateContent = (item) => {
-  if (!item || typeof item !== 'object') return '';
-  if (item.content !== undefined && item.content !== null && item.content !== '') return String(item.content);
-  if (item.body !== undefined && item.body !== null && item.body !== '') return String(item.body);
-  if (item.description !== undefined && item.description !== null && item.description !== '') return String(item.description);
-  return '';
-};
-
-CP._safeRegExp = (pattern, flags) => {
-  try {
-    return new RegExp(String(pattern || ''), String(flags || ''));
-  } catch (_e) {
-    return null;
-  }
-};
-
-CP.validateTaskBatchImport = (raw, schema) => {
-  const result = {
-    valid: false,
-    parseError: '',
-    globalErrors: [],
-    items: [],
-    total: 0,
-    validCount: 0,
-    invalidCount: 0,
-  };
-  const text = String(raw == null ? '' : raw).trim();
-  if (!text) return result;
-  if (!schema || typeof schema !== 'object') {
-    result.globalErrors.push('模板 schema 尚未就绪，暂时无法校验。');
-    return result;
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (err) {
-    result.parseError = `JSON 解析失败：${err.message || err}`;
-    return result;
-  }
-  if (!Array.isArray(parsed)) {
-    result.globalErrors.push('顶层必须是 JSON 数组。');
-    return result;
-  }
-  if (!parsed.length) {
-    result.globalErrors.push('至少需要 1 条任务。');
-    return result;
-  }
-
-  const validation = (schema && schema.validation) || {};
-  const requiredHeadings = Array.isArray(validation.required_headings) ? validation.required_headings : [];
-  const placeholderTokens = Array.isArray(validation.placeholder_tokens) ? validation.placeholder_tokens : [];
-  const priorityValues = new Set(
-    (Array.isArray(validation.priority_values) ? validation.priority_values : ['P0', 'P1', 'P2', 'P3'])
-      .map(item => String(item || '').toUpperCase())
-      .filter(Boolean),
-  );
-
-  result.items = parsed.map((item, idx) => {
-    const entry = {
-      index: idx + 1,
-      raw: item,
-      title: '',
-      ok: false,
-      errors: [],
-      missingSections: [],
-      leftoverPlaceholders: [],
-    };
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      entry.errors.push('必须是对象。');
-      return entry;
-    }
-
-    entry.title = String(item.title || item.name || '').trim();
-    if (!entry.title) {
-      entry.errors.push('缺少 title。');
-    }
-
-    const content = CP._taskTemplateContent(item);
-    if (!content.trim()) {
-      entry.errors.push('缺少 content。');
-    } else {
-      for (const section of requiredHeadings) {
-        const rx = CP._safeRegExp(section && section.pattern, section && section.flags);
-        if (!rx) continue;
-        if (!rx.test(content)) {
-          entry.missingSections.push(String((section && section.label) || '未知章节'));
-        }
-      }
-      if (entry.missingSections.length) {
-        entry.errors.push(`缺少章节：${entry.missingSections.join('、')}。`);
-      }
-      entry.leftoverPlaceholders = placeholderTokens.filter(token => token && content.includes(token));
-      if (entry.leftoverPlaceholders.length) {
-        entry.errors.push(`仍包含未替换占位符：${entry.leftoverPlaceholders.join('、')}。`);
-      }
-    }
-
-    const priority = String(item.priority || 'P2').toUpperCase();
-    if (priority && !priorityValues.has(priority)) {
-      entry.errors.push(`priority 无效：${priority}。`);
-    }
-
-    entry.ok = entry.errors.length === 0;
-    return entry;
-  });
-
-  result.total = result.items.length;
-  result.invalidCount = result.items.filter(item => !item.ok).length;
-  result.validCount = result.total - result.invalidCount;
-  result.valid = !result.parseError && result.globalErrors.length === 0 && result.invalidCount === 0;
-  return result;
 };
 
 CP.fmtTime = (v) => v ? String(v).replace('T', ' ').slice(0, 19) : '-';

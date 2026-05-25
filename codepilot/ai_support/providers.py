@@ -28,7 +28,7 @@ from codepilot.ai_support.provider_adapters import (
 from codepilot.ai_support.provider_profiles import (
     APIRequestProfile as _ProviderAPIRequestProfile,
     build_api_request_profile as _build_api_request_profile,
-    classify_prompt_difficulty as _classify_prompt_difficulty_impl,
+    estimate_prompt_difficulty as _estimate_prompt_difficulty_impl,
     is_deepseek_provider as _is_deepseek_provider,
     provider_usage_key as _provider_usage_key,
 )
@@ -46,8 +46,8 @@ from codepilot.core.text_decode import decode_subprocess_text
 _APIRequestProfile = _ProviderAPIRequestProfile
 
 
-def _classify_prompt_difficulty(prompt: str, system_prompt: Optional[str] = None) -> str:
-    return _classify_prompt_difficulty_impl(prompt, system_prompt)
+def _estimate_prompt_difficulty(prompt: str, system_prompt: Optional[str] = None) -> str:
+    return _estimate_prompt_difficulty_impl(prompt, system_prompt)
 
 
 def resolve_api_provider(

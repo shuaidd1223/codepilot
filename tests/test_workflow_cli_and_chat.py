@@ -2,29 +2,15 @@ from __future__ import annotations
 
 import contextlib
 import json
-import sys
-import types
-from pathlib import Path
-from zipfile import ZipFile
 
-import click
 import pytest
 from click.testing import CliRunner
 
-from codepilot.ai_support.agent_support import ai_guide_markdown, command_manifest
-from codepilot.binary_support import manager as binary_mod
-from codepilot.binary_support import paths as binary_paths_mod
 from codepilot.storage import database as db
 from codepilot.ai_support import service as ai_mod
-from codepilot.core import progress_bus
-from codepilot.gateway.service import GatewayResponse
-from codepilot.core import runtime as runtime_mod
-from codepilot.webapp import server as webui_mod
 from codepilot.cli import main
 from codepilot.commands import add as add_cmd
 from codepilot.commands import auto as auto_cmd
-from codepilot.commands import run as run_cmd
-from codepilot.core.config import load_project_config
 from tests.workflow_testkit import init_test_db as _init_test_db
 
 
@@ -68,7 +54,6 @@ def test_root_command_wraps_requirement_flow_in_cli_progress_renderer(tmp_path, 
         entered.append(("exit", enabled))
 
     monkeypatch.setattr("codepilot.core.cli_progress.maybe_cli_renderer", _fake_renderer)
-    monkeypatch.setattr(auto_cmd, "resolve_turn_intent", lambda *args, **kwargs: "requirement")
     monkeypatch.setattr(auto_cmd, "run_requirement_workflow", lambda **kwargs: {"ok": True})
 
     result = CliRunner().invoke(main, ["go", "--no-execute", "实现一个自动重试机制"])
@@ -611,10 +596,10 @@ def test_chat_no_ui_does_not_call_old_requirement_workflow(tmp_path, monkeypatch
     assert called == []
 
 
-def test_legacy_chat_help_no_longer_advertises_status_stats_commands():
-    help_text = auto_cmd._chat_help()
-    assert "/stats" not in help_text
-    assert "/status" not in help_text
+def test_legacy_chat_repl_helpers_are_not_exposed():
+    assert not hasattr(auto_cmd, "_chat_help")
+    assert not hasattr(auto_cmd, "run_chat_session")
+    assert not hasattr(auto_cmd, "_parse_intent_prefix")
 
 
 def test_removed_chat_repl_commands_do_not_run_from_main_chat(tmp_path, monkeypatch):
