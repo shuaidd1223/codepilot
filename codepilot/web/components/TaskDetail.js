@@ -104,6 +104,30 @@ CP.Components.TaskDetail = Vue.defineComponent({
       }
       return null;
     },
+    executionArtifacts() {
+      return (this.task && this.task.artifacts) || {};
+    },
+    hasExecutionArtifacts() {
+      const a = this.executionArtifacts;
+      return !!(a.patch || a.validation || a.review);
+    },
+    patchArtifact() {
+      return this.executionArtifacts.patch || null;
+    },
+    validationArtifact() {
+      return this.executionArtifacts.validation || null;
+    },
+    reviewArtifact() {
+      return this.executionArtifacts.review || null;
+    },
+    patchFiles() {
+      const patch = this.patchArtifact;
+      return (patch && Array.isArray(patch.files)) ? patch.files : [];
+    },
+    validationChecks() {
+      const validation = this.validationArtifact;
+      return (validation && Array.isArray(validation.checks)) ? validation.checks : [];
+    },
     verdictToneClass() {
       const v = this.latestReview && this.latestReview.verdict;
       if (v === 'pass') return 'verdict-tone-pass';
@@ -144,6 +168,18 @@ CP.Components.TaskDetail = Vue.defineComponent({
       const h = Math.floor(seconds / 3600);
       const m = Math.round((seconds % 3600) / 60);
       return m ? `${h}h${m}m` : `${h}h`;
+    },
+    artifactStatusLabel(item) {
+      if (!item) return '-';
+      const status = String(item.status || item.verdict || '').trim();
+      return status || '-';
+    },
+    artifactTone(item) {
+      const status = String((item && (item.status || item.verdict)) || '').toLowerCase();
+      if (['pass', 'passed', 'captured'].includes(status)) return 'good';
+      if (['fail', 'failed'].includes(status)) return 'bad';
+      if (['empty', 'none', 'not_run'].includes(status)) return 'muted';
+      return 'neutral';
     },
   },
   template: `
@@ -263,6 +299,58 @@ CP.Components.TaskDetail = Vue.defineComponent({
             <span v-if="isRunIdle" class="task-run-status-idle">
               <span class="idle-dot"></span>等待响应 · 静默 {{ runIdleSeconds }}s
             </span>
+          </div>
+          <div v-if="hasExecutionArtifacts" class="block artifact-review-block">
+            <div class="block-label">Diff 审查</div>
+            <div class="artifact-review-grid">
+              <div class="artifact-panel" v-if="patchArtifact">
+                <div class="artifact-panel-head">
+                  <span>Patch</span>
+                  <span class="artifact-status" :class="'artifact-' + artifactTone(patchArtifact)">
+                    {{ artifactStatusLabel(patchArtifact) }}
+                  </span>
+                </div>
+                <div class="artifact-summary">{{ patchArtifact.summary || '-' }}</div>
+                <div v-if="patchFiles.length" class="artifact-file-list">
+                  <div v-for="file in patchFiles.slice(0, 8)" :key="file.path" class="artifact-file-row">
+                    <span class="artifact-file-status">{{ file.status || '-' }}</span>
+                    <code>{{ file.path }}</code>
+                  </div>
+                  <div v-if="patchArtifact.truncated_files" class="tiny muted">
+                    +{{ patchArtifact.truncated_files }} more
+                  </div>
+                </div>
+              </div>
+              <div class="artifact-panel" v-if="validationArtifact">
+                <div class="artifact-panel-head">
+                  <span>Validation</span>
+                  <span class="artifact-status" :class="'artifact-' + artifactTone(validationArtifact)">
+                    {{ artifactStatusLabel(validationArtifact) }}
+                  </span>
+                </div>
+                <div class="artifact-summary">{{ validationArtifact.summary || '-' }}</div>
+                <div v-if="validationChecks.length" class="artifact-check-list">
+                  <div v-for="(check, idx) in validationChecks.slice(0, 4)" :key="idx" class="artifact-check-row">
+                    <span class="artifact-check-exit" :class="{ ok: check.ok === true, fail: check.ok === false }">
+                      {{ check.exit_code === null || check.exit_code === undefined ? '-' : check.exit_code }}
+                    </span>
+                    <code>{{ check.command || '-' }}</code>
+                  </div>
+                </div>
+              </div>
+              <div class="artifact-panel" v-if="reviewArtifact">
+                <div class="artifact-panel-head">
+                  <span>Review</span>
+                  <span class="artifact-status" :class="'artifact-' + artifactTone(reviewArtifact)">
+                    {{ artifactStatusLabel(reviewArtifact) }}
+                  </span>
+                </div>
+                <div class="artifact-summary">{{ reviewArtifact.summary || '-' }}</div>
+                <div v-if="reviewArtifact.blockers && reviewArtifact.blockers.length" class="artifact-mini-list">
+                  <div v-for="(item, idx) in reviewArtifact.blockers.slice(0, 3)" :key="idx">{{ item }}</div>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="block block-log-stream">
             <div class="task-log-head">

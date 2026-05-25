@@ -10,11 +10,13 @@ from typing import Any
 
 import click
 
+from codepilot.commands.execution_artifacts import collect_git_patch_artifact, validation_artifact_from_verification
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.commands.run_orchestrator import run_backlog
 from codepilot.commands.status import _resolve_project
 from codepilot.core.output import echo
 from codepilot.core.text_decode import decode_subprocess_text
+from codepilot.core.workflow_state import read_task_execution_artifacts, write_task_execution_artifacts
 from codepilot.storage import database as db
 
 
@@ -185,6 +187,30 @@ def run_build_fix(
             verdict = "pass"
         else:
             verdict = "fail"
+
+    if not dry_run:
+        try:
+            existing_artifacts = read_task_execution_artifacts(project_path, int(task["id"])) or {}
+            artifact_updates = {
+                "validation": validation_artifact_from_verification(verification),
+            }
+            if not (existing_artifacts.get("artifacts") or {}).get("patch"):
+                artifact_updates["patch"] = collect_git_patch_artifact(project_path)
+            write_task_execution_artifacts(
+                project_path,
+                int(task["id"]),
+                status=verdict,
+                source="build-fix",
+                executor=executor,
+                artifacts=artifact_updates,
+                metadata={
+                    "build_fix": True,
+                    "run_stats": run_stats or {},
+                    "triage_status": triage.get("status") or "",
+                },
+            )
+        except Exception:
+            pass
 
     return {
         "project": project,

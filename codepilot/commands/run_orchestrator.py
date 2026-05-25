@@ -17,6 +17,12 @@ from pathlib import Path
 import click
 
 from codepilot.core.config import normalize_preflight_dirty_worktree
+from codepilot.commands.execution_artifacts import (
+    collect_git_patch_artifact,
+    review_artifact_from_output,
+    validation_artifact_from_result,
+)
+from codepilot.core.workflow_state import write_task_execution_artifacts
 from codepilot.storage import database as db
 
 
@@ -412,6 +418,62 @@ def _execute_task(
         )
 
 
+def _record_task_execution_artifacts(
+    *,
+    context: _RunContext,
+    task: dict,
+    workspace: _TaskWorkspacePlan | None,
+    result,
+    status: str,
+    source: str = "run",
+    error_message: str = "",
+) -> None:
+    """Best-effort persistence for compact patch/validation/review summaries."""
+    runner = _runner_module()
+    task_id = int(task.get("id") or 0)
+    if task_id <= 0:
+        return
+    existing = getattr(result, "artifacts", None)
+    artifacts = dict(existing or {}) if isinstance(existing, dict) else {}
+    execution_path = workspace.execution_path if workspace is not None else context.project_path
+    if "patch" not in artifacts:
+        artifacts["patch"] = collect_git_patch_artifact(execution_path, run_command=runner._run_command)
+
+    current_task = db.get_task(task_id) or task
+    log_path = str(current_task.get("current_log_path") or "")
+    if "validation" not in artifacts:
+        artifacts["validation"] = validation_artifact_from_result(
+            exit_code=getattr(result, "exit_code", None),
+            executor=str(getattr(result, "executor", "") or context.executor),
+            output=str(getattr(result, "output", "") or ""),
+            review_output=str(getattr(result, "review_output", "") or ""),
+            log_path=log_path,
+        )
+    if "review" not in artifacts:
+        artifacts["review"] = review_artifact_from_output(str(getattr(result, "review_output", "") or ""))
+
+    metadata = {
+        "task_branch": str(workspace.task_branch if workspace is not None else task.get("branch_name") or ""),
+        "worktree_path": str(execution_path),
+        "project_path": str(context.project_path),
+        "current_log_path": log_path,
+    }
+    if error_message:
+        metadata["error_excerpt"] = error_message[:1000]
+    try:
+        write_task_execution_artifacts(
+            context.project_path,
+            task_id,
+            status=status,
+            source=source,
+            executor=str(getattr(result, "executor", "") or context.executor),
+            artifacts=artifacts,
+            metadata=metadata,
+        )
+    except Exception:
+        return
+
+
 def _maybe_merge_task_branch(
     context: _RunContext,
     task: dict,
@@ -757,6 +819,22 @@ def _handle_executor_exception(
     Returns whether the outer loop should stop.
     """
     runner = _runner_module()
+    try:
+        _record_task_execution_artifacts(
+            context=context,
+            task=task,
+            workspace=workspace,
+            result=runner.ExecutionResult(
+                exit_code=1,
+                output=error_text,
+                summary=error_text,
+                executor=context.executor,
+            ),
+            status="failed",
+            error_message=error_text,
+        )
+    except Exception:
+        pass
     if retry_on_failure:
         updated, should_stop = runner._handle_failure(task, error_text, stop_on_failure=False)
     else:
@@ -822,6 +900,13 @@ def _handle_execution_result(
     runner = _runner_module()
 
     if result.exit_code == 0:
+        _record_task_execution_artifacts(
+            context=context,
+            task=task,
+            workspace=workspace,
+            result=result,
+            status="done",
+        )
         runner.clear_task_runtime(
             task_id,
             status="done",
@@ -845,6 +930,14 @@ def _handle_execution_result(
         stats["done"] += 1
     else:
         error_message = result.summary or result.review_output or result.output or f"执行失败 (exit={result.exit_code})"
+        _record_task_execution_artifacts(
+            context=context,
+            task=task,
+            workspace=workspace,
+            result=result,
+            status="failed",
+            error_message=error_message,
+        )
         runner._cleanup_worktree_leftovers(workspace.execution_path, context.project_path, task_id=task_id)
         is_pass_finalize_failure = bool(getattr(result, "post_success_failure", False)) or _is_pass_finalize_failure(
             result.summary

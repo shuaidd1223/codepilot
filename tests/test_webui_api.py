@@ -19,6 +19,7 @@ from codepilot.storage import database as db
 from codepilot.commands import daemon as daemon_cmd
 from codepilot.commands import inspect as inspect_cmd
 from codepilot.core import progress_bus
+from codepilot.core.workflow_state import write_task_execution_artifacts
 from codepilot.core.web_events import publish_task_state_event
 from codepilot.webapp import server as webui_mod
 from codepilot.core import runtime as runtime_mod
@@ -614,6 +615,47 @@ def test_task_detail_404_for_nonexistent(ui_server):
     status, body = _get(f"{ui_server}/api/tasks/99999")
     assert status == 404
     assert "error" in body
+
+
+def test_task_detail_exposes_execution_artifact_summary(ui_server):
+    project = db.get_project("demo")
+    task = db.create_task("demo", "artifact detail", agent="dual")
+    write_task_execution_artifacts(
+        project["path"],
+        task["id"],
+        status="done",
+        source="run",
+        executor="builtin",
+        artifacts={
+            "patch": {
+                "kind": "patch",
+                "status": "captured",
+                "empty": False,
+                "summary": "1 file changed: codepilot/webapp/task_payloads.py",
+                "files": [{"path": "codepilot/webapp/task_payloads.py", "status": "M"}],
+            },
+            "validation": {
+                "kind": "validation",
+                "status": "passed",
+                "checks": [{"command": "pytest tests/test_webui_api.py -q", "exit_code": 0, "ok": True}],
+            },
+            "review": {
+                "kind": "review",
+                "status": "pass",
+                "verdict": "pass",
+                "summary": "VERDICT: PASS",
+            },
+        },
+    )
+
+    status, body = _get(f"{ui_server}/api/tasks/{task['id']}")
+
+    assert status == 200
+    artifacts = body["artifacts"]
+    assert artifacts["patch"]["summary"] == "1 file changed: codepilot/webapp/task_payloads.py"
+    assert artifacts["patch"]["files"][0]["path"] == "codepilot/webapp/task_payloads.py"
+    assert artifacts["validation"]["checks"][0]["exit_code"] == 0
+    assert artifacts["review"]["verdict"] == "pass"
 
 
 def test_task_log_endpoint_returns_delta_from_offset(ui_server, tmp_path):

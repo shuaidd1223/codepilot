@@ -12,6 +12,11 @@ from typing import Optional
 from codepilot.ai_support.family_runtime import build_env_for_family
 from codepilot.ai_support.service import _get_node_modules_path, normalize_agent_name
 from codepilot.core.config import AgentsConfig, load_project_config
+from codepilot.commands.execution_artifacts import (
+    collect_git_patch_artifact,
+    review_artifact_from_output,
+    validation_artifact_from_result,
+)
 from codepilot.core.output import echo
 from codepilot.core.task_mutation_guard import runner_task_context_env
 from codepilot.commands.reviewer_output import ReviewerVerdict, format_findings_for_builder, parse_reviewer_output
@@ -691,11 +696,17 @@ def _finalize_executor_success(
     reviewer: _PhaseOutcome,
 ) -> ExecutionResult:
     """After a PASS verdict, optionally commit and build the success summary."""
+    runner_mod = _runner_module()
+    patch_artifact = collect_git_patch_artifact(ctx.project_path, run_command=runner_mod._run_command)
     commit_sha = (
-        _runner_module()._git_auto_commit(ctx.project_path, ctx.task["id"], ctx.task["title"])
+        runner_mod._git_auto_commit(ctx.project_path, ctx.task["id"], ctx.task["title"])
         if auto_commit
         else ""
     )
+    if commit_sha:
+        patch_artifact = dict(patch_artifact)
+        patch_artifact["committed"] = True
+        patch_artifact["result_commit"] = commit_sha
     parts = [f"内置执行器完成(builder={builder.agent}, reviewer={reviewer.agent}, rounds={round_num})"]
     if commit_sha:
         parts.append(f"commit: {commit_sha}")
@@ -706,6 +717,16 @@ def _finalize_executor_success(
         review_output=reviewer.output,
         summary=" | ".join(parts),
         executor="builtin",
+        artifacts={
+            "patch": patch_artifact,
+            "validation": validation_artifact_from_result(
+                exit_code=0,
+                executor="builtin",
+                output=builder.output,
+                review_output=reviewer.output,
+            ),
+            "review": review_artifact_from_output(reviewer.output),
+        },
     )
 
 

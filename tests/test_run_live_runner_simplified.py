@@ -12,9 +12,13 @@ from __future__ import annotations
 import io
 from unittest.mock import MagicMock
 
+from codepilot.commands import run as run_cmd
+from codepilot.core.workflow_state import read_task_execution_artifacts
 from codepilot.commands.run_live_runner import (
     _LiveOutputProcessor,
 )
+from codepilot.storage import database as db
+from tests.workflow_testkit import init_test_db
 
 
 def test_processor_has_no_markdown_live_writer():
@@ -153,3 +157,90 @@ def test_seconds_since_last_output_tracks_idle_time():
     time.sleep(0.1)
     idle = output.seconds_since_last_output()
     assert idle > 0
+
+
+def _register_direct_git_project(tmp_path, monkeypatch):
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    run_cmd._run_command(["git", "init"], cwd=project_path, timeout=60)
+    run_cmd._run_command(["git", "config", "user.name", "CodePilot Test"], cwd=project_path, timeout=30)
+    run_cmd._run_command(["git", "config", "user.email", "test@example.com"], cwd=project_path, timeout=30)
+    (project_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    config_file = project_path / "AGENTS.toml"
+    config_file.write_text(
+        """
+[project]
+name = "demo"
+
+[automation]
+per_task_branch = false
+task_workspace = "direct"
+preflight_dirty_worktree = "stop"
+""".strip(),
+        encoding="utf-8",
+    )
+    run_cmd._run_command(["git", "add", "README.md", "AGENTS.toml"], cwd=project_path, timeout=30)
+    code, output = run_cmd._run_command(["git", "commit", "-m", "init"], cwd=project_path, timeout=120)
+    assert code == 0, output
+    db.register_project("demo", str(project_path), config_file=str(config_file))
+    return project_path
+
+
+def test_run_records_success_artifacts_with_empty_patch(tmp_path, monkeypatch):
+    project_path = _register_direct_git_project(tmp_path, monkeypatch)
+    task = db.create_task("demo", "success artifact", agent="claude", max_retries=1)
+
+    def fake_executor(*args, **kwargs):
+        return run_cmd.ExecutionResult(
+            exit_code=0,
+            output="builder ok",
+            review_output="all good\nVERDICT: PASS",
+            summary="done",
+            executor="builtin",
+        )
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", fake_executor)
+    monkeypatch.setattr(run_cmd, "_cleanup_worktree_leftovers", lambda *args, **kwargs: None)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False, quiet=True)
+
+    assert stats["done"] == 1
+    artifacts = read_task_execution_artifacts(project_path, task["id"])
+    assert artifacts is not None
+    assert artifacts["status"] == "done"
+    assert artifacts["artifacts"]["patch"]["status"] == "empty"
+    assert artifacts["artifacts"]["patch"]["empty"] is True
+    assert artifacts["artifacts"]["validation"]["status"] == "passed"
+    assert artifacts["artifacts"]["validation"]["checks"][0]["exit_code"] == 0
+    assert artifacts["artifacts"]["review"]["verdict"] == "pass"
+
+
+def test_run_records_failed_artifacts_with_exit_code_and_reviewer_verdict(tmp_path, monkeypatch):
+    project_path = _register_direct_git_project(tmp_path, monkeypatch)
+    task = db.create_task("demo", "failure artifact", agent="claude", max_retries=1)
+
+    def fake_executor(*args, **kwargs):
+        return run_cmd.ExecutionResult(
+            exit_code=2,
+            output="pytest failed\nE assertion",
+            review_output="AC #1: FAIL\nVERDICT: FAIL",
+            summary="review 未通过",
+            executor="builtin",
+        )
+
+    monkeypatch.setattr(run_cmd, "_run_builtin_executor", fake_executor)
+    monkeypatch.setattr(run_cmd, "_cleanup_worktree_leftovers", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "_triage_review_failure", lambda *args, **kwargs: None)
+
+    stats = run_cmd.run_backlog("demo", executor="builtin", auto_commit=False, retry_on_failure=False, quiet=True)
+
+    assert stats["failed"] == 1
+    artifacts = read_task_execution_artifacts(project_path, task["id"])
+    assert artifacts is not None
+    validation = artifacts["artifacts"]["validation"]
+    assert validation["status"] == "failed"
+    assert validation["checks"][0]["command"] == "builtin"
+    assert validation["checks"][0]["exit_code"] == 2
+    assert "pytest failed" in validation["checks"][0]["output_excerpt"]
+    assert artifacts["artifacts"]["review"]["verdict"] == "fail"

@@ -18,10 +18,13 @@ from codepilot.core.workflow_state import (
     create_agent_session,
     fail_agent_session,
     get_agent_session,
+    read_task_execution_artifacts,
     read_workflow_state,
     start_workflow,
+    task_execution_artifact_path,
     update_agent_session,
     update_workflow_state,
+    write_task_execution_artifacts,
     workflow_dirs,
 )
 from codepilot.storage import database as db
@@ -98,6 +101,50 @@ def test_workflow_state_corrupt_json_is_tolerated(tmp_path):
 
     assert read_workflow_state(tmp_path) is None
     assert read_workflow_state(tmp_path, mode="plan") is None
+
+
+def test_task_execution_artifacts_round_trip_project_local_summary(tmp_path):
+    written = write_task_execution_artifacts(
+        tmp_path,
+        7,
+        status="done",
+        source="run",
+        executor="builtin",
+        artifacts={
+            "patch": {
+                "kind": "patch",
+                "status": "empty",
+                "empty": True,
+                "summary": "No git diff detected.",
+                "files": [],
+            },
+            "validation": {
+                "kind": "validation",
+                "status": "passed",
+                "checks": [{"command": "builder", "exit_code": 0, "ok": True}],
+            },
+            "review": {
+                "kind": "review",
+                "status": "pass",
+                "verdict": "pass",
+                "summary": "VERDICT: PASS",
+            },
+        },
+    )
+
+    artifact_path = task_execution_artifact_path(tmp_path, 7)
+    assert artifact_path == tmp_path / ".codepilot" / "artifacts" / "tasks" / "task-7-execution.json"
+    assert written["artifact_path"] == str(artifact_path)
+
+    payload = read_task_execution_artifacts(tmp_path, 7)
+    assert payload is not None
+    assert payload["task_id"] == 7
+    assert payload["status"] == "done"
+    assert payload["source"] == "run"
+    assert payload["executor"] == "builtin"
+    assert payload["artifacts"]["patch"]["empty"] is True
+    assert payload["artifacts"]["validation"]["checks"][0]["exit_code"] == 0
+    assert payload["artifacts"]["review"]["verdict"] == "pass"
 
 
 def test_workflow_status_cli_returns_active_state_json(tmp_path, monkeypatch):

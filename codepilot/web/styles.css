@@ -1059,6 +1059,99 @@ p { margin: 0; }
 .block.warning .block-label { color: hsl(38 92% 42%); }
 [data-theme="dark"] .block.warning .block-label { color: hsl(var(--warning)); }
 
+.artifact-review-block {
+  border-color: hsl(var(--primary) / .22);
+}
+.artifact-review-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.artifact-panel {
+  min-width: 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  background: hsl(var(--muted) / .18);
+}
+.artifact-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.artifact-status {
+  flex: 0 0 auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid hsl(var(--border));
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+.artifact-status.artifact-good {
+  border-color: hsl(var(--success) / .35);
+  color: hsl(var(--success));
+  background: hsl(var(--success) / .08);
+}
+.artifact-status.artifact-bad {
+  border-color: hsl(var(--destructive) / .35);
+  color: hsl(var(--destructive));
+  background: hsl(var(--destructive) / .08);
+}
+.artifact-status.artifact-muted {
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted) / .35);
+}
+.artifact-summary {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.artifact-file-list,
+.artifact-check-list,
+.artifact-mini-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+.artifact-file-row,
+.artifact-check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+}
+.artifact-file-row code,
+.artifact-check-row code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-file-status,
+.artifact-check-exit {
+  flex: 0 0 auto;
+  min-width: 26px;
+  border-radius: var(--radius-sm);
+  border: 1px solid hsl(var(--border));
+  padding: 1px 4px;
+  text-align: center;
+  font-family: var(--font-mono);
+  color: hsl(var(--muted-foreground));
+}
+.artifact-check-exit.ok { color: hsl(var(--success)); border-color: hsl(var(--success) / .35); }
+.artifact-check-exit.fail { color: hsl(var(--destructive)); border-color: hsl(var(--destructive) / .35); }
+.artifact-mini-list {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+
 /* Structured reviewer verdict block: surfaces parse_reviewer_output fields
  * (verdict, ac_checks[], blockers[], advisory[]) as a first-class UI element
  * so users don't have to read the raw transcript to see what the reviewer
@@ -3454,6 +3547,7 @@ textarea {
 /* Responsive */
 @media (max-width: 1200px) {
   .task-kv-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .artifact-review-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 960px) {
   .view { padding: 20px; }
@@ -3493,6 +3587,7 @@ textarea {
   .metrics { grid-template-columns: 1fr; }
   .ai-usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .task-kv-grid { grid-template-columns: 1fr; }
+  .artifact-review-grid { grid-template-columns: 1fr; }
   .chat-header.chat-header-compact { padding: 8px 10px; }
 }
 

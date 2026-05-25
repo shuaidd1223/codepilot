@@ -28,6 +28,7 @@ def workflow_dirs(project_path: str | Path) -> dict[str, Path]:
         "context": root / "context",
         "specs": root / "specs",
         "plans": root / "plans",
+        "artifacts": root / "artifacts",
     }
 
 
@@ -48,6 +49,17 @@ def _mode_state_path(project_path: str | Path, mode: str) -> Path:
 
 def _active_state_path(project_path: str | Path) -> Path:
     return workflow_dirs(project_path)["state"] / _ACTIVE_STATE_FILE
+
+
+def task_execution_artifact_path(project_path: str | Path, task_id: int | str) -> Path:
+    """Return the project-local execution artifact summary path for one task."""
+    try:
+        clean_task_id = int(task_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("task_id must be an integer") from exc
+    if clean_task_id <= 0:
+        raise ValueError("task_id must be positive")
+    return workflow_dirs(project_path)["artifacts"] / "tasks" / f"task-{clean_task_id}-execution.json"
 
 
 def _default_artifact_paths(dirs: dict[str, Path], session_id: str) -> dict[str, str]:
@@ -84,6 +96,75 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(payload, dict):
         return None
+    return payload
+
+
+def _coerce_execution_artifacts(raw_artifacts: Any) -> dict[str, Any]:
+    if not isinstance(raw_artifacts, dict):
+        return {}
+    artifacts: dict[str, Any] = {}
+    for key in ("patch", "validation", "review"):
+        value = raw_artifacts.get(key)
+        if isinstance(value, dict):
+            item = dict(value)
+            item["kind"] = str(item.get("kind") or key)
+            artifacts[key] = item
+    return artifacts
+
+
+def read_task_execution_artifacts(project_path: str | Path, task_id: int | str) -> dict[str, Any] | None:
+    """Read a task execution artifact summary; corrupt or missing returns None."""
+    path = task_execution_artifact_path(project_path, task_id)
+    payload = _read_json(path)
+    if payload is None:
+        return None
+    try:
+        payload["task_id"] = int(payload.get("task_id") or task_id)
+    except (TypeError, ValueError):
+        payload["task_id"] = int(task_id)
+    payload["artifact_path"] = str(path)
+    payload["artifacts"] = _coerce_execution_artifacts(payload.get("artifacts"))
+    return payload
+
+
+def write_task_execution_artifacts(
+    project_path: str | Path,
+    task_id: int | str,
+    *,
+    status: str = "",
+    source: str = "",
+    executor: str = "",
+    artifacts: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merge and persist patch/validation/review summaries for a task.
+
+    The payload intentionally stores compact metadata and pointers only. Full
+    diffs and large logs stay in git/log files, which keeps this safe for the
+    direct-workspace execution mode and avoids a database migration.
+    """
+    path = task_execution_artifact_path(project_path, task_id)
+    current = _read_json(path) or {}
+    now = _now_iso()
+    merged_artifacts = _coerce_execution_artifacts(current.get("artifacts"))
+    merged_artifacts.update(_coerce_execution_artifacts(artifacts or {}))
+    merged_metadata = dict(current.get("metadata") or {}) if isinstance(current.get("metadata"), dict) else {}
+    if metadata:
+        merged_metadata.update(dict(metadata))
+
+    clean_task_id = int(task_id)
+    payload: dict[str, Any] = {
+        "task_id": clean_task_id,
+        "status": str(status or current.get("status") or ""),
+        "source": str(source or current.get("source") or ""),
+        "executor": str(executor or current.get("executor") or ""),
+        "created_at": str(current.get("created_at") or now),
+        "updated_at": now,
+        "artifact_path": str(path),
+        "artifacts": merged_artifacts,
+        "metadata": merged_metadata,
+    }
+    _atomic_write_json(path, payload)
     return payload
 
 

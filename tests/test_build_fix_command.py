@@ -7,6 +7,7 @@ from click.testing import CliRunner
 
 from codepilot.cli import main
 from codepilot.commands import build_fix as build_fix_mod
+from codepilot.core.workflow_state import read_task_execution_artifacts, write_task_execution_artifacts
 from codepilot.storage import database as db
 from tests.workflow_testkit import init_test_db
 
@@ -88,3 +89,60 @@ def test_build_fix_returns_json_error_when_no_failed_task(tmp_path, monkeypatch)
     payload = json.loads(result.output)
     assert payload["ok"] is False
     assert payload["error"]["code"] == "build_fix_error"
+
+
+def test_build_fix_records_failed_verification_artifact(tmp_path, monkeypatch):
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("demo", str(project_path))
+    task = db.create_task("demo", "repair with failing test", content="## Verification Matrix\n")
+    db.update_task(task["id"], status="failed", retry_count=1, error_message="old failure")
+    write_task_execution_artifacts(
+        project_path,
+        task["id"],
+        status="failed",
+        source="run",
+        executor="builtin",
+        artifacts={
+            "patch": {
+                "kind": "patch",
+                "status": "captured",
+                "empty": False,
+                "summary": "1 changed file: app.py",
+                "files": [{"path": "app.py", "status": "M"}],
+            }
+        },
+    )
+
+    def fake_run_backlog(project: str, **kwargs):
+        db.update_task(task["id"], status="done", delivery_record="fixed")
+        return {"processed": 1, "done": 1, "failed": 0, "requeued": 0, "cancelled": 0, "executor": "builtin"}
+
+    monkeypatch.setattr(build_fix_mod, "run_backlog", fake_run_backlog)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "build-fix",
+            "-p",
+            "demo",
+            "--task-id",
+            str(task["id"]),
+            "--verify-command",
+            f"{sys.executable} -c \"import sys; print('bad'); sys.exit(3)\"",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    artifacts = read_task_execution_artifacts(project_path, task["id"])
+    assert artifacts is not None
+    validation = artifacts["artifacts"]["validation"]
+    assert artifacts["artifacts"]["patch"]["status"] == "captured"
+    assert artifacts["artifacts"]["patch"]["files"][0]["path"] == "app.py"
+    assert validation["status"] == "failed"
+    assert validation["checks"][0]["exit_code"] == 3
+    assert validation["checks"][0]["ok"] is False
+    assert "print('bad')" in validation["checks"][0]["command"]
+    assert "bad" in validation["checks"][0]["stdout_excerpt"]

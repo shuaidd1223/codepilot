@@ -8,6 +8,7 @@ from pathlib import Path
 from codepilot.commands.reviewer_output import parse_reviewer_output
 from codepilot.core.runtime import runtime_summary
 from codepilot.core.task_template import missing_task_template_sections
+from codepilot.core.workflow_state import read_task_execution_artifacts
 from codepilot.storage import database as db
 
 
@@ -439,15 +440,35 @@ def task_detail_payload(task_id: int) -> dict:
                 "phase": entry.get("phase") or "",
                 "agent": entry.get("agent") or "",
             }
+    execution_artifact = None
+    artifacts: dict = {}
+    project_path = task.get("project_path") or ""
+    if project_path:
+        execution_artifact = read_task_execution_artifacts(project_path, task_id)
+        if execution_artifact:
+            artifacts = dict(execution_artifact.get("artifacts") or {})
+    if latest_review is not None and "review" not in artifacts:
+        artifacts["review"] = {
+            "kind": "review",
+            "status": latest_review.get("verdict") or "unknown",
+            "verdict": latest_review.get("verdict") or "unknown",
+            "source": latest_review.get("source") or "",
+            "summary": f"VERDICT: {str(latest_review.get('verdict') or 'unknown').upper()}",
+            "blockers": list(latest_review.get("blockers") or []),
+            "advisory": list(latest_review.get("advisory") or []),
+            "ac_checks": list(latest_review.get("ac_checks") or []),
+        }
     payload.update(
         {
             "content": task.get("content") or "",
             "depends_on": _parse_depends(task.get("depends_on")),
-            "project_path": task.get("project_path") or "",
+            "project_path": project_path,
             "current_log_path": task.get("current_log_path") or "",
             "log_text": _compose_log_text(task),
             "logs": logs,
             "latest_review": latest_review,
+            "artifacts": artifacts,
+            "execution_artifact": execution_artifact,
         }
     )
     return payload
