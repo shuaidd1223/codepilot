@@ -25,7 +25,7 @@ def test_project_lookup_accepts_directory_name_alias(tmp_path, monkeypatch):
     assert project["path"] == str(project_path)
 
 
-def test_project_lookup_accepts_config_project_name_alias(tmp_path, monkeypatch):
+def test_project_lookup_syncs_config_project_name_alias(tmp_path, monkeypatch):
     _init_db(tmp_path, monkeypatch)
     project_path = tmp_path / "workspace"
     project_path.mkdir()
@@ -36,5 +36,6 @@ def test_project_lookup_accepts_config_project_name_alias(tmp_path, monkeypatch)
     project = db.get_project("flower")
 
     assert project is not None
-    assert project["name"] == "codepilot-dev"
+    assert project["name"] == "flower"
     assert project["path"] == str(project_path)
+    assert db.get_project("codepilot-dev") is None

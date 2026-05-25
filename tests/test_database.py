@@ -105,6 +105,71 @@ class TestProjects:
         db.delete_project("to-delete")
         assert db.get_project("to-delete") is None
 
+    def test_rename_project_updates_children_and_service_scopes(self, tmp_db: Path):
+        db.register_project("old-name", str(tmp_db.parent))
+        task = db.create_task("old-name", "kept task", content="body")
+        session = db.create_session("old-name", title="kept session")
+        db.upsert_service_state(
+            "daemon",
+            "old-name",
+            pid=1234,
+            status="running",
+            meta={"project": "old-name", "started_at": "2026-05-25T09:00:00"},
+        )
+        db.upsert_service_state(
+            "webui_job",
+            "99",
+            status="queued",
+            meta={"id": 99, "project": "old-name", "request": {"project": "old-name"}},
+        )
+
+        result = db.rename_project("old-name", "new-name")
+
+        assert result["ok"] is True
+        assert result["old_name"] == "old-name"
+        assert result["new_name"] == "new-name"
+        assert db.get_project("old-name") is None
+        renamed = db.get_project("new-name")
+        assert renamed is not None
+        assert renamed["path"] == str(tmp_db.parent)
+        assert db.get_task(task["id"])["project"] == "new-name"
+        assert db.get_session(session["id"])["project"] == "new-name"
+        daemon_state = db.get_service_state("daemon", "new-name")
+        assert daemon_state is not None
+        assert daemon_state["meta"]["project"] == "new-name"
+        job_state = db.get_service_state("webui_job", "99")
+        assert job_state["meta"]["project"] == "new-name"
+        assert job_state["meta"]["request"]["project"] == "new-name"
+
+    def test_rename_project_rejects_existing_target_name(self, tmp_db: Path):
+        first = tmp_db.parent / "first"
+        second = tmp_db.parent / "second"
+        first.mkdir()
+        second.mkdir()
+        db.register_project("first", str(first))
+        db.register_project("second", str(second))
+
+        with pytest.raises(ValueError, match="已存在"):
+            db.rename_project("first", "second")
+
+        assert db.get_project("first") is not None
+        assert db.get_project("second") is not None
+
+    def test_register_project_existing_path_syncs_manual_config_project_rename(self, tmp_db: Path):
+        project_path = tmp_db.parent / "workspace"
+        project_path.mkdir()
+        config_path = project_path / "AGENTS.toml"
+        config_path.write_text('[project]\nname = "old-name"\n', encoding="utf-8")
+        db.register_project("old-name", str(project_path), config_file=str(config_path))
+        task = db.create_task("old-name", "follow register sync", content="body")
+        config_path.write_text('[project]\nname = "new-name"\n', encoding="utf-8")
+
+        project = db.register_project("new-name", str(project_path), config_file=str(config_path))
+
+        assert project["name"] == "new-name"
+        assert db.get_project("old-name") is None
+        assert db.get_task(task["id"])["project"] == "new-name"
+
     def test_project_aliases_are_resolved(self, tmp_db: Path):
         """项目别名应能被 get_project 解析。"""
         db.register_project("alias-target", str(tmp_db.parent))
@@ -349,5 +414,3 @@ class TestQueryCache:
         db.register_project("no-cache", str(tmp_db.parent))
         result = db._cache_get(("get_project", "no-cache"))
         assert result is db._CACHE_MISS
-
-

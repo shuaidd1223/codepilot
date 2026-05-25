@@ -53,6 +53,41 @@ def delete_project(ctx: click.Context, name: str, yes: bool, json_mode: bool) ->
     click.echo(f"  工作目录保留: {project['path']}")
 
 
+@click.command("rename")
+@click.argument("name")
+@click.argument("new_name")
+@click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
+@click.pass_context
+def rename_project(ctx: click.Context, name: str, new_name: str, json_mode: bool) -> None:
+    """重命名项目，并迁移关联任务/会话归属。"""
+    db.init_db()
+    root_obj = ctx.find_root().obj or {}
+    if not json_mode:
+        json_mode = root_obj.get("json_mode", False)
+
+    try:
+        result = db.rename_project(name, new_name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if json_mode:
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    if not result.get("renamed"):
+        echo(f"[yellow][i] 项目名称未变化：{result['new_name']}[/yellow]")
+        return
+
+    echo(f"[green][OK] 项目 '{result['old_name']}' 已重命名为 '{result['new_name']}'[/green]")
+    click.echo(f"  工作目录: {result['path']}")
+    click.echo(f"  已迁移任务: {result['updated_tasks']}，会话: {result['updated_sessions']}")
+    if result.get("config_updated"):
+        click.echo(f"  配置已更新: {result['config_file']}")
+    elif result.get("config_error"):
+        click.echo(f"  配置未更新: {result['config_error']}")
+
+
 project_group.add_command(delete_project)
 project_group.add_command(delete_project, "rm")
-
+project_group.add_command(rename_project)
+project_group.add_command(rename_project, "mv")

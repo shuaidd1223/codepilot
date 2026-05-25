@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -82,6 +83,7 @@ _CACHE_TTL_SECONDS = _cfg_get_cache_ttl_seconds()
 _CACHE_MISS = object()
 _QUERY_CACHE: dict[tuple, tuple[float, object]] = {}
 _CACHE_LOCK = threading.Lock()
+_PROJECT_CONFIG_SYNC = threading.local()
 
 
 def _cache_get(key: tuple) -> object:
@@ -221,7 +223,9 @@ def register_project(
             config_file=config_file,
         )
     _invalidate_project_caches()
-    return get_project(effective_name)
+    if config_file:
+        _sync_project_names_from_configs()
+    return get_project(name) or get_project(effective_name)
 
 
 def get_project(name: str) -> Optional[dict]:
@@ -248,6 +252,8 @@ def get_project(name: str) -> Optional[dict]:
 
 def list_projects() -> list[dict]:
     """Return all registered projects."""
+    if not bool(getattr(_PROJECT_CONFIG_SYNC, "active", False)):
+        _sync_project_names_from_configs()
     cache_key = ("projects",)
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
@@ -344,6 +350,26 @@ def _read_project_config_name(project: dict) -> str:
     return str(project_data.get("name") or "").strip()
 
 
+def _sync_project_names_from_configs() -> None:
+    if bool(getattr(_PROJECT_CONFIG_SYNC, "active", False)):
+        return
+    _PROJECT_CONFIG_SYNC.active = True
+    try:
+        with get_read_conn() as conn:
+            rows = _fetch_projects(conn)
+        for project in rows:
+            current_name = str(project.get("name") or "").strip()
+            config_name = _read_project_config_name(project)
+            if not current_name or not config_name or config_name == current_name:
+                continue
+            try:
+                rename_project(current_name, config_name)
+            except ValueError:
+                continue
+    finally:
+        _PROJECT_CONFIG_SYNC.active = False
+
+
 def delete_project(name: str) -> bool:
     """Delete a project and its related tasks."""
     with get_write_conn() as conn:
@@ -353,6 +379,321 @@ def delete_project(name: str) -> bool:
         _invalidate_task_caches("task_logs")
         _invalidate_session_caches()
     return removed
+
+
+def _normalize_project_name_for_update(raw: str, *, label: str) -> str:
+    name = " ".join(str(raw or "").split())
+    if not name:
+        raise ValueError(f"{label}不能为空")
+    if "/" in name or "\\" in name:
+        raise ValueError(f"{label}不能包含路径分隔符")
+    return name
+
+
+def _rewrite_project_meta_refs(value: object, old_name: str, new_name: str) -> object:
+    if isinstance(value, dict):
+        out: dict[str, object] = {}
+        for key, item in value.items():
+            if key == "project" and str(item or "") == old_name:
+                out[key] = new_name
+            else:
+                out[key] = _rewrite_project_meta_refs(item, old_name, new_name)
+        return out
+    if isinstance(value, list):
+        return [_rewrite_project_meta_refs(item, old_name, new_name) for item in value]
+    return value
+
+
+def _decode_json_object(raw: object) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _toml_string(value: str) -> str:
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _project_config_candidates(project: dict) -> list[Path]:
+    candidates: list[Path] = []
+    config_text = str(project.get("config_file") or "").strip()
+    if config_text:
+        config_path = Path(config_text).expanduser()
+        if config_path.is_dir():
+            config_path = config_path / "AGENTS.toml"
+        candidates.append(config_path)
+
+    project_path = str(project.get("path") or "").strip()
+    if project_path:
+        fallback = Path(project_path).expanduser() / "AGENTS.toml"
+        if all(str(existing) != str(fallback) for existing in candidates):
+            candidates.append(fallback)
+    return candidates
+
+
+def _rewrite_toml_section_key_text(
+    text: str,
+    *,
+    section_name: str,
+    key: str,
+    new_value: str,
+    insert_if_missing: bool = False,
+) -> tuple[str, bool]:
+    lines = text.splitlines(keepends=True)
+    section_re = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
+    key_re = re.compile(rf"^(\s*){re.escape(key)}\s*=.*$")
+    section_header_idx: int | None = None
+    in_section = False
+    for idx, line in enumerate(lines):
+        bare = line.rstrip("\r\n")
+        match = section_re.match(bare)
+        if match:
+            section = match.group(1).strip()
+            in_section = section == section_name
+            if in_section:
+                section_header_idx = idx
+            elif section_header_idx is not None:
+                break
+            continue
+        key_match = key_re.match(bare)
+        if in_section and key_match:
+            newline = line[len(bare):]
+            indent = key_match.group(1)
+            lines[idx] = f"{indent}{key} = {_toml_string(new_value)}{newline}"
+            return "".join(lines), True
+
+    if insert_if_missing and section_header_idx is not None:
+        lines.insert(section_header_idx + 1, f"{key} = {_toml_string(new_value)}\n")
+        return "".join(lines), True
+
+    if insert_if_missing:
+        prefix = f"[{section_name}]\n{key} = {_toml_string(new_value)}\n\n"
+        return prefix + text, True
+    return text, False
+
+
+def _write_project_config_text(config_path: Path, text: str) -> None:
+    config_path.write_text(text, encoding="utf-8")
+
+
+def _sync_project_config_name(
+    project: dict,
+    old_name: str,
+    new_name: str,
+    *,
+    fail_on_error: bool = False,
+) -> dict:
+    for config_path in _project_config_candidates(project):
+        if not config_path.is_file():
+            continue
+        try:
+            text = config_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            message = f"{config_path}: {exc}"
+            if fail_on_error:
+                raise ValueError(message) from exc
+            return {"config_file": str(config_path), "config_updated": False, "config_error": message}
+
+        try:
+            try:
+                import tomllib
+            except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+                import tomli as tomllib  # type: ignore[no-redef]
+            parsed = tomllib.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            message = f"AGENTS.toml 解析失败：{exc}"
+            if fail_on_error:
+                raise ValueError(message) from exc
+            return {"config_file": str(config_path), "config_updated": False, "config_error": message}
+
+        project_data = parsed.get("project") if isinstance(parsed, dict) else None
+        next_text = text
+        changed = False
+        if not (isinstance(project_data, dict) and str(project_data.get("name") or "").strip() == new_name):
+            next_text, project_changed = _rewrite_toml_section_key_text(
+                next_text,
+                section_name="project",
+                key="name",
+                new_value=new_name,
+                insert_if_missing=True,
+            )
+            changed = changed or project_changed
+
+        feishu_data = parsed.get("feishu_bot") if isinstance(parsed, dict) else None
+        if isinstance(feishu_data, dict) and str(feishu_data.get("default_project") or "").strip() == old_name:
+            next_text, feishu_changed = _rewrite_toml_section_key_text(
+                next_text,
+                section_name="feishu_bot",
+                key="default_project",
+                new_value=new_name,
+                insert_if_missing=True,
+            )
+            changed = changed or feishu_changed
+
+        if not changed:
+            return {"config_file": str(config_path), "config_updated": False, "config_error": ""}
+
+        try:
+            tomllib.loads(next_text)
+        except Exception as exc:  # noqa: BLE001
+            message = f"AGENTS.toml 更新后无法解析：{exc}"
+            if fail_on_error:
+                raise ValueError(message) from exc
+            return {"config_file": str(config_path), "config_updated": False, "config_error": message}
+
+        try:
+            _write_project_config_text(config_path, next_text)
+        except OSError as exc:
+            message = f"{config_path}: {exc}"
+            if fail_on_error:
+                raise ValueError(message) from exc
+            return {"config_file": str(config_path), "config_updated": False, "config_error": message}
+        return {"config_file": str(config_path), "config_updated": True, "config_error": ""}
+
+    return {"config_file": "", "config_updated": False, "config_error": ""}
+
+
+def _rename_project_service_state_refs(conn, old_name: str, new_name: str) -> int:
+    rows = conn.execute("SELECT * FROM service_states").fetchall()
+    changed = 0
+    for row in rows:
+        meta = _decode_json_object(row["meta"])
+        rewritten_meta = _rewrite_project_meta_refs(meta, old_name, new_name)
+        next_scope = new_name if str(row["scope"] or "") == old_name else str(row["scope"] or "")
+        if next_scope == str(row["scope"] or "") and rewritten_meta == meta:
+            continue
+
+        conn.execute(
+            """
+            INSERT INTO service_states
+                (service, scope, pid, status, log_path, heartbeat_at, meta, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(service, scope) DO UPDATE SET
+                pid = excluded.pid,
+                status = excluded.status,
+                log_path = excluded.log_path,
+                heartbeat_at = excluded.heartbeat_at,
+                meta = excluded.meta,
+                updated_at = excluded.updated_at
+            """,
+            (
+                row["service"],
+                next_scope,
+                row["pid"],
+                row["status"],
+                row["log_path"],
+                row["heartbeat_at"],
+                json.dumps(rewritten_meta, ensure_ascii=False) if rewritten_meta else None,
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
+        if next_scope != str(row["scope"] or ""):
+            conn.execute(
+                "DELETE FROM service_states WHERE service = ? AND scope = ?",
+                (row["service"], row["scope"]),
+            )
+        changed += 1
+    return changed
+
+
+def _refresh_project_task_dedup_keys(conn, project: str) -> int:
+    rows = conn.execute(
+        """
+        SELECT id, title, content, dedup_key
+          FROM tasks
+         WHERE project = ?
+           AND dedup_key IS NOT NULL
+           AND dedup_key != ''
+        """,
+        (project,),
+    ).fetchall()
+    changed = 0
+    for row in rows:
+        next_key = compute_dedup_key(project, row["title"], row["content"] or "")
+        if next_key == row["dedup_key"]:
+            continue
+        conn.execute("UPDATE tasks SET dedup_key = ? WHERE id = ?", (next_key, row["id"]))
+        changed += 1
+    return changed
+
+
+def rename_project(name: str, new_name: str) -> dict:
+    """Rename a registered project and every DB row keyed by its name."""
+    old_ref = _normalize_project_name_for_update(name, label="项目名称")
+    target_name = _normalize_project_name_for_update(new_name, label="新项目名称")
+    project = get_project(old_ref)
+    if not project:
+        raise ValueError(f"项目 '{old_ref}' 不存在。")
+
+    old_name = str(project["name"])
+    existing = get_project(target_name)
+    if existing and str(existing.get("name") or "") != old_name:
+        raise ValueError(f"项目 '{target_name}' 已存在。")
+
+    if target_name == old_name:
+        config_result = _sync_project_config_name(project, old_name, target_name, fail_on_error=True)
+        return {
+            "ok": True,
+            "renamed": False,
+            "old_name": old_name,
+            "new_name": target_name,
+            "path": project["path"],
+            "updated_tasks": 0,
+            "updated_sessions": 0,
+            "updated_service_states": 0,
+            **config_result,
+        }
+
+    with get_write_conn() as conn:
+        task_count = int(conn.execute("SELECT COUNT(*) FROM tasks WHERE project = ?", (old_name,)).fetchone()[0])
+        session_count = int(conn.execute("SELECT COUNT(*) FROM sessions WHERE project = ?", (old_name,)).fetchone()[0])
+        original_path = str(project["path"])
+        temp_path = f"{original_path}#rename-{time.time_ns()}"
+        conn.execute("UPDATE projects SET path = ? WHERE name = ?", (temp_path, old_name))
+        conn.execute(
+            """
+            INSERT INTO projects
+                (name, path, base_branch, default_mode, worktree_base, config_file, created_at)
+            SELECT ?, ?, base_branch, default_mode, worktree_base, config_file, created_at
+              FROM projects
+             WHERE name = ?
+            """,
+            (target_name, original_path, old_name),
+        )
+        conn.execute("UPDATE tasks SET project = ? WHERE project = ?", (target_name, old_name))
+        conn.execute("UPDATE sessions SET project = ? WHERE project = ?", (target_name, old_name))
+        conn.execute("DELETE FROM projects WHERE name = ?", (old_name,))
+        service_count = _rename_project_service_state_refs(conn, old_name, target_name)
+        dedup_count = _refresh_project_task_dedup_keys(conn, target_name)
+        config_result = _sync_project_config_name(project, old_name, target_name, fail_on_error=True)
+
+    _invalidate_project_caches()
+    _invalidate_task_caches()
+    _invalidate_session_caches()
+    _invalidate_service_state_caches()
+    renamed = get_project(target_name) or {**project, "name": target_name}
+    return {
+        "ok": True,
+        "renamed": True,
+        "old_name": old_name,
+        "new_name": target_name,
+        "path": renamed["path"],
+        "updated_tasks": task_count,
+        "updated_sessions": session_count,
+        "updated_service_states": service_count,
+        "updated_dedup_keys": dedup_count,
+        **config_result,
+        "project": renamed,
+    }
 
 
 def compute_dedup_key(project: str, title: str, content: str = "") -> str:

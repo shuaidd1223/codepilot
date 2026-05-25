@@ -209,6 +209,20 @@ def test_sidebar_task_leaf_includes_quick_actions():
     assert "class=\"tree-inline-confirm\"" in sidebar
 
 
+def test_sidebar_wires_project_rename_action():
+    sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
+    submission = Path("codepilot/web/boundaries/AppSubmissionBoundary.js").read_text(encoding="utf-8")
+    app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
+
+    assert "renameProject(project, ev)" in sidebar
+    assert "this.cp.renameProject(project.name, nextName)" in sidebar
+    assert "title=\"重命名项目\"" in sidebar
+    assert "project-rename-inline" in sidebar
+    assert "async function renameProject(name, newName)" in submission
+    assert "/rename`" in submission
+    assert "renameProject," in app_state
+
+
 def test_task_section_includes_batch_quick_actions():
     task_section = Path("codepilot/web/components/TaskSection.js").read_text(encoding="utf-8")
     app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
