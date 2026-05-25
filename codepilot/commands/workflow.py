@@ -23,6 +23,7 @@ from codepilot.core.workflow_state import (
     workflow_payload_with_consumable_actions,
 )
 from codepilot.storage import database as db
+from codepilot.core.supervisor import build_supervisor_analysis, execute_supervisor_auto
 
 
 @click.group("workflow")
@@ -967,6 +968,74 @@ def auto_policy_cmd(ctx: click.Context, project: str | None, json_mode: bool) ->
     click.echo("  workflow_auto_failure_threshold）")
 
 
+@click.command("supervisor")
+@click.option("--project", "-p", help="项目名称，不指定则按当前目录匹配")
+@click.option("--task", "task_id", type=int, help="只分析指定任务")
+@click.option("--limit", type=int, default=30, show_default=True, help="读取 trace 事件数量；0 表示不限制")
+@click.option("--loop-threshold", type=int, default=2, show_default=True, help="同一任务同一动作连续执行达到阈值后转人工确认")
+@click.option("--auto", "auto_action", is_flag=True, help="执行第一个 allowlist 低风险 Supervisor 建议")
+@click.option("--action", "suggestion_id", help="执行指定 Supervisor suggestion id（仅支持 allowlist）")
+@click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
+@click.pass_context
+def supervisor_cmd(
+    ctx: click.Context,
+    project: str | None,
+    task_id: int | None,
+    limit: int,
+    loop_threshold: int,
+    auto_action: bool,
+    suggestion_id: str | None,
+    json_mode: bool,
+) -> None:
+    """只读分析任务流，并可执行受控 allowlist 导向动作。"""
+    json_mode = resolve_json_mode(ctx, json_mode)
+    try:
+        if auto_action and suggestion_id:
+            raise click.ClickException("不能同时使用 --auto 和 --action。")
+        project_info = _resolve_project(project)
+        if auto_action or suggestion_id:
+            data = execute_supervisor_auto(
+                project_info,
+                task_id=task_id,
+                limit=max(limit, 0),
+                loop_threshold=max(loop_threshold, 1),
+                suggestion_id=suggestion_id,
+            )
+        else:
+            data = build_supervisor_analysis(
+                project_info,
+                task_id=task_id,
+                limit=max(limit, 0),
+                loop_threshold=max(loop_threshold, 1),
+            )
+    except (click.ClickException, OSError, ValueError, json.JSONDecodeError) as exc:
+        _emit_error(ctx, "workflow supervisor", json_mode, exc)
+        return
+
+    if json_mode:
+        emit_json_payload("workflow supervisor", ok=True, data=data)
+        return
+
+    click.echo(f"项目: {data.get('project')}")
+    click.echo(f"Supervisor dry-run: {str(data.get('dry_run')).lower()}")
+    suggestions = data.get("suggestions") or []
+    if not suggestions:
+        echo("[green]未发现需要 Supervisor 导向的任务流风险[/green]")
+    else:
+        for item in suggestions:
+            executable = "auto" if item.get("auto_executable") else "manual"
+            click.echo(
+                f"- {item.get('id')}\t{item.get('severity')}\t{item.get('action')}\t"
+                f"#{item.get('task_id')}\t{executable}\t{item.get('reason')}"
+            )
+    executed = data.get("executed")
+    if executed:
+        echo(f"[green][OK] Supervisor 已执行：{executed.get('action')} #{executed.get('task_id')}[/green]")
+    elif data.get("dry_run") is False:
+        echo(f"[yellow]Supervisor 未执行动作：{data.get('skipped_reason') or 'no_action'}[/yellow]")
+
+
 workflow_group.add_command(status_cmd)
 workflow_group.add_command(next_cmd)
 workflow_group.add_command(auto_policy_cmd)
+workflow_group.add_command(supervisor_cmd)

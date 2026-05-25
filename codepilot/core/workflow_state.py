@@ -23,6 +23,7 @@ TASK_TIMELINE_EVENTS = frozenset(
         "diff_detected",
         "validated",
         "reviewed",
+        "supervised",
         "blocked",
         "done",
         "failed",
