@@ -171,3 +171,64 @@ def test_workflow_supervisor_downgrades_repeated_retry_to_clarification(tmp_path
     assert suggestion["downgraded_from"] == "retry_with_hint"
     assert data["loop_control"]["downgraded"][0]["task_id"] == task["id"]
     assert data["loop_control"]["downgraded"][0]["from_action"] == "retry_with_hint"
+
+
+def test_workflow_supervisor_surfaces_done_task_with_risky_review_evidence(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    project_path = Path(project["path"])
+    task = db.create_task("demo", "done but risky", content="## 任务目标\n\n迁移项目数据", agent="dual")
+    db.update_task(
+        task["id"],
+        status="done",
+        delivery_record="内置执行器完成(builder=codex, reviewer=codex-review, rounds=1) | review: pass",
+        completed_at="2026-05-26T12:01:08",
+    )
+    risky_review = """The patch introduces regressions.
+
+Full review comments:
+
+- [P1] Guard old runtime cleanup against shared slugs — codepilot/storage/database.py:686
+  The old root can be deleted while another project still uses it.
+
+- [P2] Tolerate orphaned log paths during rename — codepilot/storage/database.py:738
+  Missing historical logs should not abort rename.
+"""
+    db.create_task_log(task["id"], "codex-review", "reviewer", output=risky_review, exit_code=0)
+    artifact = write_task_execution_artifacts(
+        project_path,
+        task["id"],
+        status="done",
+        source="run",
+        executor="builtin",
+        artifacts={
+            "patch": {"kind": "patch", "status": "captured", "summary": "changed files"},
+            "review": {
+                "kind": "review",
+                "status": "pass",
+                "verdict": "pass",
+                "summary": "VERDICT: PASS",
+                "blockers": [],
+                "advisory": [],
+                "ac_checks": [],
+            },
+            "validation": {
+                "kind": "validation",
+                "status": "passed",
+                "checks": [{"command": "builtin", "ok": True, "review_excerpt": risky_review}],
+            },
+        },
+    )
+
+    result = CliRunner().invoke(main, ["workflow", "supervisor", "-p", "demo", "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    suggestion = data["suggestions"][0]
+    assert suggestion["action"] == "promote_to_review"
+    assert suggestion["task_id"] == task["id"]
+    assert suggestion["risk"] == "high"
+    assert suggestion["auto_executable"] is False
+    assert "P1" in suggestion["reason"]
+    assert suggestion["artifact_path"] == artifact["artifact_path"]
+    assert data["analysis"]["risks"][0]["task_id"] == task["id"]
+    assert data["observed"]["artifacts"][0]["review_risk"]["risky"] is True

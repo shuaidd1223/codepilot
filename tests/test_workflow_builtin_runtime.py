@@ -60,9 +60,9 @@ def test_extract_review_verdict_uses_codex_review_markers():
        prompt, takes precedence over everything else).
     2. A ``需要修复的点 / 需要修复 / 需要处理 / 修复建议`` section header,
        which the reviewer opens only when it intends to block.
-    3. Non-blocking observations (e.g. bare ``- [PX]`` bullets) are NOT
-       treated as FAIL anymore — that older heuristic misfired on
-       informational notes and caused spurious retries.
+    3. Codex-style priority findings without an explicit pass verdict are
+       treated as blocking review evidence, while plain advisory prose stays
+       non-blocking.
     """
     # Strong FAIL: explicit section header.
     fail_header = "需要修复的点:\n- [P1] Keep add returning a sum"
@@ -70,12 +70,15 @@ def test_extract_review_verdict_uses_codex_review_markers():
     verdict_fail = "**VERDICT: FAIL**"
     # PASS: short affirmative prose, no blocker anchor.
     pass_output = "The only change adds a comment and does not affect behavior."
-    # Observation-only: bullets without a section header should NOT fail.
-    soft_note = "Review comment:\n- [P1] Keep add returning a sum"
+    # Priority findings without a verdict should not pass the gate.
+    priority_finding = "Review comments:\n- [P1] Keep add returning a sum"
+    # Observation-only: plain prose without blocker anchors should NOT fail.
+    soft_note = "Review note:\nConsider renaming this helper in a follow-up."
 
     assert run_cmd._extract_review_verdict(fail_header, "codex-review") == "fail"
     assert run_cmd._extract_review_verdict(verdict_fail, "claude-review") == "fail"
     assert run_cmd._extract_review_verdict(pass_output, "codex-review") == "pass"
+    assert run_cmd._extract_review_verdict(priority_finding, "codex-review") == "fail"
     assert run_cmd._extract_review_verdict(soft_note, "codex-review") == "pass"
 
 
@@ -115,6 +118,84 @@ def test_run_builtin_executor_fails_when_review_verdict_is_unknown(monkeypatch, 
 
     assert result.exit_code == 2
     assert "review 结果不明确" in (result.summary or "")
+
+
+def test_run_builtin_executor_does_not_finalize_no_verdict_priority_findings(monkeypatch, tmp_path):
+    """Task #429-style review comments must not be treated as success."""
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    task_file = project_path / "task.md"
+    task_file.write_text("demo", encoding="utf-8")
+
+    review_output = """The patch introduces regressions.
+
+Full review comments:
+
+- [P1] Guard old runtime cleanup against shared slugs — codepilot/storage/database.py:686
+  The shared runtime root can be deleted while another project still uses it.
+"""
+    phases = iter(
+        [
+            ("codex", 0, "builder ok"),
+            ("codex-review", 0, review_output),
+        ]
+    )
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(run_cmd, "_run_builtin_phase", lambda **kwargs: next(phases))
+    monkeypatch.setattr(run_cmd, "_write_task_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        run_cmd,
+        "_finalize_executor_success",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not finalize success")),
+    )
+
+    result = run_cmd._run_builtin_executor(
+        {"id": 429, "title": "rename migration", "agent": "dual"},
+        {"path": str(project_path)},
+        task_file,
+        auto_commit=False,
+        max_review_rounds=1,
+    )
+
+    assert result.exit_code == 2
+    assert "review 未通过" in (result.summary or "")
+    assert result.review_output == review_output
+    assert "review: pass" not in (result.summary or "")
+
+
+def test_run_builtin_executor_does_not_finalize_legacy_fail_verdict(monkeypatch, tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    task_file = project_path / "task.md"
+    task_file.write_text("demo", encoding="utf-8")
+
+    phases = iter(
+        [
+            ("codex", 0, "builder ok"),
+            ("codex-review", 0, "Review failed\nVERDICT: FAIL"),
+        ]
+    )
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(run_cmd, "_run_builtin_phase", lambda **kwargs: next(phases))
+    monkeypatch.setattr(run_cmd, "_write_task_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        run_cmd,
+        "_finalize_executor_success",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not finalize success")),
+    )
+
+    result = run_cmd._run_builtin_executor(
+        {"id": 7, "title": "demo", "agent": "dual"},
+        {"path": str(project_path)},
+        task_file,
+        auto_commit=False,
+        max_review_rounds=1,
+    )
+
+    assert result.exit_code == 2
+    assert "review: pass" not in (result.summary or "")
 
 
 def test_builtin_runtime_dir_is_project_first_and_outside_project(tmp_path, monkeypatch):

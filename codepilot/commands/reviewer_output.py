@@ -81,6 +81,14 @@ _AC_LINE_RE = re.compile(
     r"(?m)^\s*AC\s*#\d+\s*[:：]\s*(PASS|FAIL|N/A)", re.IGNORECASE
 )
 _VERDICT_STRIPPER_RE = re.compile(r"\s*VERDICT\s*:", re.IGNORECASE)
+_REVIEW_COMMENTS_HEADER_RE = re.compile(
+    r"(?mi)^\s*(?:Full\s+review\s+comments|Review\s+comments)\s*[:：]?\s*$"
+)
+_PRIORITY_FINDING_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?\[(P[123])\]\s*(?P<body>.+?)\s*$",
+    re.IGNORECASE,
+)
+_BLOCKING_PRIORITIES = {"P1", "P2"}
 
 
 def _extract_trailing_json(text: str) -> Optional[dict]:
@@ -128,6 +136,54 @@ def _coerce_ac_list(value: object) -> list[dict]:
     return out
 
 
+def _priority_findings(text: str) -> list[dict[str, str]]:
+    """Extract Codex-style ``[P1]`` / ``[P2]`` / ``[P3]`` review findings."""
+    lines = str(text or "").splitlines()
+    findings: list[dict[str, str]] = []
+    index = 0
+    while index < len(lines):
+        raw = lines[index]
+        match = _PRIORITY_FINDING_LINE_RE.match(raw)
+        if not match:
+            index += 1
+            continue
+        priority = match.group(1).upper()
+        block = [f"[{priority}] {match.group('body').strip()}"]
+        index += 1
+        while index < len(lines):
+            next_line = lines[index]
+            if _PRIORITY_FINDING_LINE_RE.match(next_line):
+                break
+            if not next_line.strip():
+                break
+            if re.match(r"^\s{2,}\S", next_line) or next_line.startswith("\t"):
+                block.append(next_line.strip())
+                index += 1
+                continue
+            break
+        findings.append({"priority": priority, "text": "\n".join(block).strip()})
+    return findings
+
+
+def _priority_finding_texts(text: str) -> list[str]:
+    return [item["text"] for item in _priority_findings(text) if item.get("text")]
+
+
+def _has_blocking_priority_finding(text: str) -> bool:
+    return any(item["priority"] in _BLOCKING_PRIORITIES for item in _priority_findings(text))
+
+
+def _has_review_comments_body(text: str) -> bool:
+    match = _REVIEW_COMMENTS_HEADER_RE.search(text or "")
+    if not match:
+        return False
+    body = str(text or "")[match.end():].strip()
+    if not body:
+        return False
+    lowered = body.lower()
+    return not any(marker in lowered for marker in ("no findings", "no issues", "nothing to report"))
+
+
 def _parse_from_json(payload: dict) -> Optional[ReviewerVerdict]:
     """Hydrate ReviewerVerdict from a JSON payload. Returns None if invalid."""
     verdict_raw = str(payload.get("verdict") or "").strip().lower()
@@ -152,18 +208,31 @@ def _parse_from_json(payload: dict) -> Optional[ReviewerVerdict]:
 
 def _legacy_verdict(text: str) -> str:
     """Reproduces the pre-JSON-era verdict heuristic (kept for compatibility)."""
+    ac_lines = _AC_LINE_RE.findall(text)
+    has_failed_ac = any(v.lower() == "fail" for v in ac_lines)
+    has_needs_fix = bool(_NEEDS_FIX_HEADER_RE.search(text))
+    has_blocking_finding = _has_blocking_priority_finding(text)
+    has_priority_finding = bool(_priority_findings(text))
+
     for line in reversed(text.splitlines()):
         match = _VERDICT_LINE_RE.search(line)
         if match:
-            return match.group(1).lower()
+            explicit = match.group(1).lower()
+            if explicit == "fail":
+                return "fail"
+            if has_failed_ac or has_needs_fix or has_blocking_finding:
+                return "fail"
+            return "pass"
 
     if not text.strip():
         return "unknown"
 
-    if _NEEDS_FIX_HEADER_RE.search(text):
+    if has_failed_ac or has_needs_fix or has_blocking_finding:
         return "fail"
 
-    ac_lines = _AC_LINE_RE.findall(text)
+    if has_priority_finding or _has_review_comments_body(text):
+        return "unknown"
+
     if ac_lines and all(v.lower() in {"pass", "n/a"} for v in ac_lines):
         return "pass"
 
@@ -181,6 +250,13 @@ def _legacy_findings(text: str, *, cap: int = 2000) -> str:
         block = match.group(1).strip()
         if block:
             return block
+
+    priority_findings = _priority_finding_texts(stripped)
+    if priority_findings:
+        out = "\n\n".join(priority_findings).strip()
+        if len(out) > cap:
+            out = out[-cap:]
+        return out
 
     lines = [ln for ln in stripped.splitlines() if not _VERDICT_STRIPPER_RE.match(ln)]
     out = "\n".join(lines).strip()
@@ -217,8 +293,11 @@ def parse_reviewer_output(review_output: str) -> ReviewerVerdict:
             return parsed
 
     verdict = _legacy_verdict(text)
+    priority_findings = _priority_finding_texts(text)
     findings = _legacy_findings(text)
-    blockers = [findings] if (verdict == "fail" and findings) else []
+    blockers = priority_findings if priority_findings and verdict in {"fail", "unknown"} else []
+    if not blockers and verdict == "fail" and findings:
+        blockers = [findings]
     return ReviewerVerdict(
         verdict=verdict,
         blockers=blockers,

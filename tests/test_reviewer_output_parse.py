@@ -132,6 +132,56 @@ VERDICT: FAIL
     assert result.blockers == ["- status.py 里加一个 --json 分支"]
 
 
+def test_parse_no_verdict_priority_review_findings_do_not_default_to_pass():
+    raw = """The patch introduces regressions that should be addressed before accepting.
+
+Full review comments:
+
+- [P1] Guard old runtime cleanup against shared slugs — codepilot/storage/database.py:686
+  When two registered project names slugify to the same runtime directory, renaming one can delete the shared root.
+
+- [P2] Tolerate orphaned log paths during rename — codepilot/storage/database.py:738
+  Missing historical log files should not abort rename.
+"""
+    result = parse_reviewer_output(raw)
+
+    assert result.verdict == "fail"
+    assert result.source == "legacy"
+    assert any("Guard old runtime cleanup" in item for item in result.blockers)
+    assert any("Tolerate orphaned log paths" in item for item in result.blockers)
+
+
+def test_parse_no_verdict_p3_review_finding_is_unknown_not_pass():
+    raw = """Review comments:
+
+- [P3] Use normalized rename results in the client — codepilot/web/boundaries/AppSubmissionBoundary.js:97
+  Use the returned normalized name after rename.
+"""
+    result = parse_reviewer_output(raw)
+
+    assert result.verdict == "unknown"
+    assert result.source == "legacy"
+    assert result.blockers == [
+        "[P3] Use normalized rename results in the client — codepilot/web/boundaries/AppSubmissionBoundary.js:97\n"
+        "Use the returned normalized name after rename."
+    ]
+
+
+def test_parse_legacy_pass_with_blocking_findings_is_contradictory_fail():
+    raw = """Review comments:
+
+- [P1] Missing regression coverage — tests/test_project_rename.py:10
+  The new path is untested.
+
+VERDICT: PASS
+"""
+    result = parse_reviewer_output(raw)
+
+    assert result.verdict == "fail"
+    assert result.source == "legacy"
+    assert result.blockers
+
+
 def test_parse_empty_output_is_unknown():
     result = parse_reviewer_output("")
     assert result.verdict == "unknown"

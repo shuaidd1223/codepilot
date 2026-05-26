@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from codepilot.commands.reviewer_output import parse_reviewer_output
 from codepilot.commands.trace import collect_trace_events
 from codepilot.core.memory import append_memory_event, read_memory_events
 from codepilot.core.workflow_state import (
@@ -120,6 +121,79 @@ def _artifact_status(item: dict[str, Any] | None, *keys: str) -> str:
     return ""
 
 
+def _review_log_evidence(task_id: int) -> list[tuple[str, str]]:
+    evidence: list[tuple[str, str]] = []
+    try:
+        logs = db.list_task_logs(task_id)
+    except Exception:
+        return evidence
+    for log in logs:
+        phase = str(log.get("phase") or "").lower()
+        agent = str(log.get("agent") or "").lower()
+        if "review" not in phase and "review" not in agent:
+            continue
+        output = str(log.get("output") or "").strip()
+        if output:
+            evidence.append(("task_log.reviewer", output))
+    return evidence
+
+
+def _artifact_review_evidence(artifacts: dict[str, Any]) -> list[tuple[str, str]]:
+    evidence: list[tuple[str, str]] = []
+    review = artifacts.get("review") if isinstance(artifacts.get("review"), dict) else {}
+    if review:
+        review_text = "\n".join(
+            str(part or "").strip()
+            for part in (
+                review.get("summary"),
+                "\n".join(str(item) for item in (review.get("blockers") or [])),
+                "\n".join(str(item) for item in (review.get("advisory") or [])),
+            )
+            if str(part or "").strip()
+        )
+        if review_text:
+            evidence.append(("artifact.review", review_text))
+
+    validation = artifacts.get("validation") if isinstance(artifacts.get("validation"), dict) else {}
+    checks = validation.get("checks") if isinstance(validation.get("checks"), list) else []
+    for index, check in enumerate(checks, start=1):
+        if not isinstance(check, dict):
+            continue
+        for key in ("review_excerpt", "output_excerpt", "stderr_excerpt"):
+            text = str(check.get(key) or "").strip()
+            if text:
+                evidence.append((f"artifact.validation.check{index}.{key}", text))
+    return evidence
+
+
+def _review_risk_summary(task_id: int, artifacts: dict[str, Any]) -> dict[str, Any]:
+    """Return the first risky reviewer evidence found for a task, if any."""
+    for source, text in [*_artifact_review_evidence(artifacts), *_review_log_evidence(task_id)]:
+        parsed = parse_reviewer_output(text)
+        if parsed.source == "empty":
+            continue
+        actionable = [str(item).strip() for item in (parsed.blockers or []) if str(item).strip()]
+        risky = parsed.verdict == "fail" or (parsed.verdict == "unknown" and bool(actionable))
+        if not risky:
+            continue
+        severity = (
+            "high"
+            if parsed.verdict == "fail" or any("[P1]" in item or "[P2]" in item for item in actionable)
+            else "medium"
+        )
+        summary = "; ".join(actionable[:3]) if actionable else f"VERDICT: {parsed.verdict.upper()}"
+        return {
+            "risky": True,
+            "source": source,
+            "verdict": parsed.verdict,
+            "parser_source": parsed.source,
+            "severity": severity,
+            "findings": actionable[:6],
+            "summary": _compact(summary, limit=500),
+        }
+    return {"risky": False}
+
+
 def _task_artifact_summary(project_path: Path, task: dict[str, Any]) -> dict[str, Any]:
     task_id = int(task["id"])
     payload = read_task_execution_artifacts(project_path, task_id)
@@ -131,6 +205,7 @@ def _task_artifact_summary(project_path: Path, task: dict[str, Any]) -> dict[str
             "validation_status": "",
             "review_status": "",
             "review_verdict": "",
+            "review_risk": _review_risk_summary(task_id, {}),
             "artifact_kinds": [],
             "last_timeline_event": {},
             "timeline_count": 0,
@@ -148,6 +223,7 @@ def _task_artifact_summary(project_path: Path, task: dict[str, Any]) -> dict[str
         "review_verdict": _artifact_status(review, "verdict", "status"),
         "review_summary": _compact(review.get("summary") if isinstance(review, dict) else "", limit=240),
         "validation_summary": _compact(validation.get("summary") if isinstance(validation, dict) else "", limit=240),
+        "review_risk": _review_risk_summary(task_id, artifacts),
         "artifact_kinds": sorted(str(key) for key in artifacts),
         "last_timeline_event": dict(timeline[-1]) if timeline else {},
         "timeline_count": len(timeline),
@@ -276,6 +352,21 @@ def _suggest_for_task(
             reason=reason,
             label="请求人工确认是否恢复任务",
         )
+    elif status == "done" and isinstance(artifact.get("review_risk"), dict) and artifact["review_risk"].get("risky"):
+        review_risk = artifact["review_risk"]
+        source = _compact(review_risk.get("source"), limit=120)
+        risk_summary = _compact(review_risk.get("summary"), limit=320)
+        suggestion = _base_suggestion(
+            task,
+            artifact,
+            action="promote_to_review",
+            severity=str(review_risk.get("severity") or "high"),
+            risk="high",
+            reason=f"任务已完成但 reviewer 证据存在风险（{source}）：{risk_summary}",
+            label="建议人工复核 reviewer 风险",
+        )
+        suggestion["auto_executable"] = False
+        suggestion["review_risk"] = review_risk
     elif status == "done" and "patch" in (artifact.get("artifact_kinds") or []) and not artifact.get("review_verdict"):
         suggestion = _base_suggestion(
             task,
