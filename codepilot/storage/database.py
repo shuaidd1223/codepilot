@@ -852,6 +852,21 @@ def _raw_list_projects() -> list[dict]:
         return _fetch_projects(conn)
 
 
+def _config_rename_sync_failure(project: dict, config_name: str, exc: Exception) -> dict:
+    message = str(exc) or exc.__class__.__name__
+    return {
+        "ok": False,
+        "renamed": False,
+        "old_name": str(project.get("name") or ""),
+        "new_name": config_name,
+        "path": str(project.get("path") or ""),
+        "config_file": str(project.get("config_file") or ""),
+        "config_updated": False,
+        "config_error": message,
+        "sync_skipped": True,
+    }
+
+
 def sync_project_config_renames() -> list[dict]:
     """Synchronize registered names when AGENTS.toml was manually renamed."""
     if _config_rename_sync_active():
@@ -865,20 +880,8 @@ def sync_project_config_renames() -> list[dict]:
                 continue
             try:
                 results.append(rename_project(str(project["name"]), config_name))
-            except ValueError as exc:
-                results.append(
-                    {
-                        "ok": False,
-                        "renamed": False,
-                        "old_name": str(project.get("name") or ""),
-                        "new_name": config_name,
-                        "path": str(project.get("path") or ""),
-                        "config_file": str(project.get("config_file") or ""),
-                        "config_updated": False,
-                        "config_error": str(exc),
-                        "sync_skipped": True,
-                    }
-                )
+            except Exception as exc:  # noqa: BLE001 - opportunistic read-path sync must preserve failures.
+                results.append(_config_rename_sync_failure(project, config_name, exc))
     finally:
         _CONFIG_RENAME_SYNC.active = False
     return results

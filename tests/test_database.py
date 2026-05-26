@@ -200,6 +200,29 @@ class TestProjects:
         assert sync_results[0]["new_name"] == "target"
         assert "已存在" in sync_results[0]["config_error"]
 
+    def test_list_projects_preserves_non_conflict_config_rename_failure(self, tmp_db: Path, monkeypatch):
+        project_path = tmp_db.parent / "source"
+        project_path.mkdir()
+        config_path = project_path / "AGENTS.toml"
+        config_path.write_text('[project]\nname = "target"\n', encoding="utf-8")
+        db.register_project("source", str(project_path), config_file=str(config_path))
+
+        def fail_runtime_migration(_old_name: str, _new_name: str):
+            raise RuntimeError("runtime migration exploded")
+
+        monkeypatch.setattr(db, "_migrate_project_runtime_data", fail_runtime_migration)
+
+        projects = db.list_projects()
+        sync_results = db.sync_project_config_renames()
+
+        names = {project["name"] for project in projects}
+        assert names == {"source"}
+        assert sync_results
+        assert sync_results[0]["renamed"] is False
+        assert sync_results[0]["old_name"] == "source"
+        assert sync_results[0]["new_name"] == "target"
+        assert "runtime migration exploded" in sync_results[0]["config_error"]
+
     def test_project_aliases_are_resolved(self, tmp_db: Path):
         """项目别名应能被 get_project 解析。"""
         db.register_project("alias-target", str(tmp_db.parent))
