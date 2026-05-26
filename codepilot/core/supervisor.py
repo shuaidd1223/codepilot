@@ -166,8 +166,72 @@ def _artifact_review_evidence(artifacts: dict[str, Any]) -> list[tuple[str, str]
     return evidence
 
 
+def _structured_review_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _structured_failed_ac_findings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    findings: list[str] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "").strip().upper() != "FAIL":
+            continue
+        ac_id = str(item.get("id") or "").strip() or f"AC-{index}"
+        reason = str(item.get("reason") or "").strip()
+        findings.append(f"{ac_id}: {reason}" if reason else f"{ac_id}: FAIL")
+    return findings
+
+
+def _unique_review_findings(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _structured_review_artifact_risk(artifacts: dict[str, Any]) -> dict[str, Any] | None:
+    review = artifacts.get("review") if isinstance(artifacts.get("review"), dict) else {}
+    if not review:
+        return None
+    verdict = str(review.get("verdict") or review.get("status") or "").strip().lower()
+    blockers = _structured_review_list(review.get("blockers"))
+    failed_ac = _structured_failed_ac_findings(review.get("ac_checks"))
+    findings = _unique_review_findings([*blockers, *failed_ac])
+    risky = verdict == "fail" or bool(findings)
+    if not risky:
+        return None
+    summary = "; ".join(findings[:3]) if findings else f"VERDICT: {verdict.upper() or 'UNKNOWN'}"
+    return {
+        "risky": True,
+        "source": "artifact.review.structured",
+        "verdict": verdict or "unknown",
+        "parser_source": "structured",
+        "severity": "high",
+        "findings": findings[:6],
+        "summary": _compact(summary, limit=500),
+    }
+
+
 def _review_risk_summary(task_id: int, artifacts: dict[str, Any]) -> dict[str, Any]:
     """Return the first risky reviewer evidence found for a task, if any."""
+    structured_risk = _structured_review_artifact_risk(artifacts)
+    if structured_risk:
+        return structured_risk
     for source, text in [*_artifact_review_evidence(artifacts), *_review_log_evidence(task_id)]:
         parsed = parse_reviewer_output(text)
         if parsed.source == "empty":

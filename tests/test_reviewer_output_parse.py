@@ -52,6 +52,42 @@ VERDICT: FAIL
     assert result.raw_json is not None
 
 
+def test_parse_json_pass_with_blockers_is_contradictory_fail():
+    raw = """Reviewer prose accidentally says this is okay.
+
+VERDICT: PASS
+```json
+{
+  "verdict": "pass",
+  "ac_checks": [{"id": "AC-1", "status": "PASS", "reason": "mostly ok"}],
+  "blockers": ["补上缺失的回归测试"],
+  "advisory": []
+}
+```"""
+
+    result = parse_reviewer_output(raw)
+    assert result.verdict == "fail"
+    assert result.source == "json"
+    assert result.blockers == ["补上缺失的回归测试"]
+
+
+def test_parse_json_pass_with_failed_ac_is_contradictory_fail():
+    raw = """VERDICT: PASS
+```json
+{
+  "verdict": "pass",
+  "ac_checks": [{"id": "AC-2", "status": "FAIL", "reason": "没有覆盖边界场景"}],
+  "blockers": [],
+  "advisory": []
+}
+```"""
+
+    result = parse_reviewer_output(raw)
+    assert result.verdict == "fail"
+    assert result.source == "json"
+    assert result.blockers == ["AC-2: 没有覆盖边界场景"]
+
+
 def test_parse_json_fail_without_blockers_falls_back_to_needs_fix_prose():
     """verdict=fail in JSON but blockers empty → scavenge 需要修复的点 block."""
     raw = """AC #1: FAIL (挂了)

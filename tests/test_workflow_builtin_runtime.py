@@ -164,6 +164,52 @@ Full review comments:
     assert "review: pass" not in (result.summary or "")
 
 
+def test_run_builtin_executor_does_not_finalize_contradictory_json_pass(monkeypatch, tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    task_file = project_path / "task.md"
+    task_file.write_text("demo", encoding="utf-8")
+
+    review_output = """Review summary says pass, but the structured block still has a blocker.
+
+VERDICT: PASS
+```json
+{
+  "verdict": "pass",
+  "ac_checks": [{"id": "AC-1", "status": "PASS", "reason": "ok"}],
+  "blockers": ["补上缺失的回归测试"],
+  "advisory": []
+}
+```"""
+    phases = iter(
+        [
+            ("codex", 0, "builder ok"),
+            ("codex-review", 0, review_output),
+        ]
+    )
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(run_cmd, "_run_builtin_phase", lambda **kwargs: next(phases))
+    monkeypatch.setattr(run_cmd, "_write_task_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        run_cmd,
+        "_finalize_executor_success",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not finalize success")),
+    )
+
+    result = run_cmd._run_builtin_executor(
+        {"id": 432, "title": "verdict gate", "agent": "dual"},
+        {"path": str(project_path)},
+        task_file,
+        auto_commit=False,
+        max_review_rounds=1,
+    )
+
+    assert result.exit_code == 2
+    assert "review 未通过" in (result.summary or "")
+    assert "review: pass" not in (result.summary or "")
+
+
 def test_run_builtin_executor_does_not_finalize_legacy_fail_verdict(monkeypatch, tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()

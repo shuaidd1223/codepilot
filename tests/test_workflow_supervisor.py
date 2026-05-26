@@ -232,3 +232,47 @@ Full review comments:
     assert suggestion["artifact_path"] == artifact["artifact_path"]
     assert data["analysis"]["risks"][0]["task_id"] == task["id"]
     assert data["observed"]["artifacts"][0]["review_risk"]["risky"] is True
+
+
+def test_workflow_supervisor_flags_contradictory_pass_review_artifact(tmp_path, monkeypatch):
+    project = _register_demo_project(tmp_path, monkeypatch)
+    project_path = Path(project["path"])
+    task = db.create_task("demo", "done with contradictory review", content="## 任务目标\n\n补执行门禁", agent="dual")
+    db.update_task(
+        task["id"],
+        status="done",
+        delivery_record="内置执行器完成(builder=codex, reviewer=codex-review, rounds=1) | review: pass",
+        completed_at="2026-05-26T12:10:00",
+    )
+    artifact = write_task_execution_artifacts(
+        project_path,
+        task["id"],
+        status="done",
+        source="run",
+        executor="builtin",
+        artifacts={
+            "patch": {"kind": "patch", "status": "captured", "summary": "changed files"},
+            "review": {
+                "kind": "review",
+                "status": "pass",
+                "verdict": "pass",
+                "summary": "VERDICT: PASS",
+                "blockers": ["补上 reviewer verdict gate 的回归测试"],
+                "advisory": [],
+                "ac_checks": [{"id": "AC-1", "status": "PASS", "reason": "main path works"}],
+            },
+            "validation": {"kind": "validation", "status": "passed", "checks": []},
+        },
+    )
+
+    result = CliRunner().invoke(main, ["workflow", "supervisor", "-p", "demo", "--json"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    suggestion = data["suggestions"][0]
+    assert suggestion["action"] == "promote_to_review"
+    assert suggestion["risk"] == "high"
+    assert suggestion["auto_executable"] is False
+    assert "reviewer verdict gate" in suggestion["reason"]
+    assert suggestion["artifact_path"] == artifact["artifact_path"]
+    assert data["observed"]["artifacts"][0]["review_risk"]["risky"] is True

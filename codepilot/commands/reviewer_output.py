@@ -136,6 +136,30 @@ def _coerce_ac_list(value: object) -> list[dict]:
     return out
 
 
+def _failed_ac_findings(ac_checks: list[dict]) -> list[str]:
+    findings: list[str] = []
+    for index, item in enumerate(ac_checks, start=1):
+        status = str(item.get("status") or "").strip().upper()
+        if status != "FAIL":
+            continue
+        ac_id = str(item.get("id") or "").strip() or f"AC-{index}"
+        reason = str(item.get("reason") or "").strip()
+        findings.append(f"{ac_id}: {reason}" if reason else f"{ac_id}: FAIL")
+    return findings
+
+
+def _unique_findings(items: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
 def _priority_findings(text: str) -> list[dict[str, str]]:
     """Extract Codex-style ``[P1]`` / ``[P2]`` / ``[P3]`` review findings."""
     lines = str(text or "").splitlines()
@@ -192,6 +216,10 @@ def _parse_from_json(payload: dict) -> Optional[ReviewerVerdict]:
     blockers = _coerce_str_list(payload.get("blockers"))
     advisory = _coerce_str_list(payload.get("advisory"))
     ac_checks = _coerce_ac_list(payload.get("ac_checks"))
+    failed_ac = _failed_ac_findings(ac_checks)
+    if verdict_raw == "pass" and (blockers or failed_ac):
+        verdict_raw = "fail"
+        blockers = _unique_findings([*blockers, *failed_ac])
 
     # If verdict=fail but the reviewer forgot to enumerate blockers, we still
     # accept it — the regex fallback may scavenge a prose block. Don't silently
@@ -283,6 +311,10 @@ def parse_reviewer_output(review_output: str) -> ReviewerVerdict:
     if payload is not None:
         parsed = _parse_from_json(payload)
         if parsed is not None:
+            if parsed.verdict == "pass" and _legacy_verdict(text) == "fail":
+                legacy_findings = _legacy_findings(text)
+                parsed.verdict = "fail"
+                parsed.blockers = _unique_findings([*parsed.blockers, legacy_findings])
             # Augment missing blockers with the legacy prose block when the
             # reviewer only gave us a verdict in JSON but kept the fix list
             # up in the human-readable body.
