@@ -88,6 +88,57 @@ def test_parse_json_pass_with_failed_ac_is_contradictory_fail():
     assert result.blockers == ["AC-2: 没有覆盖边界场景"]
 
 
+def test_parse_final_json_pass_takes_precedence_over_stale_legacy_fail_markers():
+    raw = """Earlier review before the builder fixed the issue:
+AC #1: FAIL
+需要修复的点:
+- 旧问题，已经在后续 builder 轮次中修复
+
+VERDICT: FAIL
+
+Final re-check:
+VERDICT: PASS
+```json
+{
+  "verdict": "pass",
+  "ac_checks": [{"id": "AC-1", "status": "PASS", "reason": "fixed"}],
+  "blockers": [],
+  "advisory": ["前面的 legacy fail marker 属于旧轮次输出"]
+}
+```"""
+
+    result = parse_reviewer_output(raw)
+    assert result.verdict == "pass"
+    assert result.source == "json"
+    assert result.blockers == []
+    assert result.advisory == ["前面的 legacy fail marker 属于旧轮次输出"]
+
+
+def test_parse_json_pass_rejects_later_legacy_fail_after_fence():
+    raw = """Initial decision:
+VERDICT: PASS
+```json
+{
+  "verdict": "pass",
+  "ac_checks": [{"id": "AC-1", "status": "PASS", "reason": "initially looked ok"}],
+  "blockers": [],
+  "advisory": []
+}
+```
+
+Actually I found a blocker after writing the JSON block.
+AC #2: FAIL
+需要修复的点:
+- JSON 后追加的失败才是最终修正意见
+VERDICT: FAIL
+"""
+
+    result = parse_reviewer_output(raw)
+    assert result.verdict == "fail"
+    assert result.source == "json"
+    assert result.blockers == ["- JSON 后追加的失败才是最终修正意见"]
+
+
 def test_parse_json_fail_without_blockers_falls_back_to_needs_fix_prose():
     """verdict=fail in JSON but blockers empty → scavenge 需要修复的点 block."""
     raw = """AC #1: FAIL (挂了)

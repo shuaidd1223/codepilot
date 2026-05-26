@@ -65,6 +65,12 @@ class ReviewerVerdict:
     raw_json: Optional[dict] = None
 
 
+@dataclass(frozen=True)
+class _JsonVerdictCandidate:
+    payload: dict
+    end: int
+
+
 _JSON_FENCE_RE = re.compile(
     r"```(?:json)?\s*\n(?P<body>\{.*?\})\s*\n```",
     re.DOTALL | re.IGNORECASE,
@@ -91,8 +97,8 @@ _PRIORITY_FINDING_LINE_RE = re.compile(
 _BLOCKING_PRIORITIES = {"P1", "P2"}
 
 
-def _extract_trailing_json(text: str) -> Optional[dict]:
-    """Pick the *last* fenced JSON object in the transcript, if any."""
+def _extract_trailing_json(text: str) -> Optional[_JsonVerdictCandidate]:
+    """Pick the last valid fenced JSON object and keep its transcript tail."""
     matches = list(_JSON_FENCE_RE.finditer(text))
     for match in reversed(matches):
         body = match.group("body").strip()
@@ -101,7 +107,7 @@ def _extract_trailing_json(text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict):
-            return payload
+            return _JsonVerdictCandidate(payload=payload, end=match.end())
     return None
 
 
@@ -307,17 +313,21 @@ def parse_reviewer_output(review_output: str) -> ReviewerVerdict:
     if not text.strip():
         return ReviewerVerdict(verdict="unknown", source="empty")
 
-    payload = _extract_trailing_json(text)
-    if payload is not None:
-        parsed = _parse_from_json(payload)
+    candidate = _extract_trailing_json(text)
+    if candidate is not None:
+        parsed = _parse_from_json(candidate.payload)
         if parsed is not None:
-            if parsed.verdict == "pass" and _legacy_verdict(text) == "fail":
-                legacy_findings = _legacy_findings(text)
-                parsed.verdict = "fail"
-                parsed.blockers = _unique_findings([*parsed.blockers, legacy_findings])
             # Augment missing blockers with the legacy prose block when the
             # reviewer only gave us a verdict in JSON but kept the fix list
-            # up in the human-readable body.
+            # up in the human-readable body. For JSON PASS, ignore older
+            # pre-fence legacy fail markers, but still honor a later reviewer
+            # self-correction appended after the selected JSON block.
+            tail = text[candidate.end :]
+            if parsed.verdict == "pass" and _legacy_verdict(tail) == "fail":
+                parsed.verdict = "fail"
+                legacy_findings = _legacy_findings(tail)
+                if legacy_findings:
+                    parsed.blockers = _unique_findings([*parsed.blockers, legacy_findings])
             if parsed.verdict == "fail" and not parsed.blockers:
                 legacy_findings = _legacy_findings(text)
                 if legacy_findings:

@@ -164,6 +164,117 @@ Full review comments:
     assert "review: pass" not in (result.summary or "")
 
 
+def test_run_builtin_executor_finalizes_when_final_json_pass_overrides_stale_legacy_markers(monkeypatch, tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    task_file = project_path / "task.md"
+    task_file.write_text("demo", encoding="utf-8")
+
+    review_output = """Earlier stale reviewer text:
+AC #1: FAIL
+需要修复的点:
+- 旧问题，已经在后续 builder 轮次中修复
+VERDICT: FAIL
+
+Final re-check:
+VERDICT: PASS
+```json
+{
+  "verdict": "pass",
+  "ac_checks": [{"id": "AC-1", "status": "PASS", "reason": "fixed"}],
+  "blockers": [],
+  "advisory": []
+}
+```"""
+    phases = iter(
+        [
+            ("codex", 0, "builder ok"),
+            ("codex-review", 0, review_output),
+        ]
+    )
+    finalized = {}
+
+    def fake_finalize(ctx, **kwargs):
+        finalized["called"] = True
+        finalized["review_output"] = kwargs["reviewer"].output
+        return run_cmd.ExecutionResult(
+            exit_code=0,
+            output=kwargs["builder"].output,
+            review_output=kwargs["reviewer"].output,
+            summary="finalized success",
+            executor="builtin",
+        )
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(run_cmd, "_run_builtin_phase", lambda **kwargs: next(phases))
+    monkeypatch.setattr(run_cmd, "_write_task_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_cmd, "_finalize_executor_success", fake_finalize)
+
+    result = run_cmd._run_builtin_executor(
+        {"id": 434, "title": "final json verdict precedence", "agent": "dual"},
+        {"path": str(project_path)},
+        task_file,
+        auto_commit=False,
+        max_review_rounds=1,
+    )
+
+    assert result.exit_code == 0
+    assert result.summary == "finalized success"
+    assert finalized == {"called": True, "review_output": review_output}
+
+
+def test_run_builtin_executor_does_not_finalize_later_legacy_fail_after_json_pass(monkeypatch, tmp_path):
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    task_file = project_path / "task.md"
+    task_file.write_text("demo", encoding="utf-8")
+
+    review_output = """Initial decision:
+VERDICT: PASS
+```json
+{
+  "verdict": "pass",
+  "ac_checks": [{"id": "AC-1", "status": "PASS", "reason": "initially ok"}],
+  "blockers": [],
+  "advisory": []
+}
+```
+
+Actually I found a blocker after writing the JSON block.
+AC #2: FAIL
+需要修复的点:
+- JSON 后追加的失败才是最终修正意见
+VERDICT: FAIL
+"""
+    phases = iter(
+        [
+            ("codex", 0, "builder ok"),
+            ("codex-review", 0, review_output),
+        ]
+    )
+
+    monkeypatch.setattr(run_cmd, "_builtin_preflight_error", lambda *args, **kwargs: "")
+    monkeypatch.setattr(run_cmd, "_run_builtin_phase", lambda **kwargs: next(phases))
+    monkeypatch.setattr(run_cmd, "_write_task_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        run_cmd,
+        "_finalize_executor_success",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not finalize success")),
+    )
+
+    result = run_cmd._run_builtin_executor(
+        {"id": 434, "title": "final json verdict precedence", "agent": "dual"},
+        {"path": str(project_path)},
+        task_file,
+        auto_commit=False,
+        max_review_rounds=1,
+    )
+
+    assert result.exit_code == 2
+    assert "review 未通过" in (result.summary or "")
+    assert result.review_output == review_output
+
+
 def test_run_builtin_executor_does_not_finalize_contradictory_json_pass(monkeypatch, tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()
