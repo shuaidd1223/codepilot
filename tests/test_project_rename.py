@@ -6,9 +6,16 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from codepilot.core.paths import global_storage_root, project_storage_root
 from codepilot.cli import main
 from codepilot.storage import database as db
 from tests.workflow_testkit import init_test_db
+
+
+def _write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def test_project_rename_command_updates_project_and_children(tmp_path, monkeypatch):
@@ -30,6 +37,113 @@ def test_project_rename_command_updates_project_and_children(tmp_path, monkeypat
     assert db.get_project("new-name") is not None
     assert db.get_task(task["id"])["project"] == "new-name"
     assert db.get_session(session["id"])["project"] == "new-name"
+
+
+def test_project_rename_command_migrates_project_data_dirs_and_log_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / "home"))
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("old-name", str(project_path))
+
+    old_data = project_storage_root(project_name="old-name")
+    new_data = project_storage_root(project_name="new-name")
+    old_log = _write(old_data / "runs" / "task-1.console.md", "builder output")
+    _write(old_data / "task-files" / "task-1.md", "task file")
+    old_conflict_text = "old log"
+    _write(old_data / "logs" / "codepilot.log", old_conflict_text)
+    _write(new_data / "logs" / "codepilot.log", "new log")
+
+    old_daemon_log = _write(global_storage_root() / "daemon" / "old-name" / "daemon.log", "daemon old")
+    _write(global_storage_root() / "inspect" / "old-name" / "inspect.log", "inspect old")
+    _write(global_storage_root() / "opencode" / "old-name" / "opencode.json", "{}")
+
+    task = db.create_task("old-name", "rename data", content=f"audit text keeps {old_data}")
+    db.update_task(task["id"], status="in_progress", current_log_path=str(old_log))
+    db.upsert_service_state(
+        "daemon",
+        "old-name",
+        pid=1234,
+        status="running",
+        log_path=str(old_daemon_log),
+        meta={"project": "old-name"},
+    )
+
+    result = CliRunner().invoke(main, ["project", "rename", "old-name", "new-name", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data_migrated"] is True
+    assert payload["data_error"] == ""
+    assert payload["data_conflicts"]
+    assert payload["data_backup_path"]
+    assert (new_data / "runs" / "task-1.console.md").read_text(encoding="utf-8") == "builder output"
+    assert (new_data / "task-files" / "task-1.md").read_text(encoding="utf-8") == "task file"
+    assert (new_data / "logs" / "codepilot.log").read_text(encoding="utf-8") == "new log"
+    backup_file = Path(payload["data_conflicts"][0]["backup"])
+    assert backup_file.read_text(encoding="utf-8") == old_conflict_text
+    assert (global_storage_root() / "daemon" / "new-name" / "daemon.log").read_text(encoding="utf-8") == "daemon old"
+    assert (global_storage_root() / "inspect" / "new-name" / "inspect.log").read_text(encoding="utf-8") == "inspect old"
+    assert (global_storage_root() / "opencode" / "new-name" / "opencode.json").is_file()
+
+    renamed_task = db.get_task(task["id"])
+    assert renamed_task["project"] == "new-name"
+    assert renamed_task["current_log_path"] == str(new_data / "runs" / "task-1.console.md")
+    assert Path(renamed_task["current_log_path"]).is_file()
+    assert f"audit text keeps {old_data}" in renamed_task["content"]
+    daemon_state = db.get_service_state("daemon", "new-name")
+    assert daemon_state["log_path"] == str(global_storage_root() / "daemon" / "new-name" / "daemon.log")
+
+
+def test_project_rename_reports_pending_cleanup_when_old_runtime_dir_is_locked(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / "home"))
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("old-name", str(project_path))
+    old_data = project_storage_root(project_name="old-name")
+    old_log = _write(old_data / "runs" / "task.console.md", "still readable")
+    task = db.create_task("old-name", "locked dir", content="body")
+    db.update_task(task["id"], status="in_progress", current_log_path=str(old_log))
+
+    original_rmtree = db.shutil.rmtree
+
+    def locked_rmtree(path, *args, **kwargs):
+        if Path(path) == old_data:
+            raise PermissionError("directory is in use")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(db.shutil, "rmtree", locked_rmtree)
+
+    result = db.rename_project("old-name", "new-name")
+
+    assert result["ok"] is True
+    assert str(old_data) in result["pending_cleanup"]
+    renamed_task = db.get_task(task["id"])
+    assert renamed_task["project"] == "new-name"
+    assert renamed_task["current_log_path"] == str(project_storage_root(project_name="new-name") / "runs" / "task.console.md")
+    assert Path(renamed_task["current_log_path"]).is_file()
+    assert old_data.exists()
+
+
+def test_project_rename_same_storage_slug_keeps_existing_data(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / "home"))
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("same name", str(project_path))
+    log_path = _write(project_storage_root(project_name="same name") / "runs" / "same.log", "same slug")
+    task = db.create_task("same name", "same slug", content="body")
+    db.update_task(task["id"], current_log_path=str(log_path))
+
+    result = db.rename_project("same name", "same-name")
+
+    assert result["ok"] is True
+    assert result["data_migrated"] is False
+    assert log_path.read_text(encoding="utf-8") == "same slug"
+    renamed_task = db.get_task(task["id"])
+    assert renamed_task["project"] == "same-name"
+    assert renamed_task["current_log_path"] == str(log_path)
 
 
 def test_project_rename_command_updates_agents_toml_project_alias(tmp_path, monkeypatch):

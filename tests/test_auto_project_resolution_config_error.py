@@ -324,9 +324,10 @@ planner = "codex"
     assert "废弃字段" in str(excinfo.value) or "codex_cmd" in str(excinfo.value)
 
 
-def test_resolve_project_for_prompt_ignores_manual_config_project_rename(tmp_path, monkeypatch):
+def test_resolve_project_for_prompt_syncs_manual_config_project_rename(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     monkeypatch.setenv("CODEPILOT_GLOBAL_CONFIG_PATH", str(tmp_path / "missing-global-AGENTS.toml"))
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / "home"))
     from codepilot.storage import database as db
 
     db.init_db()
@@ -342,7 +343,7 @@ def test_resolve_project_for_prompt_ignores_manual_config_project_rename(tmp_pat
 
     result = resolve_project_for_prompt(project=None, cwd=project, auto_register=True)
 
-    assert result["name"] == "old-name"
-    assert db.get_project("old-name") is not None
-    assert db.get_project("new-name") is None
-    assert db.get_task(task["id"])["project"] == "old-name"
+    assert result["name"] == "new-name"
+    assert db.get_project("old-name") is None
+    assert db.get_project("new-name") is not None
+    assert db.get_task(task["id"])["project"] == "new-name"

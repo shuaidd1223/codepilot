@@ -81,6 +81,18 @@ def rename_project(ctx: click.Context, name: str, new_name: str, json_mode: bool
     echo(f"[green][OK] 项目 '{result['old_name']}' 已重命名为 '{result['new_name']}'[/green]")
     click.echo(f"  工作目录: {result['path']}")
     click.echo(f"  已迁移任务: {result['updated_tasks']}，会话: {result['updated_sessions']}")
+    if result.get("data_migrated"):
+        click.echo(
+            "  运行数据: "
+            f"复制 {result.get('data_files_copied', 0)} 个文件，"
+            f"日志路径更新 {result.get('updated_log_paths', 0)} 条"
+        )
+    if result.get("data_conflicts"):
+        click.echo(f"  数据冲突: {len(result['data_conflicts'])} 个，备份: {result.get('data_backup_path') or '-'}")
+    if result.get("pending_cleanup"):
+        click.echo(f"  待清理旧目录: {len(result['pending_cleanup'])} 个")
+    if result.get("data_error"):
+        click.echo(f"  数据迁移错误: {result['data_error']}")
     if result.get("config_updated"):
         click.echo(f"  配置已更新: {result['config_file']}")
     elif result.get("config_error"):

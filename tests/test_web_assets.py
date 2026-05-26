@@ -264,18 +264,19 @@ def test_sidebar_project_row_click_selects_before_toggling_expand_state():
       this.cp.toggleProject(name);""" in sidebar
 
 
-def test_sidebar_does_not_wire_project_rename_action():
+def test_sidebar_wires_project_rename_action_and_migration_toast():
     sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
     submission = Path("codepilot/web/boundaries/AppSubmissionBoundary.js").read_text(encoding="utf-8")
     app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
 
-    assert "renameProject(project, ev)" not in sidebar
-    assert "this.cp.renameProject(project.name, nextName)" not in sidebar
-    assert "title=\"重命名项目\"" not in sidebar
-    assert "project-rename-inline" not in sidebar
-    assert "async function renameProject(name, newName)" not in submission
-    assert "/rename`" not in submission
-    assert "renameProject," not in app_state
+    assert "renameProject(project, ev)" in sidebar
+    assert "this.cp.renameProject(project.name, this.renameDraft)" in sidebar
+    assert "title=\"重命名项目\"" in sidebar
+    assert "project-rename-inline" in sidebar
+    assert "async function renameProject(name, newName)" in submission
+    assert "/rename`" in submission
+    assert "formatProjectRenameMessage(out)" in submission
+    assert "renameProject," in app_state
 
 
 def test_task_section_includes_batch_quick_actions():
@@ -741,6 +742,58 @@ def test_agent_log_contract_exposes_stable_adapter_surface():
         "scrollToBottom:",
     ):
         assert marker in contract_boundary
+
+
+def test_agent_log_renders_runtime_output_as_safe_local_scroll_text():
+    agent_log = Path("codepilot/web/components/AgentLog.js").read_text(encoding="utf-8")
+    render_boundary = Path("codepilot/web/boundaries/AgentLogRenderBoundary.js").read_text(encoding="utf-8")
+    interaction_boundary = Path("codepilot/web/boundaries/AgentLogInteractionBoundary.js").read_text(encoding="utf-8")
+    contract_boundary = Path("codepilot/web/boundaries/AgentLogBoundaryContract.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "v-html" not in agent_log
+    assert 'v-text="b.raw"' in agent_log
+    assert "class=\"al-log-wrap\"" in agent_log
+    assert "class=\"al-log-text\"" in agent_log
+    assert "CP.renderOutput" not in render_boundary
+    assert "CP.renderMarkdown" not in render_boundary
+    assert "CP.renderOutput" not in contract_boundary
+    assert "CP.renderMarkdown" not in contract_boundary
+    assert "`log:${lineStart}:${i}:${rawChunk.length}`" in render_boundary
+    assert "querySelector(`.al-log-wrap[data-idx=\"${idx}\"]`)" in interaction_boundary
+    assert "querySelector(`.al-log-wrap[data-idx=\"${idx}\"]`)" in contract_boundary
+    assert ".agent-log-body {" in styles
+    assert "overscroll-behavior: contain;" in styles
+    assert "contain: paint;" in styles
+    assert ".al-log-text" in styles
+    assert "white-space: pre-wrap;" in styles
+    assert "overflow-wrap: anywhere;" in styles
+
+
+def test_agent_log_collapses_noncritical_command_details_by_default():
+    agent_log = Path("codepilot/web/components/AgentLog.js").read_text(encoding="utf-8")
+    render_boundary = Path("codepilot/web/boundaries/AgentLogRenderBoundary.js").read_text(encoding="utf-8")
+    styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
+
+    assert "expandedBlocks: {}" in agent_log
+    assert "toggleBlock(key)" in agent_log
+    assert "isBlockExpanded(key)" in agent_log
+    assert "isBlockCollapsible(block)" in agent_log
+    assert "commandGroupTitle(block)" in agent_log
+    assert "al-command-group-head" in agent_log
+    assert "al-command-list" in agent_log
+    assert "al-command-run-head" in agent_log
+    assert "v-if=\"isBlockExpanded(b.key)\"" in agent_log
+    assert "v-if=\"isBlockExpanded(run.key)\"" in agent_log
+    assert "parseCommandRuns" in render_boundary
+    assert "type: 'command-group'" in render_boundary
+    assert "type: 'command-run'" in render_boundary
+    assert "collapsed: true" in render_boundary
+    assert "summarizeCommandRun" in render_boundary
+    assert ".al-fold-row" in styles
+    assert ".al-command-list" in styles
+    assert ".al-command-run-head" in styles
+    assert ".al-command-text" in styles
 
 
 def test_web_ui_professional_console_style_contract():

@@ -96,8 +96,9 @@ def _resolve_with_existing_config_project(
 ) -> dict:
     if not policy.auto_register or policy.require_registered:
         return matched
+    project_name = (cfg.project_name or cfg.project.name) if cfg else ""
     return _register_project_from_config(
-        name=matched["name"],
+        name=project_name or matched["name"],
         project_root=project_root,
         config_path=config_path,
         base_branch=(cfg.base_branch if cfg else matched.get("base_branch", "dev")),
@@ -287,4 +288,3 @@ def resolve_project_for_prompt(
         current_dir=current_dir,
         policy=policy,
     )
-

@@ -155,20 +155,29 @@ class TestProjects:
         assert db.get_project("first") is not None
         assert db.get_project("second") is not None
 
-    def test_register_project_existing_path_ignores_manual_config_project_rename(self, tmp_db: Path):
+    def test_register_project_existing_path_syncs_manual_config_project_rename(self, tmp_db: Path, monkeypatch):
+        monkeypatch.setenv("CODEPILOT_HOME", str(tmp_db.parent / "home"))
         project_path = tmp_db.parent / "workspace"
         project_path.mkdir()
         config_path = project_path / "AGENTS.toml"
         config_path.write_text('[project]\nname = "old-name"\n', encoding="utf-8")
         db.register_project("old-name", str(project_path), config_file=str(config_path))
         task = db.create_task("old-name", "follow register sync", content="body")
+        old_log = tmp_db.parent / "home" / "data" / "old-name" / "runs" / "sync.log"
+        old_log.parent.mkdir(parents=True, exist_ok=True)
+        old_log.write_text("log", encoding="utf-8")
+        db.update_task(task["id"], current_log_path=str(old_log))
         config_path.write_text('[project]\nname = "new-name"\n', encoding="utf-8")
 
         project = db.register_project("new-name", str(project_path), config_file=str(config_path))
 
-        assert project["name"] == "old-name"
-        assert db.get_project("new-name") is None
-        assert db.get_task(task["id"])["project"] == "old-name"
+        assert project["name"] == "new-name"
+        assert db.get_project("old-name") is None
+        assert db.get_project("new-name") is not None
+        renamed_task = db.get_task(task["id"])
+        assert renamed_task["project"] == "new-name"
+        assert renamed_task["current_log_path"] == str(tmp_db.parent / "home" / "data" / "new-name" / "runs" / "sync.log")
+        assert Path(renamed_task["current_log_path"]).is_file()
 
     def test_project_aliases_are_resolved(self, tmp_db: Path):
         """项目别名应能被 get_project 解析。"""

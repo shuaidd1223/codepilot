@@ -1,8 +1,6 @@
-/* Agent-log markdown parsing boundary — slim pass-through.
- * Parses raw Markdown text into renderable blocks.
- * No diff/exec decoration, no code-block collapsing, no legacy
- * Live Output normalization — marked.js + highlight.js handle
- * all syntax coloring from the subprocess's native output. */
+/* Agent-log text parsing boundary.
+ * Runtime logs are untrusted subprocess output. Keep them as text blocks so
+ * copied source, HTML snippets, or Vue templates cannot become live DOM. */
 /* global CP */
 
 window.CP = window.CP || {};
@@ -11,6 +9,10 @@ CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {
   const SECTION_HEAD_RE = /^##\s+/;
   const FENCE_RE = /^\s*(```+|~~~+)/;
   const CACHE_MAX_ENTRIES = 260;
+  const LONG_TEXT_COLLAPSE_LINES = 48;
+  const EXEC_LINE_RE = /^exec$/;
+  const SPEAKER_LINE_RE = /^(user|assistant|codex|claude|opencode|system)$/i;
+  const COMMAND_STATUS_RE = /^\s*(succeeded|exited|failed|timed out)\b.*:?$/i;
 
   function _escapeHtml(text) {
     const esc = CP.escapeHtml || ((t) => String(t)
@@ -46,9 +48,7 @@ CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {
     const key = String(raw || '');
     const cached = cacheGet(cache, key);
     if (cached != null) return cached;
-    const html = (CP.renderOutput
-      ? CP.renderOutput(key)
-      : _escapeHtml(key).replace(/\n/g, '<br>'));
+    const html = _escapeHtml(key).replace(/\n/g, '<br>');
     cacheSet(cache, key, html);
     return html;
   }
@@ -111,11 +111,101 @@ CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {
     return chunks;
   }
 
-  function parseMarkdownBlocks(raw, renderBlockMarkdown) {
-    if (!raw) return [];
-    const lines = raw.split(/\r?\n/);
+  function isExecLine(line) {
+    return EXEC_LINE_RE.test(String(line || '').trim());
+  }
+
+  function isSpeakerLine(line) {
+    return SPEAKER_LINE_RE.test(String(line || '').trim());
+  }
+
+  function compactLine(text, limit = 160) {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    if (value.length <= limit) return value;
+    return `${value.slice(0, Math.max(0, limit - 1))}…`;
+  }
+
+  function summarizeCommandRun(lines) {
+    const command = compactLine(lines[1] || '命令');
+    const statusLine = lines.find((line) => COMMAND_STATUS_RE.test(String(line || '')));
+    const status = statusLine ? compactLine(statusLine, 80).replace(/:$/, '') : '';
+    let tone = 'neutral';
+    if (/succeeded/i.test(status)) tone = 'ok';
+    else if (/exited|failed|timed out/i.test(status)) tone = 'fail';
+    return { command, status, tone };
+  }
+
+  function makeCommandRun(lines, start) {
+    const raw = lines.join('\n').replace(/\s+$/g, '');
+    const summary = summarizeCommandRun(lines);
+    return {
+      type: 'command-run',
+      key: `cmdrun:${start}:${lines.length}:${raw.length}`,
+      raw,
+      lineCount: lines.length,
+      command: summary.command,
+      status: summary.status,
+      tone: summary.tone,
+      collapsed: true,
+    };
+  }
+
+  function parseCommandRuns(lines) {
+    const items = [];
+    const pendingRuns = [];
+    let textStart = 0;
+
+    const flushRuns = () => {
+      if (!pendingRuns.length) return;
+      const raw = pendingRuns.map((run) => run.raw).join('\n\n');
+      const start = Number(String(pendingRuns[0].key).split(':')[1]) || 0;
+      const lineCount = pendingRuns.reduce((sum, run) => sum + run.lineCount, 0);
+      items.push({
+        type: 'command-group',
+        key: `cmd:${start}:${pendingRuns.length}:${raw.length}`,
+        raw,
+        lineCount,
+        commandCount: pendingRuns.length,
+        runs: pendingRuns.splice(0),
+        collapsed: true,
+      });
+    };
+
+    const pushText = (start, end) => {
+      if (end <= start) return;
+      flushRuns();
+      items.push({
+        type: 'text',
+        start,
+        lines: lines.slice(start, end),
+      });
+    };
+
+    let i = 0;
+    while (i < lines.length) {
+      if (!isExecLine(lines[i])) {
+        i += 1;
+        continue;
+      }
+
+      pushText(textStart, i);
+      const runStart = i;
+      i += 1;
+      while (i < lines.length && !isExecLine(lines[i]) && !isSpeakerLine(lines[i])) {
+        i += 1;
+      }
+      pendingRuns.push(makeCommandRun(lines.slice(runStart, i), runStart));
+      textStart = i;
+    }
+
+    pushText(textStart, lines.length);
+    flushRuns();
+    return items;
+  }
+
+  function pushTextBlocks(out, lines, baseStart) {
+    if (!lines.length) return;
     const sections = splitSections(lines);
-    const out = [];
 
     for (let s = 0; s < sections.length; s++) {
       const [start, end] = sections[s];
@@ -126,15 +216,29 @@ CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {
         const chunkLines = chunks[i];
         const rawChunk = chunkLines.join('\n').replace(/\s+$/g, '');
         if (!rawChunk) continue;
-        const key = `md:${start}:${i}:${rawChunk.length}`;
+        const lineStart = baseStart + start;
+        const collapsed = chunkLines.length > LONG_TEXT_COLLAPSE_LINES;
         out.push({
-          type: 'markdown',
-          key,
+          type: 'log',
+          key: `log:${lineStart}:${i}:${rawChunk.length}`,
           raw: rawChunk,
           lineCount: chunkLines.length,
-          html: renderBlockMarkdown(rawChunk),
+          title: collapsed ? `${chunkLines.length} 行输出` : '',
+          collapsed,
         });
       }
+    }
+  }
+
+  function parseMarkdownBlocks(raw) {
+    if (!raw) return [];
+    const lines = raw.split(/\r?\n/);
+    const items = parseCommandRuns(lines);
+    const out = [];
+
+    for (const item of items) {
+      if (item.type === 'command-group') out.push(item);
+      else pushTextBlocks(out, item.lines, item.start);
     }
     return out;
   }

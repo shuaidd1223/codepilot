@@ -74,7 +74,7 @@ CP.AgentLogInteractionBoundary = CP.AgentLogInteractionBoundary || (() => {
     if (!vm) return;
     const body = vm.$refs && vm.$refs.body;
     if (!body || !Number.isFinite(idx) || idx < 0) return;
-    const node = body.querySelector(`.al-md-wrap[data-idx="${idx}"]`);
+    const node = body.querySelector(`.al-log-wrap[data-idx="${idx}"]`);
     if (!node) return;
     vm.manualFollowPaused = true;
     vm.stickToBottom = false;

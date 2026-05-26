@@ -32,6 +32,7 @@ def ui_server(tmp_path, monkeypatch):
     """Start a real HTTP server on a random port with a test DB."""
     db_path = tmp_path / "tasks.db"
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(db_path))
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / "home"))
     db.init_db()
 
     project_path = tmp_path / "project"
@@ -1107,26 +1108,37 @@ def test_create_and_delete_project_via_api(ui_server, tmp_path):
     assert project_path.exists()
 
 
-def test_rename_project_via_api_is_not_available(ui_server):
+def test_rename_project_via_api_migrates_data_and_returns_summary(ui_server):
     task = db.create_task("demo", "belongs to renamed project", content="body")
     session = db.create_session("demo", title="chat")
+    home = Path(db._get_db_path()).parent / "home"
+    old_log = home / "data" / "demo" / "runs" / "api.log"
+    old_log.parent.mkdir(parents=True, exist_ok=True)
+    old_log.write_text("api log", encoding="utf-8")
+    db.update_task(task["id"], current_log_path=str(old_log))
 
     status, body = _post(f"{ui_server}/api/projects/demo/rename", {"name": "renamed-demo"})
 
-    assert status == 404
-    assert "error" in body
-    assert db.get_project("demo") is not None
-    assert db.get_project("renamed-demo") is None
-    assert db.get_task(task["id"])["project"] == "demo"
-    assert db.get_session(session["id"])["project"] == "demo"
-
-    status, dashboard = _get(f"{ui_server}/api/projects/demo")
     assert status == 200
-    assert dashboard["selected_project"] == "demo"
+    assert body.get("ok") is True
+    assert body.get("new_name") == "renamed-demo"
+    assert body.get("data_migrated") is True
+    assert body.get("data_migration", {}).get("data_migrated") is True
+    assert db.get_project("demo") is None
+    assert db.get_project("renamed-demo") is not None
+    renamed_task = db.get_task(task["id"])
+    assert renamed_task["project"] == "renamed-demo"
+    assert renamed_task["current_log_path"] == str(home / "data" / "renamed-demo" / "runs" / "api.log")
+    assert Path(renamed_task["current_log_path"]).is_file()
+    assert db.get_session(session["id"])["project"] == "renamed-demo"
+
+    status, dashboard = _get(f"{ui_server}/api/projects/renamed-demo")
+    assert status == 200
+    assert dashboard["selected_project"] == "renamed-demo"
     assert dashboard["tasks"][0]["id"] == task["id"]
 
 
-def test_project_list_ignores_manual_agents_toml_project_rename(ui_server):
+def test_project_list_syncs_manual_agents_toml_project_rename(ui_server):
     project = db.get_project("demo")
     config_path = Path(project["path"]) / "AGENTS.toml"
     config_path.write_text('[project]\nname = "renamed-from-config"\n', encoding="utf-8")
@@ -1136,9 +1148,10 @@ def test_project_list_ignores_manual_agents_toml_project_rename(ui_server):
 
     assert status == 200
     names = [item["name"] for item in dashboard["projects"]]
-    assert "demo" in names
-    assert "renamed-from-config" not in names
-    assert db.get_project("renamed-from-config") is None
+    assert "demo" not in names
+    assert "renamed-from-config" in names
+    assert db.get_project("demo") is None
+    assert db.get_project("renamed-from-config") is not None
 
 
 def test_project_task_service_stop_requests_graceful_polling_stop(ui_server, monkeypatch):

@@ -1,6 +1,6 @@
 /* <cp-agent-log :text="s.taskLog.text" :done="s.taskLog.done" tall follow>
  *
- * Markdown-first live log renderer.
+ * Text-first live log renderer.
  * Rendering + interaction are bridged through CP.AgentLogBoundaryContract
  * so component code only speaks one stable adapter contract.
  */
@@ -29,6 +29,7 @@ CP.Components.AgentLog = Vue.defineComponent({
       unreadLines: 0,
       searchQuery: '',
       searchPos: -1,
+      expandedBlocks: {},
     };
   },
   computed: {
@@ -42,7 +43,7 @@ CP.Components.AgentLog = Vue.defineComponent({
     },
     blocks() {
       const raw = this.text || '';
-      return AgentLogRender.parseMarkdownBlocks(raw, (chunk) => this._renderMarkdown(chunk));
+      return AgentLogRender.parseMarkdownBlocks(raw);
     },
     searchMatches() {
       return AgentLogInteraction.findSearchMatches(this.blocks, this.searchQuery);
@@ -78,9 +79,6 @@ CP.Components.AgentLog = Vue.defineComponent({
       AgentLogInteraction.handleSearchMatchesChanged(this, next);
     },
   },
-  created() {
-    this._mdCache = AgentLogRender.createMarkdownCache();
-  },
   mounted() {
     const body = this.$refs.body;
     if (!body) return;
@@ -94,10 +92,6 @@ CP.Components.AgentLog = Vue.defineComponent({
     if (body) body.removeEventListener('scroll', this._onScroll);
   },
   methods: {
-    _renderMarkdown(raw) {
-      return AgentLogRender.renderMarkdown(this._mdCache, raw);
-    },
-
     toggleFollow() {
       AgentLogInteraction.toggleFollow(this);
     },
@@ -118,6 +112,39 @@ CP.Components.AgentLog = Vue.defineComponent({
     },
     isSearchActive(idx) {
       return this.activeSearchIndex === idx;
+    },
+    isBlockExpanded(key) {
+      return !!this.expandedBlocks[key];
+    },
+    toggleBlock(key) {
+      this.expandedBlocks = {
+        ...this.expandedBlocks,
+        [key]: !this.expandedBlocks[key],
+      };
+    },
+    isBlockCollapsible(block) {
+      return !!(block && block.collapsed);
+    },
+    foldCaret(key) {
+      return this.isBlockExpanded(key) ? '⌄' : '›';
+    },
+    blockTitle(block) {
+      if (!block) return '日志';
+      return block.title || `${block.lineCount || 0} 行输出`;
+    },
+    blockMeta(block) {
+      if (!block) return '';
+      return `${block.lineCount || 0} 行`;
+    },
+    commandGroupTitle(block) {
+      const count = block && block.commandCount ? block.commandCount : 0;
+      return `已运行 ${count} 条命令`;
+    },
+    commandRunTitle(run, idx) {
+      return `命令 ${idx + 1}`;
+    },
+    commandRunTone(run) {
+      return run && run.tone ? `tone-${run.tone}` : 'tone-neutral';
     },
 
     _scrollToBottom() {
@@ -165,12 +192,53 @@ CP.Components.AgentLog = Vue.defineComponent({
           <div
             v-for="(b, idx) in blocks"
             :key="b.key"
-            class="al-md-wrap"
-            :class="{ 'is-hit': isSearchHit(idx), 'is-active': isSearchActive(idx) }"
+            class="al-log-wrap"
+            :class="[`type-${b.type}`, { 'is-hit': isSearchHit(idx), 'is-active': isSearchActive(idx) }]"
             :data-idx="idx">
-            <div class="al-block al-text al-text-md al-md-block">
-              <div class="md" v-html="b.html"></div>
-            </div>
+            <template v-if="b.type === 'command-group'">
+              <button
+                type="button"
+                class="al-fold-row al-command-group-head"
+                :aria-expanded="isBlockExpanded(b.key)"
+                @click="toggleBlock(b.key)">
+                <span class="al-fold-caret">{{ foldCaret(b.key) }}</span>
+                <span class="al-fold-title">{{ commandGroupTitle(b) }}</span>
+                <span class="al-fold-meta">{{ blockMeta(b) }}</span>
+              </button>
+              <div v-if="isBlockExpanded(b.key)" class="al-command-list">
+                <div v-for="(run, runIdx) in b.runs" :key="run.key" class="al-command-run">
+                  <button
+                    type="button"
+                    class="al-fold-row al-command-run-head"
+                    :aria-expanded="isBlockExpanded(run.key)"
+                    @click="toggleBlock(run.key)">
+                    <span class="al-fold-caret">{{ foldCaret(run.key) }}</span>
+                    <span class="al-fold-title">{{ commandRunTitle(run, runIdx) }}</span>
+                    <span class="al-command-text">{{ run.command }}</span>
+                    <span v-if="run.status" class="al-command-status" :class="commandRunTone(run)">{{ run.status }}</span>
+                    <span class="al-fold-meta">{{ blockMeta(run) }}</span>
+                  </button>
+                  <div v-if="isBlockExpanded(run.key)" class="al-block al-log-block al-command-run-body">
+                    <pre class="al-log-text" v-text="run.raw"></pre>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <template v-else>
+              <button
+                v-if="isBlockCollapsible(b)"
+                type="button"
+                class="al-fold-row al-log-summary"
+                :aria-expanded="isBlockExpanded(b.key)"
+                @click="toggleBlock(b.key)">
+                <span class="al-fold-caret">{{ foldCaret(b.key) }}</span>
+                <span class="al-fold-title">{{ blockTitle(b) }}</span>
+                <span class="al-fold-meta">{{ blockMeta(b) }}</span>
+              </button>
+              <div v-if="!isBlockCollapsible(b) || isBlockExpanded(b.key)" class="al-block al-log-block">
+                <pre class="al-log-text" v-text="b.raw"></pre>
+              </div>
+            </template>
           </div>
 
           <div v-if="!blocks.length" class="al-empty">暂无日志</div>

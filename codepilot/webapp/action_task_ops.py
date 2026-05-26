@@ -87,6 +87,45 @@ def delete_project_action(name: str) -> dict:
     }
 
 
+def _project_data_migration_payload(result: dict) -> dict:
+    return {
+        "data_migrated": bool(result.get("data_migrated", False)),
+        "data_backup_path": str(result.get("data_backup_path") or ""),
+        "data_conflicts": result.get("data_conflicts") if isinstance(result.get("data_conflicts"), list) else [],
+        "data_error": str(result.get("data_error") or ""),
+        "pending_cleanup": result.get("pending_cleanup") if isinstance(result.get("pending_cleanup"), list) else [],
+        "data_files_copied": int(result.get("data_files_copied") or 0),
+        "updated_log_paths": int(result.get("updated_log_paths") or 0),
+    }
+
+
+def rename_project_action(name: str, new_name: str) -> dict:
+    db.init_db()
+    old_name = (name or "").strip()
+    target_name = (new_name or "").strip()
+    if not old_name:
+        raise RuntimeError("项目名称不能为空。")
+    if not target_name:
+        raise RuntimeError("新项目名称不能为空。")
+    try:
+        result = db.rename_project(old_name, target_name)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    migration = _project_data_migration_payload(result)
+    level = "warning" if migration["pending_cleanup"] or migration["data_conflicts"] else "info"
+    _append_event(f"重命名项目：{result['old_name']} -> {result['new_name']}", level=level, project=result["new_name"])
+    payload = dict(result)
+    payload["data_migration"] = migration
+    payload["message"] = f"项目 '{result['old_name']}' 已重命名为 '{result['new_name']}'。"
+    if migration["pending_cleanup"]:
+        payload["message"] += f" {len(migration['pending_cleanup'])} 个旧目录待清理。"
+    elif migration["data_conflicts"]:
+        payload["message"] += f" {len(migration['data_conflicts'])} 个冲突已备份。"
+    elif migration["data_migrated"]:
+        payload["message"] += " 本地运行数据已迁移。"
+    return payload
+
+
 def project_service_action(project: str, service: str, action: str) -> dict:
     db.init_db()
     project_name = (project or "").strip()

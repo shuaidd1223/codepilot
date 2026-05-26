@@ -534,6 +534,10 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       return ensureSubmissionBoundary().deleteProject(name);
     }
 
+    async function renameProject(name, newName) {
+      return ensureSubmissionBoundary().renameProject(name, newName);
+    }
+
     async function projectService(service, action) {
       return ensureSubmissionBoundary().projectService(service, action);
     }
@@ -1013,7 +1017,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
       taskAction,
       taskBatchAction,
-      toggleProjectForm, submitProject, deleteProject,
+      toggleProjectForm, submitProject, deleteProject, renameProject,
       projectService, jobAction,
       runInspectWorkflow, workflowAction, workflowAutoAction,
       newSession, sendChat, sendEmbeddedChat, stopSessionRun, deleteSession,

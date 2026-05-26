@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import threading
 import time
 from contextlib import contextmanager
@@ -14,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, TypeVar
 
+from codepilot.core.paths import _slugify_project_name, global_storage_root, project_storage_root
 from codepilot.storage.config import (
     default_db_path as _cfg_default_db_path,
     get_cache_ttl_seconds as _cfg_get_cache_ttl_seconds,
@@ -222,6 +224,8 @@ def register_project(
             config_file=config_file,
         )
     _invalidate_project_caches()
+    if effective_name != name:
+        return rename_project(effective_name, name)["project"]
     return get_project(name) or get_project(effective_name)
 
 
@@ -242,6 +246,10 @@ def get_project(name: str) -> Optional[dict]:
         return cached  # type: ignore[return-value]
     with get_read_conn() as conn:
         result = _fetch_project_by_name(conn, ref)
+    if result is None and not _config_rename_sync_active():
+        sync_project_config_renames()
+        with get_read_conn() as conn:
+            result = _fetch_project_by_name(conn, ref)
     if result is None:
         result = _find_project_by_alias(ref)
     return _cache_set(cache_key, result)  # type: ignore[return-value]
@@ -249,6 +257,8 @@ def get_project(name: str) -> Optional[dict]:
 
 def list_projects() -> list[dict]:
     """Return all registered projects."""
+    if not _config_rename_sync_active():
+        sync_project_config_renames()
     cache_key = ("projects",)
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
@@ -508,14 +518,315 @@ def _sync_project_config_name(
     return {"config_file": "", "config_updated": False, "config_error": ""}
 
 
-def _rename_project_service_state_refs(conn, old_name: str, new_name: str) -> int:
+_CONFIG_RENAME_SYNC = threading.local()
+
+
+def _config_rename_sync_active() -> bool:
+    return bool(getattr(_CONFIG_RENAME_SYNC, "active", False))
+
+
+def _empty_data_migration_result() -> dict:
+    return {
+        "data_migrated": False,
+        "data_backup_path": "",
+        "data_conflicts": [],
+        "data_error": "",
+        "pending_cleanup": [],
+        "data_files_copied": 0,
+        "updated_log_paths": 0,
+    }
+
+
+def _project_runtime_root_pairs(old_name: str, new_name: str) -> list[tuple[str, Path, Path]]:
+    home = global_storage_root()
+    return [
+        (
+            "data",
+            project_storage_root(project_name=old_name),
+            project_storage_root(project_name=new_name),
+        ),
+        (
+            "daemon",
+            home / "daemon" / _slugify_project_name(old_name),
+            home / "daemon" / _slugify_project_name(new_name),
+        ),
+        (
+            "inspect",
+            home / "inspect" / _slugify_project_name(old_name),
+            home / "inspect" / _slugify_project_name(new_name),
+        ),
+        (
+            "opencode",
+            home / "opencode" / _slugify_project_name(old_name),
+            home / "opencode" / _slugify_project_name(new_name),
+        ),
+    ]
+
+
+def _backup_root_for_project_rename(old_name: str, new_name: str) -> Path:
+    old_slug = _slugify_project_name(old_name)
+    new_slug = _slugify_project_name(new_name)
+    return global_storage_root() / "migration-backups" / f"project-rename-{old_slug}-to-{new_slug}-{time.time_ns()}"
+
+
+def _resolved_path_key(path: Path) -> str:
+    return str(path.expanduser().resolve(strict=False))
+
+
+def _ensure_backup_root(result: dict, backup_root: Path) -> None:
+    if not result.get("data_backup_path"):
+        backup_root.mkdir(parents=True, exist_ok=True)
+        result["data_backup_path"] = str(backup_root)
+
+
+def _copy_file(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
+def _copy_conflict_to_backup(
+    source: Path,
+    backup_target: Path,
+    *,
+    result: dict,
+    backup_root: Path,
+    kind: str,
+    existing: Path,
+) -> None:
+    _ensure_backup_root(result, backup_root)
+    if source.is_dir():
+        shutil.copytree(source, backup_target, dirs_exist_ok=True)
+        for child in source.rglob("*"):
+            if child.is_file():
+                rel = child.relative_to(source)
+                result["_path_rewrites"][_resolved_path_key(child)] = str(backup_target / rel)
+    else:
+        _copy_file(source, backup_target)
+        result["_path_rewrites"][_resolved_path_key(source)] = str(backup_target)
+    result["data_conflicts"].append(
+        {
+            "kind": kind,
+            "source": str(source),
+            "existing": str(existing),
+            "backup": str(backup_target),
+        }
+    )
+
+
+def _merge_runtime_tree(
+    *,
+    kind: str,
+    old_root: Path,
+    new_root: Path,
+    backup_root: Path,
+    result: dict,
+) -> None:
+    if not old_root.exists():
+        return
+    result["data_migrated"] = True
+    result.setdefault("data_paths", []).append({"kind": kind, "old": str(old_root), "new": str(new_root)})
+    new_root.mkdir(parents=True, exist_ok=True)
+    skipped_dirs: list[Path] = []
+
+    for source in sorted(old_root.rglob("*"), key=lambda item: len(item.parts)):
+        if any(source == skipped or source.is_relative_to(skipped) for skipped in skipped_dirs):
+            continue
+        relative = source.relative_to(old_root)
+        target = new_root / relative
+        backup_target = backup_root / kind / relative
+
+        if source.is_dir():
+            if target.exists() and not target.is_dir():
+                _copy_conflict_to_backup(
+                    source,
+                    backup_target,
+                    result=result,
+                    backup_root=backup_root,
+                    kind=kind,
+                    existing=target,
+                )
+                skipped_dirs.append(source)
+                continue
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+
+        if target.exists():
+            _copy_conflict_to_backup(
+                source,
+                backup_target,
+                result=result,
+                backup_root=backup_root,
+                kind=kind,
+                existing=target,
+            )
+            continue
+
+        if target.parent.exists() and not target.parent.is_dir():
+            _copy_conflict_to_backup(
+                source,
+                backup_target,
+                result=result,
+                backup_root=backup_root,
+                kind=kind,
+                existing=target.parent,
+            )
+            continue
+
+        _copy_file(source, target)
+        result["data_files_copied"] += 1
+
+
+def _cleanup_old_runtime_roots(root_pairs: list[tuple[str, Path, Path]], result: dict) -> None:
+    for _kind, old_root, _new_root in root_pairs:
+        if old_root.resolve(strict=False) == _new_root.resolve(strict=False):
+            continue
+        if not old_root.exists():
+            continue
+        try:
+            shutil.rmtree(old_root)
+        except OSError:
+            result["pending_cleanup"].append(str(old_root))
+
+
+def _migrate_project_runtime_data(old_name: str, new_name: str) -> tuple[dict, list[tuple[str, Path, Path]]]:
+    result = _empty_data_migration_result()
+    result["_path_rewrites"] = {}
+    root_pairs = _project_runtime_root_pairs(old_name, new_name)
+    backup_root = _backup_root_for_project_rename(old_name, new_name)
+    try:
+        for kind, old_root, new_root in root_pairs:
+            if old_root.resolve(strict=False) == new_root.resolve(strict=False):
+                continue
+            _merge_runtime_tree(
+                kind=kind,
+                old_root=old_root,
+                new_root=new_root,
+                backup_root=backup_root,
+                result=result,
+            )
+    except OSError as exc:
+        result["data_error"] = str(exc)
+        raise ValueError(f"项目数据迁移失败：{exc}") from exc
+
+    return result, root_pairs
+
+
+def _rewrite_migrated_runtime_path(
+    raw_path: object,
+    root_pairs: list[tuple[str, Path, Path]],
+    path_rewrites: dict[str, str],
+) -> str:
+    text = str(raw_path or "").strip()
+    if not text:
+        return text
+
+    source = Path(text).expanduser()
+    source_key = _resolved_path_key(source)
+    if source_key in path_rewrites:
+        target = Path(path_rewrites[source_key])
+        if not target.exists():
+            raise ValueError(f"迁移后的日志路径不存在：{target}")
+        return str(target)
+
+    resolved = source.resolve(strict=False)
+    for _kind, old_root, new_root in root_pairs:
+        try:
+            relative = resolved.relative_to(old_root.resolve(strict=False))
+        except ValueError:
+            continue
+        target = new_root / relative
+        if not target.exists():
+            raise ValueError(f"迁移后的日志路径不存在：{target}")
+        return str(target)
+    return text
+
+
+def _rewrite_project_task_log_paths(
+    conn,
+    project: str,
+    root_pairs: list[tuple[str, Path, Path]],
+    path_rewrites: dict[str, str],
+) -> int:
+    rows = conn.execute(
+        """
+        SELECT id, current_log_path
+          FROM tasks
+         WHERE project = ?
+           AND current_log_path IS NOT NULL
+           AND current_log_path != ''
+        """,
+        (project,),
+    ).fetchall()
+    changed = 0
+    for row in rows:
+        current = str(row["current_log_path"] or "")
+        next_path = _rewrite_migrated_runtime_path(current, root_pairs, path_rewrites)
+        if next_path == current:
+            continue
+        conn.execute("UPDATE tasks SET current_log_path = ? WHERE id = ?", (next_path, row["id"]))
+        changed += 1
+    return changed
+
+
+def _project_config_name(project: dict) -> str:
+    for config_path in _project_config_candidates(project):
+        if not config_path.is_file():
+            continue
+        try:
+            text = config_path.read_text(encoding="utf-8")
+            try:
+                import tomllib
+            except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+                import tomli as tomllib  # type: ignore[no-redef]
+            parsed = tomllib.loads(text)
+        except Exception:  # noqa: BLE001
+            return ""
+        project_data = parsed.get("project") if isinstance(parsed, dict) else None
+        if isinstance(project_data, dict):
+            return str(project_data.get("name") or "").strip()
+    return ""
+
+
+def _raw_list_projects() -> list[dict]:
+    with get_read_conn() as conn:
+        return _fetch_projects(conn)
+
+
+def sync_project_config_renames() -> list[dict]:
+    """Synchronize registered names when AGENTS.toml was manually renamed."""
+    if _config_rename_sync_active():
+        return []
+    _CONFIG_RENAME_SYNC.active = True
+    results: list[dict] = []
+    try:
+        for project in _raw_list_projects():
+            config_name = _project_config_name(project)
+            if not config_name or config_name == str(project.get("name") or ""):
+                continue
+            results.append(rename_project(str(project["name"]), config_name))
+    finally:
+        _CONFIG_RENAME_SYNC.active = False
+    return results
+
+
+def _rename_project_service_state_refs(
+    conn,
+    old_name: str,
+    new_name: str,
+    *,
+    root_pairs: list[tuple[str, Path, Path]] | None = None,
+    path_rewrites: dict[str, str] | None = None,
+) -> int:
     rows = conn.execute("SELECT * FROM service_states").fetchall()
     changed = 0
+    runtime_roots = root_pairs or []
+    rewrite_map = path_rewrites or {}
     for row in rows:
         meta = _decode_json_object(row["meta"])
         rewritten_meta = _rewrite_project_meta_refs(meta, old_name, new_name)
         next_scope = new_name if str(row["scope"] or "") == old_name else str(row["scope"] or "")
-        if next_scope == str(row["scope"] or "") and rewritten_meta == meta:
+        next_log_path = _rewrite_migrated_runtime_path(row["log_path"], runtime_roots, rewrite_map)
+        if next_scope == str(row["scope"] or "") and rewritten_meta == meta and next_log_path == str(row["log_path"] or ""):
             continue
 
         conn.execute(
@@ -536,7 +847,7 @@ def _rename_project_service_state_refs(conn, old_name: str, new_name: str) -> in
                 next_scope,
                 row["pid"],
                 row["status"],
-                row["log_path"],
+                next_log_path,
                 row["heartbeat_at"],
                 json.dumps(rewritten_meta, ensure_ascii=False) if rewritten_meta else None,
                 row["created_at"],
@@ -582,7 +893,8 @@ def rename_project(name: str, new_name: str) -> dict:
         raise ValueError(f"项目 '{old_ref}' 不存在。")
 
     old_name = str(project["name"])
-    existing = get_project(target_name)
+    with get_read_conn() as conn:
+        existing = _fetch_project_by_name(conn, target_name)
     if existing and str(existing.get("name") or "") != old_name:
         raise ValueError(f"项目 '{target_name}' 已存在。")
 
@@ -597,12 +909,17 @@ def rename_project(name: str, new_name: str) -> dict:
             "updated_tasks": 0,
             "updated_sessions": 0,
             "updated_service_states": 0,
+            **_empty_data_migration_result(),
             **config_result,
         }
+
+    migration_result, root_pairs = _migrate_project_runtime_data(old_name, target_name)
+    path_rewrites = migration_result.get("_path_rewrites") if isinstance(migration_result.get("_path_rewrites"), dict) else {}
 
     with get_write_conn() as conn:
         task_count = int(conn.execute("SELECT COUNT(*) FROM tasks WHERE project = ?", (old_name,)).fetchone()[0])
         session_count = int(conn.execute("SELECT COUNT(*) FROM sessions WHERE project = ?", (old_name,)).fetchone()[0])
+        log_path_count = _rewrite_project_task_log_paths(conn, old_name, root_pairs, path_rewrites)
         original_path = str(project["path"])
         temp_path = f"{original_path}#rename-{time.time_ns()}"
         conn.execute("UPDATE projects SET path = ? WHERE name = ?", (temp_path, old_name))
@@ -619,15 +936,24 @@ def rename_project(name: str, new_name: str) -> dict:
         conn.execute("UPDATE tasks SET project = ? WHERE project = ?", (target_name, old_name))
         conn.execute("UPDATE sessions SET project = ? WHERE project = ?", (target_name, old_name))
         conn.execute("DELETE FROM projects WHERE name = ?", (old_name,))
-        service_count = _rename_project_service_state_refs(conn, old_name, target_name)
+        service_count = _rename_project_service_state_refs(
+            conn,
+            old_name,
+            target_name,
+            root_pairs=root_pairs,
+            path_rewrites=path_rewrites,
+        )
         dedup_count = _refresh_project_task_dedup_keys(conn, target_name)
         config_result = _sync_project_config_name(project, old_name, target_name, fail_on_error=True)
 
+    _cleanup_old_runtime_roots(root_pairs, migration_result)
     _invalidate_project_caches()
     _invalidate_task_caches()
     _invalidate_session_caches()
     _invalidate_service_state_caches()
     renamed = get_project(target_name) or {**project, "name": target_name}
+    migration_public = {key: value for key, value in migration_result.items() if not str(key).startswith("_")}
+    migration_public["updated_log_paths"] = log_path_count
     return {
         "ok": True,
         "renamed": True,
@@ -638,6 +964,7 @@ def rename_project(name: str, new_name: str) -> dict:
         "updated_sessions": session_count,
         "updated_service_states": service_count,
         "updated_dedup_keys": dedup_count,
+        **migration_public,
         **config_result,
         "project": renamed,
     }

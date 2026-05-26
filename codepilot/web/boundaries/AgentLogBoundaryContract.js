@@ -18,24 +18,18 @@ CP.AgentLogBoundaryContract = CP.AgentLogBoundaryContract || (() => {
 
   function _defaultRenderMarkdown(_cache, raw) {
     const text = String(raw || '');
-    return (CP.renderOutput
-      ? CP.renderOutput(text)
-      : _escapeHtml(text).replace(/\n/g, '<br>'));
+    return _escapeHtml(text).replace(/\n/g, '<br>');
   }
 
-  function _defaultParseMarkdownBlocks(raw, renderBlockMarkdown) {
+  function _defaultParseMarkdownBlocks(raw) {
     const text = String(raw || '');
     if (!text) return [];
-    const render = typeof renderBlockMarkdown === 'function'
-      ? renderBlockMarkdown
-      : (chunk) => _defaultRenderMarkdown(null, chunk);
     const lines = text.split(/\r?\n/).length;
     return [{
-      type: 'markdown',
-      key: `md:0:0:${text.length}`,
+      type: 'log',
+      key: `log:0:0:${text.length}`,
       raw: text,
       lineCount: lines,
-      html: render(text),
     }];
   }
 
@@ -109,7 +103,7 @@ CP.AgentLogBoundaryContract = CP.AgentLogBoundaryContract || (() => {
     if (!vm) return;
     const body = vm.$refs && vm.$refs.body;
     if (!body || !Number.isFinite(idx) || idx < 0) return;
-    const node = body.querySelector(`.al-md-wrap[data-idx="${idx}"]`);
+    const node = body.querySelector(`.al-log-wrap[data-idx="${idx}"]`);
     if (!node) return;
     vm.manualFollowPaused = true;
     vm.stickToBottom = false;

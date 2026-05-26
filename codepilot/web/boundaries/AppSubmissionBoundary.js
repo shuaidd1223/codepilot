@@ -19,6 +19,20 @@ CP.createAppSubmissionBoundary = (options = {}) => {
     state.projectForm.open = open == null ? !state.projectForm.open : !!open;
   }
 
+  function formatProjectRenameMessage(out) {
+    const base = (out && out.message) || '项目已重命名';
+    const migration = (out && (out.data_migration || out)) || {};
+    const notes = [];
+    if (migration.data_migrated) notes.push('运行数据已迁移');
+    if (Array.isArray(migration.data_conflicts) && migration.data_conflicts.length) {
+      notes.push(`${migration.data_conflicts.length} 个冲突已备份`);
+    }
+    if (Array.isArray(migration.pending_cleanup) && migration.pending_cleanup.length) {
+      notes.push(`${migration.pending_cleanup.length} 个旧目录待清理`);
+    }
+    return notes.length ? `${base} ${notes.join('，')}。` : base;
+  }
+
   async function submitProject() {
     const path = state.projectForm.path.trim();
     if (!path) {
@@ -72,6 +86,29 @@ CP.createAppSubmissionBoundary = (options = {}) => {
     }
   }
 
+  async function renameProject(name, newName) {
+    const oldName = String(name || '').trim();
+    const targetName = String(newName || '').trim();
+    if (!oldName || !targetName || oldName === targetName) return null;
+    try {
+      const out = await CP.api.post(`/api/projects/${encodeURIComponent(oldName)}/rename`, {
+        name: targetName,
+      });
+      if (state.nav.project === oldName) {
+        setNav({ project: targetName, view: state.nav.view || 'overview', id: state.nav.id || null });
+      }
+      await loadDashboard(targetName);
+      selectProject(targetName);
+      const migration = (out && (out.data_migration || out)) || {};
+      const toastType = (Array.isArray(migration.pending_cleanup) && migration.pending_cleanup.length) ? 'warning' : 'success';
+      pushToast(formatProjectRenameMessage(out), toastType);
+      return out;
+    } catch (err) {
+      pushToast(err.message, 'error');
+      return null;
+    }
+  }
+
   async function projectService(service, action) {
     if (!state.nav.project) {
       pushToast('先选择一个项目', 'error');
@@ -121,6 +158,7 @@ CP.createAppSubmissionBoundary = (options = {}) => {
     toggleProjectForm,
     submitProject,
     deleteProject,
+    renameProject,
     projectService,
     jobAction,
   };

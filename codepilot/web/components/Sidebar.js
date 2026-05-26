@@ -14,6 +14,8 @@ CP.Components.Sidebar = Vue.defineComponent({
       draggingProject: '',
       dragOverProject: '',
       suppressProjectRowClick: false,
+      renamingProject: '',
+      renameDraft: '',
     };
   },
   computed: {
@@ -121,7 +123,7 @@ CP.Components.Sidebar = Vue.defineComponent({
     },
     onProjectDragStart(project, ev) {
       if (!project || !project.name) return;
-      if (ev && ev.target && ev.target.closest && ev.target.closest('button,input')) {
+      if (ev && ev.target && ev.target.closest && ev.target.closest('button,input,form')) {
         ev.preventDefault();
         return;
       }
@@ -204,6 +206,38 @@ CP.Components.Sidebar = Vue.defineComponent({
     deleteProject(project, ev) {
       ev.stopPropagation();
       this.cp.deleteProject(project.name);
+    },
+    renameProject(project, ev) {
+      if (ev) ev.stopPropagation();
+      if (!project || !project.name) return;
+      this.renamingProject = project.name;
+      this.renameDraft = project.name;
+      this.$nextTick(() => {
+        const input = this.$el && this.$el.querySelector('.project-rename-inline input');
+        if (input) {
+          input.focus();
+          input.select();
+        }
+      });
+    },
+    cancelProjectRename(ev) {
+      if (ev) ev.stopPropagation();
+      this.renamingProject = '';
+      this.renameDraft = '';
+    },
+    async submitProjectRename(project, ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (!project || !project.name) return;
+      const nextName = String(this.renameDraft || '').trim();
+      if (!nextName || nextName === project.name) {
+        this.cancelProjectRename(ev);
+        return;
+      }
+      const out = await this.cp.renameProject(project.name, this.renameDraft);
+      if (out && out.ok) this.cancelProjectRename(ev);
     },
     /* Count helpers: look at project summary first so numbers stay correct
      * across projects even when we only loaded the current project's list. */
@@ -353,13 +387,27 @@ CP.Components.Sidebar = Vue.defineComponent({
                 </svg>
               </button>
               <svg class="tree-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-              <span class="tree-label">{{ p.name }}</span>
-              <span v-if="p.stats && p.stats.in_progress" class="chip info tiny">{{ p.stats.in_progress }}</span>
-              <span v-else-if="taskCount(p)" class="chip neutral tiny">{{ taskCount(p) }}</span>
-              <button class="tree-action" @click="deleteProject(p, $event)" :disabled="s.deletingProject === p.name" title="删除项目">
-                <span v-if="s.deletingProject === p.name" class="spinner tiny-spinner"></span>
-                <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
-              </button>
+              <form v-if="renamingProject === p.name" class="project-rename-inline" @submit.prevent="submitProjectRename(p, $event)" @click.stop>
+                <input v-model="renameDraft" type="text" :aria-label="'重命名 ' + p.name">
+                <button class="tree-action" type="submit" title="保存项目名">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                </button>
+                <button class="tree-action" type="button" @click="cancelProjectRename($event)" title="取消重命名">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </form>
+              <template v-else>
+                <span class="tree-label">{{ p.name }}</span>
+                <span v-if="p.stats && p.stats.in_progress" class="chip info tiny">{{ p.stats.in_progress }}</span>
+                <span v-else-if="taskCount(p)" class="chip neutral tiny">{{ taskCount(p) }}</span>
+                <button class="tree-action" @click="renameProject(p, $event)" title="重命名项目">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                </button>
+                <button class="tree-action" @click="deleteProject(p, $event)" :disabled="s.deletingProject === p.name" title="删除项目">
+                  <span v-if="s.deletingProject === p.name" class="spinner tiny-spinner"></span>
+                  <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                </button>
+              </template>
             </div>
 
             <!-- Children (only when expanded) -->
