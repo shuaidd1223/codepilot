@@ -10,12 +10,15 @@ Verifies that the direct pass-through pipeline works:
 from __future__ import annotations
 
 import io
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from codepilot.commands import run as run_cmd
 from codepilot.core.workflow_state import read_task_execution_artifacts
 from codepilot.commands.run_live_runner import (
     _LiveOutputProcessor,
+    _write_markdown_preamble,
 )
 from codepilot.storage import database as db
 from tests.workflow_testkit import init_test_db
@@ -53,6 +56,70 @@ def test_emit_writes_raw_text_directly():
     assert "```python" in written
     assert "~~~text" not in written, "raw output must not be wrapped in ~~~text"
     assert "### Runtime" not in written, "raw output must not have role sections"
+
+
+def test_markdown_preamble_redacts_prompt_arguments_and_writes_log_meta():
+    """The live console log should describe prompt input without dumping it."""
+    handle = io.StringIO()
+    prompt = "\n".join(
+        [
+            "你正在执行排队任务 #429：重构日志区域",
+            "【任务目标】",
+            "把原始日志和网页渲染一起重构。",
+            "【项目约定（来自 AGENTS.md）】",
+            *(f"- AGENTS rule {idx}" for idx in range(80)),
+            "[Requirements]",
+            "1. Use TDD.",
+        ]
+    )
+    cmd = ["codex", "-C", "D:/repo", "exec", "-o", "out.md", prompt]
+
+    _write_markdown_preamble(
+        handle,
+        task_id=429,
+        phase="builder",
+        cmd=cmd,
+        cwd=Path("D:/repo"),
+        timeout=3600,
+    )
+
+    written = handle.getvalue()
+    assert "【任务目标】" not in written
+    assert "AGENTS rule 0" not in written
+    assert "Use TDD" not in written
+    assert "[omitted prompt argument:" in written
+
+    meta_line = next(line for line in written.splitlines() if line.startswith("CODEPILOT_LOG_META:"))
+    meta = json.loads(meta_line.split(":", 1)[1].strip())
+    assert meta["kind"] == "live_command"
+    assert meta["task_id"] == 429
+    assert meta["phase"] == "builder"
+    assert meta["stdin_chars"] == 0
+    assert meta["command_redactions"][0]["index"] == len(cmd) - 1
+    assert meta["command_redactions"][0]["chars"] == len(prompt)
+
+
+def test_markdown_preamble_summarizes_stdin_input_without_printing_body():
+    handle = io.StringIO()
+    stdin_prompt = "[Requirements]\n" + "\n".join(f"secret prompt line {idx}" for idx in range(30))
+
+    _write_markdown_preamble(
+        handle,
+        task_id=430,
+        phase="reviewer",
+        cmd=["claude", "-p", "--output-format", "text"],
+        cwd=Path("D:/repo"),
+        timeout=1800,
+        input_text=stdin_prompt,
+    )
+
+    written = handle.getvalue()
+    assert "secret prompt line 0" not in written
+    assert f"stdin_chars: `{len(stdin_prompt)}`" in written
+    meta_line = next(line for line in written.splitlines() if line.startswith("CODEPILOT_LOG_META:"))
+    meta = json.loads(meta_line.split(":", 1)[1].strip())
+    assert meta["stdin_chars"] == len(stdin_prompt)
+    assert meta["command_redactions"] == []
 
 
 def test_emit_updates_offset():

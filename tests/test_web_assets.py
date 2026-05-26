@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import base64
+import json
+import shutil
+import subprocess
+import textwrap
 from http import HTTPStatus
 from pathlib import Path
 
@@ -208,6 +213,283 @@ def test_task_detail_template_avoids_nested_backticks_in_vue_bindings():
     source = Path("codepilot/web/components/TaskDetail.js").read_text(encoding="utf-8")
 
     assert ':class="`' not in source
+
+
+def test_agent_log_template_avoids_nested_backticks_in_vue_bindings():
+    source = Path("codepilot/web/components/AgentLog.js").read_text(encoding="utf-8")
+
+    assert ':class="[`' not in source
+    assert 'blockClass(b, idx)' in source
+    assert "if (this.followEnabled) this._scrollToBottom();" in source
+
+
+def _parse_agent_log_blocks(text: str, context: dict | None = None) -> list[dict]:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for AgentLogRenderBoundary parser checks")
+    script = textwrap.dedent(
+        """
+        const fs = require('fs');
+        const vm = require('vm');
+        const sourcePath = process.argv[1];
+        const raw = Buffer.from(process.argv[2], 'base64').toString('utf8');
+        const context = JSON.parse(Buffer.from(process.argv[3], 'base64').toString('utf8'));
+        global.window = global;
+        global.CP = {
+          escapeHtml(text) {
+            return String(text || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;');
+          },
+        };
+        vm.runInThisContext(fs.readFileSync(sourcePath, 'utf8'), { filename: sourcePath });
+        const blocks = CP.AgentLogRenderBoundary.parseMarkdownBlocks(raw, context);
+        process.stdout.write(JSON.stringify(blocks));
+        """
+    )
+    result = subprocess.run(
+        [
+            node,
+            "-e",
+            script,
+            str(Path("codepilot/web/boundaries/AgentLogRenderBoundary.js")),
+            base64.b64encode(text.encode("utf-8")).decode("ascii"),
+            base64.b64encode(json.dumps(context or {}).encode("utf-8")).decode("ascii"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def test_agent_log_parser_surfaces_reviewer_verdict_as_structured_block():
+    blocks = _parse_agent_log_blocks(
+        """
+        ## Live Output
+
+        AC #1: PASS — storage migration is covered.
+
+        ## 需要修复的点
+
+        - 回滚 AgentLog 渲染重构相关改动
+
+        VERDICT: FAIL
+
+        ```json
+        {
+          "verdict": "fail",
+          "ac_checks": [
+            {"id": "AC-1", "status": "PASS", "reason": "storage migration is covered"}
+          ],
+          "blockers": ["回滚 AgentLog 渲染重构相关改动"],
+          "advisory": []
+        }
+        ```
+        """,
+        {
+            "phase": "reviewer",
+            "agent": "claude-review",
+        },
+    )
+
+    review = blocks[0]
+    assert review["type"] == "review-verdict"
+    assert review["verdict"] == "fail"
+    assert review["acChecks"][0]["id"] == "AC-1"
+    assert review["blockers"] == ["回滚 AgentLog 渲染重构相关改动"]
+    assert any(block["type"] == "review-raw" and block["collapsed"] is True for block in blocks)
+
+
+def test_agent_log_parser_keeps_terminal_summaries_visible_while_folding_noise():
+    summary_lines = "\n".join(f"- 验证结果 {idx}" for idx in range(70))
+    blocks = _parse_agent_log_blocks(
+        f"""
+        exec
+        pytest -m "not slow" tests/test_web_assets.py -q
+         succeeded in 1200ms:
+        51 passed
+
+        已完成 #429。
+
+        验证结果：
+        {summary_lines}
+
+        VERDICT: PASS
+        """,
+        {
+            "phase": "builder",
+            "agent": "opencode",
+        },
+    )
+
+    command_group = next(block for block in blocks if block["type"] == "command-group")
+    visible_summary = next(block for block in blocks if "已完成 #429" in block.get("raw", ""))
+    assert command_group["collapsed"] is True
+    assert visible_summary["collapsed"] is False
+    assert visible_summary["importance"] == "critical"
+
+
+def test_agent_log_parser_is_executor_neutral_and_surfaces_fallback_telemetry():
+    blocks = _parse_agent_log_blocks(
+        """
+        exec
+        python -m pytest tests/test_project_rename.py -q
+         succeeded in 800ms:
+        12 passed
+        claude-review
+        CODEPILOT_EXECUTOR_TELEMETRY: {"kind":"executor_fallback","phase":"reviewer","fallback_reason":"timeout","failed_executor":{"family":"claude","label":"claude-review"},"fallback_executor":{"family":"opencode","label":"opencode-review"},"fallback_path":["claude","opencode"]}
+        """,
+        {
+            "phase": "reviewer",
+            "agent": "claude-review",
+        },
+    )
+
+    command_group = next(block for block in blocks if block["type"] == "command-group")
+    telemetry = next(block for block in blocks if block["type"] == "telemetry")
+    assert command_group["runs"][0]["command"] == "python -m pytest tests/test_project_rename.py -q"
+    assert "claude-review" not in command_group["runs"][0]["raw"]
+    assert telemetry["title"] == "执行器回退"
+    assert telemetry["summary"] == "claude-review → opencode-review · timeout"
+
+
+def test_agent_log_parser_expands_failed_command_group_but_folds_long_stdout():
+    lines = "\n".join(f"diff line {idx}" for idx in range(120))
+    blocks = _parse_agent_log_blocks(
+        f"""
+        exec
+        git diff --check
+         failed in 900ms:
+        {lines}
+        """,
+        {
+            "phase": "builder",
+            "agent": "codex",
+        },
+    )
+
+    command_group = next(block for block in blocks if block["type"] == "command-group")
+    failed_run = command_group["runs"][0]
+    assert command_group["failedCount"] == 1
+    assert command_group["collapsed"] is False
+    assert failed_run["tone"] == "fail"
+    assert failed_run["collapsed"] is True
+
+
+def test_agent_log_parser_folds_leading_task_context_before_commands():
+    context_lines = "\n".join(f"- AGENTS rule {idx}" for idx in range(80))
+    blocks = _parse_agent_log_blocks(
+        f"""
+        # Task #429 · builder
+
+        ## TDD Mode
+
+        {context_lines}
+
+        [Requirements]
+        1. Read the task file.
+
+        exec
+        pytest -q tests/test_web_assets.py
+         succeeded in 1200ms:
+        55 passed
+        """,
+        {
+            "phase": "builder",
+            "agent": "codex",
+        },
+    )
+
+    assert blocks[0]["type"] == "log"
+    assert blocks[0]["collapsed"] is True
+    assert blocks[0]["title"].startswith("任务输入上下文")
+    assert "AGENTS rule 0" in blocks[0]["raw"]
+    assert blocks[1]["type"] == "command-group"
+
+
+def test_agent_log_parser_uses_codepilot_log_meta_and_folds_runner_preamble():
+    raw = """
+    # Task #429 · builder
+
+    CODEPILOT_LOG_META: {"kind":"live_command","version":1,"task_id":429,"phase":"builder","cwd":"D:\\\\myCode\\\\workflow","timeout_seconds":3600,"stdin_chars":0,"command_redactions":[{"index":6,"chars":12000,"reason":"prompt"}]}
+
+    - started_at: `2026-05-26T11:16:40`
+    - phase: `builder`
+    - cwd: `D:\\myCode\\workflow`
+    - timeout_seconds: `3600`
+
+    ## Command
+
+    ```shell
+    codex -C D:\\myCode\\workflow exec -o out.md "[omitted prompt argument: 12000 chars]"
+    ```
+
+    ## Input
+
+    - command_args: `1 omitted`
+
+    ## Live Output
+
+    OpenAI Codex v0.130.0
+    workdir: D:\\myCode\\workflow
+
+    exec
+    pytest -q tests/test_web_assets.py
+     succeeded in 1200ms:
+    57 passed
+    """
+
+    blocks = _parse_agent_log_blocks(raw, {"phase": "builder", "agent": "codex"})
+
+    meta = blocks[0]
+    preamble = blocks[1]
+    command_group = next(block for block in blocks if block["type"] == "command-group")
+    assert meta["type"] == "run-meta"
+    assert "builder" in meta["summary"]
+    assert "命令参数已省略 1 项" in meta["summary"]
+    assert preamble["collapsed"] is True
+    assert preamble["title"].startswith("运行器上下文")
+    assert "CODEPILOT_LOG_META" not in preamble["raw"]
+    assert command_group["runs"][0]["command"] == "pytest -q tests/test_web_assets.py"
+
+
+def test_agent_log_parser_folds_supporting_prompt_docs_between_commands():
+    support_lines = "\n".join([
+        "## Standard Flow",
+        "",
+        "Treat status, totals, and service health as questions.",
+        "",
+        "```bash",
+        "codepilot status -p workflow --json",
+        "codepilot hud -p workflow --preset full --json",
+        "```",
+        "",
+        "Do not mutate Git state from exploration.",
+    ])
+    blocks = _parse_agent_log_blocks(
+        f"""
+        exec
+        Get-Content C:\\Users\\Administrator\\.codex\\skills\\codepilot-workflow\\SKILL.md
+         succeeded in 100ms:
+        {support_lines}
+
+        exec
+        pytest -q tests/test_web_assets.py
+         succeeded in 1000ms:
+        56 passed
+        """,
+        {
+            "phase": "builder",
+            "agent": "codex",
+        },
+    )
+
+    support = next(block for block in blocks if support_lines in block.get("raw", ""))
+    command_groups = [block for block in blocks if block["type"] == "command-group"]
+    assert support["collapsed"] is True
+    assert all(group["lineCount"] > 0 for group in command_groups)
 
 
 def test_sidebar_category_toggle_uses_project_scoped_accordion():
@@ -776,24 +1058,33 @@ def test_agent_log_collapses_noncritical_command_details_by_default():
     styles = Path("codepilot/web/styles.css").read_text(encoding="utf-8")
 
     assert "expandedBlocks: {}" in agent_log
-    assert "toggleBlock(key)" in agent_log
-    assert "isBlockExpanded(key)" in agent_log
+    assert "toggleBlock(key, block = null)" in agent_log
+    assert "isBlockExpanded(key, block = null)" in agent_log
     assert "isBlockCollapsible(block)" in agent_log
     assert "commandGroupTitle(block)" in agent_log
+    assert "reviewTone(block)" in agent_log
+    assert "telemetryTone(block)" in agent_log
+    assert "al-run-meta" in agent_log
     assert "al-command-group-head" in agent_log
     assert "al-command-list" in agent_log
     assert "al-command-run-head" in agent_log
-    assert "v-if=\"isBlockExpanded(b.key)\"" in agent_log
-    assert "v-if=\"isBlockExpanded(run.key)\"" in agent_log
+    assert "v-if=\"isBlockExpanded(b.key, b)\"" in agent_log
+    assert "v-if=\"isBlockExpanded(run.key, run)\"" in agent_log
     assert "parseCommandRuns" in render_boundary
     assert "type: 'command-group'" in render_boundary
     assert "type: 'command-run'" in render_boundary
     assert "collapsed: true" in render_boundary
+    assert "type: 'review-verdict'" in render_boundary
+    assert "type: 'telemetry'" in render_boundary
+    assert "type: 'run-meta'" in render_boundary
     assert "summarizeCommandRun" in render_boundary
     assert ".al-fold-row" in styles
     assert ".al-command-list" in styles
     assert ".al-command-run-head" in styles
     assert ".al-command-text" in styles
+    assert ".al-review-card" in styles
+    assert ".al-telemetry" in styles
+    assert ".al-run-meta" in styles
 
 
 def test_web_ui_professional_console_style_contract():

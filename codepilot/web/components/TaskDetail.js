@@ -511,6 +511,9 @@ CP.Components.TaskDetail = Vue.defineComponent({
                   <cp-agent-log v-if="phaseLogText(phase)"
                                 :text="phaseLogText(phase)"
                                 :title="phaseLogTitle(phase)"
+                                :phase="phase.phase || phase.kind"
+                                :agent="phase.agent"
+                                :review="phase.review"
                                 :done="phaseLogDone(phase)"
                                 tall
                                 :follow="phase.active"></cp-agent-log>

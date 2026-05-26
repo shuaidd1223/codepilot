@@ -6,6 +6,7 @@ isolated from shell selection and plain subprocess helpers.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -97,13 +98,56 @@ def _summarize_output(output: str) -> list[str]:
     return summary[:15]
 
 
-def _format_command_for_markdown(cmd: list[str]) -> str:
-    parts = [str(part) for part in (cmd or [])]
+_LOG_ARG_REDACT_CHARS = 400
+_PROMPT_ARG_MARKERS = (
+    "【任务目标】",
+    "【验收标准",
+    "【项目约定",
+    "[Requirements]",
+    "AGENTS.md",
+    "TDD Mode",
+    "Task file",
+)
+
+
+def _join_command_parts_for_markdown(parts: list[str]) -> str:
+    parts = [str(part) for part in (parts or [])]
     if not parts:
         return ""
     if os.name == "nt":
         return subprocess.list2cmdline(parts)
     return " ".join(shlex.quote(part) for part in parts)
+
+
+def _format_command_for_markdown(cmd: list[str]) -> str:
+    parts = [str(part) for part in (cmd or [])]
+    return _join_command_parts_for_markdown(parts)
+
+
+def _command_arg_redaction_reason(text: str) -> str:
+    value = str(text or "")
+    if any(marker in value for marker in _PROMPT_ARG_MARKERS):
+        return "prompt"
+    if "\n" in value or "\r" in value:
+        return "prompt" if len(value) > 120 else "multiline"
+    if len(value) > _LOG_ARG_REDACT_CHARS:
+        return "long"
+    return ""
+
+
+def _format_command_for_log(cmd: list[str]) -> tuple[str, list[dict[str, int | str]]]:
+    display_parts: list[str] = []
+    redactions: list[dict[str, int | str]] = []
+    for idx, part in enumerate(cmd or []):
+        text = str(part)
+        reason = _command_arg_redaction_reason(text)
+        if reason:
+            label = "prompt" if reason == "prompt" else "long"
+            display_parts.append(f"[omitted {label} argument: {len(text)} chars]")
+            redactions.append({"index": idx, "chars": len(text), "reason": reason})
+        else:
+            display_parts.append(text)
+    return _join_command_parts_for_markdown(display_parts), redactions
 
 
 def _write_markdown_preamble(
@@ -114,12 +158,30 @@ def _write_markdown_preamble(
     cmd: list[str],
     cwd: Optional[Path],
     timeout: int,
+    input_text: Optional[str] = None,
 ) -> int:
     started = datetime.now().isoformat(timespec="seconds")
     cwd_text = str(cwd) if cwd else str(Path.cwd())
-    cmd_text = _format_command_for_markdown(cmd)
+    cmd_text, redactions = _format_command_for_log(cmd)
+    meta = {
+        "kind": "live_command",
+        "version": 1,
+        "task_id": int(task_id),
+        "phase": str(phase),
+        "cwd": cwd_text,
+        "timeout_seconds": int(timeout),
+        "stdin_chars": len(input_text or ""),
+        "command_redactions": redactions,
+    }
+    input_lines = []
+    if redactions:
+        input_lines.append(f"- command_args: `{len(redactions)} omitted`")
+    if input_text is not None:
+        input_lines.append(f"- stdin_chars: `{len(input_text)}`")
+
     text = (
         f"# Task #{task_id} · {phase}\n\n"
+        f"CODEPILOT_LOG_META: {json.dumps(meta, ensure_ascii=False, separators=(',', ':'))}\n\n"
         f"- started_at: `{started}`\n"
         f"- phase: `{phase}`\n"
         f"- cwd: `{cwd_text}`\n"
@@ -128,8 +190,10 @@ def _write_markdown_preamble(
         "```shell\n"
         f"{cmd_text}\n"
         "```\n\n"
-        "## Live Output\n\n"
     )
+    if input_lines:
+        text += "## Input\n\n" + "\n".join(input_lines) + "\n\n"
+    text += "## Live Output\n\n"
     handle.write(text)
     handle.flush()
     return len(text.encode("utf-8", errors="replace"))
@@ -380,9 +444,9 @@ class _LiveOutputProcessor:
         # Any inbound byte resets the silence clock — even whitespace
         # counts as "agent still responsive".
         self.last_output_monotonic = time.monotonic()
-        # Write raw subprocess output directly to the log file without
-        # any wrapping — the subprocess (Codex/Claude/OpenCode) already
-        # produces well-structured Markdown with proper code fences.
+        # Keep subprocess bytes auditable in the console log. The stable
+        # structure lives in the CodePilot preamble/meta and the renderer
+        # consumes that before falling back to transcript heuristics.
         stream_start = self.emitted_log_bytes
         raw_bytes = raw.encode("utf-8", errors="replace")
         self.emitted_log_bytes = stream_start + len(raw_bytes)
@@ -628,6 +692,7 @@ def _run_command_live(
             cmd=cmd,
             cwd=cwd,
             timeout=timeout,
+            input_text=input_text,
         )
         output = _LiveOutputProcessor(
             task_id=task_id,
