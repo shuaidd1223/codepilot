@@ -1231,6 +1231,23 @@ def test_project_list_syncs_manual_agents_toml_project_rename(ui_server):
     assert db.get_project("renamed-from-config") is not None
 
 
+def test_projects_endpoint_tolerates_manual_config_rename_conflict(ui_server, tmp_path):
+    target_path = tmp_path / "target-project"
+    target_path.mkdir()
+    db.register_project("target", str(target_path))
+    project = db.get_project("demo")
+    config_path = Path(project["path"]) / "AGENTS.toml"
+    config_path.write_text('[project]\nname = "target"\n', encoding="utf-8")
+    db.register_project("demo", project["path"], config_file=str(config_path))
+
+    status, dashboard = _get(f"{ui_server}/api/projects")
+
+    assert status == 200
+    names = [item["name"] for item in dashboard["projects"]]
+    assert "demo" in names
+    assert "target" in names
+
+
 def test_project_task_service_stop_requests_graceful_polling_stop(ui_server, monkeypatch):
     calls = []
 

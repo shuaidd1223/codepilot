@@ -146,6 +146,85 @@ def test_project_rename_same_storage_slug_keeps_existing_data(tmp_path, monkeypa
     assert renamed_task["current_log_path"] == str(log_path)
 
 
+def test_project_rename_keeps_old_runtime_root_when_another_project_shares_slug(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / "home"))
+    init_test_db(tmp_path, monkeypatch)
+    first_path = tmp_path / "first"
+    second_path = tmp_path / "second"
+    first_path.mkdir()
+    second_path.mkdir()
+    db.register_project("old name", str(first_path))
+    db.register_project("old-name", str(second_path))
+
+    shared_root = project_storage_root(project_name="old name")
+    shared_log = _write(shared_root / "runs" / "shared.console.md", "shared runtime data")
+    task = db.create_task("old name", "shared slug", content="body")
+    db.update_task(task["id"], current_log_path=str(shared_log))
+
+    result = db.rename_project("old name", "renamed")
+
+    assert result["ok"] is True
+    assert shared_root.exists()
+    assert shared_log.read_text(encoding="utf-8") == "shared runtime data"
+    assert str(shared_root) in result["pending_cleanup"]
+    assert db.get_project("old-name") is not None
+    renamed_task = db.get_task(task["id"])
+    assert renamed_task["project"] == "renamed"
+    assert renamed_task["current_log_path"] == str(project_storage_root(project_name="renamed") / "runs" / "shared.console.md")
+
+
+def test_project_rename_leaves_orphaned_task_log_path_unrewritten(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / "home"))
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("old-name", str(project_path))
+    orphaned_log = project_storage_root(project_name="old-name") / "runs" / "missing.console.md"
+    orphaned_log.parent.mkdir(parents=True, exist_ok=True)
+    task = db.create_task("old-name", "orphaned task log", content="body")
+    db.update_task(task["id"], current_log_path=str(orphaned_log))
+
+    result = db.rename_project("old-name", "new-name")
+
+    assert result["ok"] is True
+    assert result["updated_log_paths"] == 0
+    assert result["orphaned_log_paths"]
+    assert result["orphaned_log_paths"][0]["path"] == str(orphaned_log)
+    renamed_task = db.get_task(task["id"])
+    assert renamed_task["project"] == "new-name"
+    assert renamed_task["current_log_path"] == str(orphaned_log)
+    assert renamed_task["current_log_path"] != str(project_storage_root(project_name="new-name") / "runs" / "missing.console.md")
+
+
+def test_project_rename_leaves_orphaned_service_log_path_unrewritten(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / "home"))
+    init_test_db(tmp_path, monkeypatch)
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    db.register_project("old-name", str(project_path))
+    orphaned_log = global_storage_root() / "daemon" / "old-name" / "missing.log"
+    orphaned_log.parent.mkdir(parents=True, exist_ok=True)
+    db.upsert_service_state(
+        "daemon",
+        "old-name",
+        pid=1234,
+        status="running",
+        log_path=str(orphaned_log),
+        meta={"project": "old-name"},
+    )
+
+    result = db.rename_project("old-name", "new-name")
+
+    assert result["ok"] is True
+    assert result["updated_service_states"] == 1
+    assert result["orphaned_log_paths"]
+    assert result["orphaned_log_paths"][0]["path"] == str(orphaned_log)
+    daemon_state = db.get_service_state("daemon", "new-name")
+    assert daemon_state["log_path"] == str(orphaned_log)
+    assert daemon_state["meta"]["project"] == "new-name"
+    assert db.get_service_state("daemon", "old-name") is None
+
+
 def test_project_rename_command_updates_agents_toml_project_alias(tmp_path, monkeypatch):
     init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

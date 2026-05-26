@@ -532,33 +532,40 @@ def _empty_data_migration_result() -> dict:
         "data_conflicts": [],
         "data_error": "",
         "pending_cleanup": [],
+        "orphaned_log_paths": [],
         "data_files_copied": 0,
         "updated_log_paths": 0,
     }
 
 
-def _project_runtime_root_pairs(old_name: str, new_name: str) -> list[tuple[str, Path, Path]]:
+def _project_runtime_root_for_kind(kind: str, project_name: str) -> Path:
     home = global_storage_root()
+    if kind == "data":
+        return project_storage_root(project_name=project_name)
+    return home / kind / _slugify_project_name(project_name)
+
+
+def _project_runtime_root_pairs(old_name: str, new_name: str) -> list[tuple[str, Path, Path]]:
     return [
         (
             "data",
-            project_storage_root(project_name=old_name),
-            project_storage_root(project_name=new_name),
+            _project_runtime_root_for_kind("data", old_name),
+            _project_runtime_root_for_kind("data", new_name),
         ),
         (
             "daemon",
-            home / "daemon" / _slugify_project_name(old_name),
-            home / "daemon" / _slugify_project_name(new_name),
+            _project_runtime_root_for_kind("daemon", old_name),
+            _project_runtime_root_for_kind("daemon", new_name),
         ),
         (
             "inspect",
-            home / "inspect" / _slugify_project_name(old_name),
-            home / "inspect" / _slugify_project_name(new_name),
+            _project_runtime_root_for_kind("inspect", old_name),
+            _project_runtime_root_for_kind("inspect", new_name),
         ),
         (
             "opencode",
-            home / "opencode" / _slugify_project_name(old_name),
-            home / "opencode" / _slugify_project_name(new_name),
+            _project_runtime_root_for_kind("opencode", old_name),
+            _project_runtime_root_for_kind("opencode", new_name),
         ),
     ]
 
@@ -677,15 +684,31 @@ def _merge_runtime_tree(
 
 
 def _cleanup_old_runtime_roots(root_pairs: list[tuple[str, Path, Path]], result: dict) -> None:
-    for _kind, old_root, _new_root in root_pairs:
-        if old_root.resolve(strict=False) == _new_root.resolve(strict=False):
+    for kind, old_root, new_root in root_pairs:
+        if old_root.resolve(strict=False) == new_root.resolve(strict=False):
             continue
         if not old_root.exists():
+            continue
+        if _runtime_root_is_used_by_registered_project(kind, old_root):
+            if str(old_root) not in result["pending_cleanup"]:
+                result["pending_cleanup"].append(str(old_root))
             continue
         try:
             shutil.rmtree(old_root)
         except OSError:
             result["pending_cleanup"].append(str(old_root))
+
+
+def _runtime_root_is_used_by_registered_project(kind: str, root: Path) -> bool:
+    resolved = root.resolve(strict=False)
+    for project in _raw_list_projects():
+        project_name = str(project.get("name") or "").strip()
+        if not project_name:
+            continue
+        project_root = _project_runtime_root_for_kind(kind, project_name)
+        if project_root.resolve(strict=False) == resolved:
+            return True
+    return False
 
 
 def _migrate_project_runtime_data(old_name: str, new_name: str) -> tuple[dict, list[tuple[str, Path, Path]]]:
@@ -715,6 +738,9 @@ def _rewrite_migrated_runtime_path(
     raw_path: object,
     root_pairs: list[tuple[str, Path, Path]],
     path_rewrites: dict[str, str],
+    *,
+    orphaned_log_paths: list[dict] | None = None,
+    owner: str = "",
 ) -> str:
     text = str(raw_path or "").strip()
     if not text:
@@ -736,9 +762,36 @@ def _rewrite_migrated_runtime_path(
             continue
         target = new_root / relative
         if not target.exists():
+            if not source.exists():
+                _record_orphaned_log_path(
+                    orphaned_log_paths,
+                    owner=owner,
+                    path=source,
+                    target=target,
+                )
+                return text
             raise ValueError(f"迁移后的日志路径不存在：{target}")
         return str(target)
     return text
+
+
+def _record_orphaned_log_path(
+    orphaned_log_paths: list[dict] | None,
+    *,
+    owner: str,
+    path: Path,
+    target: Path,
+) -> None:
+    if orphaned_log_paths is None:
+        return
+    entry = {
+        "owner": owner,
+        "path": str(path),
+        "target": str(target),
+        "reason": "source_missing",
+    }
+    if entry not in orphaned_log_paths:
+        orphaned_log_paths.append(entry)
 
 
 def _rewrite_project_task_log_paths(
@@ -746,6 +799,7 @@ def _rewrite_project_task_log_paths(
     project: str,
     root_pairs: list[tuple[str, Path, Path]],
     path_rewrites: dict[str, str],
+    orphaned_log_paths: list[dict],
 ) -> int:
     rows = conn.execute(
         """
@@ -760,7 +814,13 @@ def _rewrite_project_task_log_paths(
     changed = 0
     for row in rows:
         current = str(row["current_log_path"] or "")
-        next_path = _rewrite_migrated_runtime_path(current, root_pairs, path_rewrites)
+        next_path = _rewrite_migrated_runtime_path(
+            current,
+            root_pairs,
+            path_rewrites,
+            orphaned_log_paths=orphaned_log_paths,
+            owner=f"task:{row['id']}",
+        )
         if next_path == current:
             continue
         conn.execute("UPDATE tasks SET current_log_path = ? WHERE id = ?", (next_path, row["id"]))
@@ -803,7 +863,22 @@ def sync_project_config_renames() -> list[dict]:
             config_name = _project_config_name(project)
             if not config_name or config_name == str(project.get("name") or ""):
                 continue
-            results.append(rename_project(str(project["name"]), config_name))
+            try:
+                results.append(rename_project(str(project["name"]), config_name))
+            except ValueError as exc:
+                results.append(
+                    {
+                        "ok": False,
+                        "renamed": False,
+                        "old_name": str(project.get("name") or ""),
+                        "new_name": config_name,
+                        "path": str(project.get("path") or ""),
+                        "config_file": str(project.get("config_file") or ""),
+                        "config_updated": False,
+                        "config_error": str(exc),
+                        "sync_skipped": True,
+                    }
+                )
     finally:
         _CONFIG_RENAME_SYNC.active = False
     return results
@@ -816,6 +891,7 @@ def _rename_project_service_state_refs(
     *,
     root_pairs: list[tuple[str, Path, Path]] | None = None,
     path_rewrites: dict[str, str] | None = None,
+    orphaned_log_paths: list[dict] | None = None,
 ) -> int:
     rows = conn.execute("SELECT * FROM service_states").fetchall()
     changed = 0
@@ -825,7 +901,13 @@ def _rename_project_service_state_refs(
         meta = _decode_json_object(row["meta"])
         rewritten_meta = _rewrite_project_meta_refs(meta, old_name, new_name)
         next_scope = new_name if str(row["scope"] or "") == old_name else str(row["scope"] or "")
-        next_log_path = _rewrite_migrated_runtime_path(row["log_path"], runtime_roots, rewrite_map)
+        next_log_path = _rewrite_migrated_runtime_path(
+            row["log_path"],
+            runtime_roots,
+            rewrite_map,
+            orphaned_log_paths=orphaned_log_paths,
+            owner=f"service_state:{row['service']}:{row['scope']}",
+        )
         if next_scope == str(row["scope"] or "") and rewritten_meta == meta and next_log_path == str(row["log_path"] or ""):
             continue
 
@@ -919,7 +1001,11 @@ def rename_project(name: str, new_name: str) -> dict:
     with get_write_conn() as conn:
         task_count = int(conn.execute("SELECT COUNT(*) FROM tasks WHERE project = ?", (old_name,)).fetchone()[0])
         session_count = int(conn.execute("SELECT COUNT(*) FROM sessions WHERE project = ?", (old_name,)).fetchone()[0])
-        log_path_count = _rewrite_project_task_log_paths(conn, old_name, root_pairs, path_rewrites)
+        orphaned_log_paths = migration_result.get("orphaned_log_paths")
+        if not isinstance(orphaned_log_paths, list):
+            orphaned_log_paths = []
+            migration_result["orphaned_log_paths"] = orphaned_log_paths
+        log_path_count = _rewrite_project_task_log_paths(conn, old_name, root_pairs, path_rewrites, orphaned_log_paths)
         original_path = str(project["path"])
         temp_path = f"{original_path}#rename-{time.time_ns()}"
         conn.execute("UPDATE projects SET path = ? WHERE name = ?", (temp_path, old_name))
@@ -942,6 +1028,7 @@ def rename_project(name: str, new_name: str) -> dict:
             target_name,
             root_pairs=root_pairs,
             path_rewrites=path_rewrites,
+            orphaned_log_paths=orphaned_log_paths,
         )
         dedup_count = _refresh_project_task_dedup_keys(conn, target_name)
         config_result = _sync_project_config_name(project, old_name, target_name, fail_on_error=True)

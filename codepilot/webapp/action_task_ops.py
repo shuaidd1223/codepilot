@@ -94,6 +94,7 @@ def _project_data_migration_payload(result: dict) -> dict:
         "data_conflicts": result.get("data_conflicts") if isinstance(result.get("data_conflicts"), list) else [],
         "data_error": str(result.get("data_error") or ""),
         "pending_cleanup": result.get("pending_cleanup") if isinstance(result.get("pending_cleanup"), list) else [],
+        "orphaned_log_paths": result.get("orphaned_log_paths") if isinstance(result.get("orphaned_log_paths"), list) else [],
         "data_files_copied": int(result.get("data_files_copied") or 0),
         "updated_log_paths": int(result.get("updated_log_paths") or 0),
     }
@@ -112,7 +113,7 @@ def rename_project_action(name: str, new_name: str) -> dict:
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
     migration = _project_data_migration_payload(result)
-    level = "warning" if migration["pending_cleanup"] or migration["data_conflicts"] else "info"
+    level = "warning" if migration["pending_cleanup"] or migration["data_conflicts"] or migration["orphaned_log_paths"] else "info"
     _append_event(f"重命名项目：{result['old_name']} -> {result['new_name']}", level=level, project=result["new_name"])
     payload = dict(result)
     payload["data_migration"] = migration
@@ -121,6 +122,8 @@ def rename_project_action(name: str, new_name: str) -> dict:
         payload["message"] += f" {len(migration['pending_cleanup'])} 个旧目录待清理。"
     elif migration["data_conflicts"]:
         payload["message"] += f" {len(migration['data_conflicts'])} 个冲突已备份。"
+    elif migration["orphaned_log_paths"]:
+        payload["message"] += f" {len(migration['orphaned_log_paths'])} 个历史日志路径已保留。"
     elif migration["data_migrated"]:
         payload["message"] += " 本地运行数据已迁移。"
     return payload
