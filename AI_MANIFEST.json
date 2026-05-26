@@ -407,6 +407,17 @@
       ]
     },
     {
+      "name": "shutdown",
+      "syntax": "codepilot shutdown [-p <project-name>] [--force]",
+      "purpose": "Stop CodePilot Web UI, Feishu, webhook, daemon, inspect, and active task runtime processes in one operation.",
+      "when_to_use": "Use when local CodePilot services should be shut down and active work should either finish gracefully or be force-stopped.",
+      "examples": [
+        "codepilot shutdown",
+        "codepilot shutdown -p <project-name>",
+        "codepilot shutdown --force"
+      ]
+    },
+    {
       "name": "daemon",
       "syntax": "codepilot daemon -p <project-name> [--status|--stop]",
       "purpose": "Continuously poll backlog and execute tasks for a project.",

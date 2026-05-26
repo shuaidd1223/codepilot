@@ -213,6 +213,38 @@ def stop_inspect_service(project: str) -> dict:
     _cleanup_inspect_files(project)
     return {"stopped": True, "pids": [pid]}
 
+
+def request_inspect_service_stop(project: str) -> dict:
+    """Request foreground inspect to stop after the current round."""
+    if not project:
+        raise RuntimeError("停止巡检必须指定项目。")
+    status = inspect_service_status(project)
+    if not status["running"]:
+        _cleanup_inspect_files(project)
+        return {"stopped": False, "stop_requested": False, "pids": []}
+    pid = int(status["pid"])
+    db.upsert_service_state(
+        "inspect",
+        project,
+        pid=pid,
+        status="stopping",
+        log_path=str(_service_log_path(project)),
+        heartbeat_at=_now_iso(),
+        meta={"project": project, "pid": pid, "stop_requested_at": _now_iso()},
+    )
+    return {"stopped": False, "stop_requested": True, "pids": [pid]}
+
+
+def _inspect_stop_requested(project: str) -> bool:
+    try:
+        db._invalidate_service_state_caches()
+    except Exception:
+        pass
+    state = db.get_service_state("inspect", project)
+    if not state:
+        return False
+    return str(state.get("status") or "").strip().lower() == "stopping"
+
 INSPECT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1752,4 +1784,5 @@ def inspect(
         run_inspection_fn=_run_inspection_with_stream,
         emit_inspection_result_fn=_emit_result_after_stream,
         echo_fn=echo,
+        inspect_stop_requested_fn=_inspect_stop_requested,
     )

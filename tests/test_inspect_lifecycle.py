@@ -145,3 +145,47 @@ def test_run_foreground_inspection_loop_runs_once_and_clears_state():
     assert emitted[0]["dry_run"] is True
     assert emitted[0]["json_mode"] is False
     assert cleared == [("inspect", "demo")]
+
+
+def test_run_foreground_inspection_loop_exits_after_round_when_stop_requested():
+    touched: list[dict] = []
+    cleared: list[tuple[str, str]] = []
+    emitted: list[dict] = []
+    stop_requested = {"value": False}
+
+    options = inspect_lifecycle.ForegroundInspectLoopOptions(
+        project="demo",
+        project_info={"name": "demo", "path": "D:/repo/demo"},
+        signals=("git_log",),
+        max_new_tasks=1,
+        interval_seconds=600,
+        planner="codex",
+        priority="P3",
+        auto_execute=False,
+        agent="codex",
+        dry_run=False,
+        once=False,
+        json_mode=False,
+    )
+
+    def _run_inspection(project_info, **kwargs):
+        stop_requested["value"] = True
+        return {"project": project_info["name"], "created": [], "skipped": [], "candidates_total": 0}
+
+    inspect_lifecycle.run_foreground_inspection_loop(
+        options,
+        touch_service_state_fn=lambda *args, **kwargs: touched.append({"args": args, "kwargs": kwargs}),
+        clear_service_state_fn=lambda service, scope: cleared.append((service, scope)),
+        service_log_path_fn=lambda _name: "D:/tmp/inspect.log",
+        print_round_header_fn=lambda **_kwargs: None,
+        run_inspection_fn=_run_inspection,
+        emit_inspection_result_fn=lambda result, **kwargs: emitted.append({"result": result, **kwargs}),
+        echo_fn=lambda *_args, **_kwargs: None,
+        inspect_stop_requested_fn=lambda _project: stop_requested["value"],
+        get_pid_fn=lambda: 2222,
+        sleep_fn=lambda _seconds: (_ for _ in ()).throw(AssertionError("stop request should skip sleep")),
+    )
+
+    assert len(touched) == 1
+    assert emitted
+    assert cleared == [("inspect", "demo")]

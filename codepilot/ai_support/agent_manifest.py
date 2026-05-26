@@ -374,6 +374,17 @@ def command_manifest(
                 ],
             },
             {
+                "name": "shutdown",
+                "syntax": _cmd(command, "shutdown [-p <项目名>] [--force]"),
+                "purpose": "一条命令停止 CodePilot Web UI、飞书、Webhook 服务，并对 daemon、巡检和运行中任务执行等待或强制停止。",
+                "when_to_use": "需要关闭本机 CodePilot 相关后台服务，或在有运行中工作时选择等待完成/强制取消时。",
+                "examples": [
+                    _cmd(command, "shutdown"),
+                    _cmd(command, "shutdown -p codepilot-dev"),
+                    _cmd(command, "shutdown --force"),
+                ],
+            },
+            {
                 "name": "task_find",
                 "syntax": _cmd(command, "task find <关键词> -p <项目名> [--json]"),
                 "purpose": "按关键词、状态、优先级检索任务。",
@@ -722,6 +733,7 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
             {"name": "memory", "syntax": _cmd(command, f"memory events -p {project} [--type <event_type>] [--limit N] --json"), "purpose": "Read project-local factual memory events; CodePilot automatically creates deduplicated candidates with score/feedback/seen_count and `.codepilot/memory/autocapture.md`.", "when_to_use": "Use to analyze inspect/workflow events and self-improvement evidence.", "examples": [_cmd(command, f"memory events -p {project} --json"), _cmd(command, f"memory events -p {project} --type workflow.action_executed --json")]},
             {"name": "trace", "syntax": _cmd(command, f"trace [-p {project}] [--task <task_id>] [--limit N] [--json]"), "purpose": "Show recent activity across task lifecycle, logs, service heartbeats, and workflow state.", "when_to_use": "Use to understand what happened recently.", "examples": [_cmd(command, f"trace -p {project} --limit 30")]},
             {"name": "ui", "syntax": _cmd(command, "ui [--host 127.0.0.1] [--port 8766] | ui <start|status|logs|stop|restart>"), "purpose": "Run or manage the Web UI.", "when_to_use": "Use for graphical multi-project overview or persistent UI service management.", "examples": [_cmd(command, "ui --no-open --port 8877"), _cmd(command, "ui start")]},
+            {"name": "shutdown", "syntax": _cmd(command, f"shutdown [-p {project}] [--force]"), "purpose": "Stop CodePilot Web UI, Feishu, webhook, daemon, inspect, and active task runtime processes in one operation.", "when_to_use": "Use when local CodePilot services should be shut down and active work should either finish gracefully or be force-stopped.", "examples": [_cmd(command, "shutdown"), _cmd(command, f"shutdown -p {project}"), _cmd(command, "shutdown --force")]},
             {"name": "daemon", "syntax": _cmd(command, f"daemon -p {project} [--status|--stop]"), "purpose": "Continuously poll backlog and execute tasks for a project.", "when_to_use": "Use when tasks should run continuously in the background.", "examples": [_cmd(command, f"daemon -p {project} --status")]},
             {"name": "event", "syntax": _cmd(command, f"event <schema|list|register|enable|disable|test> [--project {project}] [--json]"), "purpose": "Manage project event sink registry and event schema.", "when_to_use": "Use for hook/event plugin integration.", "examples": [_cmd(command, "event schema --json"), _cmd(command, f"event list -p {project} --json")]},
             {"name": "hook", "syntax": _cmd(command, f"hook <plan|validate|test|logs|install|uninstall> -p {project} [--json]"), "purpose": "Manage project hook registry and lifecycle event validation.", "when_to_use": "Use to verify hook/event integrations.", "examples": [_cmd(command, f"hook validate -p {project} --json")]},

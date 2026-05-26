@@ -120,13 +120,35 @@ def run_foreground_inspection_loop(
     run_inspection_fn: Callable[..., dict],
     emit_inspection_result_fn: Callable[..., None],
     echo_fn: Callable[[str], None],
+    inspect_stop_requested_fn: Callable[[str], bool] | None = None,
     get_pid_fn: Callable[[], int] = os.getpid,
-    sleep_fn: Callable[[int], None] = time.sleep,
+    sleep_fn: Callable[[float], None] = time.sleep,
 ) -> None:
     """Run foreground inspect rounds and keep runtime state lifecycle consistent."""
     round_num = 0
+
+    def _stop_requested() -> bool:
+        return bool(inspect_stop_requested_fn and inspect_stop_requested_fn(options.project))
+
+    def _sleep_or_stop(seconds: int) -> bool:
+        if inspect_stop_requested_fn is None:
+            sleep_fn(seconds)
+            return False
+        remaining = float(max(0, int(seconds)))
+        while remaining > 0:
+            if _stop_requested():
+                return True
+            chunk = min(1.0, remaining)
+            sleep_fn(chunk)
+            remaining -= chunk
+        return _stop_requested()
+
     try:
         while True:
+            if _stop_requested():
+                if not options.json_mode:
+                    echo_fn("[yellow]收到巡检停止请求，退出；当前轮已完成。[/yellow]")
+                break
             touch_service_state_fn(
                 "inspect",
                 options.project,
@@ -160,10 +182,17 @@ def run_foreground_inspection_loop(
 
             if options.once:
                 break
+            if _stop_requested():
+                if not options.json_mode:
+                    echo_fn("[yellow]收到巡检停止请求，退出；当前轮已完成。[/yellow]")
+                break
             if not options.json_mode:
                 echo_fn(f"[dim]下次巡检将在 {options.interval_seconds} 秒后...[/dim]")
             try:
-                sleep_fn(options.interval_seconds)
+                if _sleep_or_stop(options.interval_seconds):
+                    if not options.json_mode:
+                        echo_fn("[yellow]收到巡检停止请求，退出。[/yellow]")
+                    break
             except KeyboardInterrupt:
                 if not options.json_mode:
                     echo_fn("[yellow]巡检已停止[/yellow]")
