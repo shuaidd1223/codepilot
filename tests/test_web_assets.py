@@ -612,6 +612,124 @@ def test_sidebar_project_row_click_selects_before_toggling_expand_state():
       this.cp.toggleProject(name);""" in sidebar
 
 
+def _run_submission_rename(response: dict, *, draft: str = "  Normalized    Name  ") -> dict:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for AppSubmissionBoundary behavior checks")
+    script = textwrap.dedent(
+        """
+        const fs = require('fs');
+        const vm = require('vm');
+        const sourcePath = process.argv[1];
+        const response = JSON.parse(Buffer.from(process.argv[2], 'base64').toString('utf8'));
+        const draft = Buffer.from(process.argv[3], 'base64').toString('utf8');
+        const calls = { posts: [], nav: [], loads: [], selected: [], toasts: [] };
+        global.window = global;
+        global.CP = {
+          api: {
+            async post(url, body) {
+              calls.posts.push({ url, body });
+              return response;
+            },
+          },
+        };
+        vm.runInThisContext(fs.readFileSync(sourcePath, 'utf8'), { filename: sourcePath });
+        const state = { nav: { project: 'old-name', view: 'tasks', id: 42 } };
+        const boundary = CP.createAppSubmissionBoundary({
+          state,
+          pushToast(message, tone) { calls.toasts.push([message, tone]); },
+          loadDashboard(project) {
+            calls.loads.push(project);
+            return Promise.resolve();
+          },
+          selectProject(project) { calls.selected.push(project); },
+          setNav(nav) { calls.nav.push(nav); },
+        });
+        (async () => {
+          const out = await boundary.renameProject('old-name', draft);
+          process.stdout.write(JSON.stringify({ calls, out }));
+        })().catch((err) => {
+          console.error(err && err.stack ? err.stack : err);
+          process.exit(1);
+        });
+        """
+    )
+    result = subprocess.run(
+        [
+            node,
+            "-e",
+            script,
+            str(Path("codepilot/web/boundaries/AppSubmissionBoundary.js")),
+            base64.b64encode(json.dumps(response).encode("utf-8")).decode("ascii"),
+            base64.b64encode(draft.encode("utf-8")).decode("ascii"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def test_app_submission_rename_uses_backend_normalized_project_name_for_navigation():
+    by_new_name = _run_submission_rename(
+        {
+            "ok": True,
+            "message": "项目 'old-name' 已重命名为 'Normalized Name'。",
+            "new_name": "Normalized Name",
+            "project": {"name": "project-payload-should-not-win"},
+            "data_migration": {
+                "data_migrated": True,
+                "pending_cleanup": ["old-a", "old-b"],
+            },
+        },
+    )
+
+    assert by_new_name["calls"]["posts"] == [
+        {
+            "url": "/api/projects/old-name/rename",
+            "body": {"name": "Normalized    Name"},
+        }
+    ]
+    assert by_new_name["calls"]["nav"] == [
+        {"project": "Normalized Name", "view": "tasks", "id": 42}
+    ]
+    assert by_new_name["calls"]["loads"] == ["Normalized Name"]
+    assert by_new_name["calls"]["selected"] == ["Normalized Name"]
+    assert by_new_name["calls"]["toasts"] == [
+        [
+            "项目 'old-name' 已重命名为 'Normalized Name'。 运行数据已迁移，2 个旧目录待清理。",
+            "warning",
+        ]
+    ]
+
+    by_project_payload = _run_submission_rename(
+        {
+            "ok": True,
+            "message": "项目已重命名",
+            "project": {"name": "Project Payload Name"},
+        },
+        draft="Project    Payload    Name",
+    )
+    assert by_project_payload["calls"]["nav"] == [
+        {"project": "Project Payload Name", "view": "tasks", "id": 42}
+    ]
+    assert by_project_payload["calls"]["loads"] == ["Project Payload Name"]
+    assert by_project_payload["calls"]["selected"] == ["Project Payload Name"]
+
+    fallback = _run_submission_rename(
+        {
+            "ok": True,
+            "message": "项目已重命名",
+        },
+        draft="Fallback    Name",
+    )
+    assert fallback["calls"]["nav"] == [
+        {"project": "Fallback    Name", "view": "tasks", "id": 42}
+    ]
+    assert fallback["calls"]["loads"] == ["Fallback    Name"]
+    assert fallback["calls"]["selected"] == ["Fallback    Name"]
+
+
 def test_sidebar_wires_project_rename_action_and_migration_toast():
     sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
     submission = Path("codepilot/web/boundaries/AppSubmissionBoundary.js").read_text(encoding="utf-8")

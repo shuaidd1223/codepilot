@@ -33,6 +33,19 @@ CP.createAppSubmissionBoundary = (options = {}) => {
     return notes.length ? `${base} ${notes.join('，')}。` : base;
   }
 
+  function renameResultProjectName(out, fallbackName) {
+    const candidates = [
+      out && out.new_name,
+      out && out.project && out.project.name,
+      fallbackName,
+    ];
+    for (const candidate of candidates) {
+      const name = String(candidate || '').trim();
+      if (name) return name;
+    }
+    return '';
+  }
+
   async function submitProject() {
     const path = state.projectForm.path.trim();
     if (!path) {
@@ -94,11 +107,12 @@ CP.createAppSubmissionBoundary = (options = {}) => {
       const out = await CP.api.post(`/api/projects/${encodeURIComponent(oldName)}/rename`, {
         name: targetName,
       });
+      const normalizedName = renameResultProjectName(out, targetName);
       if (state.nav.project === oldName) {
-        setNav({ project: targetName, view: state.nav.view || 'overview', id: state.nav.id || null });
+        setNav({ project: normalizedName, view: state.nav.view || 'overview', id: state.nav.id || null });
       }
-      await loadDashboard(targetName);
-      selectProject(targetName);
+      await loadDashboard(normalizedName);
+      selectProject(normalizedName);
       const migration = (out && (out.data_migration || out)) || {};
       const toastType = (Array.isArray(migration.pending_cleanup) && migration.pending_cleanup.length) ? 'warning' : 'success';
       pushToast(formatProjectRenameMessage(out), toastType);
