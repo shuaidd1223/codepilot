@@ -20,6 +20,8 @@ CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {
   const VERDICT_RE = /\bVERDICT\s*:\s*(PASS|FAIL)\b/i;
   const REVIEW_CONTEXT_RE = /review/i;
   const CRITICAL_TEXT_RE = /(\bVERDICT\s*:|###?\s*(Summary|Result)\b|已完成\s*#?\d*|验证结果|TDD evidence|需要修复|Full review comments|Traceback|AssertionError|^\s*(FAILED|ERROR)\b|\bException\b)/im;
+  const DIFF_START_RE = /^\s*diff --git\s+a\/(.+?)\s+b\/(.+)\s*$/;
+  const DIFF_META_RE = /^(index |new file mode |deleted file mode |old mode |new mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |--- |\+\+\+ |\\ No newline)/;
 
   function _escapeHtml(text) {
     const esc = CP.escapeHtml || ((t) => String(t)
@@ -165,18 +167,119 @@ CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {
     return { command, status, tone };
   }
 
+  function commandStatusIndex(lines) {
+    return lines.findIndex((line) => COMMAND_STATUS_RE.test(String(line || '')));
+  }
+
+  function normalizedDiffLine(line) {
+    return String(line || '').replace(/^\s+/, '');
+  }
+
+  function isDiffStartLine(line) {
+    return DIFF_START_RE.test(normalizedDiffLine(line));
+  }
+
+  function diffLineKind(line) {
+    const text = normalizedDiffLine(line);
+    if (/^diff --git /.test(text)) return 'hdr';
+    if (/^@@ /.test(text)) return 'hunk';
+    if (DIFF_META_RE.test(text)) return 'meta';
+    if (text.startsWith('+') && !text.startsWith('+++')) return 'add';
+    if (text.startsWith('-') && !text.startsWith('---')) return 'del';
+    return 'ctx';
+  }
+
+  function diffLineMarker(line, kind = '') {
+    const text = normalizedDiffLine(line);
+    const lineKind = kind || diffLineKind(text);
+    if (lineKind === 'add') return '+';
+    if (lineKind === 'del') return '-';
+    if (lineKind === 'hunk') return '@';
+    if (lineKind === 'hdr') return 'd';
+    return text.startsWith(' ') ? '·' : '';
+  }
+
+  function isDiffContinuationLine(line) {
+    const text = normalizedDiffLine(line);
+    if (!text.trim()) return false;
+    if (isDiffStartLine(text)) return true;
+    if (DIFF_META_RE.test(text)) return true;
+    if (/^@@ /.test(text)) return true;
+    if (/^[+\- ]/.test(text)) return true;
+    return false;
+  }
+
+  function diffFileFromLines(lines) {
+    for (const line of lines) {
+      const match = DIFF_START_RE.exec(normalizedDiffLine(line));
+      if (match) return match[2] || match[1] || '';
+    }
+    for (const line of lines) {
+      const text = normalizedDiffLine(line);
+      if (text.startsWith('+++ b/')) return text.slice(6).trim();
+      if (text.startsWith('--- a/')) return text.slice(6).trim();
+    }
+    return '';
+  }
+
+  function parseDiffBlock(lines, start) {
+    const normalized = lines.map((line) => normalizedDiffLine(line).replace(/\s+$/g, ''));
+    const raw = normalized.join('\n').replace(/\s+$/g, '');
+    const file = diffFileFromLines(normalized);
+    const addedCount = normalized.filter((line) => line.startsWith('+') && !line.startsWith('+++')).length;
+    const deletedCount = normalized.filter((line) => line.startsWith('-') && !line.startsWith('---')).length;
+    return {
+      type: 'diff',
+      key: `diff:${start}:${file}:${raw.length}`,
+      raw,
+      file,
+      title: file ? `Diff · ${file}` : 'Diff',
+      lineCount: normalized.length,
+      addedCount,
+      deletedCount,
+      lines: normalized.map((text) => {
+        const kind = diffLineKind(text);
+        return { text, kind, marker: diffLineMarker(text, kind) };
+      }),
+      collapsed: normalized.length > 220,
+      importance: 'critical',
+    };
+  }
+
+  function findDiffEnd(lines, start) {
+    let end = start + 1;
+    while (end < lines.length) {
+      if (isDiffStartLine(lines[end])) break;
+      if (!isDiffContinuationLine(lines[end])) break;
+      end += 1;
+    }
+    return end;
+  }
+
   function makeCommandRun(lines, start) {
-    const raw = lines.join('\n').replace(/\s+$/g, '');
-    const summary = summarizeCommandRun(lines);
+    const runLines = lines.slice();
+    while (runLines.length > 0 && !String(runLines[runLines.length - 1] || '').trim()) {
+      runLines.pop();
+    }
+    const raw = runLines.join('\n').replace(/\s+$/g, '');
+    const summary = summarizeCommandRun(runLines);
+    const statusIdx = commandStatusIndex(runLines);
+    const bodyStart = statusIdx >= 0 ? statusIdx + 1 : 2;
+    const meaningfulBodyLines = runLines.slice(bodyStart).filter((line) => String(line || '').trim());
+    const inlineOnly = runLines.length <= 2 || (
+      summary.tone === 'ok' && runLines.length <= 4 && meaningfulBodyLines.length === 0
+    );
     return {
       type: 'command-run',
-      key: `cmdrun:${start}:${lines.length}:${raw.length}`,
+      key: `cmdrun:${start}:${runLines.length}:${raw.length}`,
       raw,
-      lineCount: lines.length,
+      lineCount: runLines.length,
       command: summary.command,
       status: summary.status,
       tone: summary.tone,
-      collapsed: summary.tone !== 'fail' || lines.length > 80,
+      inlineOnly,
+      hasDiff: runLines.some((line) => isDiffStartLine(line)),
+      collapsed: inlineOnly ? false : (summary.tone !== 'fail' || runLines.length > 80),
     };
   }
 
@@ -368,7 +471,7 @@ CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {
     return out;
   }
 
-  function pushTextBlocks(out, lines, baseStart) {
+  function pushPlainTextBlocks(out, lines, baseStart) {
     if (!lines.length) return;
     const sections = splitSections(lines);
 
@@ -399,6 +502,28 @@ CP.AgentLogRenderBoundary = CP.AgentLogRenderBoundary || (() => {
         });
       }
     }
+  }
+
+  function pushTextBlocks(out, lines, baseStart) {
+    if (!lines.length) return;
+    let textStart = 0;
+    let i = 0;
+
+    while (i < lines.length) {
+      if (!isDiffStartLine(lines[i])) {
+        i += 1;
+        continue;
+      }
+
+      pushPlainTextBlocks(out, lines.slice(textStart, i), baseStart + textStart);
+      const diffStart = i;
+      const diffEnd = findDiffEnd(lines, diffStart);
+      out.push(parseDiffBlock(lines.slice(diffStart, diffEnd), baseStart + diffStart));
+      i = diffEnd;
+      textStart = i;
+    }
+
+    pushPlainTextBlocks(out, lines.slice(textStart), baseStart + textStart);
   }
 
   function pushTextAndTelemetryBlocks(out, lines, baseStart, context = {}) {

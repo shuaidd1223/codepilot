@@ -2667,6 +2667,18 @@ pre.code.live-log { max-height: 280px; }
 .al-diff-line.al-diff-hunk-toggle:hover {
   background: rgba(130, 170, 255, .12);
 }
+.al-command-run-head.is-inline {
+  cursor: default;
+}
+.al-fold-caret-spacer {
+  opacity: 0;
+}
+.al-command-diff {
+  margin: 0;
+  border: 1px solid var(--agent-subtle);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, .02);
+}
 .al-diff-line.al-diff-hunk-collapsed {
   color: #a8c8ff;
 }

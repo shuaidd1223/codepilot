@@ -164,8 +164,52 @@ CP.Components.AgentLog = Vue.defineComponent({
     commandRunTitle(run, idx) {
       return `命令 ${idx + 1}`;
     },
+    commandRunHeadClass(run) {
+      return [
+        'al-fold-row',
+        'al-command-run-head',
+        {
+          'is-inline': !!(run && run.inlineOnly),
+        },
+      ];
+    },
+    toggleCommandRun(run) {
+      if (!run || run.inlineOnly) return;
+      this.toggleBlock(run.key, run);
+    },
     commandRunTone(run) {
       return run && run.tone ? `tone-${run.tone}` : 'tone-neutral';
+    },
+    diffLineClass(row) {
+      const kind = String((row && row.kind) || 'ctx').trim() || 'ctx';
+      return `k-${kind}`;
+    },
+    diffLineMarker(row) {
+      return String((row && row.marker) || '');
+    },
+    diffLines(block) {
+      if (block && Array.isArray(block.lines)) return block.lines;
+      return String((block && block.raw) || '')
+        .split(/\r?\n/)
+        .map((line) => {
+          let kind = 'ctx';
+          if (/^diff --git /.test(line)) kind = 'hdr';
+          else if (/^@@ /.test(line)) kind = 'hunk';
+          else if (/^(index |new file mode |deleted file mode |old mode |new mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |--- |\+\+\+ |\\ No newline)/.test(line)) kind = 'meta';
+          else if (line.startsWith('+') && !line.startsWith('+++')) kind = 'add';
+          else if (line.startsWith('-') && !line.startsWith('---')) kind = 'del';
+          const marker = kind === 'add' ? '+' : (kind === 'del' ? '-' : (kind === 'hunk' ? '@' : ''));
+          return { text: line, kind, marker };
+        });
+    },
+    diffCount(block) {
+      const added = Number((block && block.addedCount) || 0);
+      const deleted = Number((block && block.deletedCount) || 0);
+      if (!added && !deleted) return '';
+      return `+${added} -${deleted}`;
+    },
+    isDiffText(text) {
+      return /(^|\n)\s*diff --git /.test(String(text || ''));
     },
     verdictLabel(block) {
       const verdict = String((block && block.verdict) || 'unknown').toUpperCase();
@@ -281,6 +325,34 @@ CP.Components.AgentLog = Vue.defineComponent({
                 <span class="al-telemetry-summary">{{ b.summary || b.raw }}</span>
               </div>
             </template>
+            <template v-else-if="b.type === 'diff'">
+              <div class="al-block al-diff">
+                <button
+                  v-if="isBlockCollapsible(b)"
+                  type="button"
+                  class="al-diff-head clickable"
+                  :aria-expanded="isBlockExpanded(b.key, b)"
+                  @click="toggleBlock(b.key, b)">
+                  <span class="al-diff-caret">{{ foldCaret(b.key, b) }}</span>
+                  <span class="al-diff-file">{{ b.file || b.title || 'Diff' }}</span>
+                  <span class="al-diff-meta">{{ blockMeta(b) }}</span>
+                  <span class="al-diff-count">{{ diffCount(b) }}</span>
+                </button>
+                <div v-else class="al-diff-head">
+                  <span class="al-diff-caret">⌄</span>
+                  <span class="al-diff-file">{{ b.file || b.title || 'Diff' }}</span>
+                  <span class="al-diff-meta">{{ blockMeta(b) }}</span>
+                  <span class="al-diff-count">{{ diffCount(b) }}</span>
+                </div>
+                <pre v-if="!isBlockCollapsible(b) || isBlockExpanded(b.key, b)" class="al-diff-body"><span
+                    v-for="(line, lineIdx) in diffLines(b)"
+                    :key="lineIdx"
+                    class="al-diff-line"
+                    :class="diffLineClass(line)"
+                    :data-marker="diffLineMarker(line)"
+                    v-text="line.text"></span></pre>
+              </div>
+            </template>
             <template v-else-if="b.type === 'command-group'">
               <button
                 type="button"
@@ -295,18 +367,28 @@ CP.Components.AgentLog = Vue.defineComponent({
                 <div v-for="(run, runIdx) in b.runs" :key="run.key" class="al-command-run">
                   <button
                     type="button"
-                    class="al-fold-row al-command-run-head"
-                    :aria-expanded="isBlockExpanded(run.key, run)"
-                    @click="toggleBlock(run.key, run)">
-                    <span class="al-fold-caret">{{ foldCaret(run.key, run) }}</span>
+                    :class="commandRunHeadClass(run)"
+                    :aria-expanded="run.inlineOnly ? 'false' : isBlockExpanded(run.key, run)"
+                    @click="toggleCommandRun(run)">
+                    <span v-if="!run.inlineOnly" class="al-fold-caret">{{ foldCaret(run.key, run) }}</span>
+                    <span v-else class="al-fold-caret al-fold-caret-spacer"></span>
                     <span class="al-fold-title">{{ commandRunTitle(run, runIdx) }}</span>
                     <span class="al-command-text">{{ run.command }}</span>
                     <span v-if="run.status" class="al-command-status" :class="commandRunTone(run)">{{ run.status }}</span>
                     <span class="al-fold-meta">{{ blockMeta(run) }}</span>
                   </button>
-                  <div v-if="isBlockExpanded(run.key, run)" class="al-block al-log-block al-command-run-body">
-                    <pre class="al-log-text" v-text="run.raw"></pre>
-                  </div>
+                  <template v-if="isBlockExpanded(run.key, run)">
+                    <div v-if="!run.inlineOnly" class="al-block al-log-block al-command-run-body">
+                      <pre v-if="isDiffText(run.raw)" class="al-diff-body al-command-diff"><span
+                          v-for="(line, lineIdx) in diffLines(run)"
+                          :key="lineIdx"
+                          class="al-diff-line"
+                          :class="diffLineClass(line)"
+                          :data-marker="diffLineMarker(line)"
+                          v-text="line.text"></span></pre>
+                      <pre v-else class="al-log-text" v-text="run.raw"></pre>
+                    </div>
+                  </template>
                 </div>
               </div>
             </template>

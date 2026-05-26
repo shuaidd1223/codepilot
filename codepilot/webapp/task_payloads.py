@@ -120,6 +120,7 @@ def _parse_depends(raw: str | None) -> list[int]:
 _LOG_CHUNK_MAX_BYTES = 2 * 1024 * 1024
 _PHASE_LOG_KEY_RE = re.compile(r"[^a-z0-9_.-]+")
 _PHASE_ROUND_RE = re.compile(r"(?:^|[-_\s])r(?:ound)?[-_\s]*(\d+)\b|round[-_\s]*(\d+)\b", re.IGNORECASE)
+_PHASE_PATH_KIND_RE = re.compile(r"task-\d+-(builder|reviewer|review|preflight|merge)(?:[-_]|$)", re.IGNORECASE)
 
 
 def task_log_delta(task_id: int, *, offset: int = 0) -> dict:
@@ -201,6 +202,25 @@ def _phase_kind(phase: str, agent: str = "") -> str:
     return _safe_phase_key(phase or agent or "phase")
 
 
+def _phase_kind_from_path(path: str | None) -> str:
+    if not path:
+        return ""
+    match = _PHASE_PATH_KIND_RE.search(Path(str(path)).name)
+    if not match:
+        return ""
+    value = match.group(1).lower()
+    return "reviewer" if value == "review" else value
+
+
+def _normalized_path(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return str(Path(value).expanduser().resolve(strict=False))
+    except OSError:
+        return str(value)
+
+
 def _phase_round(phase: str) -> int | None:
     text = str(phase or "")
     match = _PHASE_ROUND_RE.search(text)
@@ -242,6 +262,8 @@ def _phase_status(entry: dict, task: dict, review_block: dict | None, *, active:
             return "done" if int(exit_code) == 0 else "failed"
         except (TypeError, ValueError):
             return "unknown"
+    if entry.get("_current_log") and str(task.get("status") or "") in {"failed", "cancelled"}:
+        return "failed"
     if entry.get("finished_at"):
         return "done"
     if str(task.get("status") or "") == "failed":
@@ -421,8 +443,14 @@ def _phase_entry_payload(
 def _task_phase_logs(task: dict, log_entries: list[dict], timeline: list[dict], *, include_private: bool = False) -> list[dict]:
     phases: list[dict] = []
     used_timeline: set[int] = set()
+    used_raw_paths: set[str] = set()
     counters: dict[str, int] = {}
     current_log_path = str(task.get("current_log_path") or "").strip()
+    current_log_kind = _phase_kind_from_path(current_log_path)
+    current_log_norm = _normalized_path(current_log_path)
+    last_kind_index: dict[str, int] = {}
+    for idx, item in enumerate(log_entries):
+        last_kind_index[_phase_kind(str(item.get("phase") or ""), str(item.get("agent") or ""))] = idx
 
     for index, entry in enumerate(log_entries):
         phase = str(entry.get("phase") or "")
@@ -439,8 +467,10 @@ def _task_phase_logs(task: dict, log_entries: list[dict], timeline: list[dict], 
             round_num = explicit_round
 
         raw_path = _timeline_phase_path(entry, timeline, used_timeline)
-        if not raw_path and index == len(log_entries) - 1:
+        if not raw_path and current_log_path and current_log_kind == kind and last_kind_index.get(kind) == index:
             raw_path = current_log_path
+        if raw_path:
+            used_raw_paths.add(_normalized_path(raw_path))
         phases.append(
             _phase_entry_payload(
                 task=task,
@@ -453,35 +483,40 @@ def _task_phase_logs(task: dict, log_entries: list[dict], timeline: list[dict], 
             )
         )
 
-    if str(task.get("status") or "") == "in_progress":
-        active_path = current_log_path
-        has_active_path = active_path and any(str(item.get("_raw_path") or "") == active_path for item in phases)
-        if active_path and not has_active_path:
-            phase = str(task.get("run_phase") or "running")
-            kind = _phase_kind(phase, str(task.get("agent") or ""))
-            round_num = _phase_round(phase)
-            if kind in {"builder", "reviewer"} and round_num is None:
-                round_num = counters.get(kind, 0) + 1
-            phases.append(
-                _phase_entry_payload(
-                    task=task,
-                    entry={
-                        "phase": phase,
-                        "agent": task.get("agent") or "",
-                        "started_at": task.get("heartbeat_at") or task.get("started_at") or "",
-                        "finished_at": "",
-                        "duration": None,
-                        "exit_code": None,
-                        "output": "",
-                    },
-                    index=len(phases),
-                    kind=kind,
-                    round_num=round_num,
-                    raw_path=active_path,
-                    active=True,
-                    include_private=include_private,
-                )
+    active_path = current_log_path
+    has_active_path = bool(active_path and current_log_norm in used_raw_paths)
+    if active_path and not has_active_path:
+        active = str(task.get("status") or "") == "in_progress"
+        phase = str(task.get("run_phase") or current_log_kind or ("running" if active else "runtime"))
+        kind = _phase_kind(phase, str(task.get("agent") or "")) if phase else ""
+        if kind == "phase" and current_log_kind:
+            kind = current_log_kind
+        if not kind:
+            kind = current_log_kind or "phase"
+        round_num = _phase_round(phase)
+        if kind in {"builder", "reviewer"} and round_num is None:
+            round_num = counters.get(kind, 0) + 1
+        phases.append(
+            _phase_entry_payload(
+                task=task,
+                entry={
+                    "phase": phase,
+                    "agent": task.get("agent") or "",
+                    "started_at": task.get("heartbeat_at") or task.get("started_at") or "",
+                    "finished_at": "" if active else (task.get("completed_at") or ""),
+                    "duration": None,
+                    "exit_code": None,
+                    "output": task.get("error_message") or "",
+                    "_current_log": True,
+                },
+                index=len(phases),
+                kind=kind,
+                round_num=round_num,
+                raw_path=active_path,
+                active=active,
+                include_private=include_private,
             )
+        )
 
     if include_private:
         return phases
@@ -674,7 +709,7 @@ def _task_payload(task: dict) -> dict:
     error_message = ""
     if status == "backlog" and raw_error:
         skip_reason = raw_error
-    else:
+    elif status not in {"done", "archived"}:
         error_message = raw_error
 
     blocked_reason: str | None = None

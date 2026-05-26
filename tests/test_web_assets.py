@@ -378,6 +378,72 @@ def test_agent_log_parser_expands_failed_command_group_but_folds_long_stdout():
     assert failed_run["collapsed"] is True
 
 
+def test_agent_log_parser_extracts_unified_diff_blocks():
+    blocks = _parse_agent_log_blocks(
+        """
+        codex
+        我会先补回归测试。
+
+        diff --git a/tests/test_shutdown_command.py b/tests/test_shutdown_command.py
+        new file mode 100644
+        index 0000000..1111111
+        --- /dev/null
+        +++ b/tests/test_shutdown_command.py
+        @@ -0,0 +1,5 @@
+        +from click.testing import CliRunner
+        +
+        +def test_shutdown_stops_services():
+        +    assert True
+        -legacy placeholder
+
+        接下来运行 pytest。
+        """,
+        {
+            "phase": "builder",
+            "agent": "codex",
+        },
+    )
+
+    diff = next(block for block in blocks if block["type"] == "diff")
+    generic = "\n".join(block.get("raw", "") for block in blocks if block["type"] == "log")
+    assert diff["file"] == "tests/test_shutdown_command.py"
+    assert diff["addedCount"] == 4
+    assert diff["deletedCount"] == 1
+    assert diff["collapsed"] is False
+    assert any(line["kind"] == "add" for line in diff["lines"])
+    assert any(line["kind"] == "del" for line in diff["lines"])
+    assert "diff --git" not in generic
+
+
+def test_agent_log_parser_marks_short_successful_commands_inline_only():
+    blocks = _parse_agent_log_blocks(
+        """
+        exec
+        git status --short
+         succeeded in 90ms:
+
+        exec
+        rg --files
+
+        codex
+        工作区干净。
+        """,
+        {
+            "phase": "builder",
+            "agent": "codex",
+        },
+    )
+
+    command_group = next(block for block in blocks if block["type"] == "command-group")
+    first, second = command_group["runs"]
+    assert first["inlineOnly"] is True
+    assert first["collapsed"] is False
+    assert first["lineCount"] == 3
+    assert second["inlineOnly"] is True
+    assert second["collapsed"] is False
+    assert second["lineCount"] == 2
+
+
 def test_agent_log_parser_folds_leading_task_context_before_commands():
     context_lines = "\n".join(f"- AGENTS rule {idx}" for idx in range(80))
     blocks = _parse_agent_log_blocks(
@@ -1068,11 +1134,16 @@ def test_agent_log_collapses_noncritical_command_details_by_default():
     assert "al-command-group-head" in agent_log
     assert "al-command-list" in agent_log
     assert "al-command-run-head" in agent_log
+    assert "run.inlineOnly" in agent_log
+    assert "b.type === 'diff'" in agent_log
+    assert "diffLineClass" in agent_log
     assert "v-if=\"isBlockExpanded(b.key, b)\"" in agent_log
     assert "v-if=\"isBlockExpanded(run.key, run)\"" in agent_log
     assert "parseCommandRuns" in render_boundary
     assert "type: 'command-group'" in render_boundary
     assert "type: 'command-run'" in render_boundary
+    assert "type: 'diff'" in render_boundary
+    assert "parseDiffBlock" in render_boundary
     assert "collapsed: true" in render_boundary
     assert "type: 'review-verdict'" in render_boundary
     assert "type: 'telemetry'" in render_boundary

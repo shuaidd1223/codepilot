@@ -776,6 +776,83 @@ def test_task_detail_exposes_phase_logs_and_lazy_raw_console(ui_server):
     assert "path" not in raw
 
 
+def test_task_detail_keeps_terminal_current_console_on_own_phase(ui_server):
+    project = db.get_project("demo")
+    project_path = Path(project["path"])
+    runs_dir = project_path / ".codepilot" / "runs"
+    runs_dir.mkdir(parents=True)
+    task = db.create_task("demo", "terminal builder console", content=_COMPLIANT_TASK_CONTENT, agent="dual")
+    builder_console = runs_dir / f"task-{task['id']}-builder-r1-stalled.console.md"
+    builder_console.write_bytes(b"builder live line\npytest output\n")
+
+    db.create_task_log(
+        task["id"],
+        "codex",
+        "preflight",
+        output="preflight ok",
+        exit_code=0,
+        started_at="2026-05-26T06:00:00",
+        finished_at="2026-05-26T06:00:01",
+        duration=1,
+    )
+    append_task_timeline_event(
+        project["path"],
+        task["id"],
+        event="agent_started",
+        actor="dual",
+        source="codepilot.runtime",
+        message=f"任务 #{task['id']} agent 启动阶段：builder",
+        artifact_path=str(builder_console),
+        time="2026-05-26T06:00:02",
+    )
+    db.update_task(
+        task["id"],
+        status="failed",
+        run_phase="builder",
+        current_log_path=str(builder_console),
+        error_message="builder execution stalled after implementation; continuing manual verification",
+        started_at="2026-05-26T06:00:00",
+        completed_at="2026-05-26T06:20:00",
+    )
+
+    status, body = _get(f"{ui_server}/api/tasks/{task['id']}")
+
+    assert status == 200
+    phases = body["phase_logs"]
+    assert [phase["label"] for phase in phases] == ["Preflight", "Builder R1"]
+    assert phases[0]["raw_source"] == "db"
+    assert phases[0]["raw_filename"] == ""
+    assert phases[1]["raw_source"] == "file"
+    assert phases[1]["raw_filename"] == builder_console.name
+    assert phases[1]["status"] == "failed"
+
+    builder_key = urllib.parse.quote(phases[1]["key"], safe="")
+    status, raw = _get(f"{ui_server}/api/tasks/{task['id']}/phase-logs/{builder_key}")
+
+    assert status == 200
+    assert raw["source"] == "file"
+    assert raw["text"] == "builder live line\npytest output\n"
+
+
+def test_task_detail_hides_stale_error_message_for_done_task(ui_server):
+    task = db.create_task("demo", "done task with stale runtime error", content=_COMPLIANT_TASK_CONTENT, agent="dual")
+    db.update_task(
+        task["id"],
+        status="done",
+        error_message="builder execution stalled after implementation; continuing manual verification",
+        delivery_record="VERDICT: PASS",
+        completed_at="2026-05-26T06:30:00",
+    )
+
+    status, body = _get(f"{ui_server}/api/tasks/{task['id']}")
+
+    assert status == 200
+    assert body["status"] == "done"
+    assert body["error_message"] == ""
+    assert body["blocked_reason"] == ""
+    assert body["latest"] == "VERDICT: PASS"
+
+
 def test_task_phase_log_endpoint_rejects_unknown_keys_and_unsafe_paths(ui_server, tmp_path):
     task = db.create_task("demo", "unsafe phase path", content=_COMPLIANT_TASK_CONTENT, agent="codex")
     outside = tmp_path / "outside" / f"task-{task['id']}-builder-r1-test.console.md"
