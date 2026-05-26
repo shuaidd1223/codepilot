@@ -14,7 +14,6 @@ CP.createAppSubmissionBoundary = (options = {}) => {
   const setNav = options.setNav || (() => {});
   const confirmDialog = options.confirmDialog || (async () => false);
   const deleteProjectDraft = options.deleteProjectDraft || (() => {});
-  const renameProjectDraft = options.renameProjectDraft || (() => {});
 
   function toggleProjectForm(open = null) {
     state.projectForm.open = open == null ? !state.projectForm.open : !!open;
@@ -73,39 +72,6 @@ CP.createAppSubmissionBoundary = (options = {}) => {
     }
   }
 
-  async function renameProject(name, newName) {
-    const currentName = String(name || '').trim();
-    const nextName = String(newName || '').trim();
-    if (!currentName) return;
-    if (!nextName) {
-      pushToast('项目名称不能为空', 'error');
-      return;
-    }
-    if (nextName === currentName) {
-      pushToast('项目名称未变化', 'info');
-      return;
-    }
-    state.renamingProject = currentName;
-    try {
-      const out = await CP.api.post(`/api/projects/${encodeURIComponent(currentName)}/rename`, {
-        name: nextName,
-      });
-      const finalName = out.new_name || nextName;
-      renameProjectDraft(currentName, finalName);
-      if (state.nav.project === currentName) {
-        setNav({ project: finalName, view: state.nav.view, id: state.nav.id });
-      }
-      await loadDashboard();
-      if (!state.nav.project) selectProject(finalName);
-      pushToast(out.message || '项目已重命名', 'success');
-      return out;
-    } catch (err) {
-      pushToast(err.message, 'error');
-    } finally {
-      state.renamingProject = '';
-    }
-  }
-
   async function projectService(service, action) {
     if (!state.nav.project) {
       pushToast('先选择一个项目', 'error');
@@ -155,7 +121,6 @@ CP.createAppSubmissionBoundary = (options = {}) => {
     toggleProjectForm,
     submitProject,
     deleteProject,
-    renameProject,
     projectService,
     jobAction,
   };

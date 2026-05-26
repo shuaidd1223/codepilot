@@ -83,7 +83,6 @@ _CACHE_TTL_SECONDS = _cfg_get_cache_ttl_seconds()
 _CACHE_MISS = object()
 _QUERY_CACHE: dict[tuple, tuple[float, object]] = {}
 _CACHE_LOCK = threading.Lock()
-_PROJECT_CONFIG_SYNC = threading.local()
 
 
 def _cache_get(key: tuple) -> object:
@@ -223,8 +222,6 @@ def register_project(
             config_file=config_file,
         )
     _invalidate_project_caches()
-    if config_file:
-        _sync_project_names_from_configs()
     return get_project(name) or get_project(effective_name)
 
 
@@ -252,8 +249,6 @@ def get_project(name: str) -> Optional[dict]:
 
 def list_projects() -> list[dict]:
     """Return all registered projects."""
-    if not bool(getattr(_PROJECT_CONFIG_SYNC, "active", False)):
-        _sync_project_names_from_configs()
     cache_key = ("projects",)
     cached = _cache_get(cache_key)
     if cached is not _CACHE_MISS:
@@ -319,55 +314,7 @@ def _project_aliases(project: dict) -> set[str]:
         path = Path(path_text)
         aliases.add(path.name.casefold())
         aliases.add(str(path.resolve()).casefold())
-
-    config_name = _read_project_config_name(project)
-    if config_name:
-        aliases.add(config_name.casefold())
     return {alias for alias in aliases if alias}
-
-
-def _read_project_config_name(project: dict) -> str:
-    config_text = str(project.get("config_file") or "").strip()
-    if not config_text:
-        return ""
-    config_path = Path(config_text).expanduser()
-    if config_path.is_dir():
-        config_path = config_path / "AGENTS.toml"
-    if not config_path.is_file():
-        return ""
-    try:
-        try:
-            import tomllib
-        except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
-            import tomli as tomllib  # type: ignore[no-redef]
-        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        # 读取 TOML 文件失败时使用空字符串
-        return ""
-    project_data = data.get("project") if isinstance(data, dict) else None
-    if not isinstance(project_data, dict):
-        return ""
-    return str(project_data.get("name") or "").strip()
-
-
-def _sync_project_names_from_configs() -> None:
-    if bool(getattr(_PROJECT_CONFIG_SYNC, "active", False)):
-        return
-    _PROJECT_CONFIG_SYNC.active = True
-    try:
-        with get_read_conn() as conn:
-            rows = _fetch_projects(conn)
-        for project in rows:
-            current_name = str(project.get("name") or "").strip()
-            config_name = _read_project_config_name(project)
-            if not current_name or not config_name or config_name == current_name:
-                continue
-            try:
-                rename_project(current_name, config_name)
-            except ValueError:
-                continue
-    finally:
-        _PROJECT_CONFIG_SYNC.active = False
 
 
 def delete_project(name: str) -> bool:

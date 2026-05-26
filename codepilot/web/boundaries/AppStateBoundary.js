@@ -33,7 +33,6 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       actionPending: {},
       workflowPending: '',
       projectSubmitting: false, deletingProject: '',
-      renamingProject: '',
       servicePending: '',
       pendingTasks: {},
       dark: false,
@@ -232,15 +231,6 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       if (!project || !Object.prototype.hasOwnProperty.call(state.projectDrafts, project)) return;
       delete state.projectDrafts[project];
       persistProjectDrafts();
-    }
-
-    function renameProjectDraft(oldProject, newProject) {
-      if (!oldProject || !newProject || oldProject === newProject) return;
-      if (Object.prototype.hasOwnProperty.call(state.projectDrafts, oldProject)) {
-        state.projectDrafts[newProject] = state.projectDrafts[oldProject];
-        delete state.projectDrafts[oldProject];
-        persistProjectDrafts();
-      }
     }
 
     let projectDraftSaveQueued = false;
@@ -528,7 +518,6 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
         setNav,
         confirmDialog,
         deleteProjectDraft,
-        renameProjectDraft,
       });
       return submissionBoundary;
     }
@@ -543,10 +532,6 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
     async function deleteProject(name) {
       return ensureSubmissionBoundary().deleteProject(name);
-    }
-
-    async function renameProject(name, newName) {
-      return ensureSubmissionBoundary().renameProject(name, newName);
     }
 
     async function projectService(service, action) {
@@ -1028,7 +1013,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
 
       taskAction,
       taskBatchAction,
-      toggleProjectForm, submitProject, deleteProject, renameProject,
+      toggleProjectForm, submitProject, deleteProject,
       projectService, jobAction,
       runInspectWorkflow, workflowAction, workflowAutoAction,
       newSession, sendChat, sendEmbeddedChat, stopSessionRun, deleteSession,

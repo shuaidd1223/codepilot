@@ -155,7 +155,7 @@ class TestProjects:
         assert db.get_project("first") is not None
         assert db.get_project("second") is not None
 
-    def test_register_project_existing_path_syncs_manual_config_project_rename(self, tmp_db: Path):
+    def test_register_project_existing_path_ignores_manual_config_project_rename(self, tmp_db: Path):
         project_path = tmp_db.parent / "workspace"
         project_path.mkdir()
         config_path = project_path / "AGENTS.toml"
@@ -166,9 +166,9 @@ class TestProjects:
 
         project = db.register_project("new-name", str(project_path), config_file=str(config_path))
 
-        assert project["name"] == "new-name"
-        assert db.get_project("old-name") is None
-        assert db.get_task(task["id"])["project"] == "new-name"
+        assert project["name"] == "old-name"
+        assert db.get_project("new-name") is None
+        assert db.get_task(task["id"])["project"] == "old-name"
 
     def test_project_aliases_are_resolved(self, tmp_db: Path):
         """项目别名应能被 get_project 解析。"""

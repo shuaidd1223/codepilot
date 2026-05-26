@@ -80,7 +80,6 @@ from codepilot.webapp.action_task_ops import (  # noqa: F401 (re-export)
     get_task_template_schema_action,
     import_tasks_action,
     project_service_action,
-    rename_project_action,
     stop_task_action,
 )
 from codepilot.webapp.payloads import (  # noqa: F401 (re-export)
@@ -1034,16 +1033,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             match.group(3),
         )
 
-    def _dispatch_post_project_rename(self, path: str, get_body: Callable[[], dict]) -> dict | None:
-        match = re.fullmatch(r"/api/projects/([^/]+)/rename", path)
-        if not match:
-            return None
-        body = get_body()
-        return rename_project_action(
-            unquote(match.group(1)),
-            body.get("name") or body.get("new_name") or "",
-        )
-
     def _dispatch_post_project_inspect_run(self, path: str, get_body: Callable[[], dict]) -> dict | None:
         match = re.fullmatch(r"/api/projects/([^/]+)/inspect/runs", path)
         if not match:
@@ -1108,9 +1097,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if payload is not None:
             return payload
         payload = self._dispatch_post_project_service(path)
-        if payload is not None:
-            return payload
-        payload = self._dispatch_post_project_rename(path, get_body)
         if payload is not None:
             return payload
         payload = self._dispatch_post_session_run_stop(path)

@@ -253,18 +253,29 @@ def test_sidebar_projects_support_drag_sort_and_whole_row_toggle():
     assert ".tree-project-row[draggable=\"true\"]" in styles
 
 
-def test_sidebar_wires_project_rename_action():
+def test_sidebar_project_row_click_selects_before_toggling_expand_state():
+    sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
+
+    assert "isProjectOverviewActive(name)" in sidebar
+    assert """if (!this.isProjectOverviewActive(name)) {
+        this.cp.selectProject(name);
+        return;
+      }
+      this.cp.toggleProject(name);""" in sidebar
+
+
+def test_sidebar_does_not_wire_project_rename_action():
     sidebar = Path("codepilot/web/components/Sidebar.js").read_text(encoding="utf-8")
     submission = Path("codepilot/web/boundaries/AppSubmissionBoundary.js").read_text(encoding="utf-8")
     app_state = Path("codepilot/web/boundaries/AppStateBoundary.js").read_text(encoding="utf-8")
 
-    assert "renameProject(project, ev)" in sidebar
-    assert "this.cp.renameProject(project.name, nextName)" in sidebar
-    assert "title=\"重命名项目\"" in sidebar
-    assert "project-rename-inline" in sidebar
-    assert "async function renameProject(name, newName)" in submission
-    assert "/rename`" in submission
-    assert "renameProject," in app_state
+    assert "renameProject(project, ev)" not in sidebar
+    assert "this.cp.renameProject(project.name, nextName)" not in sidebar
+    assert "title=\"重命名项目\"" not in sidebar
+    assert "project-rename-inline" not in sidebar
+    assert "async function renameProject(name, newName)" not in submission
+    assert "/rename`" not in submission
+    assert "renameProject," not in app_state
 
 
 def test_task_section_includes_batch_quick_actions():

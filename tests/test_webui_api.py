@@ -1107,27 +1107,26 @@ def test_create_and_delete_project_via_api(ui_server, tmp_path):
     assert project_path.exists()
 
 
-def test_rename_project_via_api_updates_tasks_and_selected_dashboard(ui_server):
+def test_rename_project_via_api_is_not_available(ui_server):
     task = db.create_task("demo", "belongs to renamed project", content="body")
     session = db.create_session("demo", title="chat")
 
     status, body = _post(f"{ui_server}/api/projects/demo/rename", {"name": "renamed-demo"})
 
-    assert status == 200
-    assert body.get("ok") is True
-    assert body.get("old_name") == "demo"
-    assert body.get("new_name") == "renamed-demo"
-    assert db.get_project("demo") is None
-    assert db.get_task(task["id"])["project"] == "renamed-demo"
-    assert db.get_session(session["id"])["project"] == "renamed-demo"
+    assert status == 404
+    assert "error" in body
+    assert db.get_project("demo") is not None
+    assert db.get_project("renamed-demo") is None
+    assert db.get_task(task["id"])["project"] == "demo"
+    assert db.get_session(session["id"])["project"] == "demo"
 
-    status, dashboard = _get(f"{ui_server}/api/projects/renamed-demo")
+    status, dashboard = _get(f"{ui_server}/api/projects/demo")
     assert status == 200
-    assert dashboard["selected_project"] == "renamed-demo"
+    assert dashboard["selected_project"] == "demo"
     assert dashboard["tasks"][0]["id"] == task["id"]
 
 
-def test_project_list_syncs_manual_agents_toml_project_rename(ui_server):
+def test_project_list_ignores_manual_agents_toml_project_rename(ui_server):
     project = db.get_project("demo")
     config_path = Path(project["path"]) / "AGENTS.toml"
     config_path.write_text('[project]\nname = "renamed-from-config"\n', encoding="utf-8")
@@ -1137,9 +1136,9 @@ def test_project_list_syncs_manual_agents_toml_project_rename(ui_server):
 
     assert status == 200
     names = [item["name"] for item in dashboard["projects"]]
-    assert "renamed-from-config" in names
-    assert "demo" not in names
-    assert db.get_project("renamed-from-config") is not None
+    assert "demo" in names
+    assert "renamed-from-config" not in names
+    assert db.get_project("renamed-from-config") is None
 
 
 def test_project_task_service_stop_requests_graceful_polling_stop(ui_server, monkeypatch):

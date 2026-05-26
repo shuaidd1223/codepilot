@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -85,46 +84,6 @@ def delete_project_action(name: str) -> dict:
         "project": project_name,
         "path": project["path"],
         "deleted_tasks": stats["total"],
-    }
-
-
-def _rename_active_ui_jobs(old_name: str, new_name: str) -> None:
-    shell = sys.modules.get("codepilot.webapp.server")
-    if shell is None:
-        return
-    try:
-        with shell._UI_LOCK:
-            for job in shell._UI_JOBS.values():
-                if str(job.get("project") or "") == old_name:
-                    job["project"] = new_name
-                request = job.get("request") if isinstance(job.get("request"), dict) else None
-                if request and str(request.get("project") or "") == old_name:
-                    request["project"] = new_name
-    except Exception:  # noqa: BLE001
-        return
-
-
-def rename_project_action(name: str, new_name: str) -> dict:
-    db.init_db()
-    try:
-        result = db.rename_project(name, new_name)
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
-
-    old_name = str(result.get("old_name") or "")
-    renamed_name = str(result.get("new_name") or "")
-    if old_name and renamed_name:
-        _rename_active_ui_jobs(old_name, renamed_name)
-    if result.get("renamed"):
-        _append_event(f"重命名项目：{old_name} -> {renamed_name}", project=renamed_name)
-        message = f"项目 '{old_name}' 已重命名为 '{renamed_name}'。"
-    else:
-        _append_event(f"项目名称未变化：{renamed_name}", project=renamed_name)
-        message = f"项目 '{renamed_name}' 名称未变化。"
-    return {
-        **result,
-        "message": message,
-        "project": db.get_project(renamed_name),
     }
 
 

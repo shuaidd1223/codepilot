@@ -10,7 +10,6 @@ CP.Components.Sidebar = Vue.defineComponent({
       pageSize: 10,
       visibleLeafCount: {},
       leafConfirm: { taskId: null, action: '' },
-      projectRename: { project: '', name: '' },
       projectOrder: [],
       draggingProject: '',
       dragOverProject: '',
@@ -56,6 +55,10 @@ CP.Components.Sidebar = Vue.defineComponent({
       ev.stopPropagation();
       this.cp.toggleProject(name);
     },
+    isProjectOverviewActive(name) {
+      const nav = this.s.nav || {};
+      return nav.project === name && nav.view === 'overview' && (nav.id === null || nav.id === undefined);
+    },
     toggleProjectRow(name, ev) {
       if (ev) ev.stopPropagation();
       if (!name) return;
@@ -63,8 +66,11 @@ CP.Components.Sidebar = Vue.defineComponent({
         this.suppressProjectRowClick = false;
         return;
       }
+      if (!this.isProjectOverviewActive(name)) {
+        this.cp.selectProject(name);
+        return;
+      }
       this.cp.toggleProject(name);
-      this.cp.setNav({ project: name, view: 'overview', id: null });
     },
     toggleCategory(project, cat, ev) {
       ev.stopPropagation();
@@ -198,29 +204,6 @@ CP.Components.Sidebar = Vue.defineComponent({
     deleteProject(project, ev) {
       ev.stopPropagation();
       this.cp.deleteProject(project.name);
-    },
-    renameProject(project, ev) {
-      if (ev) ev.stopPropagation();
-      this.projectRename = { project: project.name, name: project.name };
-    },
-    isRenamingProject(project) {
-      return !!project && this.projectRename.project === project.name;
-    },
-    cancelProjectRename(ev) {
-      if (ev) ev.stopPropagation();
-      this.projectRename = { project: '', name: '' };
-    },
-    async submitProjectRename(project, ev) {
-      if (ev) {
-        ev.preventDefault();
-        ev.stopPropagation();
-      }
-      if (!project || !project.name) return;
-      const nextName = (this.projectRename.name || '').trim();
-      const out = await this.cp.renameProject(project.name, nextName);
-      if (out && out.ok !== false) {
-        this.projectRename = { project: '', name: '' };
-      }
     },
     /* Count helpers: look at project summary first so numbers stay correct
      * across projects even when we only loaded the current project's list. */
@@ -373,20 +356,11 @@ CP.Components.Sidebar = Vue.defineComponent({
               <span class="tree-label">{{ p.name }}</span>
               <span v-if="p.stats && p.stats.in_progress" class="chip info tiny">{{ p.stats.in_progress }}</span>
               <span v-else-if="taskCount(p)" class="chip neutral tiny">{{ taskCount(p) }}</span>
-              <button class="tree-action" @click="renameProject(p, $event)" :disabled="s.renamingProject === p.name" title="重命名项目">
-                <span v-if="s.renamingProject === p.name" class="spinner tiny-spinner"></span>
-                <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-              </button>
               <button class="tree-action" @click="deleteProject(p, $event)" :disabled="s.deletingProject === p.name" title="删除项目">
                 <span v-if="s.deletingProject === p.name" class="spinner tiny-spinner"></span>
                 <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
               </button>
             </div>
-            <form v-if="isRenamingProject(p)" class="project-rename-inline" @submit.prevent="submitProjectRename(p, $event)" @click.stop>
-              <input v-model="projectRename.name" type="text" aria-label="新项目名" @keydown.esc.prevent="cancelProjectRename">
-              <button type="submit" class="btn btn-primary btn-sm" :disabled="s.renamingProject === p.name">确认</button>
-              <button type="button" class="btn btn-outline btn-sm" :disabled="s.renamingProject === p.name" @click="cancelProjectRename">取消</button>
-            </form>
 
             <!-- Children (only when expanded) -->
             <div v-show="isExpanded(p.name)" class="tree-children">
