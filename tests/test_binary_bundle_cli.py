@@ -144,9 +144,7 @@ def test_binary_install_releases_bundled_vendor_files(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert (target_dir / "codepilot").exists()
-    assert (target_dir / "web" / "index.html").read_text(encoding="utf-8") == "<html></html>"
-    assert (target_dir / "feishu" / "package.json").exists()
-    assert (target_dir / "feishu" / "feishu_worker.mjs").exists()
-    assert (target_dir / "feishu" / "node_modules" / "@larksuiteoapi" / "node-sdk" / "index.js").exists()
+    assert not (target_dir / "web").exists()  # web is bundled inside the binary
+    assert not (target_dir / "feishu").exists()  # feishu is now Python-native
     assert (target_dir / "vendor" / "opencode").read_text(encoding="utf-8") == "opencode-binary"
     assert (target_dir / "vendor" / "manifest.json").exists()

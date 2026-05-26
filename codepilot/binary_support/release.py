@@ -294,7 +294,7 @@ def _stage_web_assets(source_path: Path, artifact_dir: Path) -> Path | None:
 
 
 def _project_requires_web_assets(project_root: Path) -> bool:
-    return (project_root / "codepilot" / "web" / "index.html").exists()
+    return False  # Web UI 静态资源已由 PyInstaller 打包进二进制，不再需要外部目录。
 
 
 def _missing_web_assets(web_dir: Path) -> list[str]:
@@ -323,7 +323,7 @@ def _stage_feishu_runtime(source_path: Path, artifact_dir: Path) -> Path | None:
 
 
 def _project_requires_feishu_runtime(project_root: Path) -> bool:
-    return (project_root / "codepilot" / "feishu_worker.mjs").exists()
+    return False  # 飞书已改用 Python 原生 lark-oapi SDK，不再需要外部 Node.js 侧车。
 
 
 def _missing_feishu_runtime(feishu_dir: Path) -> list[str]:

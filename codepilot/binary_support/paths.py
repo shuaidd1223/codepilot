@@ -187,6 +187,10 @@ def _build_command(
         "codepilot",
         "--collect-all",
         "rich",
+        "--collect-all",
+        "lark_oapi",
+        "--collect-all",
+        "websockets",
     ]
     if clean:
         cmd.append("--clean")

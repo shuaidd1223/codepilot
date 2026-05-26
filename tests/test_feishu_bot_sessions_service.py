@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,6 @@ def _write_feishu_config(
     enabled: bool = True,
     app_id: str = "cli-target",
     app_secret: str = "secret-target",
-    node_command: str = "node-target",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -40,7 +40,6 @@ name = "demo"
 enabled = {str(enabled).lower()}
 app_id = "{app_id}"
 app_secret = "{app_secret}"
-node_command = "{node_command}"
 default_project = "demo"
 """.strip(),
         encoding="utf-8",
@@ -146,7 +145,6 @@ def test_ensure_feishu_service_running_if_enabled_uses_registered_project_config
         assert cfg.enabled is True
         assert cfg.app_id == "cli-target"
         assert cfg.app_secret == "secret-target"
-        assert cfg.node_command == "node-target"
 
     class _Proc:
         pid = 4321
@@ -199,12 +197,11 @@ def test_feishu_spawn_detached_passes_config_reference_in_env_not_command(monkey
 def test_feishu_worker_env_and_command_use_config_reference(monkeypatch, tmp_path):
     config_file = tmp_path / "config-root" / "AGENTS.toml"
     _write_feishu_config(config_file)
-    monkeypatch.setattr(feishu_cmd, "_worker_script", lambda: tmp_path / "feishu_worker.mjs")
 
     env = feishu_cmd._build_worker_env(str(config_file))
     command = feishu_cmd._worker_command(str(config_file))
 
-    assert command == ["node-target", str(tmp_path / "feishu_worker.mjs")]
+    assert command == [sys.executable, "-m", "codepilot", "feishu", "run-worker"]
     assert env[FEISHU_CONFIG_REF_ENV] == str(config_file)
     assert env["CODEPILOT_FEISHU_APP_ID"] == "cli-target"
     assert env["CODEPILOT_FEISHU_APP_SECRET"] == "secret-target"
@@ -252,9 +249,9 @@ def test_ensure_feishu_service_running_if_enabled_starts_detached_worker(monkeyp
 
 def test_feishu_process_command_detection_matches_only_feishu_processes():
     assert feishu_cmd._is_feishu_process_command("python.exe -m codepilot feishu run")
-    assert feishu_cmd._is_feishu_process_command("node D:\\myCode\\workflow\\codepilot\\feishu_worker.mjs")
+    assert feishu_cmd._is_feishu_process_command("python.exe -m codepilot feishu run-worker")
     assert feishu_cmd._is_feishu_process_command(
-        "cmd.exe /C D:\\ServBay\\bin\\node.cmd D:\\myCode\\workflow\\codepilot\\feishu_worker.mjs"
+        "python.exe D:\\myCode\\workflow\\codepilot\\feishu_worker.py"
     )
     assert not feishu_cmd._is_feishu_process_command("python.exe -m codepilot daemon --project demo")
     assert not feishu_cmd._is_feishu_process_command("python.exe -m codepilot ui --port 8766")
@@ -337,20 +334,13 @@ def test_feishu_spawn_detached_uses_binary_command_when_frozen(monkeypatch, tmp_
     assert proc.pid == 4321
     assert calls[0][0] == [r"C:\Tools\CodePilot\codepilot.exe", "feishu", "run"]
 
-def test_feishu_runtime_uses_installed_sidecar_when_frozen(monkeypatch, tmp_path):
+def test_feishu_runtime_uses_install_dir_when_frozen(monkeypatch, tmp_path):
     install_dir = tmp_path / "bin"
-    runtime_dir = install_dir / "feishu"
-    runtime_dir.mkdir(parents=True)
-    worker = runtime_dir / "feishu_worker.mjs"
-    worker.write_text("import 'x';\n", encoding="utf-8")
-    notify = runtime_dir / "feishu_notify.mjs"
-    notify.write_text("import 'x';\n", encoding="utf-8")
-    package_json = runtime_dir / "package.json"
-    package_json.write_text("{}", encoding="utf-8")
+    install_dir.mkdir(parents=True)
 
     monkeypatch.setattr(feishu_cmd.sys, "frozen", True, raising=False)
     monkeypatch.setattr(feishu_cmd.sys, "executable", str(install_dir / "codepilot.exe"))
 
-    assert feishu_cmd._repo_root() == runtime_dir
-    assert feishu_cmd._worker_script() == worker
-    assert card_builders._feishu_notify_script() == notify
+    assert feishu_cmd._repo_root() == install_dir
+    assert feishu_cmd._worker_script().name == "feishu_worker.py"
+    assert card_builders._feishu_notify_script().name == "feishu_notify.py"

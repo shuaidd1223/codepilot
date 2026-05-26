@@ -18,7 +18,6 @@ class FeishuBotConfig:
     enabled: bool = False
     app_id: str = ""
     app_secret: str = ""
-    node_command: str = "node"
     default_project: str = ""
     command_prefix: str = ""
 
@@ -46,7 +45,6 @@ def load_feishu_bot_config(config_path: ConfigReference | None = None) -> Feishu
         enabled=bool(cfg.feishu_bot_enabled or section.get("enabled", False)),
         app_id=str(cfg.feishu_app_id or section.get("app_id", "") or ""),
         app_secret=str(cfg.feishu_app_secret or section.get("app_secret", "") or ""),
-        node_command=str(cfg.feishu_node_command or section.get("node_command", "node") or "node"),
         default_project=str(cfg.feishu_default_project or section.get("default_project", "") or ""),
         command_prefix=str(cfg.feishu_command_prefix or section.get("command_prefix", "") or "").strip(),
     )
@@ -61,6 +59,4 @@ def validate_feishu_bot_config(config_path: ConfigReference | None = None) -> li
         problems.append("[feishu_bot].app_id 为空。")
     if not cfg.app_secret:
         problems.append("[feishu_bot].app_secret 为空。")
-    if not cfg.node_command:
-        problems.append("[feishu_bot].node_command 为空。")
     return problems

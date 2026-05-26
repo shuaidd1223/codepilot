@@ -229,7 +229,6 @@ def build_agents_config_from_dict(
         feishu_bot_enabled=bool(feishu_bot.get("enabled", False)),
         feishu_app_id=str(feishu_bot.get("app_id", "") or ""),
         feishu_app_secret=str(feishu_bot.get("app_secret", "") or ""),
-        feishu_node_command=str(feishu_bot.get("node_command", "node") or "node"),
         feishu_default_project=str(feishu_bot.get("default_project", "") or ""),
         feishu_command_prefix=str(feishu_bot.get("command_prefix", "") or ""),
         config_file_path=config_file_path,

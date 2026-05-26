@@ -266,7 +266,6 @@ def test_config_sync_moves_inline_feishu_app_secret_to_sibling_secrets_file(tmp_
 enabled = true
 app_id = "cli-demo"
 app_secret = "feishu-inline-secret"
-node_command = "node"
 """.strip(),
     )
 
@@ -301,7 +300,6 @@ base_branch = "main"
 [feishu_bot]
 enabled = true
 app_id = "cli-demo"
-node_command = "node"
 """.strip(),
     )
 

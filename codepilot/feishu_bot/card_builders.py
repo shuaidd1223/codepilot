@@ -8,6 +8,7 @@ from typing import Any
 
 from codepilot.core.work_item import build_work_item
 from codepilot.feishu_bot import notification_cards as _notification_cards
+from codepilot import feishu_runtime as _feishu_runtime
 from codepilot.feishu_bot.batch_action_cards import build_batch_task_action_card
 from codepilot.feishu_bot.constants import _PENDING_CONFIRM_TTL_SECONDS
 from codepilot.feishu_bot.helpers import (
@@ -875,7 +876,7 @@ def build_services_card(project_name: str, *, prefix: str = "") -> dict[str, Any
 # ---------------------------------------------------------------------------
 
 
-_feishu_notify_script = _notification_cards._feishu_notify_script
+_feishu_notify_script = _feishu_runtime.notify_script
 
 
 def _send_bot_card(card: dict[str, Any], *, project_name: str = "", chat_ids: list[str] | None = None) -> bool:

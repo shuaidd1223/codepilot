@@ -109,9 +109,9 @@ def _is_feishu_process_command(command_line: str) -> bool:
     text = " ".join(str(command_line or "").strip().split()).lower()
     if not text:
         return False
-    if re.search(r"(?:^|\s)-m\s+codepilot\s+feishu\s+run(?:\s|$)", text):
+    if re.search(r"(?:-m\s+)?codepilot(?:\.exe)?\s+feishu\s+run(?:-worker)?(?:\s|$)", text):
         return True
-    return "feishu_worker.mjs" in text
+    return "feishu_worker" in text
 
 
 def _windows_feishu_processes() -> list[dict[str, Any]]:
@@ -119,8 +119,8 @@ def _windows_feishu_processes() -> list[dict[str, Any]]:
         "$ErrorActionPreference='SilentlyContinue'; "
         "Get-CimInstance Win32_Process | "
         "Where-Object { $_.CommandLine -and "
-        "($_.CommandLine -match '-m\\s+codepilot\\s+feishu\\s+run' -or "
-        "$_.CommandLine -match 'feishu_worker\\.mjs') } | "
+        "($_.CommandLine -match '(?:-m\\s+)?codepilot(?:\\\\.exe)?\\s+feishu\\s+run(?:-worker)?' -or "
+        "$_.CommandLine -match 'feishu_worker') } | "
         "Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"
     )
     try:
@@ -289,8 +289,6 @@ def _build_worker_env(config_ref: Any = None) -> dict[str, str]:
         {
             "CODEPILOT_FEISHU_APP_ID": cfg.app_id,
             "CODEPILOT_FEISHU_APP_SECRET": cfg.app_secret,
-            "CODEPILOT_FEISHU_PYTHON": sys.executable,
-            "CODEPILOT_FEISHU_PYTHON_MODE": "binary" if getattr(sys, "frozen", False) else "module",
         }
     )
     if ref:
@@ -299,8 +297,7 @@ def _build_worker_env(config_ref: Any = None) -> dict[str, str]:
 
 
 def _worker_command(config_ref: Any = None) -> list[str]:
-    cfg = _load_config(_resolve_config_ref(config_ref=config_ref))
-    return [cfg.node_command or "node", str(_worker_script())]
+    return [sys.executable, "-m", "codepilot", "feishu", "run-worker"]
 
 
 def _check_runtime_ready(config_ref: Any = None) -> None:
@@ -310,23 +307,11 @@ def _check_runtime_ready(config_ref: Any = None) -> None:
     if problems:
         raise RuntimeError("飞书机器人配置不完整：\n- " + "\n- ".join(problems))
 
-    repo_root = _repo_root()
-    package_json = repo_root / "package.json"
-    if not package_json.exists():
-        raise RuntimeError(f"缺少 {package_json.name}，请先在仓库根目录安装飞书 SDK 依赖。")
-
     try:
-        subprocess.run(
-            [cfg.node_command or "node", "-e", "require.resolve('@larksuiteoapi/node-sdk')"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=False,
-            timeout=15,
-        )
-    except Exception as exc:
+        import lark_oapi  # noqa: F401
+    except ImportError as exc:
         raise RuntimeError(
-            "未找到 @larksuiteoapi/node-sdk。请在仓库根目录执行 `npm install`。"
+            "未找到 lark-oapi。请执行 `pip install lark-oapi`。"
         ) from exc
 
 
@@ -477,6 +462,14 @@ def run_cmd() -> None:
     _start_foreground()
 
 
+@feishu_group.command("run-worker")
+def run_worker_cmd() -> None:
+    """内部入口：运行飞书 WebSocket 长连接 worker（Python 原生）。"""
+    from codepilot.feishu_worker import main as worker_main
+
+    worker_main()
+
+
 @feishu_group.command("start")
 def start_cmd() -> None:
     """后台启动飞书长连接机器人。"""
@@ -554,7 +547,7 @@ def logs_cmd(tail: int) -> None:
 
 @feishu_group.command("handle-event")
 def handle_event_cmd() -> None:
-    """内部入口：处理一条飞书消息事件并输出 JSON 回复。"""
+    """内部入口：处理一条飞书消息事件并输出 JSON 回复（兼容旧 Node.js worker）。"""
     side_output = io.StringIO()
     try:
         raw = sys.stdin.read() or "{}"

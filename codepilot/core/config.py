@@ -252,7 +252,6 @@ class AgentsConfig:
     feishu_bot_enabled: bool = False
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
-    feishu_node_command: str = "node"
     feishu_default_project: str = ""
     feishu_command_prefix: str = ""
     config_file_path: Optional[str] = None
@@ -989,7 +988,6 @@ enabled = false
 app_id = ""
 # App Secret 只写到同目录 .codepilot.secrets.toml，避免 AGENTS.toml 出现密钥字段:
 # [feishu_bot]
-node_command = "node"
 default_project = ""
 command_prefix = ""
 """
@@ -1044,7 +1042,6 @@ enabled = false
 app_id = ""
 # App Secret 只写到同目录 .codepilot.secrets.toml，避免 AGENTS.toml 出现密钥字段:
 # [feishu_bot]
-node_command = "node"
 default_project = ""
 command_prefix = ""
 """

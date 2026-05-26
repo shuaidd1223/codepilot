@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,12 +29,6 @@ from codepilot.feishu_config import load_feishu_bot_config
 from codepilot.storage import database as db
 
 _BotCardSender = Callable[..., bool]
-
-
-def _feishu_notify_script() -> Path:
-    from codepilot.feishu_runtime import notify_script
-
-    return notify_script()
 
 
 def _truthy_env(name: str) -> bool:
@@ -107,33 +100,18 @@ def _send_bot_card(card: dict[str, Any], *, project_name: str = "", chat_ids: li
     targets = chat_ids or _notification_chat_ids(project_name)
     if not targets:
         return False
-    payload = json.dumps({"chat_ids": targets, "card": card}, ensure_ascii=False)
-    env = os.environ.copy()
-    env.update(
-        {
-            "CODEPILOT_FEISHU_APP_ID": cfg.app_id,
-            "CODEPILOT_FEISHU_APP_SECRET": cfg.app_secret,
-        }
-    )
     try:
-        result = subprocess.run(
-            [cfg.node_command or "node", str(_feishu_notify_script())],
-            input=payload,
-            text=True,
-            encoding="utf-8",
-            capture_output=True,
-            timeout=20,
-            env=env,
+        from codepilot.feishu_notify import send_feishu_notification
+
+        result = send_feishu_notification(
+            chat_ids=targets,
+            card=card,
+            app_id=cfg.app_id,
+            app_secret=cfg.app_secret,
         )
     except Exception:
         return False
-    if result.returncode != 0:
-        return False
-    try:
-        parsed = json.loads(result.stdout or "{}")
-    except Exception:
-        return False
-    return int(parsed.get("sent") or 0) > 0
+    return int(result.get("sent") or 0) > 0
 
 
 def build_task_event_card(

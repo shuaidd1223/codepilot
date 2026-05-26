@@ -173,12 +173,6 @@ def test_binary_build_command_invokes_pyinstaller(tmp_path, monkeypatch):
     (tmp_path / "codepilot" / "web" / "index.html").write_text("<html></html>", encoding="utf-8")
     (tmp_path / "codepilot" / "web" / "app.js").write_text("console.log('ok');\n", encoding="utf-8")
     (tmp_path / "codepilot" / "web" / "boundaries" / "AppStateBoundary.js").write_text("export {};\n", encoding="utf-8")
-    (tmp_path / "codepilot" / "feishu_worker.mjs").write_text("import 'x';\n", encoding="utf-8")
-    (tmp_path / "codepilot" / "feishu_notify.mjs").write_text("import 'x';\n", encoding="utf-8")
-    (tmp_path / "package.json").write_text('{"dependencies":{"@larksuiteoapi/node-sdk":"1.0.0"}}', encoding="utf-8")
-    (tmp_path / "package-lock.json").write_text('{"lockfileVersion":3}', encoding="utf-8")
-    (tmp_path / "node_modules" / "@larksuiteoapi" / "node-sdk").mkdir(parents=True)
-    (tmp_path / "node_modules" / "@larksuiteoapi" / "node-sdk" / "index.js").write_text("module.exports = {};\n", encoding="utf-8")
     dist_dir = tmp_path / "dist-out"
     build_dir = tmp_path / "build-out"
     captured = {}
@@ -209,13 +203,9 @@ def test_binary_build_command_invokes_pyinstaller(tmp_path, monkeypatch):
     assert "--collect-all" in captured["cmd"]
     data_args = [captured["cmd"][idx + 1] for idx, item in enumerate(captured["cmd"]) if item == "--add-data"]
     assert any(str(tmp_path / "codepilot" / "web") in item and "codepilot/web" in item for item in data_args)
-    assert (dist_dir / "web" / "index.html").read_text(encoding="utf-8") == "<html></html>"
-    assert (dist_dir / "web" / "boundaries" / "AppStateBoundary.js").exists()
-    assert (dist_dir / "feishu" / "package.json").exists()
-    assert (dist_dir / "feishu" / "package-lock.json").exists()
-    assert (dist_dir / "feishu" / "node_modules" / "@larksuiteoapi" / "node-sdk" / "index.js").exists()
-    assert (dist_dir / "feishu" / "feishu_worker.mjs").exists()
-    assert (dist_dir / "feishu" / "feishu_notify.mjs").exists()
+    assert "--collect-all" in captured["cmd"]
+    assert "lark_oapi" in captured["cmd"]
+    assert "websockets" in captured["cmd"]
 
 
 def test_binary_build_command_uses_python_when_parent_is_frozen(tmp_path, monkeypatch):
@@ -238,44 +228,6 @@ def test_binary_build_command_uses_python_when_parent_is_frozen(tmp_path, monkey
     )
 
     assert cmd[:3] == [expected_python, "-m", "PyInstaller"]
-
-
-def test_binary_build_fails_when_feishu_runtime_dependencies_missing(tmp_path, monkeypatch):
-    (tmp_path / "codepilot").mkdir()
-    (tmp_path / "codepilot" / "__main__.py").write_text("print('ok')\n", encoding="utf-8")
-    (tmp_path / "codepilot" / "templates").mkdir()
-    (tmp_path / "codepilot" / "templates" / "demo.md").write_text("x", encoding="utf-8")
-    (tmp_path / "codepilot" / "web" / "boundaries").mkdir(parents=True)
-    (tmp_path / "codepilot" / "web" / "index.html").write_text("<html></html>", encoding="utf-8")
-    (tmp_path / "codepilot" / "web" / "app.js").write_text("console.log('ok');\n", encoding="utf-8")
-    (tmp_path / "codepilot" / "web" / "boundaries" / "AppStateBoundary.js").write_text("export {};\n", encoding="utf-8")
-    (tmp_path / "codepilot" / "feishu_worker.mjs").write_text("import 'x';\n", encoding="utf-8")
-    (tmp_path / "codepilot" / "feishu_notify.mjs").write_text("import 'x';\n", encoding="utf-8")
-    (tmp_path / "package.json").write_text('{"dependencies":{"@larksuiteoapi/node-sdk":"1.0.0"}}', encoding="utf-8")
-    (tmp_path / "package-lock.json").write_text('{"lockfileVersion":3}', encoding="utf-8")
-    dist_dir = tmp_path / "dist-out"
-    build_dir = tmp_path / "build-out"
-
-    monkeypatch.setattr(binary_mod, "default_build_dir", lambda root: build_dir)
-    monkeypatch.setattr(binary_mod.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(binary_mod.platform, "machine", lambda: "x86_64")
-
-    def fake_run(cmd, **kwargs):
-        binary_path = dist_dir / "codepilot"
-        binary_path.parent.mkdir(parents=True, exist_ok=True)
-        binary_path.write_text("exe", encoding="utf-8")
-
-        class Result:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return Result()
-
-    monkeypatch.setattr(binary_mod.subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="飞书运行时依赖缺失"):
-        binary_mod.build_binary(project_root=tmp_path, output_dir=dist_dir, clean=True)
 
 
 def test_binary_where_command_prints_default_dir(tmp_path, monkeypatch):
@@ -371,7 +323,7 @@ def test_create_release_bundle_generates_manifest_checksums_and_archives(tmp_pat
     assert "发布摘要" in result.summary_path.read_text(encoding="utf-8")
 
 
-def test_create_release_bundle_fails_when_current_project_artifact_lacks_sidecars(tmp_path):
+def test_create_release_bundle_succeeds_without_sidecars(tmp_path):
     project_root = tmp_path / "project"
     artifact_dir = tmp_path / "dist" / "binary" / "windows-x86_64"
     binary_path = artifact_dir / "codepilot.exe"
@@ -385,13 +337,13 @@ def test_create_release_bundle_fails_when_current_project_artifact_lacks_sidecar
     (artifact_dir / "web" / "app.js").write_text("console.log('ok');\n", encoding="utf-8")
     (artifact_dir / "web" / "boundaries" / "AppStateBoundary.js").write_text("export {};\n", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="缺少飞书运行时目录"):
-        binary_mod.create_release_bundle(
-            project_root=project_root,
-            artifacts=[("windows-x86_64", binary_path)],
-            output_dir=tmp_path / "release",
-            version="1.2.3",
-        )
+    result = binary_mod.create_release_bundle(
+        project_root=project_root,
+        artifacts=[("windows-x86_64", binary_path)],
+        output_dir=tmp_path / "release",
+        version="1.2.3",
+    )
+    assert result.release_dir.exists()
 
 
 def test_windows_install_script_cleans_legacy_cmd_and_prioritizes_path():

@@ -443,7 +443,6 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
         "feishu_bot": {
             "enabled": _bool(feishu_bot.get("enabled"), False),
             "app_id": _string(feishu_bot.get("app_id"), ""),
-            "node_command": _string(feishu_bot.get("node_command"), "node"),
             "default_project": _string(feishu_bot.get("default_project"), ""),
             "command_prefix": _string(feishu_bot.get("command_prefix"), ""),
         },
@@ -562,7 +561,6 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("notifications", "enabled"): ["是否发送通知。"],
     ("feishu_bot", "enabled"): ["是否启用飞书企业应用长连接机器人。"],
     ("feishu_bot", "app_id"): ["飞书企业应用 App ID。"],
-    ("feishu_bot", "node_command"): ["Node.js 命令名或完整路径；默认 node。"],
     ("feishu_bot", "default_project"): ["未显式指定项目时默认操作的项目名。"],
     ("feishu_bot", "command_prefix"): ["可选命令前缀，例如 cp；留空则直接识别 help/tasks/stop 等命令。"],
 }
@@ -1026,7 +1024,6 @@ def init_config(global_mode: bool, path: Path | None, non_interactive: bool) -> 
             data["feishu_bot"] = {
                 "enabled": True,
                 "app_id": app_id,
-                "node_command": "node",
                 "default_project": project_name,
                 "command_prefix": "",
             }
