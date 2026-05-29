@@ -108,12 +108,54 @@ def _resolve_agent_executable(agent: str, cfg: AgentsConfig | None) -> str:
         configured = str((cfg.commands or {}).get(agent, "") or "").strip()
         if configured:
             return _resolve_executable_path(configured)
+    # 尝试安装版内嵌的 bundled CLI（PyInstaller 打包时）
+    bundled = _find_bundled_executable(agent)
+    if bundled:
+        return bundled
     return _resolve_executable_path(agent)
+
+
+def _find_bundled_executable(agent: str) -> str | None:
+    """在 PyInstaller 打包环境中查找内嵌的 CLI 可执行文件."""
+    if not getattr(sys, "frozen", False):
+        return None
+    family = get_family(agent)
+    if family is None or not family.bundled_path:
+        return None
+    binary_dir = Path(sys.executable).expanduser().resolve().parent
+    relative = Path(family.bundled_path)
+    if relative.name:
+        relative = relative.with_name(
+            f"{relative.name}.exe" if sys.platform == "win32" and not relative.name.lower().endswith((".exe", ".cmd", ".bat", ".ps1")) else relative.name
+        )
+    candidates = [
+        binary_dir / relative,
+        binary_dir.parent / relative,
+    ]
+    if len(relative.parts) > 1 and relative.parts[0].lower() == "bin":
+        candidates.append(binary_dir / Path(*relative.parts[1:]))
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = os.path.normcase(os.path.normpath(str(candidate)))
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return None
 
 
 def _resolve_executable_path(value: str) -> str:
     resolved = shutil.which(value)
-    return resolved or value
+    if resolved:
+        return resolved
+    if "\\" in value or "/" in value:
+        raise click.ClickException(
+            f"找不到可执行文件：{value}\n请检查路径是否正确或文件是否存在。"
+        )
+    raise click.ClickException(
+        f"找不到 '{value}' 命令。请确保已安装并将其所在目录添加到 PATH 环境变量中。"
+    )
 
 
 def _codepilot_mcp_command(project: str | None) -> list[str]:

@@ -1177,3 +1177,47 @@ def test_resolve_agent_executable_expands_path_command(monkeypatch: pytest.Monke
     monkeypatch.setattr(chat_cmd.shutil, "which", lambda value: "C:\\tools\\opencode.cmd" if value == "opencode" else None)
 
     assert chat_cmd._resolve_agent_executable("opencode", None) == "C:\\tools\\opencode.cmd"
+
+
+def test_resolve_executable_path_raises_on_unknown_command(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(chat_cmd.shutil, "which", lambda value: None)
+
+    with pytest.raises(click.ClickException, match="找不到 'unknown-agent' 命令"):
+        chat_cmd._resolve_executable_path("unknown-agent")
+
+
+def test_resolve_executable_path_raises_on_missing_path(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(chat_cmd.shutil, "which", lambda value: None)
+
+    with pytest.raises(click.ClickException, match="找不到可执行文件"):
+        chat_cmd._resolve_executable_path("C:\\fake\\path\\agent.exe")
+
+
+def test_resolve_agent_executable_raises_when_all_fallbacks_fail(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("CODEPILOT_OPENCODE_CMD", raising=False)
+    monkeypatch.setattr(chat_cmd.shutil, "which", lambda value: None)
+
+    with pytest.raises(click.ClickException, match="找不到 'opencode' 命令"):
+        chat_cmd._resolve_agent_executable("opencode", None)
+
+
+def test_resolve_agent_executable_uses_bundled_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.delenv("CODEPILOT_OPENCODE_CMD", raising=False)
+    fake_exe = tmp_path / "bin" / "vendor"
+    fake_exe.mkdir(parents=True)
+    opencode_bin = fake_exe / "opencode.exe"
+    opencode_bin.touch()
+    monkeypatch.setattr(chat_cmd, "_find_bundled_executable", lambda agent: str(opencode_bin.resolve()) if agent == "opencode" else None)
+    monkeypatch.setattr(chat_cmd.shutil, "which", lambda value: None)
+
+    result = chat_cmd._resolve_agent_executable("opencode", None)
+    assert result == str(opencode_bin.resolve())
+
+
+def test_resolve_agent_executable_falls_back_when_frozen_but_no_bundled(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("CODEPILOT_OPENCODE_CMD", raising=False)
+    monkeypatch.setattr(chat_cmd, "_find_bundled_executable", lambda agent: None)
+    monkeypatch.setattr(chat_cmd.shutil, "which", lambda value: None)
+
+    with pytest.raises(click.ClickException, match="找不到 'opencode' 命令"):
+        chat_cmd._resolve_agent_executable("opencode", None)
