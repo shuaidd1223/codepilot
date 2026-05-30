@@ -192,6 +192,30 @@ def install_binary(
     )
 
 
+def ensure_global_config() -> Path | None:
+    """Create the global AGENTS.toml if it does not already exist.
+
+    Called automatically after binary installation so that users can start
+    using CodePilot without having to run :command:`codepilot config init`
+    manually.  When a global config already exists (e.g. from a previous
+    installation) this function is a no-op.
+    """
+    from codepilot.core.config import find_global_config, resolve_global_config_path
+
+    existing = find_global_config()
+    if existing is not None:
+        return None
+
+    from codepilot.commands.config_cmd import _canonical_config, render_agents_toml
+
+    config_path = resolve_global_config_path()
+    canonical = _canonical_config({}, project_name=config_path.parent.name)
+    content = render_agents_toml(canonical)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(content, encoding="utf-8")
+    return config_path
+
+
 __all__ = [
     "BuildResult",
     "InstallResult",
@@ -203,6 +227,7 @@ __all__ = [
     "create_release_bundle",
     "current_platform_tag",
     "default_build_dir",
+    "ensure_global_config",
     "default_dist_dir",
     "default_install_dir",
     "default_release_dir",

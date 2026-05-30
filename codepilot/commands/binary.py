@@ -11,6 +11,7 @@ from codepilot.binary_support.manager import (
     build_binary,
     create_release_bundle,
     default_install_dir,
+    ensure_global_config,
     install_binary,
     restore_project_version,
     resolve_release_dir,
@@ -84,10 +85,13 @@ def binary_build(
         register_path=register_path,
     )
     bundled_installed = vendor_fetcher.install_bundled_vendor(result.binary_path, target_dir=install_result.target_dir)
+    config_created = ensure_global_config()
     echo(f"[green][OK] 已安装[/green]  {install_result.installed_path}")
     click.echo(f"  {install_result.registration_message}")
     if bundled_installed:
         click.echo(f"  bundled CLI: {install_result.target_dir / 'vendor'}")
+    if config_created:
+        click.echo(f"  [green]已创建全局配置[/green] {config_created}")
 
 
 @binary.command("install")
@@ -102,6 +106,7 @@ def binary_install(binary_path: Path | None, target_dir: Path | None, name: str,
         source = resolve_install_source(binary_path, project_root=project_root, name=name)
         result = install_binary(binary_path=source, target_dir=target_dir, name=name, register_path=register_path)
         bundled_installed = vendor_fetcher.install_bundled_vendor(source, target_dir=result.target_dir)
+        config_created = ensure_global_config()
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -111,6 +116,8 @@ def binary_install(binary_path: Path | None, target_dir: Path | None, name: str,
     click.echo(f"  {result.registration_message}")
     if bundled_installed:
         click.echo(f"  bundled CLI: {result.target_dir / 'vendor'}")
+    if config_created:
+        click.echo(f"  [green]已创建全局配置[/green] {config_created}")
 
 
 @binary.command("where")
