@@ -36,7 +36,7 @@ class CheckResult:
         extra: Optional[dict] = None,
     ):
         resolved_severity = severity or ("ok" if ok else "error")
-        if resolved_severity not in {"ok", "warning", "error"}:
+        if resolved_severity not in {"ok", "warning", "error", "info"}:
             raise ValueError(f"unsupported severity: {resolved_severity}")
         self.name = name
         self.ok = resolved_severity != "error"
