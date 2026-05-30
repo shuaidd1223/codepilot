@@ -41,7 +41,7 @@ def initialize_project(path: Path, project_name: str | None = None, *, no_config
     if existing:
         if not no_config:
             _update_config(config_file, existing["name"])
-            ensure_gitignore_entry(resolved_path, config.CONFIG_FILENAME)
+            ensure_gitignore_entry(resolved_path, config.CONFIG_FILENAME, comment="CodePilot 项目配置文件，包含项目专属设置")
         return {
             "created": False,
             "project": existing,
@@ -59,7 +59,7 @@ def initialize_project(path: Path, project_name: str | None = None, *, no_config
     )
     if not no_config:
         _update_config(config_file, requested_name)
-        ensure_gitignore_entry(resolved_path, config.CONFIG_FILENAME)
+        ensure_gitignore_entry(resolved_path, config.CONFIG_FILENAME, comment="CodePilot 项目配置文件，包含项目专属设置")
     return {
         "created": True,
         "project": project,

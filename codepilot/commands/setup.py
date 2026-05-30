@@ -134,13 +134,13 @@ def _setup_config(root: Path, project_name: str, *, dry_run: bool) -> list[dict[
         if write_secrets:
             if dry_run:
                 actions.append(_action("secrets", secrets_path, root, "would_create", "将迁移内联飞书 App Secret。"))
-                status = ensure_gitignore_entry(root, config_mod.SECRETS_FILENAME, dry_run=True)
+                status = ensure_gitignore_entry(root, config_mod.SECRETS_FILENAME, comment="CodePilot 密钥文件，包含 API Key 等敏感信息，不应提交到版本控制", dry_run=True)
                 actions.append(_action("gitignore", root / ".gitignore", root, status, "确保 secrets 覆盖文件不被提交。"))
             else:
                 merged_secrets = config_cmd._merge_secret_dicts(existing_secrets, sync_secrets)
                 secrets_path.write_text(config_cmd.render_secrets_toml(merged_secrets), encoding="utf-8")
                 actions.append(_action("secrets", secrets_path, root, "created", "已迁移内联飞书 App Secret。"))
-                status = ensure_gitignore_entry(root, config_mod.SECRETS_FILENAME)
+                status = ensure_gitignore_entry(root, config_mod.SECRETS_FILENAME, comment="CodePilot 密钥文件，包含 API Key 等敏感信息，不应提交到版本控制")
                 actions.append(_action("gitignore", root / ".gitignore", root, status, "确保 secrets 覆盖文件不被提交。"))
         return actions
 
@@ -170,7 +170,7 @@ def _setup_directories(root: Path, *, dry_run: bool) -> list[dict[str, Any]]:
 
 
 def _setup_gitignore(root: Path, *, dry_run: bool) -> dict[str, Any]:
-    status = ensure_gitignore_entry(root, config_mod.CONFIG_FILENAME, dry_run=dry_run)
+    status = ensure_gitignore_entry(root, config_mod.CONFIG_FILENAME, comment="CodePilot 项目配置文件，包含项目专属设置", dry_run=dry_run)
     detail = "确保 AGENTS.toml 不被提交到项目仓库。"
     return _action("gitignore", root / ".gitignore", root, status, detail)
 

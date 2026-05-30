@@ -907,11 +907,11 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
     if write_secrets and secrets_content:
         secrets_path.write_text(secrets_content, encoding="utf-8")
         if not global_mode:
-            ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME)
+            ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME, comment="CodePilot 密钥文件，包含 API Key 等敏感信息，不应提交到版本控制")
     else:
         created = ensure_secrets_template(config_path.parent)
         if created and not global_mode:
-            ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME)
+            ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME, comment="CodePilot 密钥文件，包含 API Key 等敏感信息，不应提交到版本控制")
     click.echo(f"已同步配置: {config_path}")
     if write_secrets:
         click.echo(f"已迁移飞书 App Secret 到: {secrets_path}")
@@ -1114,7 +1114,7 @@ def init_config(global_mode: bool, path: Path | None, non_interactive: bool) -> 
         secrets_content = render_secrets_toml(_canonical_secrets(secrets_data))
         secrets_path.write_text(secrets_content, encoding="utf-8")
         if not global_mode:
-            ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME)
+            ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME, comment="CodePilot 密钥文件，包含 API Key 等敏感信息，不应提交到版本控制")
         console.print(f"[green]✓[/green] Secrets 已写入: {secrets_path}")
 
     console.print(Panel.fit("[bold green]配置完成！[/bold green]", border_style="green"))
@@ -1280,7 +1280,7 @@ def validate_config(path: Path | None, global_mode: bool, fix: bool) -> None:
             if created:
                 fixes.append(f"已创建 secrets 模板: {created}")
                 if not global_mode:
-                    ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME)
+                    ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME, comment="CodePilot 密钥文件，包含 API Key 等敏感信息，不应提交到版本控制")
         else:
             cmd_hint = "codepilot config sync --global" if global_mode else "codepilot config sync"
             console.print(f"[yellow]⚠[/yellow] 建议运行 {cmd_hint} 自动创建")
