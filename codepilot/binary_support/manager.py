@@ -236,11 +236,14 @@ def _write_cli_wrapper(target_dir: Path, family: str) -> Path | None:
     if wrapper_path.exists():
         return None
 
-    # Prefer the bundled vendor binary so we don't conflict with the user's
-    # global installation of the same tool.
+    # CodePilot MUST use its own bundled opencode so it never conflicts
+    # with the user's system-level installation.  If the vendor binary is
+    # missing the installation is incomplete — skip wrapper creation.
     bundled = target_dir / "vendor" / executable_name(family)
-    command = str(bundled.resolve()) if bundled.exists() else family
+    if not bundled.exists():
+        return None
 
+    command = str(bundled.resolve())
     if platform.system().lower() == "windows":
         wrapper_path.write_text(
             f"@echo off\r\n\"{command}\" %*\r\n",

@@ -34,7 +34,7 @@ def binary():
 @click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="产物输出目录，默认 dist/binary/<platform>")
 @click.option("--name", default="codepilot", help="二进制文件名")
 @click.option("--clean/--no-clean", default=True, help="构建前清理 PyInstaller 缓存")
-@click.option("--bundle-cli", default=None, help="逗号分隔的 bundled CLI provider，仅支持 opencode,codex")
+@click.option("--bundle-cli", default="opencode", help="逗号分隔的 bundled CLI provider，仅支持 opencode,codex（默认: opencode）")
 @click.option("--install/--no-install", "install_after_build", default=False, help="构建完成后直接安装到用户 PATH 目录")
 @click.option("--target-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="安装目录，默认按系统自动选择")
 @click.option("--register-path/--no-register-path", default=True, help="安装后是否自动注册到用户 PATH")
