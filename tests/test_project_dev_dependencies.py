@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
 
 
 def test_dev_extra_includes_project_level_ruff():

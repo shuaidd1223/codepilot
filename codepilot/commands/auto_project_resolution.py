@@ -166,7 +166,10 @@ def _auto_fix_config_error(config_path: Path, error: ConfigError) -> bool:
 
 def _apply_config_sync(config_path: Path) -> bool:
     """执行 `codepilot config sync` 等效操作，修复指定 AGENTS.toml。"""
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     from codepilot.commands.config_cmd import _canonical_config, render_agents_toml
     from codepilot.core.output import echo

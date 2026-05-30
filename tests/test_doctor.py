@@ -461,7 +461,10 @@ base_branch = "dev"
     config_action = next(item for item in payload["data"]["fix"]["actions"] if item["kind"] == "config")
     assert config_action["status"] == "refreshed"
 
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     parsed = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
     assert "agents" in parsed

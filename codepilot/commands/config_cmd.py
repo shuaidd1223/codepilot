@@ -263,7 +263,10 @@ def _load_toml_dict(path: Path) -> dict[str, Any]:
     Missing optional overlay files are treated as empty; invalid TOML still
     raises so callers can report real configuration errors.
     """
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     if not path.exists():
         return {}
@@ -827,7 +830,10 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
     if config_path.exists():
         try:
             with open(config_path, "rb") as handle:
-                import tomllib
+                try:
+                    import tomllib
+                except ImportError:
+                    import tomli as tomllib  # type: ignore[no-redef]
 
                 data = tomllib.load(handle)
         except Exception as exc:

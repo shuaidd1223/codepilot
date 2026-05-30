@@ -106,7 +106,10 @@ def _has_explicit_automation_task_agent(project_info: dict, cfg=None) -> bool:
             and getattr(cfg.automation, "task_agent", "") != "dual"
         )
     try:
-        import tomllib
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib  # type: ignore[no-redef]
 
         with open(config_ref, "rb") as handle:
             data = tomllib.load(handle)

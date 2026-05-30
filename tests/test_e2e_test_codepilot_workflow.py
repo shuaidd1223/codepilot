@@ -15,7 +15,10 @@ import shutil
 import subprocess
 import sys
 import threading
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
 import urllib.error
 import urllib.parse
 import urllib.request

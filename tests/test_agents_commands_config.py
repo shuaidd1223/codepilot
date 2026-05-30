@@ -7,7 +7,10 @@ adding ``[automation] fallback_cli_order`` and ``[providers.opencode]``.
 
 from __future__ import annotations
 
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
 from pathlib import Path
 
 import pytest

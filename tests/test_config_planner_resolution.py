@@ -169,7 +169,10 @@ extra = "drop"
     assert "reviewer" in synced
     assert "task_agent" in synced
 
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     parsed = tomllib.loads(synced)
     assert parsed["project"]["name"] == "demo"
@@ -220,7 +223,10 @@ provider = "deepseek"
 
     assert result.exit_code == 0, result.output
 
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     parsed = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
     assert "classifier" not in parsed
@@ -246,7 +252,10 @@ write = "deny"
 
     assert result.exit_code == 0, result.output
 
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     parsed = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
     assert parsed["opencode"]["permission"]["mode"] == "custom"
@@ -273,7 +282,10 @@ app_secret = "feishu-inline-secret"
 
     assert result.exit_code == 0, result.output
 
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     agents_data = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))
     secrets_data = tomllib.loads((project / SECRETS_FILENAME).read_text(encoding="utf-8"))
@@ -337,7 +349,10 @@ app_secret = "feishu-from-secrets"
 
     assert result.exit_code == 0, result.output
 
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     secrets_data = tomllib.loads((project / SECRETS_FILENAME).read_text(encoding="utf-8"))
     agents_data = tomllib.loads((project / "AGENTS.toml").read_text(encoding="utf-8"))

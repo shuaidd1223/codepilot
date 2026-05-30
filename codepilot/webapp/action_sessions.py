@@ -472,7 +472,10 @@ def update_project_permission_action(project: str, mode: str = "") -> dict:
     每次读写都会通过 ``_canonical_config`` + ``render_agents_toml`` 标准化整个
     AGENTS.toml，保证格式一致性。
     """
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     from codepilot.commands.config_cmd import _canonical_config, render_agents_toml
     from codepilot.core.config import find_config

@@ -20,6 +20,7 @@ monkeypatch their shell-module-level dependencies (e.g. ``default_build_dir``,
 from __future__ import annotations
 
 # Re-exported standard-library modules for test monkeypatching.
+import os
 import platform
 import shutil
 import subprocess
@@ -155,6 +156,33 @@ def build_binary(
     )
 
 
+def _copy_or_replace(source: Path, destination: Path) -> None:
+    """Copy *source* to *destination*, tolerating locked files on Windows."""
+    try:
+        shutil.copy2(source, destination)
+    except PermissionError:
+        if platform.system().lower() != "windows":
+            raise
+        # Destination file may be locked (e.g. a running instance).
+        # On Windows we can rename a locked file, then copy the new one in.
+        backup = destination.with_name(destination.stem + ".old" + destination.suffix)
+        try:
+            os.replace(destination, backup)
+        except OSError:
+            # Cannot even rename — give up on copying, the existing binary
+            # is likely still usable.
+            return
+        try:
+            shutil.copy2(source, destination)
+        except PermissionError:
+            # Last resort: try to restore the backup
+            try:
+                os.replace(backup, destination)
+            except OSError:
+                pass
+            raise
+
+
 def install_binary(
     *,
     binary_path: str | Path,
@@ -172,7 +200,7 @@ def install_binary(
     destination = destination_dir / executable_name(name)
 
     if source != destination:
-        shutil.copy2(source, destination)
+        _copy_or_replace(source, destination)
     if platform.system().lower() != "windows":
         destination.chmod(destination.stat().st_mode | 0o755)
 

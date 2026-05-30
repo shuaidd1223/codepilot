@@ -1,6 +1,9 @@
 """Tests for codepilot config init and config validate commands."""
 
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
 from pathlib import Path
 import tempfile
 from unittest.mock import patch

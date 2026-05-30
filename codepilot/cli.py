@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 
 import click
 
@@ -187,6 +188,29 @@ def main(
     ctx.obj["auto_commit"] = auto_commit
     ctx.obj["max_tasks"] = max_tasks
     ctx.obj["max_retries"] = max_retries
+
+    # ── 自安装检测 ───────────────────────────────────────────────
+    # 当 PyInstaller 打包的 exe 从非安装目录（如下载目录）运行时，
+    # 自动完成：复制到安装目录 + 注册 PATH + 创建默认配置。
+    from codepilot.binary_support.paths import executable_name as _executable_name
+    from codepilot.binary_support.paths import running_binary_path, default_install_dir
+
+    _running = running_binary_path()
+    if _running is not None and not os.environ.get("CODEPILOT_PORTABLE"):
+        _install_dir = default_install_dir()
+        _installed = _install_dir / _executable_name("codepilot")
+        if _running.resolve() != _installed.resolve():
+            from codepilot.binary_support.manager import install_binary, ensure_global_config
+
+            _result = install_binary(binary_path=_running, target_dir=_install_dir, register_path=True)
+            ensure_global_config()
+            click.echo(
+                f"CodePilot 已安装到 {_result.installed_path}。\n"
+                "请重新打开终端后运行 codepilot 命令。",
+                err=True,
+            )
+            return
+    # ── 自安装检测结束 ───────────────────────────────────────────
 
     if not json_mode and ctx.invoked_subcommand != "setup":
         init_db()

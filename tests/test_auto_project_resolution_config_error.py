@@ -22,7 +22,10 @@ def _write(path: Path, body: str) -> None:
 
 
 def _read_toml(path: Path) -> dict:
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
