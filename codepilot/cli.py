@@ -200,10 +200,11 @@ def main(
         _install_dir = default_install_dir()
         _installed = _install_dir / _executable_name("codepilot")
         if _running.resolve() != _installed.resolve():
-            from codepilot.binary_support.manager import install_binary, ensure_global_config
+            from codepilot.binary_support.manager import install_binary, ensure_cli_wrappers, ensure_global_config
 
             _result = install_binary(binary_path=_running, target_dir=_install_dir, register_path=True)
             ensure_global_config()
+            ensure_cli_wrappers(_result.target_dir)
             click.echo(
                 f"CodePilot 已安装到 {_result.installed_path}。\n"
                 "请重新打开终端后运行 codepilot 命令。",

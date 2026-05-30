@@ -220,6 +220,52 @@ def install_binary(
     )
 
 
+def _write_cli_wrapper(target_dir: Path, family: str) -> Path | None:
+    """Create a ``cp-<family>`` wrapper in *target_dir* that forwards to *family*.
+
+    On Windows a ``.cmd`` batch file is written; on POSIX a shell script.
+    Returns the path of the created wrapper, or ``None`` if it already
+    existed.
+    """
+    if platform.system().lower() == "windows":
+        wrapper_name = f"cp-{family}.cmd"
+    else:
+        wrapper_name = f"cp-{family}"
+    wrapper_path = target_dir / wrapper_name
+    if wrapper_path.exists():
+        return None
+
+    if platform.system().lower() == "windows":
+        wrapper_path.write_text(
+            f"@echo off\r\n{family} %*\r\n",
+            encoding="ascii",
+        )
+    else:
+        wrapper_path.write_text(
+            f"#!/usr/bin/env sh\n\nexec {family} \"$@\"\n",
+            encoding="ascii",
+        )
+        wrapper_path.chmod(0o755)
+    return wrapper_path
+
+
+def ensure_cli_wrappers(target_dir: Path | None = None) -> list[Path]:
+    """Create ``cp-opencode`` (and similar) wrappers in the install directory.
+
+    These wrappers forward to the real CLI commands so that CodePilot's
+    configuration can reference dedicated command names without conflicting
+    with other installations of the same tools.
+    """
+    families = ["opencode"]
+    install_dir = Path(target_dir).expanduser().resolve() if target_dir else default_install_dir()
+    created: list[Path] = []
+    for family in families:
+        wrapper = _write_cli_wrapper(install_dir, family)
+        if wrapper:
+            created.append(wrapper)
+    return created
+
+
 def ensure_global_config() -> Path | None:
     """Create the global AGENTS.toml if it does not already exist.
 
@@ -256,6 +302,7 @@ __all__ = [
     "create_release_bundle",
     "current_platform_tag",
     "default_build_dir",
+    "ensure_cli_wrappers",
     "ensure_global_config",
     "default_dist_dir",
     "default_install_dir",
