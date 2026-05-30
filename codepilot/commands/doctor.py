@@ -917,16 +917,101 @@ def run_project_checks(project_info: dict | None, *, include_services: bool = Fa
     return results
 
 
-def _run_setup_fix(project: str | None) -> dict:
-    """Run the conservative project setup fix used by ``doctor --fix``."""
-    db.init_db()
-    project_info = db.get_project(project) if project else db.find_project_by_path(Path.cwd())
-    target = Path(project_info["path"]).resolve() if project_info else Path.cwd().resolve()
-    project_name = project or (str(project_info.get("name") or "") if project_info else None)
+def _run_setup_fix(project_name: str | None) -> dict:
+    """Run the full automatic repair used by ``doctor --fix``.
 
-    from codepilot.commands.setup import setup_project
+    Fixes everything that can be safely auto-repaired:
+    * global AGENTS.toml + .codepilot.secrets.toml
+    * project-level AGENTS.toml + .codepilot.secrets.toml + .gitignore
+    * SQLite database initialization
+    * console encoding on Windows
 
-    return setup_project(target, project_name, dry_run=False)
+    Returns a dict of ``{action: status, ...}`` suitable for JSON output.
+    """
+    import os
+    from pathlib import Path
+
+    from codepilot.binary_support.manager import ensure_global_config
+    from codepilot.commands.config_cmd import (
+        _canonical_config,
+        ensure_secrets_template,
+        render_agents_toml,
+    )
+    from codepilot.core.config import find_config, resolve_global_config_path
+    from codepilot.core.gitignore import ensure_gitignore_entry
+    from codepilot.core.console_encoding import configure_console_encoding
+    from codepilot.storage.database import init_db as _init_db
+
+    actions: dict[str, str] = {}
+
+    # 1. Global config + secrets
+    global_config = ensure_global_config()
+    if global_config:
+        actions["global_config"] = "created"
+        actions["global_secrets"] = "created"
+    else:
+        # Global config exists — ensure secrets template is there too
+        secrets_path = resolve_global_config_path().parent
+        created = ensure_secrets_template(secrets_path)
+        actions["global_config"] = "exists"
+        actions["global_secrets"] = "created" if created else "exists"
+
+    # 2. Project-level config (if we're in a project directory)
+    project_config = find_config(Path.cwd())
+    if project_config is None:
+        # Try to create one in the current directory if it looks like a project
+        cwd = Path.cwd()
+        if (cwd / ".git").exists():
+            config_path = cwd / "AGENTS.toml"
+            if not config_path.exists():
+                canonical = _canonical_config({}, project_name=cwd.name)
+                content = render_agents_toml(canonical)
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                config_path.write_text(content, encoding="utf-8")
+                actions["project_config"] = "created"
+            else:
+                actions["project_config"] = "exists"
+        else:
+            actions["project_config"] = "skipped (not in a git repo)"
+    else:
+        actions["project_config"] = "exists"
+
+    # 3. Project secrets + gitignore
+    project_config = find_config(Path.cwd())
+    if project_config:
+        config_dir = project_config.parent
+        created = ensure_secrets_template(config_dir)
+        if created:
+            actions["project_secrets"] = "created"
+            ensure_gitignore_entry(
+                config_dir,
+                "AGENTS.toml",
+                comment="CodePilot 项目配置文件，包含项目专属设置",
+            )
+            ensure_gitignore_entry(
+                config_dir,
+                ".codepilot.secrets.toml",
+                comment="CodePilot 密钥文件，包含 API Key 等敏感信息，不应提交到版本控制",
+            )
+            actions["gitignore"] = "updated"
+        else:
+            actions["project_secrets"] = "exists"
+
+    # 4. Database
+    try:
+        _init_db()
+        actions["database"] = "ready"
+    except Exception as exc:
+        actions["database"] = f"error: {exc}"
+
+    # 5. Console encoding (Windows)
+    try:
+        configure_console_encoding()
+        actions["console_encoding"] = "configured"
+    except Exception:
+        actions["console_encoding"] = "skipped"
+
+    return actions
 
 
 def _dispatch_doctor_event(
@@ -971,7 +1056,7 @@ def _dispatch_doctor_event(
 @click.option("--json", "json_mode", is_flag=True, help="JSON 输出")
 @click.option("--project", "-p", help="项目名称；开启项目级配置和服务健康检查")
 @click.option("--services", is_flag=True, help="包含 daemon / inspect / Web UI / Feishu 服务状态")
-@click.option("--fix", "fix_mode", is_flag=True, help="执行保守自动修复：运行项目级 setup，不修改真实 Codex hooks")
+@click.option("--fix", "fix_mode", is_flag=True, help="一键自动修复所有配置和环境问题")
 @click.pass_context
 def doctor(ctx: click.Context, json_mode: bool, project: str | None, services: bool, fix_mode: bool):
     """环境自检，检查 Python、Git、AGENTS.toml、CLI 工具、数据库和编码。"""
@@ -1011,7 +1096,10 @@ def doctor(ctx: click.Context, json_mode: bool, project: str | None, services: b
     echo("[bold]codepilot doctor[/bold]  环境自检报告")
     echo("─" * 50)
     if fix_result is not None:
-        echo("[green]已执行保守修复：项目级 setup 完成，真实 .codex/hooks.json 未修改。[/green]")
+        echo("[green]已执行一键修复：[/green]")
+        for action, status in fix_result.items():
+            icon = "[green]✔[/green]" if "error" not in str(status) else "[red]✘[/red]"
+            echo(f"  {icon}  {safe(action):28s}  {safe(status)}")
         echo("─" * 50)
 
     errors: list[CheckResult] = []

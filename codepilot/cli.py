@@ -16,7 +16,7 @@ configure_console_encoding()
 silence_subprocess_windows_if_detached()
 
 _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
-    "init": ("codepilot.commands.init", "init_"),
+    "init": ("codepilot.commands.config_cmd", "init_config"),
     "ai": ("codepilot.commands.ai", "ai"),
     "binary": ("codepilot.commands.binary", "binary"),
     "config": ("codepilot.commands.config_cmd", "config_group"),
@@ -43,7 +43,6 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "project": ("codepilot.commands.project", "project_group"),
     "cleanup": ("codepilot.commands.cleanup", "cleanup"),
     "doctor": ("codepilot.commands.doctor", "doctor"),
-    "setup": ("codepilot.commands.setup", "setup"),
     "event": ("codepilot.commands.event", "event_group"),
     "hook": ("codepilot.commands.hook", "hook_group"),
     "exec": ("codepilot.commands.exec_cmd", "exec_cmd"),
@@ -58,6 +57,7 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
 }
 
 _REMOVED_COMMAND_HINTS: dict[str, str] = {
+    "setup": "codepilot doctor --fix (一键修复所有配置和环境问题)",
     "release": "codepilot binary <subcommand>",
     "show": "codepilot task show <task_id>",
     "done": "codepilot task done <task_id>",
