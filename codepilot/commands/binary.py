@@ -6,12 +6,13 @@ from pathlib import Path
 
 import click
 
-from codepilot.binary import (
+from codepilot.binary_support import vendor_fetcher
+from codepilot.binary_support.manager import (
     build_binary,
     create_release_bundle,
     default_install_dir,
+    ensure_global_config,
     install_binary,
-    read_project_version,
     restore_project_version,
     resolve_release_dir,
     resolve_release_inputs,
@@ -20,7 +21,7 @@ from codepilot.binary import (
     verify_release_bundle,
     _merge_release_inputs,
 )
-from codepilot.output import echo
+from codepilot.core.output import echo
 
 
 @click.group("binary")
@@ -32,6 +33,7 @@ def binary():
 @click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="产物输出目录，默认 dist/binary/<platform>")
 @click.option("--name", default="codepilot", help="二进制文件名")
 @click.option("--clean/--no-clean", default=True, help="构建前清理 PyInstaller 缓存")
+@click.option("--bundle-cli", default=None, help="逗号分隔的 bundled CLI provider，仅支持 opencode,codex")
 @click.option("--install/--no-install", "install_after_build", default=False, help="构建完成后直接安装到用户 PATH 目录")
 @click.option("--target-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="安装目录，默认按系统自动选择")
 @click.option("--register-path/--no-register-path", default=True, help="安装后是否自动注册到用户 PATH")
@@ -39,6 +41,7 @@ def binary_build(
     output_dir: Path | None,
     name: str,
     clean: bool,
+    bundle_cli: str | None,
     install_after_build: bool,
     target_dir: Path | None,
     register_path: bool,
@@ -46,13 +49,28 @@ def binary_build(
     """使用 PyInstaller 为当前操作系统构建单文件二进制。"""
     project_root = Path.cwd()
     try:
+        bundle_providers = vendor_fetcher.parse_bundle_cli_list(bundle_cli)
         result = build_binary(project_root=project_root, output_dir=output_dir, name=name, clean=clean)
+        bundle_result = None
+        if bundle_providers:
+            bundle_result = vendor_fetcher.bundle_vendor_clis(
+                bundle_providers,
+                output_dir=result.dist_dir,
+                platform_tag=result.platform_tag,
+                cache_dir=result.build_dir / "vendor-cache",
+            )
     except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
     echo(f"[green][OK] 构建完成[/green]  {result.binary_path}")
     click.echo(f"  平台: {result.platform_tag}")
     click.echo(f"  输出目录: {result.dist_dir}")
+    if bundle_result:
+        providers = ", ".join(entry.provider for entry in bundle_result.providers)
+        click.echo(f"  bundled CLI: {providers}")
+        click.echo(f"  vendor manifest: {bundle_result.manifest_path}")
 
     if not install_after_build:
         click.echo("\n下一步：")
@@ -66,8 +84,14 @@ def binary_build(
         name=name,
         register_path=register_path,
     )
+    bundled_installed = vendor_fetcher.install_bundled_vendor(result.binary_path, target_dir=install_result.target_dir)
+    config_created = ensure_global_config()
     echo(f"[green][OK] 已安装[/green]  {install_result.installed_path}")
     click.echo(f"  {install_result.registration_message}")
+    if bundled_installed:
+        click.echo(f"  bundled CLI: {install_result.target_dir / 'vendor'}")
+    if config_created:
+        click.echo(f"  [green]已创建全局配置[/green] {config_created}")
 
 
 @binary.command("install")
@@ -81,6 +105,8 @@ def binary_install(binary_path: Path | None, target_dir: Path | None, name: str,
     try:
         source = resolve_install_source(binary_path, project_root=project_root, name=name)
         result = install_binary(binary_path=source, target_dir=target_dir, name=name, register_path=register_path)
+        bundled_installed = vendor_fetcher.install_bundled_vendor(source, target_dir=result.target_dir)
+        config_created = ensure_global_config()
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -88,6 +114,10 @@ def binary_install(binary_path: Path | None, target_dir: Path | None, name: str,
     click.echo(f"  来源: {result.source_path}")
     click.echo(f"  目标目录: {result.target_dir}")
     click.echo(f"  {result.registration_message}")
+    if bundled_installed:
+        click.echo(f"  bundled CLI: {result.target_dir / 'vendor'}")
+    if config_created:
+        click.echo(f"  [green]已创建全局配置[/green] {config_created}")
 
 
 @binary.command("where")
@@ -181,7 +211,7 @@ def binary_verify(release_dir: Path | None):
 
 
 @binary.command("prepare")
-@click.option("--version", "target_version", required=True, help="目标版本号，例如 0.1.1")
+@click.option("--version", "target_version", required=True, help="目标版本号，例如 0.7.5")
 @click.option(
     "--artifact",
     "artifacts",

@@ -1,0 +1,166 @@
+# CodePilot Operation Guide
+
+Language: [中文](03-操作文档.zh-CN.md) | English
+
+This guide is for daily operation. It covers how to initialize a project, submit work, inspect context, operate tasks, run services, troubleshoot failures, and prepare releases.
+
+## 1. Daily Entrypoints
+
+### 1.1 Initialize A Project
+
+```bash
+codepilot setup . --dry-run --json
+codepilot setup .
+codepilot doctor --project <project-name> --services --json
+```
+
+Use `setup --dry-run --json` before writing project state when you need a safe preview.
+
+### 1.2 Submit Requirements
+
+```bash
+codepilot "fix task retry logic and add tests"
+codepilot go "fix task retry logic and add tests" -p <project-name>
+codepilot auto -p <project-name> -t "high-level goal" --plan-only
+```
+
+Prefer the natural-language entrypoints for human requests. Use `add -f` only when an external AI has already rendered template-compliant task content.
+
+### 1.3 OpenCode Session
+
+```bash
+codepilot chat -p <project-name> -a opencode
+```
+
+OpenCode receives a CodePilot-managed runtime profile with MCP tools, commands, permissions, model/provider settings, and language instructions.
+
+## 2. Planning And Read-Only Evidence
+
+```bash
+codepilot plan -p <project-name> "clear requirement" --json
+codepilot explore -p <project-name> --prompt "question to investigate" --json
+codepilot wiki query -p <project-name> "build" --json
+codepilot note show -p <project-name> --json
+codepilot memory events -p <project-name> --json
+codepilot trace -p <project-name> --limit 30 --json
+```
+
+`plan` creates reviewable artifacts without creating backlog tasks or running code. `explore` is read-only: it does not write files, modify Git, start services, install dependencies, or run tests.
+
+`memory events` reads the project-local automatic observation log at `.codepilot/memory/events.jsonl`. CodePilot automatically turns these facts into deduplicated candidates and maintains `.codepilot/memory/autocapture.md`; candidates record `score`, `feedback`, and `seen_count`, with workflow actions and terminal task outcomes automatically adjusting weight. It does not directly write human-maintained long-term wiki/note content.
+
+## 3. Status, Tasks, And Logs
+
+```bash
+codepilot status -p <project-name> -v
+codepilot hud -p <project-name> --preset full --json
+codepilot task show <task_id> --json
+codepilot task logs <task_id> --tail 80
+codepilot task find <keyword> -p <project-name> --json
+```
+
+Use `status` and `hud` for project-level state. Use `task show` and `task logs` when you already know the task id.
+
+Task intervention commands:
+
+```bash
+codepilot task stop <task_id>
+codepilot task retry <task_id>
+codepilot task resume <task_id>
+codepilot task cancel <task_id>
+codepilot task archive <task_id>
+codepilot task rm <task_id>
+```
+
+For destructive operations such as delete/archive, list candidates first and explain the risk before acting.
+
+## 4. Direct Task Import Rules
+
+External AI systems must read the schema before using direct import:
+
+```bash
+codepilot ai template --format json
+codepilot add -p <project-name> -f tasks.json
+codepilot add -p <project-name> -f tasks.md
+```
+
+Rules:
+
+- Each JSON item must include a complete `content` field.
+- Markdown import must contain complete task-template sections.
+- `--no-ai` and `--allow-empty` are removed; placeholder tasks are rejected.
+- Humans should normally use `codepilot "requirement text"` instead of `add`.
+
+## 5. Queue Execution And Inspection
+
+```bash
+codepilot run -p <project-name> --once
+codepilot daemon -p <project-name>
+codepilot daemon -p <project-name> --status
+codepilot inspect -p <project-name> --once
+codepilot inspect -p <project-name> --once --dry-run --write-workflow --json
+codepilot inspect -p <project-name> --status
+codepilot build-fix -p <project-name> --task-id <task_id> --json
+```
+
+`--write-workflow` stores the read-only inspection result as `.codepilot/context/inspect-*.json` and lets `workflow next --list --json` expose safe actions such as `create_inspect_tasks`, `promote_inspect_report_<candidate_id>`, `ignore_inspect_report_<candidate_id>`, `delete_inspect_report_<candidate_id>`, `archive_inspect_report_<candidate_id>`, and `plan_from_inspect`. `workflow next --auto --json` only chooses policy-allowed actions; by default it does not create inspect tasks or import plan tasks, and `[automation] workflow_auto_*` settings can opt in. Plain `--dry-run` keeps the old no-write behavior.
+
+Dirty-worktree preflight behavior is configured in `[automation].preflight_dirty_worktree`:
+
+```toml
+# stop = skip execution; commit = save a preflight commit; stash = stash local changes and record restore notes.
+preflight_dirty_worktree = "stop"
+```
+
+## 6. Web UI, Feishu, And Webhook
+
+```bash
+codepilot ui
+codepilot ui start
+codepilot ui logs --tail 100
+codepilot webhook --host 127.0.0.1 --port 8765
+codepilot feishu start
+codepilot feishu status
+codepilot feishu logs --tail 100
+```
+
+Web UI is the graphical multi-project control surface. Webhook accepts external task submissions. Feishu supports project selection, status cards, Q&A, requirement submission, and task control.
+
+## 7. Events, Hooks, Providers, And Skills
+
+```bash
+codepilot event schema --json
+codepilot event list -p <project-name> --json
+codepilot hook validate -p <project-name> --json
+codepilot exec -p <project-name> --provider codex --dry-run --json -- codex --version
+codepilot skill list -p <project-name> --json
+```
+
+Use these commands to validate lifecycle events, provider availability, and local workflow skills without replacing native CLI tools.
+
+## 8. Release Operations
+
+```bash
+codepilot binary build
+codepilot binary install --binary <path-to-binary>
+codepilot binary prepare --version <version>
+codepilot binary release --build-current
+codepilot binary verify
+codepilot binary where
+```
+
+Use `binary prepare` for the standard version-update, build, release-directory, and verification flow.
+
+## 9. Troubleshooting
+
+- Command not found: run `codepilot doctor --json`, then verify `[agents.commands]` and PATH.
+- Task stuck or silent: inspect `status -v`, `task show`, and `task logs --tail 80`; stop the task only after confirming it is safe.
+- Failed task repair: prefer `codepilot build-fix -p <project-name> --task-id <task_id> --json`.
+- Service health: use `doctor --services --json`, `ui logs`, `daemon --status`, and `inspect --status`.
+- OpenCode model or permission mismatch: check project provider config and `[opencode.permission]`.
+
+## 10. References
+
+- Overview: [中文](02-说明文档.zh-CN.md) / [English](02-overview.en-US.md)
+- AI / Agent guide: [中文](04-AI与Agent调用手册.zh-CN.md) / [English](04-ai-agent-manual.en-US.md)
+- Skill integration: [中文](05-Skill化集成指南.zh-CN.md) / [English](05-skill-integration-guide.en-US.md)

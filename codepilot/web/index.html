@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodePilot 控制台</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/static/codepilot-logo.png">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css">
+<!-- Must use the FULL build (with template compiler), not vue.global.prod.js, because we compile templates in the browser. -->
+<script src="https://unpkg.com/vue@3.5.13/dist/vue.global.js"></script>
+<!-- Syntax highlighting (core + diff + common languages), ANSI escape rendering, and
+     markdown parsing (AI output is GFM; DOMPurify sanitises the rendered HTML). -->
+<script src="https://unpkg.com/@highlightjs/cdn-assets@11.10.0/highlight.min.js"></script>
+<script src="https://unpkg.com/@highlightjs/cdn-assets@11.10.0/languages/diff.min.js"></script>
+<script src="https://unpkg.com/ansi_up@5.2.1/ansi_up.js"></script>
+<script src="https://unpkg.com/marked@12.0.2/marked.min.js"></script>
+<script src="https://unpkg.com/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html.min.js"></script>
+</head>
+<body>
+<div id="app"></div>
+
+<!-- Shared helpers / constants (exposes window.CP) -->
+<script src="/static/utils.js"></script>
+<script src="/static/boundaries/StateBoundary.js"></script>
+<script src="/static/boundaries/AppFeedbackBoundary.js"></script>
+<script src="/static/boundaries/AppSessionBoundary.js"></script>
+<script src="/static/boundaries/AppSubmissionBoundary.js"></script>
+<script src="/static/boundaries/AppStateBoundary.js"></script>
+<script src="/static/boundaries/TaskDetailBoundary.js"></script>
+<script src="/static/boundaries/AgentLogRenderBoundary.js"></script>
+<script src="/static/boundaries/AgentLogInteractionBoundary.js"></script>
+<script src="/static/boundaries/AgentLogBoundaryContract.js"></script>
+
+<!-- Base components -->
+<script src="/static/components/Chip.js"></script>
+<script src="/static/components/CodeBlock.js"></script>
+<script src="/static/components/LiveLog.js"></script>
+<script src="/static/components/DiffViewer.js"></script>
+<script src="/static/components/AgentLog.js"></script>
+<script src="/static/components/Markdown.js"></script>
+<script src="/static/components/ToastStack.js"></script>
+<script src="/static/components/ConfirmDialog.js"></script>
+<script src="/static/components/MainHeader.js"></script>
+
+<!-- Panels used by views -->
+<script src="/static/components/MetricsPanel.js"></script>
+<script src="/static/components/TaskSection.js"></script>
+
+<!-- Views (routed by ContentPane) -->
+<script src="/static/components/ProjectView.js"></script>
+<script src="/static/components/SessionsView.js"></script>
+<script src="/static/components/TasksView.js"></script>
+<script src="/static/components/JobsView.js"></script>
+<script src="/static/components/TaskDetail.js"></script>
+<script src="/static/components/JobDetail.js"></script>
+<script src="/static/components/ChatView.js"></script>
+<script src="/static/components/ContentPane.js"></script>
+
+<!-- Sidebar + root app -->
+<script src="/static/components/Sidebar.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

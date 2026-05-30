@@ -1,0 +1,105 @@
+"""Project management commands."""
+
+from __future__ import annotations
+
+import json
+
+import click
+
+from codepilot.storage import database as db
+from codepilot.core.output import echo
+
+
+@click.group("project")
+def project_group() -> None:
+    """管理已注册项目。"""
+
+
+@click.command("delete")
+@click.argument("name")
+@click.option("--yes", "-y", is_flag=True, help="跳过确认")
+@click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
+@click.pass_context
+def delete_project(ctx: click.Context, name: str, yes: bool, json_mode: bool) -> None:
+    """删除项目注册记录和关联任务/会话，不删除工作目录。"""
+    db.init_db()
+    root_obj = ctx.find_root().obj or {}
+    if not json_mode:
+        json_mode = root_obj.get("json_mode", False)
+
+    project = db.get_project(name)
+    if not project:
+        raise click.ClickException(f"项目 '{name}' 未注册。")
+    project_name = str(project["name"])
+
+    stats = db.get_task_stats(project_name)
+    if json_mode:
+        ok = db.delete_project(project_name)
+        click.echo(json.dumps({"ok": ok, "project": project_name, "path": project["path"]}, ensure_ascii=False, indent=2))
+        return
+
+    if not yes:
+        click.echo(f"将删除项目注册记录：{project_name}")
+        click.echo(f"  路径: {project['path']}")
+        click.echo(
+            f"  关联任务: {stats['total']} 总 / {stats['in_progress']} 进行 / "
+            f"{stats['backlog']} 待办 / {stats['done']} 完成"
+        )
+        click.echo("  工作目录不会被删除。")
+        click.confirm("确认删除？", abort=True)
+
+    db.delete_project(project_name)
+    echo(f"[green][OK] 项目 '{project_name}' 已删除[/green]")
+    click.echo(f"  工作目录保留: {project['path']}")
+
+
+@click.command("rename")
+@click.argument("name")
+@click.argument("new_name")
+@click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
+@click.pass_context
+def rename_project(ctx: click.Context, name: str, new_name: str, json_mode: bool) -> None:
+    """重命名项目，并迁移关联任务/会话归属。"""
+    db.init_db()
+    root_obj = ctx.find_root().obj or {}
+    if not json_mode:
+        json_mode = root_obj.get("json_mode", False)
+
+    try:
+        result = db.rename_project(name, new_name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if json_mode:
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    if not result.get("renamed"):
+        echo(f"[yellow][i] 项目名称未变化：{result['new_name']}[/yellow]")
+        return
+
+    echo(f"[green][OK] 项目 '{result['old_name']}' 已重命名为 '{result['new_name']}'[/green]")
+    click.echo(f"  工作目录: {result['path']}")
+    click.echo(f"  已迁移任务: {result['updated_tasks']}，会话: {result['updated_sessions']}")
+    if result.get("data_migrated"):
+        click.echo(
+            "  运行数据: "
+            f"复制 {result.get('data_files_copied', 0)} 个文件，"
+            f"日志路径更新 {result.get('updated_log_paths', 0)} 条"
+        )
+    if result.get("data_conflicts"):
+        click.echo(f"  数据冲突: {len(result['data_conflicts'])} 个，备份: {result.get('data_backup_path') or '-'}")
+    if result.get("pending_cleanup"):
+        click.echo(f"  待清理旧目录: {len(result['pending_cleanup'])} 个")
+    if result.get("data_error"):
+        click.echo(f"  数据迁移错误: {result['data_error']}")
+    if result.get("config_updated"):
+        click.echo(f"  配置已更新: {result['config_file']}")
+    elif result.get("config_error"):
+        click.echo(f"  配置未更新: {result['config_error']}")
+
+
+project_group.add_command(delete_project)
+project_group.add_command(delete_project, "rm")
+project_group.add_command(rename_project)
+project_group.add_command(rename_project, "mv")

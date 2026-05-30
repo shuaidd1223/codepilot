@@ -1,3 +1,8 @@
-"""CodePilot - 全局编程工作流自动化 CLI 工具."""
+"""CodePilot - 全局编程工作流自动化 CLI 工具.
 
-__version__ = "0.1.0"
+Author: 帅呆呆 <2264505396@qq.com>
+Repository: https://gitee.com/shuai_dd/workflow
+License: MIT
+"""
+
+__version__ = "0.7.5"

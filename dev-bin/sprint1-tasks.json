@@ -1,0 +1,32 @@
+[
+  {
+    "title": "新增 ai template 命令暴露任务模板与 JSON schema 给外部 AI",
+    "priority": "P1",
+    "agent": "dual"
+  },
+  {
+    "title": "LLM 调用接入流式 heartbeat 推送 token 与 elapsed 到 progress_bus",
+    "priority": "P0",
+    "agent": "dual"
+  },
+  {
+    "title": "Builder 子进程 stdout 实时 tail 并通过 progress_bus 转推给 CLI 与 Web",
+    "priority": "P0",
+    "agent": "dual"
+  },
+  {
+    "title": "Reviewer verdict 结构化推送 blockers 分类事件到 progress_bus",
+    "priority": "P1",
+    "agent": "dual"
+  },
+  {
+    "title": "Web SSE 事件扩展 type 字段 phase_start/heartbeat/phase_end/error 前端按阶段折叠",
+    "priority": "P1",
+    "agent": "dual"
+  },
+  {
+    "title": "终端输出统一化 echo 与 logger 增加时间戳与 level 颜色",
+    "priority": "P2",
+    "agent": "dual"
+  }
+]

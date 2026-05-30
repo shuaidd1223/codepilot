@@ -1,24 +1,27 @@
 [project]
 name = "codepilot"
-version = "0.1.0"
+version = "0.7.5"
 description = "全局编程工作流自动化 CLI 工具"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Developer" }]
+authors = [{ name = "帅呆呆", email = "2264505396@qq.com" }]
 keywords = ["automation", "workflow", "claude", "codex", "ai"]
 
 dependencies = [
     "click>=8.1.0",
+    "mcp>=1.27.1",
     "rich>=13.0.0",
     "pydantic>=2.7.0",
     "tomli>=2.0.1; python_version < '3.11'",
+    "lark-oapi>=1.4.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
+    "ruff>=0.8.0",
 ]
 build = [
     "pyinstaller>=6.10.0",
@@ -29,7 +32,10 @@ ai = [
 ]
 
 [project.scripts]
-codepilot = "codepilot.cli:main"
+codepilot-dev = "codepilot.cli:main"
+
+[project.urls]
+Repository = "https://gitee.com/shuai_dd/CodePilot"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -43,4 +49,15 @@ include = ["codepilot*"]
 "" = "."
 
 [tool.setuptools.package-data]
-"codepilot" = ["templates/*.md"]
+"codepilot" = ["templates/*.md", "prompts/*.md", "web/*.html", "web/*.css", "web/*.js", "web/*.png", "web/*.ico", "web/components/*.js", "web/boundaries/*.js", "*.mjs"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+# 默认走 xdist 并行 + loadfile 分发：同文件留同一 worker（避免共享 fixture / db
+# 的隔离问题），文件之间并行。把全量回归从 ~7min 压到 ~3.5min；叠加
+# `pytest -m "not slow"` 后日常开发 ~60-90s。
+addopts = "-p pytest_mcp_chat_glob -n auto --dist loadfile"
+markers = [
+    "slow: 单测耗时 > 10s 的重型用例（git worktree / full pipeline / self iteration）。日常用 `pytest -m 'not slow'` 跳过。",
+    "serial: 必须串行的用例（持有全局锁、共享 daemon、抢端口等）。xdist 分组到同一 worker。",
+]

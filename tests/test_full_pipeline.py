@@ -6,17 +6,15 @@ They exercise the real DB, real git operations, and real CLI entry points.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
-from codepilot import db
-from codepilot import webui as webui_mod
+from codepilot.storage import database as db
+from codepilot.webapp import server as webui_mod
 from codepilot.cli import main
 from codepilot.commands import auto as auto_mod
 from codepilot.commands import run as run_cmd
@@ -59,7 +57,7 @@ def _setup(tmp_path, monkeypatch):
 
 def test_requirement_planning_creates_subtasks(tmp_path, monkeypatch):
     """run_requirement_workflow should create tasks from AI breakdown."""
-    project_path = _setup(tmp_path, monkeypatch)
+    _setup(tmp_path, monkeypatch)
 
     breakdown = {
         "summary": "测试拆分",
@@ -77,7 +75,7 @@ def test_requirement_planning_creates_subtasks(tmp_path, monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(main, [
-        "--project", "demo", "--no-execute", "实现两个子功能",
+        "go", "--project", "demo", "--no-execute", "实现两个子功能",
     ])
 
     assert result.exit_code == 0
@@ -95,17 +93,18 @@ def test_builtin_executor_commits_and_merges_to_base(tmp_path, monkeypatch):
     project_path = _setup(tmp_path, monkeypatch)
 
     # Create a task
-    task = db.create_task("demo", "add hello.txt", agent="codex", max_retries=1)
+    db.create_task("demo", "add hello.txt", agent="codex", max_retries=1)
 
     # Mock the builtin executor: simulate writing a file + staging + committing
-    def fake_run_builtin(task_dict, project, task_file, auto_commit=True):
+    def fake_run_builtin(task_dict, project, task_file, auto_commit=True, **kwargs):
+        execution_path = Path(kwargs["execution_path"])
         # Simulate builder: create a file and commit
-        hello = project_path / "hello.txt"
+        hello = execution_path / "hello.txt"
         hello.write_text("hello world\n", encoding="utf-8")
-        subprocess.run(["git", "add", "."], cwd=str(project_path), capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=str(execution_path), capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", f"task #{task_dict['id']}: add hello"],
-            cwd=str(project_path), capture_output=True,
+            cwd=str(execution_path), capture_output=True,
             env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
                  "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
         )
@@ -141,13 +140,14 @@ def test_builtin_executor_commits_and_merges_to_base(tmp_path, monkeypatch):
     assert branches.stdout.strip() == "", "Feature branch should be deleted after merge"
 
 
+@pytest.mark.slow
 def test_failed_execution_keeps_feature_branch(tmp_path, monkeypatch):
     """A failed task should NOT merge; feature branch is preserved for debugging."""
     project_path = _setup(tmp_path, monkeypatch)
 
     task = db.create_task("demo", "will fail", agent="codex", max_retries=1)
 
-    def fake_run_builtin(task_dict, project, task_file, auto_commit=True):
+    def fake_run_builtin(task_dict, project, task_file, auto_commit=True, **kwargs):
         return run_cmd.ExecutionResult(
             exit_code=1,
             output="something broke",
@@ -157,14 +157,14 @@ def test_failed_execution_keeps_feature_branch(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_cmd, "_run_builtin_executor", fake_run_builtin)
 
-    stats = run_cmd.run_backlog("demo", once=True, limit=1, executor="builtin")
+    run_cmd.run_backlog("demo", once=True, limit=1, executor="builtin")
 
     # Task should be requeued or failed, NOT done
     updated = db.get_task(task["id"])
     assert updated["status"] in ("backlog", "failed")
 
     # Failed tasks preserve feature branch for debugging (not merged to dev)
-    branches = subprocess.run(
+    subprocess.run(
         ["git", "branch", "--list", "feat/task-*"],
         cwd=str(project_path), capture_output=True, text=True,
     )
@@ -176,7 +176,7 @@ def test_failed_execution_keeps_feature_branch(tmp_path, monkeypatch):
 
 def test_duplicate_requirement_does_not_double_create(tmp_path, monkeypatch):
     """Submitting the same requirement twice should not create duplicate tasks."""
-    project_path = _setup(tmp_path, monkeypatch)
+    _setup(tmp_path, monkeypatch)
 
     breakdown = {
         "summary": "唯一任务",
@@ -191,8 +191,8 @@ def test_duplicate_requirement_does_not_double_create(tmp_path, monkeypatch):
 
     runner = CliRunner()
     # Submit twice
-    runner.invoke(main, ["--project", "demo", "--no-execute", "唯一任务 X"])
-    runner.invoke(main, ["--project", "demo", "--no-execute", "唯一任务 X"])
+    runner.invoke(main, ["go", "--project", "demo", "--no-execute", "唯一任务 X"])
+    runner.invoke(main, ["go", "--project", "demo", "--no-execute", "唯一任务 X"])
 
     tasks = db.list_tasks(project="demo")
     titles = [t["title"] for t in tasks if t["title"] == "唯一任务 X"]
@@ -204,7 +204,7 @@ def test_duplicate_requirement_does_not_double_create(tmp_path, monkeypatch):
 
 def test_cli_plain_text_plan_and_execute(tmp_path, monkeypatch):
     """codepilot 'requirement' should plan, create task, and attempt execution."""
-    project_path = _setup(tmp_path, monkeypatch)
+    _setup(tmp_path, monkeypatch)
 
     breakdown = {
         "summary": "快速任务",
@@ -215,12 +215,13 @@ def test_cli_plain_text_plan_and_execute(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_mod, "generate_task_breakdown", lambda **kw: breakdown)
 
     # Mock executor
-    def fake_run_builtin(task_dict, project, task_file, auto_commit=True):
-        (project_path / "output.txt").write_text("done", encoding="utf-8")
-        subprocess.run(["git", "add", "."], cwd=str(project_path), capture_output=True)
+    def fake_run_builtin(task_dict, project, task_file, auto_commit=True, **kwargs):
+        execution_path = Path(kwargs["execution_path"])
+        (execution_path / "output.txt").write_text("done", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(execution_path), capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", "task done"],
-            cwd=str(project_path), capture_output=True,
+            cwd=str(execution_path), capture_output=True,
             env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
                  "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
         )
@@ -233,7 +234,7 @@ def test_cli_plain_text_plan_and_execute(tmp_path, monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(main, [
-        "--project", "demo", "--execute", "--executor", "builtin", "快速完成一件事",
+        "go", "--project", "demo", "--execute", "--executor", "builtin", "快速完成一件事",
     ])
 
     assert result.exit_code == 0

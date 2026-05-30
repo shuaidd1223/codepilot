@@ -1,0 +1,62 @@
+"""Feishu bot configuration loading."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping
+
+from codepilot.core.config import load_config, load_project_config
+
+
+FEISHU_CONFIG_REF_ENV = "CODEPILOT_FEISHU_CONFIG"
+
+
+@dataclass
+class FeishuBotConfig:
+    enabled: bool = False
+    app_id: str = ""
+    app_secret: str = ""
+    default_project: str = ""
+    command_prefix: str = ""
+
+
+ConfigReference = str | Path | Mapping[str, Any]
+
+
+def _env_config_reference() -> str:
+    return str(os.environ.get(FEISHU_CONFIG_REF_ENV) or "").strip()
+
+
+def _effective_config_reference(config_path: ConfigReference | None = None) -> ConfigReference | None:
+    if config_path is not None:
+        return config_path
+    return _env_config_reference() or None
+
+
+def load_feishu_bot_config(config_path: ConfigReference | None = None) -> FeishuBotConfig:
+    config_ref = _effective_config_reference(config_path)
+    cfg = load_project_config(config_ref) if config_ref is not None else load_config()
+    if cfg is None:
+        return FeishuBotConfig()
+    section = cfg.feishu_bot if isinstance(cfg.feishu_bot, dict) else {}
+    return FeishuBotConfig(
+        enabled=bool(cfg.feishu_bot_enabled or section.get("enabled", False)),
+        app_id=str(cfg.feishu_app_id or section.get("app_id", "") or ""),
+        app_secret=str(cfg.feishu_app_secret or section.get("app_secret", "") or ""),
+        default_project=str(cfg.feishu_default_project or section.get("default_project", "") or ""),
+        command_prefix=str(cfg.feishu_command_prefix or section.get("command_prefix", "") or "").strip(),
+    )
+
+
+def validate_feishu_bot_config(config_path: ConfigReference | None = None) -> list[str]:
+    cfg = load_feishu_bot_config(config_path)
+    problems: list[str] = []
+    if not cfg.enabled:
+        problems.append("[feishu_bot].enabled = true 未开启。")
+    if not cfg.app_id:
+        problems.append("[feishu_bot].app_id 为空。")
+    if not cfg.app_secret:
+        problems.append("[feishu_bot].app_secret 为空。")
+    return problems

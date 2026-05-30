@@ -1,0 +1,544 @@
+/* Project-first tree sidebar: projects → (tasks, jobs). */
+/* global Vue, CP */
+const PROJECT_ORDER_STORAGE_KEY = 'cp-sidebar-project-order-v1';
+
+CP.Components.Sidebar = Vue.defineComponent({
+  name: 'CpSidebar',
+  inject: ['cp'],
+  data() {
+    return {
+      pageSize: 10,
+      visibleLeafCount: {},
+      leafConfirm: { taskId: null, action: '' },
+      projectOrder: [],
+      draggingProject: '',
+      dragOverProject: '',
+      suppressProjectRowClick: false,
+      renamingProject: '',
+      renameDraft: '',
+    };
+  },
+  computed: {
+    s() { return this.cp.state; },
+    orderedProjects() {
+      const rows = Array.isArray(this.s.projects) ? this.s.projects.slice() : [];
+      const order = Array.isArray(this.projectOrder) ? this.projectOrder : [];
+      if (!order.length) return rows;
+      const indexByName = new Map(order.map((name, index) => [name, index]));
+      return rows
+        .map((project, index) => ({ project, index }))
+        .sort((left, right) => {
+          const leftOrder = indexByName.has(left.project.name)
+            ? indexByName.get(left.project.name)
+            : Number.MAX_SAFE_INTEGER;
+          const rightOrder = indexByName.has(right.project.name)
+            ? indexByName.get(right.project.name)
+            : Number.MAX_SAFE_INTEGER;
+          if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+          return left.index - right.index;
+        })
+        .map((item) => item.project);
+    },
+  },
+  created() {
+    this.projectOrder = this.readProjectOrder();
+  },
+  watch: {
+    's.projects': {
+      handler() {
+        this.normalizeProjectOrder();
+      },
+      deep: false,
+    },
+  },
+  methods: {
+    isExpanded(key, def) { return this.cp.isExpanded(key, def); },
+    toggleProject(name, ev) {
+      ev.stopPropagation();
+      this.cp.toggleProject(name);
+    },
+    isProjectOverviewActive(name) {
+      const nav = this.s.nav || {};
+      return nav.project === name && nav.view === 'overview' && (nav.id === null || nav.id === undefined);
+    },
+    toggleProjectRow(name, ev) {
+      if (ev) ev.stopPropagation();
+      if (!name) return;
+      if (this.suppressProjectRowClick) {
+        this.suppressProjectRowClick = false;
+        return;
+      }
+      if (!this.isProjectOverviewActive(name)) {
+        this.cp.selectProject(name);
+        return;
+      }
+      this.cp.toggleProject(name);
+    },
+    toggleCategory(project, cat, ev) {
+      ev.stopPropagation();
+      this.cp.toggleCategory(project, cat);
+    },
+    toggleCategoryRow(project, cat, ev) {
+      if (ev) ev.stopPropagation();
+      if (!project || !cat) return;
+      this.cp.toggleCategory(project, cat);
+      this.cp.setNav({ project, view: cat, id: null });
+    },
+    isActive(match) {
+      const n = this.s.nav;
+      return Object.keys(match).every(k => n[k] === match[k]);
+    },
+    projectNames() {
+      return (Array.isArray(this.s.projects) ? this.s.projects : [])
+        .map((project) => project && project.name)
+        .filter(Boolean);
+    },
+    readProjectOrder() {
+      try {
+        const raw = localStorage.getItem(PROJECT_ORDER_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((name, index) => (
+          typeof name === 'string'
+          && name
+          && parsed.indexOf(name) === index
+        ));
+      } catch (_e) {
+        return [];
+      }
+    },
+    persistProjectOrder() {
+      try {
+        localStorage.setItem(PROJECT_ORDER_STORAGE_KEY, JSON.stringify(this.projectOrder));
+      } catch (_e) { /* ignore */ }
+    },
+    normalizeProjectOrder() {
+      const names = new Set(this.projectNames());
+      const nextOrder = (Array.isArray(this.projectOrder) ? this.projectOrder : [])
+        .filter((name, index, arr) => names.has(name) && arr.indexOf(name) === index);
+      if (nextOrder.length === this.projectOrder.length && nextOrder.every((name, index) => name === this.projectOrder[index])) return;
+      this.projectOrder = nextOrder;
+      this.persistProjectOrder();
+    },
+    onProjectDragStart(project, ev) {
+      if (!project || !project.name) return;
+      if (ev && ev.target && ev.target.closest && ev.target.closest('button,input,form')) {
+        ev.preventDefault();
+        return;
+      }
+      this.draggingProject = project.name;
+      this.dragOverProject = '';
+      if (ev && ev.dataTransfer) {
+        ev.dataTransfer.effectAllowed = 'move';
+        ev.dataTransfer.setData('text/plain', project.name);
+        ev.dataTransfer.setData('application/x-codepilot-project', project.name);
+      }
+    },
+    onProjectDragOver(project, ev) {
+      if (!project || !project.name || !this.draggingProject || this.draggingProject === project.name) return;
+      if (ev) {
+        ev.preventDefault();
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+      }
+      this.dragOverProject = project.name;
+    },
+    onProjectDragLeave(project, ev) {
+      if (!project || this.dragOverProject !== project.name) return;
+      const related = ev && ev.relatedTarget;
+      if (related && ev.currentTarget && ev.currentTarget.contains(related)) return;
+      this.dragOverProject = '';
+    },
+    onProjectDrop(project, ev) {
+      if (ev) ev.preventDefault();
+      const targetName = project && project.name;
+      const sourceName = this.draggingProject
+        || (ev && ev.dataTransfer && (ev.dataTransfer.getData('application/x-codepilot-project') || ev.dataTransfer.getData('text/plain')));
+      if (!sourceName || !targetName || sourceName === targetName) {
+        this.clearProjectDragState(true);
+        return;
+      }
+      const names = this.orderedProjects.map((item) => item.name).filter(Boolean);
+      const fromIndex = names.indexOf(sourceName);
+      const rawTargetIndex = names.indexOf(targetName);
+      if (fromIndex < 0 || rawTargetIndex < 0) {
+        this.clearProjectDragState(true);
+        return;
+      }
+      const [moved] = names.splice(fromIndex, 1);
+      let targetIndex = rawTargetIndex;
+      if (ev && ev.currentTarget && typeof ev.clientY === 'number') {
+        const rect = ev.currentTarget.getBoundingClientRect();
+        const dropAfter = ev.clientY > rect.top + rect.height / 2;
+        targetIndex = rawTargetIndex + (dropAfter ? 1 : 0);
+      }
+      if (fromIndex < targetIndex) targetIndex -= 1;
+      names.splice(Math.max(0, Math.min(targetIndex, names.length)), 0, moved);
+      this.projectOrder = names;
+      this.persistProjectOrder();
+      this.clearProjectDragState(true);
+    },
+    onProjectDragEnd() {
+      this.clearProjectDragState(true);
+    },
+    clearProjectDragState(suppressClick = false) {
+      this.draggingProject = '';
+      this.dragOverProject = '';
+      if (!suppressClick) return;
+      this.suppressProjectRowClick = true;
+      setTimeout(() => {
+        this.suppressProjectRowClick = false;
+      }, 0);
+    },
+    projectTasks(projName) {
+      /* Read from the per-project map so this project's tasks never show
+       * some other project's content during a nav switch. The map is
+       * populated by loadDashboard whenever a project is selected; other
+       * projects simply stay at [] until their dashboard is fetched. */
+      return (this.s.tasksByProject && this.s.tasksByProject[projName]) || [];
+    },
+    projectJobs(projName) {
+      return (this.s.jobsByProject && this.s.jobsByProject[projName]) || [];
+    },
+    submitProject() {
+      this.cp.submitProject();
+    },
+    deleteProject(project, ev) {
+      ev.stopPropagation();
+      this.cp.deleteProject(project.name);
+    },
+    renameProject(project, ev) {
+      if (ev) ev.stopPropagation();
+      if (!project || !project.name) return;
+      this.renamingProject = project.name;
+      this.renameDraft = project.name;
+      this.$nextTick(() => {
+        const input = this.$el && this.$el.querySelector('.project-rename-inline input');
+        if (input) {
+          input.focus();
+          input.select();
+        }
+      });
+    },
+    cancelProjectRename(ev) {
+      if (ev) ev.stopPropagation();
+      this.renamingProject = '';
+      this.renameDraft = '';
+    },
+    async submitProjectRename(project, ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (!project || !project.name) return;
+      const nextName = String(this.renameDraft || '').trim();
+      if (!nextName || nextName === project.name) {
+        this.cancelProjectRename(ev);
+        return;
+      }
+      const out = await this.cp.renameProject(project.name, this.renameDraft);
+      if (out && out.ok) this.cancelProjectRename(ev);
+    },
+    /* Count helpers: look at project summary first so numbers stay correct
+     * across projects even when we only loaded the current project's list. */
+    taskCount(p) {
+      if (p && p.stats && typeof p.stats.total === 'number') return p.stats.total;
+      return this.projectTasks(p.name).length;
+    },
+    jobCount(p) {
+      if (p && typeof p.job_count === 'number') return p.job_count;
+      return this.projectJobs(p.name).length;
+    },
+    leafKey(project, category) {
+      return `${project}/${category}`;
+    },
+    leafLimit(project, category) {
+      const key = this.leafKey(project, category);
+      return this.visibleLeafCount[key] || this.pageSize;
+    },
+    visibleLeafItems(items, project, category) {
+      return (items || []).slice(0, this.leafLimit(project, category));
+    },
+    leafRemaining(items, project, category) {
+      return Math.max((items || []).length - this.leafLimit(project, category), 0);
+    },
+    leafHasMore(items, project, category) {
+      return this.leafRemaining(items, project, category) > 0;
+    },
+    leafCanCollapse(items, project, category) {
+      return (items || []).length > this.pageSize && this.leafLimit(project, category) > this.pageSize;
+    },
+    leafNextChunk(items, project, category) {
+      return Math.min(this.pageSize, this.leafRemaining(items, project, category));
+    },
+    expandLeaf(project, category) {
+      const key = this.leafKey(project, category);
+      this.visibleLeafCount[key] = this.leafLimit(project, category) + this.pageSize;
+    },
+    collapseLeaf(project, category) {
+      const key = this.leafKey(project, category);
+      this.visibleLeafCount[key] = this.pageSize;
+    },
+    taskActionNeedsConfirm(act) {
+      return ['cancel', 'archive', 'delete'].includes(act);
+    },
+    isTaskQuickConfirm(task) {
+      return !!task && this.leafConfirm.taskId === task.id;
+    },
+    clearTaskQuickConfirm() {
+      this.leafConfirm = { taskId: null, action: '' };
+    },
+    taskQuickConfirmMessage(task) {
+      if (!task || !task.id) return '';
+      if (this.leafConfirm.action === 'cancel') return `取消 #${task.id}？`;
+      if (this.leafConfirm.action === 'archive') return `归档 #${task.id}？`;
+      if (this.leafConfirm.action === 'delete') return `删除 #${task.id}？`;
+      return '';
+    },
+    requestTaskQuickAction(task, act, ev) {
+      if (ev) ev.stopPropagation();
+      if (!task || !task.id) return;
+      if (!this.taskActionNeedsConfirm(act)) {
+        this.clearTaskQuickConfirm();
+        this.cp.taskAction(task.id, act);
+        return;
+      }
+      if (this.leafConfirm.taskId === task.id && this.leafConfirm.action === act) {
+        this.clearTaskQuickConfirm();
+      } else {
+        this.leafConfirm = { taskId: task.id, action: act };
+      }
+    },
+    confirmTaskQuickAction(task, ev) {
+      if (ev) ev.stopPropagation();
+      if (!task || !task.id || !this.leafConfirm.action) return;
+      const act = this.leafConfirm.action;
+      this.clearTaskQuickConfirm();
+      this.cp.taskAction(task.id, act);
+    },
+  },
+  template: `
+    <aside class="sidebar">
+      <div class="brand-bar">
+        <div class="brand">
+          <div class="brand-logo">
+            <img class="brand-logo-img" src="/static/codepilot-logo.png" alt="">
+          </div>
+          <div>
+            <div class="brand-name">CodePilot</div>
+            <div class="brand-sub">控制台</div>
+          </div>
+        </div>
+        <button class="icon-btn" @click="cp.toggleDark()" :title="s.dark ? '切换到浅色' : '切换到深色'">
+          <svg v-if="!s.dark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        </button>
+      </div>
+
+      <div class="sidebar-scroll">
+        <div class="group-title">
+          <span>项目</span>
+          <button class="mini-action" @click="cp.toggleProjectForm()" :title="s.projectForm.open ? '收起' : '新建项目'">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+
+        <form v-if="s.projectForm.open" class="project-form" @submit.prevent="submitProject">
+          <div class="field">
+            <label>工作目录</label>
+            <input v-model="s.projectForm.path" type="text" placeholder="D:\\myCode\\workflow">
+          </div>
+          <div class="field">
+            <label>项目名</label>
+            <input v-model="s.projectForm.name" type="text" placeholder="默认取目录名">
+          </div>
+          <label class="checkbox">
+            <input type="checkbox" v-model="s.projectForm.noConfig">
+            不生成 AGENTS.toml
+          </label>
+          <div class="row gap-xs">
+            <button type="submit" class="btn btn-primary btn-sm grow" :disabled="s.projectSubmitting">
+              <span v-if="s.projectSubmitting" class="spinner"></span>
+              注册
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" @click="cp.toggleProjectForm(false)" :disabled="s.projectSubmitting">取消</button>
+          </div>
+        </form>
+
+        <div v-if="!s.projects.length" class="empty-block">还没有项目</div>
+
+        <div v-else class="tree">
+          <div v-for="p in orderedProjects" :key="p.name" class="tree-project"
+               :class="{dragging: draggingProject === p.name, 'drag-over': dragOverProject === p.name}">
+            <!-- Project node -->
+            <div class="tree-row tree-project-row"
+                 draggable="true"
+                 :class="{active: isActive({project: p.name, view: 'overview'})}"
+                 @dragstart="onProjectDragStart(p, $event)"
+                 @dragover="onProjectDragOver(p, $event)"
+                 @dragleave="onProjectDragLeave(p, $event)"
+                 @drop="onProjectDrop(p, $event)"
+                 @dragend="onProjectDragEnd"
+                 @click="toggleProjectRow(p.name, $event)">
+              <button class="chevron" @click="toggleProject(p.name, $event)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                  :style="{transform: isExpanded(p.name) ? 'rotate(90deg)' : 'rotate(0deg)'}">
+                  <polyline points="9 18 15 12 9 6"/>
+                </svg>
+              </button>
+              <svg class="tree-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <form v-if="renamingProject === p.name" class="project-rename-inline" @submit.prevent="submitProjectRename(p, $event)" @click.stop>
+                <input v-model="renameDraft" type="text" :aria-label="'重命名 ' + p.name">
+                <button class="tree-action" type="submit" title="保存项目名">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                </button>
+                <button class="tree-action" type="button" @click="cancelProjectRename($event)" title="取消重命名">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </form>
+              <template v-else>
+                <span class="tree-label">{{ p.name }}</span>
+                <span v-if="p.stats && p.stats.in_progress" class="chip info tiny">{{ p.stats.in_progress }}</span>
+                <span v-else-if="taskCount(p)" class="chip neutral tiny">{{ taskCount(p) }}</span>
+                <button class="tree-action" @click="renameProject(p, $event)" title="重命名项目">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                </button>
+                <button class="tree-action" @click="deleteProject(p, $event)" :disabled="s.deletingProject === p.name" title="删除项目">
+                  <span v-if="s.deletingProject === p.name" class="spinner tiny-spinner"></span>
+                  <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                </button>
+              </template>
+            </div>
+
+            <!-- Children (only when expanded) -->
+            <div v-show="isExpanded(p.name)" class="tree-children">
+              <!-- Tasks category -->
+              <div class="tree-row tree-category-row" :class="{active: isActive({project: p.name, view: 'tasks'})}" @click="toggleCategoryRow(p.name, 'tasks', $event)">
+                <button class="chevron" @click="toggleCategory(p.name, 'tasks', $event)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                    :style="{transform: isExpanded(p.name + '/tasks') ? 'rotate(90deg)' : 'rotate(0deg)'}">
+                    <polyline points="9 18 15 12 9 6"/>
+                  </svg>
+                </button>
+                <svg class="tree-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                <span class="tree-label">任务</span>
+                <span class="muted tiny">{{ taskCount(p) }}</span>
+              </div>
+              <div v-show="isExpanded(p.name + '/tasks')" class="tree-leaf-wrap">
+                <div v-if="!projectTasks(p.name).length" class="tree-empty">暂无任务</div>
+                <div v-for="t in visibleLeafItems(projectTasks(p.name), p.name, 'tasks')" :key="t.id"
+                     class="tree-row tree-leaf-row"
+                     :class="{active: isActive({view: 'task', id: t.id})}"
+                     @click="cp.selectTask(p.name, t.id)">
+                  <!-- Tasks that hit a preflight skip still show as backlog
+                       (待办) in status, but should wear a warning tone here
+                       so users spot "this one needs me to act" at a glance
+                       instead of blending into the regular gray backlog. -->
+                  <span class="dot-status" :class="t.skip_reason ? 'warning' : $cp.toneClass(t.status)"
+                        :title="t.skip_reason ? '预检跳过' : $cp.statusLabel(t.status)"></span>
+                  <span class="tree-label">
+                    <span class="muted tiny">#{{ t.id }}</span> {{ t.title }}
+                  </span>
+                  <span class="tree-leaf-actions" @click.stop>
+                    <button v-if="t.actions.cancel" class="tree-action" title="取消任务"
+                            :disabled="cp.isTaskPending(t.id)"
+                            @click.stop="requestTaskQuickAction(t, 'cancel', $event)">
+                      <span v-if="cp.taskPendingAction(t.id) === 'cancel'" class="spinner tiny-spinner"></span>
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                    <button v-if="t.actions.archive" class="tree-action" title="归档任务"
+                            :disabled="cp.isTaskPending(t.id)"
+                            @click.stop="requestTaskQuickAction(t, 'archive', $event)">
+                      <span v-if="cp.taskPendingAction(t.id) === 'archive'" class="spinner tiny-spinner"></span>
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
+                    </button>
+                    <button v-if="t.actions.delete" class="tree-action" title="删除任务"
+                            :disabled="cp.isTaskPending(t.id)"
+                            @click.stop="requestTaskQuickAction(t, 'delete', $event)">
+                      <span v-if="cp.taskPendingAction(t.id) === 'delete'" class="spinner tiny-spinner"></span>
+                      <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                    </button>
+                  </span>
+                  <div v-if="isTaskQuickConfirm(t)" class="tree-inline-confirm" @click.stop>
+                    <span class="tree-inline-confirm-text">{{ taskQuickConfirmMessage(t) }}</span>
+                    <button class="btn btn-primary btn-sm"
+                            :disabled="cp.isTaskPending(t.id)"
+                            @click.stop="confirmTaskQuickAction(t, $event)">
+                      确认
+                    </button>
+                    <button class="btn btn-outline btn-sm"
+                            :disabled="cp.isTaskPending(t.id)"
+                            @click.stop="clearTaskQuickConfirm()">
+                      取消
+                    </button>
+                  </div>
+                </div>
+                <button v-if="leafHasMore(projectTasks(p.name), p.name, 'tasks')"
+                        class="tree-row tree-more"
+                        @click.stop="expandLeaf(p.name, 'tasks')">
+                  再展开 {{ leafNextChunk(projectTasks(p.name), p.name, 'tasks') }} 条（剩余 {{ leafRemaining(projectTasks(p.name), p.name, 'tasks') }}）
+                </button>
+                <button v-if="leafCanCollapse(projectTasks(p.name), p.name, 'tasks')"
+                        class="tree-row tree-more"
+                        @click.stop="collapseLeaf(p.name, 'tasks')">
+                  全部收起
+                </button>
+              </div>
+
+              <!-- Requirements / jobs category -->
+              <div class="tree-row tree-category-row" :class="{active: isActive({project: p.name, view: 'jobs'})}" @click="toggleCategoryRow(p.name, 'jobs', $event)">
+                <button class="chevron" @click="toggleCategory(p.name, 'jobs', $event)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                    :style="{transform: isExpanded(p.name + '/jobs') ? 'rotate(90deg)' : 'rotate(0deg)'}">
+                    <polyline points="9 18 15 12 9 6"/>
+                  </svg>
+                </button>
+                <svg class="tree-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span class="tree-label">需求</span>
+                <span class="muted tiny">{{ jobCount(p) }}</span>
+              </div>
+              <div v-show="isExpanded(p.name + '/jobs')" class="tree-leaf-wrap">
+                <div v-if="!projectJobs(p.name).length" class="tree-empty">暂无需求</div>
+                <div v-for="j in visibleLeafItems(projectJobs(p.name), p.name, 'jobs')" :key="j.id"
+                     class="tree-row tree-leaf-row"
+                     :class="{active: isActive({view: 'job', id: j.id})}"
+                     @click="cp.selectJob(p.name, j.id)">
+                  <span v-if="$cp.isJobActive(j)" class="spinner"></span>
+                  <span v-else class="dot-status" :class="$cp.toneClass(j.status)"></span>
+                  <span class="tree-label">
+                    <span class="muted tiny">#{{ j.id }}</span> {{ j.title }}
+                  </span>
+                </div>
+                <button v-if="leafHasMore(projectJobs(p.name), p.name, 'jobs')"
+                        class="tree-row tree-more"
+                        @click.stop="expandLeaf(p.name, 'jobs')">
+                  再展开 {{ leafNextChunk(projectJobs(p.name), p.name, 'jobs') }} 条（剩余 {{ leafRemaining(projectJobs(p.name), p.name, 'jobs') }}）
+                </button>
+                <button v-if="leafCanCollapse(projectJobs(p.name), p.name, 'jobs')"
+                        class="tree-row tree-more"
+                        @click.stop="collapseLeaf(p.name, 'jobs')">
+                  全部收起
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footer: recent events -->
+        <div class="side-group" style="margin-top: 18px">
+          <div class="group-title"><span>最近事件</span></div>
+          <div v-if="s.events.length" class="side-events">
+            <div v-for="(ev, i) in s.events" :key="i" class="event-card">
+              <div class="event-head">
+                <cp-chip :tone="$cp.toneClass(ev.level || 'info')">{{ ev.level || 'info' }}</cp-chip>
+                <span class="muted tiny">{{ $cp.fmtTime(ev.time) }}</span>
+              </div>
+              <div class="tiny">{{ ev.message }}</div>
+            </div>
+          </div>
+          <div v-else class="empty-block">暂无事件</div>
+        </div>
+      </div>
+    </aside>
+  `,
+});

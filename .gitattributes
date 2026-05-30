@@ -1,0 +1,33 @@
+# 统一换行符：LF (Unix)。Git 会自动识别文本文件，并在工作区写出 LF。
+* text=auto eol=lf
+
+# 常见源码/配置/文档显式按文本处理并使用 LF。
+*.py text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.mjs text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.cmd text eol=lf
+*.ps1 text eol=lf
+
+# 近期曾出现 CRLF 工作区漂移的根级 AI/配置文件显式固定为 LF。
+AI_MANIFEST.json text eol=lf
+AI_USAGE*.md text eol=lf
+pyproject.toml text eol=lf
+
+# 二进制文件不转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.whl binary

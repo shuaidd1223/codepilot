@@ -1,172 +1,586 @@
 {
   "name": "CodePilot",
-  "version": "0.1.0",
+  "version": "0.7.4",
+  "author": {
+    "name": "帅呆呆",
+    "email": "2264505396@qq.com"
+  },
+  "repository": "https://gitee.com/shuai_dd/CodePilot",
+  "license": "MIT",
   "command_name": "codepilot",
-  "description": "本地工程工作流 CLI，可把自然语言需求转换成任务，并自动规划、执行、审查和发布。",
+  "language": "en",
+  "description": "Local engineering workflow CLI that turns natural-language requirements into tasks and coordinates planning, execution, review, operations, and release.",
   "calling_principles": [
-    "优先使用非交互命令，避免 chat 模式，除非明确需要持续会话。",
-    "需要结构化结果时，优先使用 `status --json`、`find --json`、`ai manifest`。",
-    "如果目标是提交一个自然语言需求，直接调用 `codepilot \"需求文本\"` 或 `codepilot go \"需求文本\"`。",
-    "如果目标是发布产物，优先调用 `codepilot release prepare --version <版本号>`。",
-    "如果任务处于运行中，先用 `codepilot status -p <项目名> -v` 查看阶段，再决定是否 `logs` 或 `stop`。",
-    "如果任务失败或被取消，且需要重新排队，使用 `codepilot retry <task_id>`。"
+    "Prefer non-interactive commands and avoid chat mode unless a persistent conversation is explicitly needed.",
+    "When structured output is needed, prefer `hud --json`, `status --json`, `task show --json`, `doctor --json`, `task find --json`, or `ai manifest`.",
+    "To submit a natural-language requirement, call `codepilot \"requirement text\"` or `codepilot go \"requirement text\"`.",
+    "Chat, Web UI sessions, and Feishu free text route through the OpenCode agent; CodePilot provides MCP workflow tools and project constraints.",
+    "Call `plan`, `inspect --write-workflow`, or MCP workflow tools explicitly when deterministic artifacts are required.",
+    "Advance `plan` / `inspect` `next_actions` with `workflow next --list` / `workflow next --action <id>`; `workflow next --auto` only chooses policy-allowed actions and defaults do not create or import tasks; treat `suggested_command` as display/review metadata only.",
+    "For project state, task counts, completion ratio, failed tasks, running tasks, or service status, let the agent choose `status`, `hud`, `task`, or `trace` tools.",
+    "For release artifacts, prefer `codepilot binary prepare --version <version>`.",
+    "If a task is running, inspect its phase with `codepilot status -p <project-name> -v` before deciding whether to view logs or stop it.",
+    "If a failed task needs a full repair loop, prefer `codepilot build-fix -p <project-name> --task-id <task_id> --json`; use `codepilot task retry <task_id>` only to requeue it."
   ],
   "structured_outputs": [
     {
       "command": "codepilot ai manifest",
       "format": "json",
-      "purpose": "输出完整命令清单、常见工作流和调用建议。"
+      "purpose": "Return this machine-readable command manifest."
     },
     {
-      "command": "codepilot status -p <项目名> --json",
-      "format": "json",
-      "purpose": "获取项目任务状态和任务列表。"
+      "command": "codepilot ai guide",
+      "format": "markdown",
+      "purpose": "Return the AI usage guide."
     },
     {
-      "command": "codepilot find <关键词> -p <项目名> --json",
+      "command": "codepilot ai template --format json",
       "format": "json",
-      "purpose": "搜索任务并获取结构化结果。"
+      "purpose": "Return task-template fields and batch-import schema."
+    },
+    {
+      "command": "codepilot setup . --dry-run --json",
+      "format": "json",
+      "purpose": "Preview project setup actions without writing hooks."
+    },
+    {
+      "command": "codepilot self-update -p <project-name> --dry-run --json \"improvement goal\"",
+      "format": "json",
+      "purpose": "Run self-improvement preflight and planning without creating tasks or changing code."
+    },
+    {
+      "command": "codepilot status -p <project-name> --json",
+      "format": "json",
+      "purpose": "Return project task status and task lists."
+    },
+    {
+      "command": "codepilot hud -p <project-name> --preset full --json",
+      "format": "json",
+      "purpose": "Return queue, running task, recent activity, and service status."
+    },
+    {
+      "command": "codepilot explore --prompt <question> --json",
+      "format": "json",
+      "purpose": "Read-only project exploration with evidence, sources, and limitations."
+    },
+    {
+      "command": "codepilot plan -p <project-name> <requirement> --json",
+      "format": "json",
+      "purpose": "Create a reviewable plan artifact with risks, verification matrix, and task candidates."
+    },
+    {
+      "command": "codepilot inspect -p <project-name> --once --dry-run --write-workflow --json",
+      "format": "json",
+      "purpose": "Run a read-only inspection preview, persist project-local workflow context, and expose safe inspect next_actions."
+    },
+    {
+      "command": "codepilot workflow status -p <project-name> --json",
+      "format": "json",
+      "purpose": "Return the latest workflow state, agent session, artifact paths, next-action context, and auto_policy."
+    },
+    {
+      "command": "codepilot workflow auto-policy -p <project-name> --json",
+      "format": "json",
+      "purpose": "Return the resolved auto-advance policy: allow_create_inspect_tasks, allow_import_plan_tasks, max_steps, failure_threshold."
+    },
+    {
+      "command": "codepilot workflow next -p <project-name> --list --json",
+      "format": "json",
+      "purpose": "List the current workflow next_actions for safe external-agent selection."
+    },
+    {
+      "command": "codepilot workflow next -p <project-name> --action <id> --json",
+      "format": "json",
+      "purpose": "Execute one allowlisted next_action without shelling out to suggested_command."
+    },
+    {
+      "command": "codepilot workflow next -p <project-name> --auto --json",
+      "format": "json",
+      "purpose": "Automatically choose policy-allowed workflow next_actions without executing suggested_command strings; defaults do not create or import tasks."
+    },
+    {
+      "command": "codepilot task find <keyword> -p <project-name> --json",
+      "format": "json",
+      "purpose": "Search tasks and return structured matches."
+    },
+    {
+      "command": "codepilot task show <task_id> --json",
+      "format": "json",
+      "purpose": "Return one task's full metadata, content, errors, delivery record, and log summary."
+    },
+    {
+      "command": "codepilot doctor --json",
+      "format": "json",
+      "purpose": "Check local environment, CLI tools, configuration, and database health."
+    },
+    {
+      "command": "codepilot event schema --json",
+      "format": "json",
+      "purpose": "Return CodePilot event types and payload-field contracts."
+    },
+    {
+      "command": "codepilot hook validate -p <project-name> --json",
+      "format": "json",
+      "purpose": "Validate project hook registry and provider-neutral lifecycle events."
+    },
+    {
+      "command": "codepilot exec --provider codex --dry-run --json -- codex --version",
+      "format": "json",
+      "purpose": "Run provider preflight or command smoke checks in the project context."
+    },
+    {
+      "command": "codepilot build-fix -p <project-name> --json",
+      "format": "json",
+      "purpose": "Run the failed-task repair loop with validation and verdict output."
+    },
+    {
+      "command": "codepilot skill run ralplan -p <project-name> --provider codex --input \"requirement\" --json",
+      "format": "json",
+      "purpose": "Run an enabled local workflow skill and return structured output."
+    },
+    {
+      "command": "codepilot wiki query <keyword> -p <project-name> --json",
+      "format": "json",
+      "purpose": "Search the local project wiki for durable project knowledge."
+    },
+    {
+      "command": "codepilot note show -p <project-name> --json",
+      "format": "json",
+      "purpose": "Read persistent project working memory."
+    },
+    {
+      "command": "codepilot memory events -p <project-name> --json",
+      "format": "json",
+      "purpose": "Read project-local factual memory events; CodePilot automatically creates deduplicated candidates with score/feedback/seen_count and an autocapture summary."
+    },
+    {
+      "command": "codepilot trace -p <project-name> --json",
+      "format": "json",
+      "purpose": "Return recent project activity across tasks, logs, services, and workflow state."
     }
   ],
   "commands": [
     {
       "name": "init",
       "syntax": "codepilot init <path>",
-      "purpose": "初始化项目并生成 AGENTS.toml。",
-      "when_to_use": "第一次接入某个仓库时。",
+      "purpose": "Initialize a project and generate AGENTS.toml.",
+      "when_to_use": "Use when connecting a repository for the first time.",
       "examples": [
         "codepilot init .",
         "codepilot init D:\\repo -n demo"
       ]
     },
     {
-      "name": "goal",
-      "syntax": "codepilot \"需求文本\"",
-      "purpose": "提交一个自然语言需求，让 CodePilot 自动判断是否拆分并按配置执行。",
-      "when_to_use": "其他 AI 想把高层目标交给 CodePilot 自己执行时。",
+      "name": "setup",
+      "syntax": "codepilot setup [path] [--name <project-name>] [--dry-run] [--json]",
+      "purpose": "Prepare project .codepilot state, sync AGENTS.toml, and register the project.",
+      "when_to_use": "Use before installing hooks or when preparing CodePilot project state.",
       "examples": [
-        "codepilot \"修复任务重试逻辑并补测试\""
+        "codepilot setup .",
+        "codepilot setup . --dry-run --json"
+      ]
+    },
+    {
+      "name": "self_update",
+      "syntax": "codepilot self-update -p <project-name> --dry-run [--provider codex] \"improvement goal\" [--json]",
+      "purpose": "Run a project-local self-improvement dry run that collects evidence and produces an upgrade plan without changing code.",
+      "when_to_use": "Use when CodePilot should audit its own project state before creating tasks or making changes.",
+      "examples": [
+        "codepilot self-update -p <project-name> --dry-run --json \"Improve multi-agent compatibility\""
+      ]
+    },
+    {
+      "name": "goal",
+      "syntax": "codepilot \"requirement text\"",
+      "purpose": "Submit a natural-language requirement for planning and optional execution.",
+      "when_to_use": "Use when another AI wants CodePilot to own the implementation workflow.",
+      "examples": [
+        "codepilot \"Fix task retry logic and add tests\""
+      ]
+    },
+    {
+      "name": "go",
+      "syntax": "codepilot go <requirement> [--project <project-name>]",
+      "purpose": "Explicit requirement entrypoint for planning and execution.",
+      "when_to_use": "Use when project/planner/executor options must be explicit.",
+      "examples": [
+        "codepilot go \"Fix task retry logic and add tests\" -p <project-name>"
+      ]
+    },
+    {
+      "name": "chat",
+      "syntax": "codepilot chat [-p <project-name>] [-a opencode]",
+      "purpose": "Start the CodePilot-managed OpenCode TUI with isolated config, MCP, commands, provider/model, and permissions.",
+      "when_to_use": "Use for persistent interactive sessions.",
+      "examples": [
+        "codepilot chat -p <project-name> -a opencode"
       ]
     },
     {
       "name": "status",
-      "syntax": "codepilot status -p <项目名> [-v|--json]",
-      "purpose": "查看任务总览、运行态、最后输出。",
-      "when_to_use": "检查是否还有 backlog、是否有任务卡住、当前运行到哪一阶段。",
+      "syntax": "codepilot status -p <project-name> [-v|--json]",
+      "purpose": "Show task overview, running state, and latest output.",
+      "when_to_use": "Use to check backlog, stuck tasks, or active phases.",
       "examples": [
-        "codepilot status -p codepilot-dev -v",
-        "codepilot status -p codepilot-dev --json"
+        "codepilot status -p <project-name> -v",
+        "codepilot status -p <project-name> --json"
       ]
     },
     {
-      "name": "logs",
-      "syntax": "codepilot logs <task_id> [--tail N|--full]",
-      "purpose": "查看任务实时日志或历史日志。",
-      "when_to_use": "需要了解任务执行细节或错误上下文。",
+      "name": "hud",
+      "syntax": "codepilot hud [-p <project-name>] [--all] [--preset minimal|focused|full] [--watch|--json]",
+      "purpose": "Show a lightweight workflow HUD with queue, running tasks, activity, and services.",
+      "when_to_use": "Use for quick workspace health checks.",
       "examples": [
-        "codepilot logs 7",
-        "codepilot logs 7 --tail 50"
+        "codepilot hud -p <project-name> --preset full --json"
       ]
     },
     {
-      "name": "stop",
-      "syntax": "codepilot stop <task_id> [-m 原因]",
-      "purpose": "停止运行中的任务。",
-      "when_to_use": "任务卡住、执行方向错误、需要强制终止时。",
+      "name": "task_logs",
+      "syntax": "codepilot task logs <task_id> [--tail N|--full]",
+      "purpose": "Read real-time or historical task logs.",
+      "when_to_use": "Use for task execution details and error context.",
       "examples": [
-        "codepilot stop 7",
-        "codepilot stop 7 -m \"方向错误，停止重跑\""
+        "codepilot task logs 7",
+        "codepilot task logs 7 --tail 50"
       ]
     },
     {
-      "name": "retry",
-      "syntax": "codepilot retry <task_id>",
-      "purpose": "手动重试指定任务，重置运行态并重新放回 backlog。",
-      "when_to_use": "任务 failed/cancelled 后需要人工重新触发时。",
+      "name": "task_show",
+      "syntax": "codepilot task show <task_id> [--logs|--json]",
+      "purpose": "Read full task metadata, content, errors, delivery record, and log summary.",
+      "when_to_use": "Use when the exact task id is known.",
       "examples": [
-        "codepilot retry 7"
+        "codepilot task show 7 --json"
+      ]
+    },
+    {
+      "name": "task_retry",
+      "syntax": "codepilot task retry <task_id>",
+      "purpose": "Reset a failed/cancelled task and put it back into backlog.",
+      "when_to_use": "Use for manual requeueing.",
+      "examples": [
+        "codepilot task retry 7"
+      ]
+    },
+    {
+      "name": "task_stop",
+      "syntax": "codepilot task stop <task_id> [-m <reason>]",
+      "purpose": "Stop a running task.",
+      "when_to_use": "Use when a task is stuck or going in the wrong direction.",
+      "examples": [
+        "codepilot task stop 7 -m \"wrong direction\""
       ]
     },
     {
       "name": "run",
-      "syntax": "codepilot run -p <项目名> [--executor builtin|dispatch]",
-      "purpose": "执行 backlog 中的任务。",
-      "when_to_use": "已存在 backlog，想手动触发执行。",
+      "syntax": "codepilot run -p <project-name> [--executor builtin|dispatch]",
+      "purpose": "Execute backlog tasks.",
+      "when_to_use": "Use when tasks already exist and should run now.",
       "examples": [
-        "codepilot run -p codepilot-dev --executor builtin --no-auto-commit"
+        "codepilot run -p <project-name> --executor builtin --no-auto-commit"
+      ]
+    },
+    {
+      "name": "build_fix",
+      "syntax": "codepilot build-fix -p <project-name> [--task-id <id>] [--verify-command <cmd>] [--json]",
+      "purpose": "Collect failure context, retry repair, run validation, and produce a verdict.",
+      "when_to_use": "Use when failed tasks need a complete repair loop.",
+      "examples": [
+        "codepilot build-fix -p <project-name> --task-id 7 --verify-command \"pytest tests/test_x.py -q\" --json"
+      ]
+    },
+    {
+      "name": "doctor",
+      "syntax": "codepilot doctor [--project <project-name>] [--services] [--fix] [--json]",
+      "purpose": "Check environment, configuration, CLI tools, API keys, database, and services.",
+      "when_to_use": "Use for environment or setup troubleshooting.",
+      "examples": [
+        "codepilot doctor --json",
+        "codepilot doctor --fix --json"
+      ]
+    },
+    {
+      "name": "inspect",
+      "syntax": "codepilot inspect -p <project-name> [--once|--status|--stop|--dry-run|--write-workflow|--json]",
+      "purpose": "Inspect project signals, preview candidates, optionally write workflow context, or create candidate tasks.",
+      "when_to_use": "Use to discover technical debt, failed-task patterns, and improvement candidates.",
+      "examples": [
+        "codepilot inspect -p <project-name> --once",
+        "codepilot inspect -p <project-name> --once --dry-run --write-workflow --json"
+      ]
+    },
+    {
+      "name": "explore",
+      "syntax": "codepilot explore --prompt <question> [-p <project-name>] [--use-wiki|--no-wiki] [--json]",
+      "purpose": "Read-only exploration of files, Git, task logs, wiki, and inspect signals.",
+      "when_to_use": "Use when planning needs local evidence but should not modify anything.",
+      "examples": [
+        "codepilot explore --prompt \"find task template\" --json"
+      ]
+    },
+    {
+      "name": "plan",
+      "syntax": "codepilot plan [-p <project-name>] <requirement> [--from-spec <path>] [--use-wiki|--no-wiki] [--json]",
+      "purpose": "Generate a reviewable plan artifact with scope, risks, verification matrix, and task candidates.",
+      "when_to_use": "Use when requirements are ready for plan review but should not enter backlog.",
+      "examples": [
+        "codepilot plan -p <project-name> \"Add explore\" --json"
+      ]
+    },
+    {
+      "name": "workflow_auto_policy",
+      "syntax": "codepilot workflow auto-policy -p <project-name> --json",
+      "purpose": "Return the resolved auto-advance policy: allow_create_inspect_tasks, allow_import_plan_tasks, max_steps, failure_threshold.",
+      "when_to_use": "Use before --auto to check whether inspect task creation or plan task import is allowed by project configuration.",
+      "examples": [
+        "codepilot workflow auto-policy -p <project-name> --json"
+      ]
+    },
+    {
+      "name": "workflow_status",
+      "syntax": "codepilot workflow status -p <project-name> [--mode <mode>] --json",
+      "purpose": "Read latest or mode-specific workflow state and agent session context, including artifact paths, next-action source, and auto_policy.",
+      "when_to_use": "Use before advancing a plan/inspect artifact or when inspecting current workflow state.",
+      "examples": [
+        "codepilot workflow status -p <project-name> --json",
+        "codepilot workflow status -p <project-name> --mode plan --json"
+      ]
+    },
+    {
+      "name": "workflow_next",
+      "syntax": "codepilot workflow next -p <project-name> [--mode <mode>] [--list | --action <id> | --auto] [--allow-high-risk] --json",
+      "purpose": "List, safely execute, or policy-auto-advance artifact next_actions through a fixed allowlist; it never executes suggested_command strings.",
+      "when_to_use": "Use after plan/inspect returns next_actions and an external agent needs to advance by action id or let CodePilot choose policy-allowed auto actions. Defaults do not create inspect tasks or import plan tasks unless AGENTS.toml opts in.",
+      "examples": [
+        "codepilot workflow next -p <project-name> --list --json",
+        "codepilot workflow next -p <project-name> --auto --json",
+        "codepilot workflow next -p <project-name> --action plan_from_spec --json",
+        "codepilot workflow next -p <project-name> --action import_tasks --json"
+      ]
+    },
+    {
+      "name": "wiki",
+      "syntax": "codepilot wiki <add|list|query|update|delete|refresh|lint|ingest> ...",
+      "purpose": "Maintain local Markdown project knowledge.",
+      "when_to_use": "Use to record or query build commands, architecture facts, failure modes, and decisions.",
+      "examples": [
+        "codepilot wiki query -p <project-name> \"build\" --json"
+      ]
+    },
+    {
+      "name": "note",
+      "syntax": "codepilot note <add|show|prune|clear> ...",
+      "purpose": "Maintain persistent project working memory.",
+      "when_to_use": "Use to preserve important context across sessions.",
+      "examples": [
+        "codepilot note add -p <project-name> \"pytest -q is the main validation command\""
+      ]
+    },
+    {
+      "name": "memory",
+      "syntax": "codepilot memory events -p <project-name> [--type <event_type>] [--limit N] --json",
+      "purpose": "Read project-local factual memory events; CodePilot automatically creates deduplicated candidates with score/feedback/seen_count and `.codepilot/memory/autocapture.md`.",
+      "when_to_use": "Use to analyze inspect/workflow events and self-improvement evidence.",
+      "examples": [
+        "codepilot memory events -p <project-name> --json",
+        "codepilot memory events -p <project-name> --type workflow.action_executed --json"
+      ]
+    },
+    {
+      "name": "trace",
+      "syntax": "codepilot trace [-p <project-name>] [--task <task_id>] [--limit N] [--json]",
+      "purpose": "Show recent activity across task lifecycle, logs, service heartbeats, and workflow state.",
+      "when_to_use": "Use to understand what happened recently.",
+      "examples": [
+        "codepilot trace -p <project-name> --limit 30"
       ]
     },
     {
       "name": "ui",
-      "syntax": "codepilot ui [--host 127.0.0.1] [--port 8766]",
-      "purpose": "启动本地 Web UI，图形化查看项目、任务和状态，并执行重试 / 停止 / 插队。",
-      "when_to_use": "需要图形化总览多个项目，或需要人工点击干预任务时。",
+      "syntax": "codepilot ui [--host 127.0.0.1] [--port 8766] | ui <start|status|logs|stop|restart>",
+      "purpose": "Run or manage the Web UI.",
+      "when_to_use": "Use for graphical multi-project overview or persistent UI service management.",
       "examples": [
-        "codepilot ui",
-        "codepilot ui --no-open --port 8877"
+        "codepilot ui --no-open --port 8877",
+        "codepilot ui start"
       ]
     },
     {
-      "name": "release_prepare",
-      "syntax": "codepilot release prepare --version <版本号>",
-      "purpose": "更新版本号、构建当前平台、生成发布目录并自动校验。",
-      "when_to_use": "准备一个可交付的本地发布包时。",
+      "name": "shutdown",
+      "syntax": "codepilot shutdown [-p <project-name>] [--force]",
+      "purpose": "Stop CodePilot Web UI, Feishu, webhook, daemon, inspect, and active task runtime processes in one operation.",
+      "when_to_use": "Use when local CodePilot services should be shut down and active work should either finish gracefully or be force-stopped.",
       "examples": [
-        "codepilot release prepare --version 0.1.1"
+        "codepilot shutdown",
+        "codepilot shutdown -p <project-name>",
+        "codepilot shutdown --force"
       ]
     },
     {
-      "name": "release_bundle",
-      "syntax": "codepilot release bundle [--build-current] [--artifact 平台=路径]",
-      "purpose": "把已有二进制整理成标准发布目录。",
-      "when_to_use": "已有一个或多个平台二进制，准备打包发布时。",
+      "name": "daemon",
+      "syntax": "codepilot daemon -p <project-name> [--status|--stop]",
+      "purpose": "Continuously poll backlog and execute tasks for a project.",
+      "when_to_use": "Use when tasks should run continuously in the background.",
       "examples": [
-        "codepilot release bundle --build-current",
-        "codepilot release bundle --artifact linux-x86_64=dist/binary/linux-x86_64/codepilot"
+        "codepilot daemon -p <project-name> --status"
       ]
     },
     {
-      "name": "release_verify",
-      "syntax": "codepilot release verify [--release-dir 发布目录]",
-      "purpose": "校验发布目录、压缩包内容和校验值。",
-      "when_to_use": "发布前自检或 CI 验证时。",
+      "name": "event",
+      "syntax": "codepilot event <schema|list|register|enable|disable|test> [--project <project-name>] [--json]",
+      "purpose": "Manage project event sink registry and event schema.",
+      "when_to_use": "Use for hook/event plugin integration.",
       "examples": [
-        "codepilot release verify",
-        "codepilot release verify --release-dir dist/release/codepilot-0.1.0-summary"
+        "codepilot event schema --json",
+        "codepilot event list -p <project-name> --json"
+      ]
+    },
+    {
+      "name": "hook",
+      "syntax": "codepilot hook <plan|validate|test|logs|install|uninstall> -p <project-name> [--json]",
+      "purpose": "Manage project hook registry and lifecycle event validation.",
+      "when_to_use": "Use to verify hook/event integrations.",
+      "examples": [
+        "codepilot hook validate -p <project-name> --json"
+      ]
+    },
+    {
+      "name": "exec",
+      "syntax": "codepilot exec -p <project-name> --provider codex|claude|gemini|custom [--dry-run] [--json] -- <command...>",
+      "purpose": "Run provider-neutral command smoke checks with project-local audit events.",
+      "when_to_use": "Use to verify agent CLIs or custom commands in project context.",
+      "examples": [
+        "codepilot exec -p <project-name> --provider codex --dry-run --json -- codex --version"
+      ]
+    },
+    {
+      "name": "skill",
+      "syntax": "codepilot skill <list|search|show|enable|disable|run> -p <project-name> [--json]",
+      "purpose": "Manage and run local workflow skill catalog entries.",
+      "when_to_use": "Use to discover or run project workflow skills.",
+      "examples": [
+        "codepilot skill list -p <project-name> --json"
+      ]
+    },
+    {
+      "name": "webhook",
+      "syntax": "codepilot webhook [--host 127.0.0.1] [--port 8765]",
+      "purpose": "Start the lightweight HTTP webhook service.",
+      "when_to_use": "Use when external systems need to POST tasks or receive status notifications.",
+      "examples": [
+        "codepilot webhook --host 127.0.0.1 --port 8765"
+      ]
+    },
+    {
+      "name": "feishu",
+      "syntax": "codepilot feishu <start|status|logs|stop|run|handle-event>",
+      "purpose": "Manage the Feishu long-connection bot.",
+      "when_to_use": "Use for Feishu status cards, Q&A, task control, and notifications.",
+      "examples": [
+        "codepilot feishu start",
+        "codepilot feishu status"
+      ]
+    },
+    {
+      "name": "binary_prepare",
+      "syntax": "codepilot binary prepare --version <version>",
+      "purpose": "Update version, build the current platform, generate a release directory, and verify it.",
+      "when_to_use": "Use to prepare a local release package.",
+      "examples": [
+        "codepilot binary prepare --version 0.7.5"
+      ]
+    },
+    {
+      "name": "binary_release",
+      "syntax": "codepilot binary release [--build-current] [--artifact platform=path]",
+      "purpose": "Assemble existing binaries into a standard release directory.",
+      "when_to_use": "Use when preparing artifacts for release.",
+      "examples": [
+        "codepilot binary release --build-current",
+        "codepilot binary release --artifact linux-x86_64=dist/binary/linux-x86_64/codepilot"
+      ]
+    },
+    {
+      "name": "binary_verify",
+      "syntax": "codepilot binary verify [--release-dir <release-dir>]",
+      "purpose": "Verify release directory, archives, and checksums.",
+      "when_to_use": "Use before publishing.",
+      "examples": [
+        "codepilot binary verify"
+      ]
+    },
+    {
+      "name": "ai_template",
+      "syntax": "codepilot ai template [--format md|json|guide] [--language en|zh-CN]",
+      "purpose": "Return the task template, machine-readable schema, or filling guide.",
+      "when_to_use": "Use before external AI batch-imports tasks with `add -f`.",
+      "examples": [
+        "codepilot ai template --format json",
+        "codepilot ai template --format guide --language zh-CN"
       ]
     }
   ],
   "workflows": [
     {
-      "name": "提交一个新需求并执行",
+      "name": "Submit and execute a new requirement",
       "steps": [
-        "codepilot init .",
-        "codepilot \"实现一个需求\"",
-        "codepilot status -p <项目名> -v",
-        "codepilot logs <task_id>"
+        "codepilot setup .",
+        "codepilot \"Implement a requirement\"",
+        "codepilot status -p <project-name> -v",
+        "codepilot task show <task_id>",
+        "codepilot task logs <task_id>"
       ]
     },
     {
-      "name": "排障运行中的任务",
+      "name": "Use the OpenCode workflow in chat or Feishu",
       "steps": [
-        "codepilot status -p <项目名> -v",
-        "codepilot logs <task_id> --tail 80",
-        "codepilot stop <task_id>"
+        "Ask about project state directly; the OpenCode agent chooses CodePilot MCP tools.",
+        "Submit requirements as natural language; OpenCode can call CodePilot MCP planning and task tools.",
+        "Use explicit operations like `retry 123` or `tasks failed`, or describe the operation in natural language.",
+        "Call `plan` explicitly when deterministic artifacts are needed."
       ]
     },
     {
-      "name": "重试失败或取消的任务",
+      "name": "Review an artifact and safely advance its next action",
       "steps": [
-        "codepilot logs <task_id> --tail 80",
-        "codepilot retry <task_id>",
-        "codepilot run -p <项目名>"
+        "codepilot workflow status -p <project-name> --json",
+        "codepilot workflow next -p <project-name> --list --json",
+        "# Choose an action id from the list; do not execute suggested_command strings.",
+        "codepilot workflow next -p <project-name> --action <id> --json"
       ]
     },
     {
-      "name": "准备一个发布包",
+      "name": "Debug a running task",
       "steps": [
-        "codepilot release prepare --version <版本号>",
-        "codepilot release verify"
+        "codepilot status -p <project-name> -v",
+        "codepilot task show <task_id>",
+        "codepilot task logs <task_id> --tail 80",
+        "codepilot task stop <task_id>"
+      ]
+    },
+    {
+      "name": "Retry a failed or cancelled task",
+      "steps": [
+        "codepilot task logs <task_id> --tail 80",
+        "codepilot task retry <task_id>",
+        "codepilot run -p <project-name>"
+      ]
+    },
+    {
+      "name": "Prepare a release package",
+      "steps": [
+        "codepilot binary prepare --version <version>",
+        "codepilot binary verify"
+      ]
+    },
+    {
+      "name": "Import externally planned tasks",
+      "steps": [
+        "codepilot ai template --format json",
+        "# Render tasks.json according to the schema; each item needs complete English task-template markdown in `content`.",
+        "codepilot add -p <project-name> -f tasks.json",
+        "codepilot status -p <project-name> -v"
       ]
     }
   ]

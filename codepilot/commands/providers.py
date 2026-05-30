@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import click
-from rich.console import Console
+from rich import box
 from rich.table import Table
 
-from codepilot.ai import (
+from codepilot.ai_support.service import (
     CLI_PROVIDERS,
     API_PROVIDERS,
-    list_available_providers,
     check_provider_availability,
 )
+from codepilot.core.output import terminal_console
+
+
+def _short_status(is_available: bool, message: str | None, *, ok_label: str) -> str:
+    if is_available:
+        return f"[green]✔ {ok_label}[/green]"
+    # Compress the long "原因+提示" into a single short token. Detail goes to a follow-up section.
+    short = "需配置 Key" if message and "配置" in message else "不可用"
+    return f"[yellow]✘ {short}[/yellow]"
 
 
 @click.command("providers")
@@ -63,68 +71,68 @@ def providers(ctx: click.Context, available: bool, json_mode: bool):
         click.echo(json.dumps(output, ensure_ascii=False, indent=2))
         return
 
-    console = Console()
+    console = terminal_console()
 
     # CLI Providers
-    console.print("\n[bold cyan]CLI Providers[/bold cyan] (命令行 AI)")
-    console.print("[dim]需要本地安装对应的 CLI 工具[/dim]\n")
+    console.print()
+    console.print("[bold cyan]CLI Providers[/bold cyan]  [dim]命令行 AI · 需本地安装对应 CLI 工具[/dim]")
 
-    cli_table = Table(show_header=True, header_style="bold")
-    cli_table.add_column("Key", style="cyan", width=15)
-    cli_table.add_column("Name", width=25)
-    cli_table.add_column("Command", width=15)
-    cli_table.add_column("Status", width=20)
+    cli_table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
+    cli_table.add_column("Key", style="cyan", no_wrap=True, ratio=2)
+    cli_table.add_column("名称", no_wrap=True, overflow="ellipsis", ratio=3)
+    cli_table.add_column("命令", style="dim", no_wrap=True, ratio=2)
+    cli_table.add_column("状态", no_wrap=True, ratio=2)
 
+    cli_unavailable: list[tuple[str, str]] = []
     for key, provider in cli_providers:
         is_avail, msg = check_provider_availability(key)
-        status = "[green]已安装[/green]" if is_avail else f"[red]{msg}[/red]"
-
         if available and not is_avail:
             continue
-
-        cli_table.add_row(key, provider.name, provider.cmd, status)
+        cli_table.add_row(key, provider.name, provider.cmd, _short_status(is_avail, msg, ok_label="已安装"))
+        if not is_avail and msg:
+            cli_unavailable.append((key, msg))
 
     console.print(cli_table)
 
     # API Providers
-    console.print("\n[bold cyan]API Providers[/bold cyan] (API 接口 AI)")
-    console.print("[dim]需要设置对应的 API Key（环境变量或配置文件）[/dim]\n")
+    console.print()
+    console.print("[bold cyan]API Providers[/bold cyan]  [dim]API 接口 AI · 需配置 API Key[/dim]")
 
-    api_table = Table(show_header=True, header_style="bold")
-    api_table.add_column("Key", style="cyan", width=18)
-    api_table.add_column("Name", width=25)
-    api_table.add_column("Type", width=10)
-    api_table.add_column("Model", width=25)
-    api_table.add_column("Status", width=20)
+    api_table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
+    api_table.add_column("Key", style="cyan", no_wrap=True, ratio=2)
+    api_table.add_column("名称", no_wrap=True, overflow="ellipsis", ratio=3)
+    api_table.add_column("类型", no_wrap=True, ratio=1)
+    api_table.add_column("模型", no_wrap=True, overflow="ellipsis", ratio=4)
+    api_table.add_column("状态", no_wrap=True, ratio=2)
 
+    api_unavailable: list[tuple[str, str]] = []
     for key, provider in api_providers:
         is_avail, msg = check_provider_availability(key)
-        status = "[green]可用[/green]" if is_avail else f"[yellow]需配置 Key[/yellow]"
-
         if available and not is_avail:
             continue
-
         api_table.add_row(
             key,
             provider.name,
             provider.provider_type,
             provider.model,
-            status,
+            _short_status(is_avail, msg, ok_label="可用"),
         )
+        if not is_avail:
+            api_unavailable.append((key, msg or "需配置 API Key"))
 
     console.print(api_table)
 
-    # 提示信息
-    console.print("\n[dim]环境变量说明:[/dim]")
-    console.print("  OPENAI_API_KEY       - OpenAI GPT 系列")
-    console.print("  ANTHROPIC_API_KEY    - Claude API")
-    console.print("  HUNYUAN_API_KEY      - 腾讯云混元")
-    console.print("  ZHIPU_API_KEY        - 智谱 GLM")
-    console.print("  ERNIE_API_KEY        - 百度文心")
-    console.print("  DASHSCOPE_API_KEY    - 阿里通义")
-    console.print("  DEEPSEEK_API_KEY     - DeepSeek")
+    # 不可用项的详情（只在有不可用时打印）
+    if cli_unavailable or api_unavailable:
+        console.print()
+        console.print("[bold]不可用项详情[/bold]")
+        for key, msg in (*cli_unavailable, *api_unavailable):
+            console.print(f"  [yellow]·[/yellow] [cyan]{key}[/cyan]  [dim]{msg}[/dim]")
 
-    console.print("\n[dim]使用示例:[/dim]")
-    console.print("  [cyan]codepilot add -p myproj -t \"任务\" -a openai-gpt4o[/cyan]")
-    console.print("  [cyan]codepilot add -p myproj -t \"任务\" -a claude-sonnet[/cyan]")
-    console.print("  [cyan]codepilot add -p myproj -t \"任务\" -a deepseek[/cyan]")
+    # 帮助信息
+    console.print()
+    console.print("[dim]环境变量:[/dim] [cyan]OPENAI_API_KEY[/cyan] · [cyan]ANTHROPIC_API_KEY[/cyan] · "
+                  "[cyan]HUNYUAN_API_KEY[/cyan] · [cyan]ZHIPU_API_KEY[/cyan] · "
+                  "[cyan]ERNIE_API_KEY[/cyan] · [cyan]DASHSCOPE_API_KEY[/cyan] · [cyan]DEEPSEEK_API_KEY[/cyan]")
+    console.print('[dim]示例:[/dim] [cyan]codepilot add -p myproj -t "任务" -a openai-gpt4o[/cyan]')
+

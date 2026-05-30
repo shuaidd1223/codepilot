@@ -1,16 +1,272 @@
-"""codepilot 任务管理命令：edit / rm / done / retry / find."""
+"""codepilot 任务管理命令：show / edit / rm / done / retry / archive / find."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 
-from codepilot import db
+from codepilot.storage import database as db
+from codepilot.webapp.display_sort import sort_tasks_for_display
+from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
 from codepilot.commands.status import _resolve_project
-from codepilot.output import echo
-from codepilot.runtime import clear_task_runtime, is_process_alive, request_task_stop, stop_process_tree
+from codepilot.core.output import echo, terminal_console
+from codepilot.core.task_mutation_guard import RunnerTaskMutationError, guard_current_runner_task_mutation
+from codepilot.core.runtime import (
+    clear_task_runtime,
+    is_process_alive,
+    request_task_stop,
+    stop_process_tree,
+    stop_worktree_leftovers,
+)
+from rich import box
+from rich.markup import escape as _markup_escape
+from rich.table import Table
+
+
+_FIND_STATUS_STYLE = {
+    "backlog": "yellow",
+    "in_progress": "blue",
+    "done": "green",
+    "failed": "red",
+    "cancelled": "magenta",
+    "archived": "dim",
+}
+
+
+def _guard_runner_owned_task_or_exit(task_id: int, action: str) -> None:
+    try:
+        guard_current_runner_task_mutation(task_id, action=action)
+    except RunnerTaskMutationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+# ── show ──────────────────────────────────────────────────────────────────────
+
+_SHOW_FIELD_ORDER = [
+    "id",
+    "project",
+    "title",
+    "status",
+    "priority",
+    "agent",
+    "builder",
+    "reviewer",
+    "depends_on",
+    "source",
+    "dedup_key",
+    "fallback_reason",
+    "retry_count",
+    "max_retries",
+    "run_phase",
+    "heartbeat_at",
+    "active_pid",
+    "stop_requested",
+    "stop_reason",
+    "project_path",
+    "branch_name",
+    "worktree_path",
+    "current_log_path",
+    "created_at",
+    "started_at",
+    "completed_at",
+]
+
+_SHOW_EXTRA_FIELD_EXCLUDES = {
+    "content",
+    "error_message",
+    "delivery_record",
+    "last_output",
+}
+
+
+def _parse_depends_on(raw: Any) -> list[int]:
+    if raw in (None, ""):
+        return []
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    deps: list[int] = []
+    for item in parsed:
+        try:
+            deps.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return deps
+
+
+def _task_show_payload(task: dict, logs: list[dict]) -> dict:
+    payload_task = dict(task)
+    payload_task["depends_on_ids"] = _parse_depends_on(task.get("depends_on"))
+    return {"task": payload_task, "logs": [dict(entry) for entry in logs]}
+
+
+def _show_value(value: Any) -> str:
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _show_block(title: str, text: Any, *, empty_hint: str | None = None) -> None:
+    if text is None or not str(text).strip():
+        if empty_hint is None:
+            return
+        echo(f"[cyan]{title}[/cyan]")
+        click.echo(empty_hint)
+        click.echo()
+        return
+    echo(f"[cyan]{title}[/cyan]")
+    click.echo(str(text))
+    click.echo()
+
+
+def _emit_show_not_found(ctx: click.Context, task_id: int, json_mode: bool) -> None:
+    if json_mode:
+        emit_json_payload(
+            "show",
+            ok=False,
+            data={"task": None, "logs": []},
+            error=f"任务 #{task_id} 不存在",
+            error_code="task_not_found",
+        )
+    else:
+        echo(f"[red]任务 #{task_id} 不存在[/red]")
+    ctx.exit(1)
+
+
+def _load_show_task_or_exit(ctx: click.Context, task_id: int, json_mode: bool) -> tuple[dict, list[dict]]:
+    task = db.get_task(task_id)
+    if not task:
+        _emit_show_not_found(ctx, task_id, json_mode)
+    return task, db.list_task_logs(task_id)
+
+
+def _show_field_value(field: str, value: Any) -> str:
+    if field == "depends_on":
+        deps = _parse_depends_on(value)
+        value = ", ".join(f"#{dep}" for dep in deps) if deps else "-"
+    return _show_value(value)
+
+
+def _iter_show_fields(task: dict) -> list[tuple[str, str]]:
+    shown = set()
+    rows: list[tuple[str, str]] = []
+    for field in _SHOW_FIELD_ORDER:
+        if field not in task:
+            continue
+        shown.add(field)
+        rows.append((field, _show_field_value(field, task.get(field))))
+
+    extra_fields = sorted(
+        key for key in task.keys() if key not in shown and key not in _SHOW_EXTRA_FIELD_EXCLUDES
+    )
+    rows.extend((field, _show_value(task.get(field))) for field in extra_fields)
+    return rows
+
+
+def _render_show_header(console, task: dict) -> None:
+    console.print()
+    console.print(
+        f"[bold cyan]任务详情[/bold cyan]  [dim]#[/dim]{task['id']}  "
+        f"[bold]{_markup_escape(task['title'] or '')}[/bold]"
+    )
+    click.echo()
+
+
+def _render_show_fields(task: dict) -> None:
+    for field, value in _iter_show_fields(task):
+        click.echo(f"{field}: {value}")
+    click.echo()
+
+
+def _render_show_body(task: dict) -> None:
+    _show_block(
+        "任务内容",
+        task.get("content"),
+        empty_hint=(
+            "（空正文：这个任务只有标题，没有保存正文。常见原因：通过早期版本的 "
+            "`codepilot add` 占位通道导入；新版 add 已强制要求 content 模板合规，"
+            "请按 `codepilot ai template --format json` 的 schema 重新投递。）"
+        ),
+    )
+    _show_block("错误信息", task.get("error_message"))
+    _show_block("交付记录", task.get("delivery_record"))
+    _show_block("最近输出", task.get("last_output"))
+    from codepilot.commands.task import _render_recovery_hints
+    _render_recovery_hints(task)
+
+
+def _build_show_log_table(logs: list[dict]) -> Table:
+    log_table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
+    log_table.add_column("ID", style="dim", justify="right", width=5, no_wrap=True)
+    log_table.add_column("阶段", width=10, no_wrap=True)
+    log_table.add_column("Agent", width=10, no_wrap=True, overflow="ellipsis")
+    log_table.add_column("退出", justify="right", width=5, no_wrap=True)
+    log_table.add_column("耗时", justify="right", width=8, no_wrap=True)
+    log_table.add_column("开始时间", style="dim", width=19, no_wrap=True)
+    log_table.add_column("结束时间", style="dim", width=19, no_wrap=True)
+    for entry in logs:
+        exit_code = entry.get("exit_code")
+        exit_text = "-" if exit_code is None else str(exit_code)
+        exit_style = "green" if exit_code == 0 else ("red" if exit_code not in (None, 0) else "dim")
+        log_table.add_row(
+            f"#{entry.get('id')}",
+            str(entry.get("phase") or "-"),
+            str(entry.get("agent") or "-"),
+            f"[{exit_style}]{exit_text}[/{exit_style}]",
+            str(entry.get("duration") if entry.get("duration") is not None else "-"),
+            (entry.get("started_at") or "-")[:19],
+            (entry.get("finished_at") or "-")[:19],
+        )
+    return log_table
+
+
+def _render_show_logs(console, task_id: int, logs: list[dict], include_logs: bool) -> None:
+    if not logs:
+        return
+
+    console.print()
+    console.print(f"[bold cyan]执行日志[/bold cyan]  [dim]{len(logs)} 条[/dim]")
+    console.print(_build_show_log_table(logs))
+    if include_logs:
+        for entry in logs:
+            if entry.get("output"):
+                console.print()
+                console.print(f"[dim]── #{entry.get('id')} {entry.get('phase') or '-'} ──[/dim]")
+                click.echo(entry["output"])
+        return
+
+    console.print(f"[dim]  完整日志: codepilot task logs {task_id} --full[/dim]")
+
+
+@click.command()
+@click.argument("task_id", type=int)
+@click.option("--logs", "include_logs", is_flag=True, help="同时显示历史日志完整输出")
+@click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON 输出")
+@click.pass_context
+def show(ctx: click.Context, task_id: int, include_logs: bool, json_mode: bool):
+    """精确查看单个任务详情。"""
+    db.init_db()
+    json_mode = resolve_json_mode(ctx, json_mode)
+
+    task, logs = _load_show_task_or_exit(ctx, task_id, json_mode)
+    payload = _task_show_payload(task, logs)
+    if json_mode:
+        emit_json_payload("show", ok=True, data=payload)
+        return
+
+    console = terminal_console()
+    _render_show_header(console, task)
+    _render_show_fields(task)
+    _render_show_body(task)
+    _render_show_logs(console, task_id, logs, include_logs)
 
 
 # ── done ──────────────────────────────────────────────────────────────────────
@@ -20,6 +276,7 @@ from codepilot.runtime import clear_task_runtime, is_process_alive, request_task
 @click.option("--message", "-m", default="", help="完成备注/交付说明")
 def done(task_id: int, message: str):
     """手动标记任务为完成（不运行 Agent）。"""
+    _guard_runner_owned_task_or_exit(task_id, "done")
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -40,6 +297,7 @@ def done(task_id: int, message: str):
 @click.argument("task_id", type=int)
 def retry(task_id: int):
     """手动重试指定任务：重置运行态并重新放回 backlog。"""
+    _guard_runner_owned_task_or_exit(task_id, "retry")
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -63,6 +321,121 @@ def retry(task_id: int):
     click.echo(f"  下一步: codepilot run -p {task['project']}")
 
 
+# ── cancel ────────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("task_ids", type=int, nargs=-1, required=True)
+@click.option("--message", "-m", default="", help="取消原因")
+def cancel(task_ids: tuple[int, ...], message: str):
+    """取消一个或多个任务（保留记录，不删除）。"""
+    for tid in task_ids:
+        _guard_runner_owned_task_or_exit(tid, "cancel")
+    db.init_db()
+    count = 0
+    for tid in task_ids:
+        task = db.get_task(tid)
+        if not task:
+            echo(f"[yellow]任务 #{tid} 不存在，跳过[/yellow]")
+            continue
+        status = str(task.get("status") or "")
+        if status == "in_progress":
+            echo(f"[yellow]任务 #{tid} 正在执行中，不能取消；请使用 task stop[/yellow]")
+            continue
+        if status == "done":
+            echo(f"[yellow]任务 #{tid} 已完成，无法取消[/yellow]")
+            continue
+        if status == "archived":
+            echo(f"[yellow]任务 #{tid} 已归档，无法取消[/yellow]")
+            continue
+        if status == "cancelled":
+            echo(f"[yellow]任务 #{tid} 已取消，无需重复操作[/yellow]")
+            continue
+        from datetime import datetime
+        reason = (message or "手动取消").strip() or "手动取消"
+        clear_task_runtime(
+            tid,
+            status="cancelled",
+            completed_at=datetime.now().isoformat(),
+            error_message=reason,
+            stop_requested=0,
+            stop_reason=None,
+        )
+        # Sweep any long-lived dev servers (next dev / vite / etc.) the
+        # builder agent left inside the task's worktree.
+        wt = (task or {}).get("worktree_path")
+        project_path = (task or {}).get("project_path")
+        try:
+            if wt and wt != project_path:
+                stop_worktree_leftovers(wt, wait_seconds=3)
+        except Exception:
+            pass
+        echo(f"[yellow]已取消 #{tid}[/yellow]  {task['title']}")
+        count += 1
+    if count:
+        echo(f"[green][OK] 共取消 {count} 个任务[/green]")
+
+
+# ── archive ───────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("task_ids", type=int, nargs=-1, required=True)
+def archive(task_ids: tuple[int, ...]):
+    """归档一个或多个已完成任务。"""
+    for tid in task_ids:
+        _guard_runner_owned_task_or_exit(tid, "archive")
+    db.init_db()
+    count = 0
+    for tid in task_ids:
+        task = db.get_task(tid)
+        if not task:
+            echo(f"[yellow]任务 #{tid} 不存在，跳过[/yellow]")
+            continue
+        status = str(task.get("status") or "")
+        if status == "archived":
+            echo(f"[yellow]任务 #{tid} 已归档，无需重复操作[/yellow]")
+            continue
+        if status != "done":
+            echo(f"[yellow]任务 #{tid} 当前状态为 {status}，只有已完成任务可以归档[/yellow]")
+            continue
+        updated = db.update_task(tid, status="archived")
+        if not updated:
+            echo(f"[yellow]任务 #{tid} 归档失败，已跳过[/yellow]")
+            continue
+        echo(f"[cyan]已归档 #{tid}[/cyan]  {task['title']}")
+        count += 1
+    if count:
+        echo(f"[green][OK] 共归档 {count} 个任务[/green]")
+
+
+# ── resume ────────────────────────────────────────────────────────────────────
+
+@click.command()
+@click.argument("task_ids", type=int, nargs=-1, required=True)
+def resume(task_ids: tuple[int, ...]):
+    """恢复 cancelled/failed 任务到 backlog，等待重新执行。"""
+    db.init_db()
+    count = 0
+    for tid in task_ids:
+        task = db.get_task(tid)
+        if not task:
+            echo(f"[yellow]任务 #{tid} 不存在，跳过[/yellow]")
+            continue
+        if task["status"] not in ("cancelled", "failed"):
+            echo(f"[yellow]任务 #{tid} 状态为 {task['status']}，只有 cancelled/failed 可恢复[/yellow]")
+            continue
+        clear_task_runtime(
+            tid,
+            status="backlog",
+            error_message=None,
+            stop_requested=0,
+            stop_reason=None,
+        )
+        echo(f"[green]已恢复 #{tid}[/green]  {task['title']} → backlog")
+        count += 1
+    if count:
+        echo(f"[green][OK] 共恢复 {count} 个任务到 backlog[/green]")
+
+
 # ── edit ───────────────────────────────────────────────────────────────────────
 
 @click.command()
@@ -72,15 +445,16 @@ def retry(task_id: int):
                type=click.Choice(["P0", "P1", "P2", "P3"], case_sensitive=False),
                help="修改优先级")
 @click.option("--status", "-s",
-               type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled"], case_sensitive=False),
+               type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled", "archived"], case_sensitive=False),
                help="修改状态")
 @click.option("--agent", "-a",
-               type=click.Choice(["dual", "builder", "reviewer", "claude", "codex"], case_sensitive=False),
+               type=click.Choice(["dual", "builder", "reviewer", "claude", "codex", "opencode"], case_sensitive=False),
                help="修改 Agent 模式")
 @click.option("--depends", "-d", help="修改依赖，格式: 1,2,3（覆盖现有依赖）")
 def edit(task_id: int, title: str | None, priority: str | None,
          status: str | None, agent: str | None, depends: str | None):
     """修改任务属性。"""
+    _guard_runner_owned_task_or_exit(task_id, "edit")
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -134,6 +508,8 @@ def rm(task_ids: tuple[int, ...], force: bool):
     if not task_ids:
         echo("[yellow]未指定任务 ID[/yellow]")
         return
+    for tid in task_ids:
+        _guard_runner_owned_task_or_exit(tid, "rm")
 
     tasks = []
     for tid in task_ids:
@@ -146,8 +522,24 @@ def rm(task_ids: tuple[int, ...], force: bool):
     if not tasks:
         return
 
-    echo(f"[cyan]将删除以下 {len(tasks)} 个任务：[/cyan]")
-    for t in tasks:
+    deletable_statuses = {"backlog", "cancelled", "done", "archived"}
+    deletable: list[dict] = []
+    for task in tasks:
+        status = str(task.get("status") or "")
+        if status == "in_progress":
+            echo(f"[yellow]任务 #{task['id']} 正在执行中，不能删除；请先停止[/yellow]")
+            continue
+        if status not in deletable_statuses:
+            echo(f"[yellow]任务 #{task['id']} 当前状态为 {status}，不允许直接删除[/yellow]")
+            continue
+        deletable.append(task)
+
+    if not deletable:
+        echo("[yellow]没有可删除的任务[/yellow]")
+        return
+
+    echo(f"[cyan]将删除以下 {len(deletable)} 个任务：[/cyan]")
+    for t in deletable:
         click.echo(f"  #{t['id']}  {t['title']}  [{t['status']}]")
 
     if not force:
@@ -155,13 +547,12 @@ def rm(task_ids: tuple[int, ...], force: bool):
             echo("[yellow]已取消[/yellow]")
             return
 
-    with db.get_conn() as conn:
-        for t in tasks:
-            conn.execute("DELETE FROM task_logs WHERE task_id = ?", (t["id"],))
-            conn.execute("DELETE FROM tasks WHERE id = ?", (t["id"],))
-        conn.commit()
+    deleted = 0
+    for task in deletable:
+        if db.delete_task(task["id"]):
+            deleted += 1
 
-    echo(f"[green][OK] 已删除 {len(tasks)} 个任务[/green]")
+    echo(f"[green][OK] 已删除 {deleted} 个任务[/green]")
 
 
 # ── find ────────────────────────────────────────────────────────────────────────
@@ -170,7 +561,7 @@ def rm(task_ids: tuple[int, ...], force: bool):
 @click.argument("keyword", required=False)
 @click.option("--project", "-p", callback=_resolve_project, help="限定项目")
 @click.option("--status", "-s",
-              type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled"], case_sensitive=False),
+              type=click.Choice(["backlog", "in_progress", "done", "failed", "cancelled", "archived"], case_sensitive=False),
               help="按状态过滤")
 @click.option("--priority", "--pri",
               type=click.Choice(["P0", "P1", "P2", "P3"], case_sensitive=False),
@@ -182,9 +573,7 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
          status: str | None, priority: str | None, limit: int, json_mode: bool):
     """搜索任务（标题或内容包含关键词）。"""
     db.init_db()
-    # 优先用本地 --json，否则用全局
-    if not json_mode and ctx.parent:
-        json_mode = ctx.parent.obj.get("json_mode", False)
+    json_mode = resolve_json_mode(ctx, json_mode)
 
     sql = "SELECT * FROM tasks WHERE 1=1"
     params: list = []
@@ -203,44 +592,50 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
         like = f"%{keyword}%"
         params.extend([like, like])
 
-    sql += " ORDER BY priority ASC, created_at DESC LIMIT ?"
-    params.append(limit)
-
     with db.get_conn() as conn:
-        rows = conn.execute(sql, params).fetchall()
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    rows = sort_tasks_for_display(rows)[: max(1, int(limit or 1))]
 
     if not rows:
         if json_mode:
-            click.echo(json.dumps({"tasks": [], "count": 0}, ensure_ascii=False, indent=2))
+            emit_json_payload("find", ok=True, data={"tasks": [], "count": 0})
         else:
             echo("[yellow]没有找到匹配的任务[/yellow]")
         return
 
     if json_mode:
-        click.echo(json.dumps({"tasks": [dict(r) for r in rows], "count": len(rows)},
-                              ensure_ascii=False, indent=2))
+        emit_json_payload("find", ok=True, data={"tasks": rows, "count": len(rows)})
         return
 
-    echo(f"[cyan]找到 {len(rows)} 个任务：[/cyan]")
-    click.echo()
-    for r in rows:
-        status_color = {
-            "backlog": "dim",
-            "in_progress": "blue",
-            "done": "green",
-            "failed": "red",
-            "cancelled": "magenta",
-        }.get(r["status"], "dim")
+    console = terminal_console()
+    console.print()
+    console.print(f"[bold cyan]找到 {len(rows)} 个任务[/bold cyan]")
 
-        echo(
-            f"  #{r['id']}  [bold]{r['title']}[/bold]  "
-            f"[{status_color}]{r['status']}[/{status_color}]  "
-            f"{r['priority']}  {r['project']}"
-        )
-        if keyword and r["content"]:
-            snippet = r["content"][:80].replace("\n", " ")
-            click.echo(f"    -> {snippet}...")
-        click.echo()
+    table = Table(show_header=True, header_style="bold bright_black", box=box.SIMPLE_HEAVY, expand=True)
+    table.add_column("ID", style="dim", justify="right", width=5, no_wrap=True)
+    table.add_column("P", justify="center", width=3, no_wrap=True)
+    table.add_column("状态", width=10, no_wrap=True)
+    table.add_column("项目", width=14, no_wrap=True, overflow="ellipsis")
+    table.add_column("标题", ratio=3, no_wrap=True, overflow="ellipsis")
+    if keyword:
+        table.add_column("命中片段", style="dim", ratio=2, no_wrap=True, overflow="ellipsis")
+
+    for r in rows:
+        style = _FIND_STATUS_STYLE.get(r["status"], "dim")
+        row = [
+            f"#{r['id']}",
+            r["priority"] or "-",
+            f"[{style}]{r['status']}[/{style}]",
+            _markup_escape(r["project"] or "-"),
+            _markup_escape((r["title"] or "").replace("\n", " ").strip() or "-"),
+        ]
+        if keyword:
+            content = (r.get("content") or "").replace("\n", " ").strip()
+            row.append(_markup_escape(content) if content else "-")
+        table.add_row(*row)
+
+    console.print(table)
+    console.print()
 
 
 # ── stop ───────────────────────────────────────────────────────────────────────
@@ -250,6 +645,7 @@ def find(ctx: click.Context, keyword: str | None, project: str | None,
 @click.option("--message", "-m", default="", help="停止原因")
 def stop(task_id: int, message: str):
     """停止一个正在运行的任务。"""
+    _guard_runner_owned_task_or_exit(task_id, "stop")
     db.init_db()
     task = db.get_task(task_id)
     if not task:
@@ -282,6 +678,14 @@ def stop(task_id: int, message: str):
         stop_requested=0,
         stop_reason=None,
     )
+    # Sweep any dev servers still inside the task's worktree.
+    wt = (refreshed or task or {}).get("worktree_path")
+    project_path = (refreshed or task or {}).get("project_path")
+    try:
+        if wt and wt != project_path:
+            stop_worktree_leftovers(wt, wait_seconds=3)
+    except Exception:
+        pass
     echo(f"[yellow]任务 #{task_id} 已停止[/yellow]  {task['title']}")
 
 
@@ -292,6 +696,37 @@ def _render_log_text(text: str, tail: int) -> str:
         return ""
     lines = text.splitlines()
     return "\n".join(lines[-tail:]) if tail > 0 else text
+
+
+@click.command()
+@click.argument("task_id", type=int)
+@click.option("--dry-run", is_flag=True, help="只列出候选 PID，不真的杀")
+def sweep(task_id: int, dry_run: bool):
+    """清理任务 worktree 里遗留的长生命进程（next dev / vite / npm run dev 等）。"""
+    from codepilot.core.runtime import find_worktree_processes
+    db.init_db()
+    task = db.get_task(task_id)
+    if not task:
+        echo(f"[red]任务 #{task_id} 不存在[/red]")
+        return
+    wt = task.get("worktree_path")
+    project_path = task.get("project_path")
+    if not wt:
+        echo(f"[yellow]任务 #{task_id} 没有 worktree，不需要 sweep[/yellow]")
+        return
+    if wt == project_path:
+        echo(f"[yellow]任务 #{task_id} 直接运行在项目根目录（没有隔离 worktree），跳过 sweep 以避免误杀你自己的进程[/yellow]")
+        return
+    pids = find_worktree_processes(wt)
+    if not pids:
+        echo(f"[dim]worktree {wt} 没有遗留进程[/dim]")
+        return
+    echo(f"[cyan]候选 PID:[/cyan] {', '.join(str(p) for p in pids)}")
+    if dry_run:
+        return
+    killed = stop_worktree_leftovers(wt, wait_seconds=4)
+    if killed:
+        echo(f"[green][OK] 已清理 {len(killed)} 个进程[/green]  PID={','.join(str(p) for p in killed)}")
 
 
 @click.command()
@@ -317,7 +752,7 @@ def logs(task_id: int, tail: int, full: bool):
     if not task_logs:
         snippet = task.get("last_output") or ""
         if snippet:
-            echo(f"[cyan]最近输出[/cyan]")
+            echo("[cyan]最近输出[/cyan]")
             click.echo(snippet if full else _render_log_text(snippet, tail))
         else:
             echo("[yellow]这个任务还没有可用日志[/yellow]")
