@@ -221,11 +221,12 @@ def install_binary(
 
 
 def _write_cli_wrapper(target_dir: Path, family: str) -> Path | None:
-    """Create a ``cp-<family>`` wrapper in *target_dir* that forwards to *family*.
+    """Create a ``cp-<family>`` wrapper in *target_dir*.
 
     On Windows a ``.cmd`` batch file is written; on POSIX a shell script.
-    Returns the path of the created wrapper, or ``None`` if it already
-    existed.
+    If the bundled vendor binary exists (e.g. ``vendor/opencode.exe``) the
+    wrapper forwards to it; otherwise it falls back to the system command.
+    Returns the path of the created wrapper, or ``None`` if it already existed.
     """
     if platform.system().lower() == "windows":
         wrapper_name = f"cp-{family}.cmd"
@@ -235,14 +236,19 @@ def _write_cli_wrapper(target_dir: Path, family: str) -> Path | None:
     if wrapper_path.exists():
         return None
 
+    # Prefer the bundled vendor binary so we don't conflict with the user's
+    # global installation of the same tool.
+    bundled = target_dir / "vendor" / executable_name(family)
+    command = str(bundled.resolve()) if bundled.exists() else family
+
     if platform.system().lower() == "windows":
         wrapper_path.write_text(
-            f"@echo off\r\n{family} %*\r\n",
+            f"@echo off\r\n\"{command}\" %*\r\n",
             encoding="ascii",
         )
     else:
         wrapper_path.write_text(
-            f"#!/usr/bin/env sh\n\nexec {family} \"$@\"\n",
+            f"#!/usr/bin/env sh\n\nexec \"{command}\" \"$@\"\n",
             encoding="ascii",
         )
         wrapper_path.chmod(0o755)
