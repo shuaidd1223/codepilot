@@ -909,7 +909,9 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
         if not global_mode:
             ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME)
     else:
-        ensure_secrets_template(config_path.parent)
+        created = ensure_secrets_template(config_path.parent)
+        if created and not global_mode:
+            ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME)
     click.echo(f"已同步配置: {config_path}")
     if write_secrets:
         click.echo(f"已迁移飞书 App Secret 到: {secrets_path}")
@@ -1277,8 +1279,11 @@ def validate_config(path: Path | None, global_mode: bool, fix: bool) -> None:
             created = ensure_secrets_template(config_path.parent)
             if created:
                 fixes.append(f"已创建 secrets 模板: {created}")
+                if not global_mode:
+                    ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME)
         else:
-            console.print(f"[yellow]⚠[/yellow] 建议运行 codepilot config sync --global 自动创建")
+            cmd_hint = "codepilot config sync --global" if global_mode else "codepilot config sync"
+            console.print(f"[yellow]⚠[/yellow] 建议运行 {cmd_hint} 自动创建")
 
     # 输出结果
     console.print("\n[bold]验证结果:[/bold]")
