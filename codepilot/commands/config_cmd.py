@@ -723,6 +723,49 @@ def render_agents_toml(canonical: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_secrets_template_toml() -> str:
+    """Render a commented template for .codepilot.secrets.toml.
+
+    Unlike :func:`render_secrets_toml` this always produces output — a
+    guidance file with placeholder examples — even when no real secrets
+    have been configured yet.  Callers use this to bootstrap the secrets
+    file on first install or during ``config sync``.
+    """
+    lines: list[str] = [
+        "# CodePilot secrets override file",
+        "# Keep this file out of version control.",
+        "#",
+        "# 在此文件中配置 API Key 等敏感信息，不会被提交到版本控制。",
+        "# 编辑下方示例，去掉注释并填入你的真实密钥。",
+        "#",
+        "# 示例：DeepSeek Provider",
+        "# [providers.deepseek]",
+        "# api_key = \"sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+        "#",
+        "# 示例：飞书机器人",
+        "# [feishu_bot]",
+        "# app_secret = \"xxxxxxxxxxxxxxxx\"",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def ensure_secrets_template(config_dir: Path) -> Path | None:
+    """Create a .codepilot.secrets.toml template if it does not exist.
+
+    Returns the path if a new file was created, ``None`` if one already
+    existed.  Safe to call on directories that do not contain an
+    ``AGENTS.toml`` yet.
+    """
+    secrets_path = config_dir / config_mod.SECRETS_FILENAME
+    if secrets_path.exists():
+        return None
+    config_dir.mkdir(parents=True, exist_ok=True)
+    content = render_secrets_template_toml()
+    secrets_path.write_text(content, encoding="utf-8")
+    return secrets_path
+
+
 def render_secrets_toml(canonical: dict[str, Any]) -> str:
     providers = canonical.get("providers", {}) if isinstance(canonical.get("providers"), dict) else {}
     feishu_bot = canonical.get("feishu_bot", {}) if isinstance(canonical.get("feishu_bot"), dict) else {}
@@ -860,14 +903,16 @@ def sync(path: Path | None, global_mode: bool, dry_run: bool) -> None:
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(content, encoding="utf-8")
+    secrets_path = config_path.parent / config_mod.SECRETS_FILENAME
     if write_secrets and secrets_content:
-        secrets_path = config_path.parent / config_mod.SECRETS_FILENAME
         secrets_path.write_text(secrets_content, encoding="utf-8")
         if not global_mode:
             ensure_gitignore_entry(config_path.parent, config_mod.SECRETS_FILENAME)
+    else:
+        ensure_secrets_template(config_path.parent)
     click.echo(f"已同步配置: {config_path}")
     if write_secrets:
-        click.echo(f"已迁移飞书 App Secret 到: {config_path.parent / config_mod.SECRETS_FILENAME}")
+        click.echo(f"已迁移飞书 App Secret 到: {secrets_path}")
 
 
 @config_group.command("init")
@@ -1222,6 +1267,18 @@ def validate_config(path: Path | None, global_mode: bool, fix: bool) -> None:
         if fix:
             automation["task_workspace"] = "branch"
             fixes.append("automation.task_workspace 已修复为 'branch'")
+
+    # 6. 检查 secrets 文件
+    console.print("\n[bold]6. 检查 secrets 文件...[/bold]")
+    secrets_path = config_path.parent / config_mod.SECRETS_FILENAME
+    if not secrets_path.exists():
+        warnings.append(f"secrets 文件不存在: {secrets_path}")
+        if fix:
+            created = ensure_secrets_template(config_path.parent)
+            if created:
+                fixes.append(f"已创建 secrets 模板: {created}")
+        else:
+            console.print(f"[yellow]⚠[/yellow] 建议运行 codepilot config sync --global 自动创建")
 
     # 输出结果
     console.print("\n[bold]验证结果:[/bold]")

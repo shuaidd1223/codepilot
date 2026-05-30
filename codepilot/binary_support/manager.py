@@ -234,13 +234,14 @@ def ensure_global_config() -> Path | None:
     if existing is not None:
         return None
 
-    from codepilot.commands.config_cmd import _canonical_config, render_agents_toml
+    from codepilot.commands.config_cmd import _canonical_config, render_agents_toml, ensure_secrets_template
 
     config_path = resolve_global_config_path()
     canonical = _canonical_config({}, project_name=config_path.parent.name)
     content = render_agents_toml(canonical)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(content, encoding="utf-8")
+    ensure_secrets_template(config_path.parent)
     return config_path
 
 
