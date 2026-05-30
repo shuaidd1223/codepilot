@@ -32,7 +32,7 @@ ai = [
 ]
 
 [project.scripts]
-codepilot = "codepilot.cli:main"
+codepilot-dev = "codepilot.cli:main"
 
 [project.urls]
 Repository = "https://gitee.com/shuai_dd/CodePilot"
