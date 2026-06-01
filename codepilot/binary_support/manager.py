@@ -188,9 +188,20 @@ def _mirror_onedir(source_dir: Path, target_dir: Path, name: str) -> Path:
 
 
 def _is_onedir_tree(path: Path) -> bool:
-    """Return True if *path* looks like a PyInstaller onedir directory."""
+    """Return True if *path* looks like a PyInstaller onedir directory.
+
+    PyInstaller onedir (--onedir) output consists of a top-level directory
+    containing the executable alongside an ``_internal`` folder with all
+    bundled dependencies.  Earlier PyInstaller versions placed files
+    directly in the root; both layouts are detected.
+    """
     if not path.is_dir():
         return False
+    exe = path / executable_name("codepilot")
+    internal = path / "_internal"
+    if exe.is_file() and internal.is_dir():
+        return True
+    # Legacy layout: at least 5 loose files in the directory root.
     files = [p for p in path.iterdir() if p.is_file()]
     return len(files) >= 5
 
