@@ -35,6 +35,7 @@ CP.createAppSessionBoundary = (options = {}) => {
   async function loadSessionChat(sessionId = null) {
     const targetId = Number(sessionId || currentSessionId() || 0);
     if (!targetId) return;
+    state.sessionMessagesLoading = true;
     try {
       const data = await CP.api.get(`/api/sessions/${targetId}`);
       const loadedSession = data.session || null;
@@ -51,10 +52,12 @@ CP.createAppSessionBoundary = (options = {}) => {
       }
       state.sessionDetail = loadedSession;
       state.sessionMessages = data.messages || [];
+      state.sessionMessagesLoading = false;
       await nextTick();
       const chatScrollEl = getChatScrollEl();
       if (chatScrollEl) chatScrollEl.scrollTop = chatScrollEl.scrollHeight;
     } catch (err) {
+      state.sessionMessagesLoading = false;
       pushToast(err.message, 'error');
     }
   }

@@ -6,6 +6,7 @@ CP.Components.TasksView = Vue.defineComponent({
   data() {
     return {
       inlineConfirm: { taskId: null, action: '' },
+      dragTaskId: null,
     };
   },
   computed: {
@@ -89,6 +90,41 @@ CP.Components.TasksView = Vue.defineComponent({
       this.pick(task);
     },
   },
+    // Kanban drag-drop
+    onDragStart(task, ev) {
+      if (!task || !task.id) return;
+      this.dragTaskId = task.id;
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('text/plain', String(task.id));
+    },
+    onDragEnd() {
+      this.dragTaskId = null;
+    },
+    onColumnDrop(targetStatus, ev) {
+      const taskId = this.dragTaskId;
+      this.dragTaskId = null;
+      if (!taskId || !targetStatus) return;
+      const tasks = this.boardColumns.flatMap(c => c.tasks || []);
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) return;
+      const sourceStatus = task.status;
+      if (sourceStatus === targetStatus) return;
+      // Map target column to action
+      let action = null;
+      if (targetStatus === 'in_progress') action = 'promote';
+      else if (targetStatus === 'cancelled') action = 'cancel';
+      else if (targetStatus === 'archived') action = 'archive';
+      if (!action) {
+        this.cp.pushToast('??????????', 'info');
+        return;
+      }
+      // For destructive actions, show inline confirm
+      if (['cancel', 'archive'].includes(action)) {
+        this.inlineConfirm = { taskId: task.id, action };
+        return;
+      }
+      this.cp.taskAction(task.id, action);
+    },
   template: `
     <div class="view workflow-board-view">
       <div class="view-toolbar">
@@ -105,7 +141,9 @@ CP.Components.TasksView = Vue.defineComponent({
         <section v-for="column in boardColumns"
                  :key="column.id"
                  class="workflow-column"
-                 :class="'tone-' + (column.tone || 'neutral')">
+                 :class="['tone-' + (column.tone || 'neutral'), { 'drag-over': dragTaskId && column.id !== (boardColumns.find(c => c.tasks && c.tasks.find(t => t.id === dragTaskId)) || {}).status }]"
+                 @dragover.prevent
+                 @drop="onColumnDrop(column.id, $event)">
           <div class="workflow-column-head">
             <div>
               <h3>{{ column.title }}</h3>
@@ -119,7 +157,11 @@ CP.Components.TasksView = Vue.defineComponent({
           <article v-for="task in column.tasks"
                    :key="task.id"
                    class="workflow-task-card"
-                   @click="pick(task)">
+                   :class="{ 'drag-active': dragTaskId === task.id }"
+                   draggable="true"
+                   @click="pick(task)"
+                   @dragstart="onDragStart(task, $event)"
+                   @dragend="onDragEnd">
             <div class="workflow-card-title">#{{ task.id }} {{ task.title }}</div>
             <div class="chip-row">
               <cp-chip :tone="$cp.toneClass(task.status)">{{ $cp.statusLabel(task.status) }}</cp-chip>
@@ -174,3 +216,14 @@ CP.Components.TasksView = Vue.defineComponent({
     </div>
   `,
 });
+
+/* Kanban drag-drop visual feedback */
+(function() {
+  const style = document.createElement('style');
+  style.textContent = [
+    ".workflow-task-card { cursor: grab; }",
+    ".workflow-task-card.drag-active { opacity: 0.4; }",
+    ".workflow-column.drag-over { background: hsl(var(--primary) / 0.06); outline: 2px dashed hsl(var(--primary) / 0.3); border-radius: var(--radius-sm); }",
+  ].join("\n");
+  document.head.appendChild(style);
+})();

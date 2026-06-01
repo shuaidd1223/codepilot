@@ -80,6 +80,7 @@ from codepilot.webapp.action_task_ops import (
     stop_task_action,
 )
 from codepilot.webapp.action_requirements import retry_task_action
+from codepilot.core.web_events import publish_task_state_event
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +234,22 @@ def _handle_project_view_command(
     if verb in {"projects", "ls"}:
         return _reply_card(build_projects_card(prefix=cfg.command_prefix, default_project=active_project))
     if verb in {"tasks", "panel"}:
-        project_name, status_filter, page = _parse_tasks_command_args(parts[1:], default_project=active_project)
+        raw_parts = parts[1:]
+        # Persist current page in chat context for return visits
+        has_explicit_page = any(
+            "page=" in str(token).lower() or 
+            "?=" in str(token) or 
+            "??=" in str(token).lower()
+            for token in raw_parts
+        )
+        project_name, status_filter, page = _parse_tasks_command_args(raw_parts, default_project=active_project)
+        if not has_explicit_page and chat_id:
+            scope, meta = _chat_meta(chat_id)
+            saved_page = meta.get("task_page", 1) if scope else 1
+            if saved_page and int(saved_page) > 1:
+                page = int(saved_page)
+        if chat_id:
+            _write_chat_meta(chat_id, {"task_page": page})
         return _reply_card(
             build_tasks_card(
                 project_name,

@@ -65,6 +65,8 @@ CP.createAppFeedbackBoundary = (options = {}) => {
     }
   }
 
+  const MAX_VISIBLE_TOASTS = 3;
+
   function pushToast(message, type = 'info') {
     const existing = state.toasts.find((toast) => toast.message === message && toast.type === type);
     if (existing) {
@@ -77,6 +79,16 @@ CP.createAppFeedbackBoundary = (options = {}) => {
     }
     const id = ++state.toastSeq;
     state.toasts.push({ id, message, type, count: 1 });
+    // Enforce max visible toast limit: remove oldest non-error first
+    while (state.toasts.length > MAX_VISIBLE_TOASTS) {
+      const idx = state.toasts.findIndex(t => t.type !== 'error');
+      if (idx >= 0) {
+        const removed = state.toasts[idx];
+        clearTimeout(toastTimers.get(removed.id));
+        toastTimers.delete(removed.id);
+        state.toasts.splice(idx, 1);
+      } else break;
+    }
     if (type !== 'error') {
       toastTimers.set(id, setTimeout(() => dismissToast(id), 4000));
     }
@@ -96,6 +108,7 @@ CP.createAppFeedbackBoundary = (options = {}) => {
     confirmResolver = null;
     state.confirmDialog.open = false;
     if (resolver) resolver(!!result);
+    processConfirmQueue();
   }
 
   function confirmDialog(options = {}) {

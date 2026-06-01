@@ -111,6 +111,14 @@ CP.createAppSubmissionBoundary = (options = {}) => {
       if (state.nav.project === oldName) {
         setNav({ project: normalizedName, view: state.nav.view || 'overview', id: state.nav.id || null });
       }
+      // ???????????????
+      state.taskDetail = null;
+      state.taskDetailError = '';
+      state.sessionDetail = null;
+      state.sessionMessages = [];
+      state.taskLog = { taskId: null, text: '', nextOffset: 0, size: 0, done: true, loading: false };
+      state.sessionRuns = {};
+      state.activeProjectSessionId = null;
       await loadDashboard(normalizedName);
       selectProject(normalizedName);
       const migration = (out && (out.data_migration || out)) || {};
