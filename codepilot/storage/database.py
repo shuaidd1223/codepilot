@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -80,6 +81,7 @@ from codepilot.storage.task_write_store import (
 
 
 DB_PATH = _cfg_default_db_path()
+logger = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = _cfg_get_cache_ttl_seconds()
 _CACHE_MISS = object()
@@ -684,12 +686,13 @@ def _merge_runtime_tree(
 
 
 def _cleanup_old_runtime_roots(root_pairs: list[tuple[str, Path, Path]], result: dict) -> None:
+    projects = _raw_list_projects()
     for kind, old_root, new_root in root_pairs:
         if old_root.resolve(strict=False) == new_root.resolve(strict=False):
             continue
         if not old_root.exists():
             continue
-        if _runtime_root_is_used_by_registered_project(kind, old_root):
+        if _runtime_root_is_used_by_registered_project(kind, old_root, projects=projects):
             if str(old_root) not in result["pending_cleanup"]:
                 result["pending_cleanup"].append(str(old_root))
             continue
@@ -699,9 +702,11 @@ def _cleanup_old_runtime_roots(root_pairs: list[tuple[str, Path, Path]], result:
             result["pending_cleanup"].append(str(old_root))
 
 
-def _runtime_root_is_used_by_registered_project(kind: str, root: Path) -> bool:
+def _runtime_root_is_used_by_registered_project(kind: str, root: Path, projects: list[dict] | None = None) -> bool:
     resolved = root.resolve(strict=False)
-    for project in _raw_list_projects():
+    if projects is None:
+        projects = _raw_list_projects()
+    for project in projects:
         project_name = str(project.get("name") or "").strip()
         if not project_name:
             continue
@@ -1402,8 +1407,7 @@ def _publish_task_updated_event(task: Optional[dict], changed_fields: set[str]) 
             )
             dispatch_event_to_sinks(project_root, event)
     except Exception:  # noqa: BLE001
-        # 发布事件失败不应阻止主流程
-        pass
+        logger.debug("Event publish failed", exc_info=True)
     _record_task_update_memory(task, changed_fields, project_info=project_info)
 
 

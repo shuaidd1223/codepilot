@@ -1675,7 +1675,6 @@ def inspect(
         if json_mode:
             emit_json_payload("inspect", ok=False, data={}, error=message, error_code="invalid_options")
             ctx.exit(1)
-            return
         raise click.ClickException(message)
     proj = db.get_project(project) if project else None
     if not proj:
@@ -1688,7 +1687,6 @@ def inspect(
                 error_code="project_required",
             )
             ctx.exit(1)
-            return
         raise click.ClickException("需要用 -p 指定项目，或先 codepilot init")
 
     lifecycle_options = inspect_lifecycle.InspectServiceLifecycleOptions(

@@ -24,6 +24,7 @@ from codepilot.core.runtime import (
 )
 from codepilot.core.text_decode import decode_subprocess_text
 from codepilot.storage import database as db
+from codepilot.commands.json_contract import emit_json_payload
 
 
 @dataclass(frozen=True)
@@ -295,16 +296,57 @@ def _active_summary(work: ActiveWork) -> str:
 @click.option("--project", "-p", default=None, help="Limit shutdown checks to one registered project.")
 @click.option("--force", is_flag=True, help="Force stop active work without prompting.")
 @click.option("--poll-interval", type=float, default=2.0, show_default=True, help="Seconds between idle checks in wait mode.")
-def shutdown(project: str | None, force: bool, poll_interval: float) -> None:
+@click.option("--json", "json_mode", is_flag=True, hidden=True, help="JSON output")
+def shutdown(project: str | None, force: bool, poll_interval: float, json_mode: bool) -> None:
     """Stop CodePilot services and optionally force-stop active work."""
-    db.init_db()
-    _stop_webui_service()
-    _stop_feishu_service()
-    _stop_webhook_service()
+    try:
+        db.init_db()
+    except Exception as exc:
+        raise click.ClickException(f"Failed to initialize database: {exc}")
+
+    services_result: dict[str, Any] = {}
+    try:
+        services_result["webui"] = _stop_webui_service()
+    except Exception as exc:
+        services_result["webui"] = {"stopped": False, "error": str(exc)}
+
+    try:
+        services_result["feishu"] = _stop_feishu_service()
+    except Exception as exc:
+        services_result["feishu"] = {"stopped": False, "error": str(exc)}
+
+    try:
+        services_result["webhook"] = _stop_webhook_service()
+    except Exception as exc:
+        services_result["webhook"] = {"stopped": False, "error": str(exc)}
 
     work = _collect_active_work(project)
     if not work.any():
+        if json_mode:
+            emit_json_payload("shutdown", ok=True, data={
+                "services": services_result,
+                "active_work": None,
+                "action": "complete",
+            })
+            return
         echo("[green]CodePilot shutdown complete; no active work remains.[/green]")
+        return
+
+    if json_mode:
+        payload: dict[str, Any] = {
+            "services": services_result,
+            "active_work": {
+                "daemons": len(work.daemons),
+                "inspections": len(work.inspections),
+                "tasks": len(work.tasks),
+            },
+        }
+        if force:
+            _force_stop_active_work(work)
+            payload["action"] = "force_stopped"
+        else:
+            payload["action"] = "detected"
+        emit_json_payload("shutdown", ok=True, data=payload)
         return
 
     echo(f"[yellow]Active CodePilot work detected:[/yellow] {_active_summary(work)}")

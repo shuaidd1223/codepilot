@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import logging
+
 import click
 
 from codepilot.core.config import resolve_project_config_reference
@@ -27,6 +29,7 @@ from codepilot.feishu_runtime import runtime_root, worker_script
 from codepilot.feishu_bot import handle_event_payload, load_feishu_bot_config, validate_feishu_bot_config
 from codepilot.storage import database as db
 
+logger = logging.getLogger(__name__)
 
 STATE_DIR = global_storage_root() / "feishu"
 LOG_FILE = STATE_DIR / "feishu.log"
@@ -131,6 +134,7 @@ def _windows_feishu_processes() -> list[dict[str, Any]]:
             timeout=20,
         )
     except Exception:
+        logger.debug("PowerShell process query failed", exc_info=True)
         return []
     raw = decode_subprocess_text(result.stdout).strip()
     if result.returncode != 0 or not raw:
@@ -147,6 +151,7 @@ def _windows_feishu_processes() -> list[dict[str, Any]]:
         try:
             pid = int(row.get("ProcessId") or 0)
         except Exception:
+            logger.debug("Invalid ProcessId in feishu process row", exc_info=True)
             pid = 0
         command_line = str(row.get("CommandLine") or "")
         if pid > 0 and _is_feishu_process_command(command_line):
@@ -158,6 +163,7 @@ def _posix_feishu_processes() -> list[dict[str, Any]]:
     try:
         result = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True, timeout=20)
     except Exception:
+        logger.debug("ps process query failed", exc_info=True)
         return []
     if result.returncode != 0:
         return []
@@ -189,6 +195,7 @@ def _stop_feishu_processes() -> list[int]:
         try:
             pid = int(process.get("pid") or 0)
         except Exception:
+            logger.debug("Invalid pid in feishu process entry during stop", exc_info=True)
             continue
         if pid <= 0 or pid == current_pid or not is_process_alive(pid):
             continue
@@ -210,6 +217,7 @@ def _service_status() -> dict:
     try:
         pid = int(state.get("pid") or 0) if state else 0
     except Exception:
+        logger.debug("Invalid pid in service state", exc_info=True)
         pid = 0
     running = bool(pid and is_process_alive(pid))
     return {
@@ -402,7 +410,7 @@ def _supervise_worker(config_ref: Any = None) -> None:
             if proc is not None and proc.poll() is None:
                 stop_process_tree(proc.pid, wait_seconds=5)
         except Exception:
-            pass
+            logger.debug("Failed to stop process tree during cleanup", exc_info=True)
         _clear_state()
 
 
@@ -438,7 +446,7 @@ def ensure_service_running_if_enabled(project_ref: Any = None, *, config_ref: An
         try:
             tail = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-1500:]
         except Exception:
-            pass
+            logger.debug("Failed to read log tail for error report", exc_info=True)
         return {
             "enabled": True,
             "running": False,

@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
+import logging
+
 import click
+
+logger = logging.getLogger(__name__)
 
 from codepilot.commands.execution_artifacts import collect_git_patch_artifact, validation_artifact_from_verification
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
@@ -18,6 +23,12 @@ from codepilot.core.output import echo
 from codepilot.core.text_decode import decode_subprocess_text
 from codepilot.core.workflow_state import read_task_execution_artifacts, write_task_execution_artifacts
 from codepilot.storage import database as db
+
+
+# Shell metacharacters blocked in verification commands to prevent injection:
+# pipe, command substitution, and chaining operators (&&, ||) are rejected.
+# Semicolons are allowed because they are commonly used inside -c "..."" Python code.
+_SHELL_META = re.compile(r"\||&&|\|\||`|\$\(|&(?![&|])")
 
 
 class BuildFixError(RuntimeError):
@@ -76,6 +87,18 @@ def _run_verification(project_path: Path, commands: list[str], timeout_seconds: 
     results: list[dict[str, Any]] = []
     for command in commands:
         try:
+            try:
+                # Validate: reject shell metacharacters to prevent injection
+                if _SHELL_META.search(command):
+                    raise BuildFixError(
+                        f"验证命令包含不支持的 shell 操作符: {command!r}"
+                    )
+            except BuildFixError:
+                raise
+            except Exception as exc:
+                raise BuildFixError(
+                    f"验证命令解析失败: {command!r} — {exc}"
+                ) from exc
             completed = subprocess.run(
                 command,
                 cwd=str(project_path),
@@ -210,7 +233,7 @@ def run_build_fix(
                 },
             )
         except Exception:
-            pass
+            logger.debug("write_task_execution_artifacts failed for build-fix", exc_info=True)
 
     return {
         "project": project,

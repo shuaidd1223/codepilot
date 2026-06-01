@@ -376,9 +376,14 @@ def hud(
     if watch:
         try:
             while True:
-                snapshot = collect_hud_snapshot(project=project, all_projects=all_projects, preset=preset)
-                console.clear()
-                render_hud(snapshot, preset=preset, console=console)
+                try:
+                    snapshot = collect_hud_snapshot(project=project, all_projects=all_projects, preset=preset)
+                    console.clear()
+                    render_hud(snapshot, preset=preset, console=console)
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                    echo(f"[red]HUD 刷新异常，跳过本轮[{_now_iso()}][/red]")
                 time.sleep(max(interval, 0.2))
         except KeyboardInterrupt:
             return

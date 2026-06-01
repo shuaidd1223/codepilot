@@ -11,6 +11,7 @@ from typing import Any, Mapping
 import click
 
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
+from codepilot.commands.status import resolve_project_info
 from codepilot.core.config import AgentsConfig, ScheduledAgentConfig, load_project_config
 from codepilot.core.output import echo, safe
 from codepilot.scheduled.guards import GUARDS_RELATIVE_PATH, agent_job_key
@@ -18,18 +19,6 @@ from codepilot.scheduled.runner import run_agent_job
 from codepilot.scheduled.templates import render_prompt_template
 from codepilot.storage import database as db
 
-
-def _resolve_project(project: str | None) -> dict:
-    db.init_db()
-    if project:
-        found = db.get_project(project)
-        if not found:
-            raise click.ClickException(f"项目 '{project}' 未注册。")
-        return found
-    found = db.find_project_by_path(Path.cwd())
-    if not found:
-        raise click.ClickException("当前目录不属于已注册项目；请使用 -p/--project 指定项目。")
-    return found
 
 
 def _project_root(project_info: Mapping[str, Any]) -> Path:
@@ -167,7 +156,7 @@ def list_cmd(ctx: click.Context, project: str | None, json_mode: bool) -> None:
     """列出 scheduled agents。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        project_info = _resolve_project(project)
+        project_info = resolve_project_info(project)
         project_root = _project_root(project_info)
         project_name = _project_name(project_info)
         config = _load_agents_config(project_info)
@@ -201,7 +190,7 @@ def show_cmd(ctx: click.Context, name: str, project: str | None, json_mode: bool
     """查看单个 scheduled agent 摘要。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        project_info = _resolve_project(project)
+        project_info = resolve_project_info(project)
         project_root = _project_root(project_info)
         project_name = _project_name(project_info)
         config = _load_agents_config(project_info)
@@ -237,7 +226,7 @@ def run_once_cmd(ctx: click.Context, name: str, project: str | None, dry_run: bo
     """手动运行一个 scheduled agent。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        project_info = _resolve_project(project)
+        project_info = resolve_project_info(project)
         project_root = _project_root(project_info)
         project_name = _project_name(project_info)
         config = _load_agents_config(project_info)
@@ -295,7 +284,7 @@ def disable_cmd(ctx: click.Context, name: str, project: str | None, json_mode: b
     """禁用一个 scheduled agent。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        project_info = _resolve_project(project)
+        project_info = resolve_project_info(project)
         project_root = _project_root(project_info)
         project_name = _project_name(project_info)
         config = _load_agents_config(project_info)

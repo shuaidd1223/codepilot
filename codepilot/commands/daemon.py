@@ -11,8 +11,11 @@ from pathlib import Path
 
 import click
 
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+
+logger = logging.getLogger(__name__)
 
 from codepilot.storage import database as db
 from codepilot.commands.feishu import ensure_service_running_if_enabled
@@ -349,7 +352,7 @@ def _tick_heartbeat(project: str | None = None) -> None:
             status=status,
         )
     except Exception:
-        pass
+        logger.debug("touch_service_state failed for daemon heartbeat", exc_info=True)
 
 
 def _start_heartbeat_thread(project: str | None = None, *, interval_seconds: int = 10) -> threading.Event:

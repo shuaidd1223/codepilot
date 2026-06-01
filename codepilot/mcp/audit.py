@@ -38,6 +38,7 @@ def record_mcp_tool_call(
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_needed(path)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
     except OSError:
@@ -82,3 +83,29 @@ def _summarize_string(value: str) -> str:
 def _is_secret_key(key: str) -> bool:
     lowered = key.lower()
     return any(marker in lowered for marker in _SECRET_MARKERS)
+
+
+def _rotate_log_if_needed(path: Path, max_size_mb: int = 10, keep: int = 2) -> None:
+    """Rotate audit log if it exceeds max_size_mb, keeping only last `keep` rotated files."""
+    if not path.exists():
+        return
+    max_bytes = max_size_mb * 1024 * 1024
+    if path.stat().st_size <= max_bytes:
+        return
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    rotated = path.with_name(f"{path.stem}-{today}{path.suffix}")
+    if rotated.exists():
+        counter = 1
+        while rotated.exists():
+            rotated = path.with_name(f"{path.stem}-{today}-{counter}{path.suffix}")
+            counter += 1
+    path.rename(rotated)
+
+    pattern = f"{path.stem}-*{path.suffix}"
+    rotated_files = sorted(path.parent.glob(pattern), reverse=True)
+    for old in rotated_files[keep:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass

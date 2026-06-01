@@ -65,6 +65,23 @@ def resolve_api_provider(
     )
 
 
+def _retry_with_backoff(func, max_retries=3, base_delay=1.0):
+    import random
+
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            status = getattr(e, "status_code", None) or getattr(e, "status", None)
+            if status is not None and status != 429:
+                raise
+            delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+            time.sleep(delay)
+    return func()
+
+
 _PROJECT_MARKER_FILES = (
     "AGENTS.toml",
     "pyproject.toml",
@@ -493,6 +510,18 @@ def _run_cli_provider(
         if not output:
             raise RuntimeError(f"{provider.name} 返回了空内容")
 
+        _record_api_usage(
+            _APIRunContext(
+                provider=provider,
+                client=None,
+                prompt=prompt,
+                system_prompt=None,
+                messages=[],
+                started_at=time.monotonic(),
+                model=getattr(provider, "cmd", "cli") or "cli",
+            ),
+            {"output_tokens": _estimate_tokens(output)},
+        )
         return output
 
     except subprocess.TimeoutExpired:
@@ -725,7 +754,7 @@ def _record_api_usage(ctx: _APIRunContext, usage: Any) -> None:
 
 
 def _run_openai_sync(ctx: _APIRunContext) -> str:
-    response = ctx.client.chat.completions.create(**_openai_request_kwargs(ctx))
+    response = _retry_with_backoff(lambda: ctx.client.chat.completions.create(**_openai_request_kwargs(ctx)))
     _record_api_usage(ctx, getattr(response, "usage", None))
     return (response.choices[0].message.content or "").strip()
 
@@ -769,7 +798,8 @@ def _anthropic_request_kwargs(ctx: _APIRunContext, *, stream: bool = False) -> d
 
 
 def _run_anthropic_sync(ctx: _APIRunContext) -> str:
-    response = ctx.client.messages.create(**_anthropic_request_kwargs(ctx))
+    response = _retry_with_backoff(lambda: ctx.client.messages.create(**_anthropic_request_kwargs(ctx)))
+    _record_api_usage(ctx, getattr(response, "usage", None))
     return "".join(
         str(getattr(block, "text", "") or "")
         for block in (getattr(response, "content", None) or [])
@@ -779,6 +809,7 @@ def _run_anthropic_sync(ctx: _APIRunContext) -> str:
 def _run_anthropic_stream(ctx: _APIRunContext) -> str:
     parts: list[str] = []
     last_emit_at = 0.0
+    stream_usage: dict[str, int] = {}
     _emit_llm_heartbeat(ctx, "", final=False)
     stream = ctx.client.messages.create(**_anthropic_request_kwargs(ctx, stream=True))
     for event in stream:
@@ -788,6 +819,16 @@ def _run_anthropic_stream(ctx: _APIRunContext) -> str:
             piece = str(getattr(getattr(event, "delta", None), "text", "") or "")
         elif event_type == "content_block_start":
             piece = str(getattr(getattr(event, "content_block", None), "text", "") or "")
+        elif event_type == "message_start":
+            usage = getattr(event, "message", None)
+            if usage is not None:
+                msg_usage = getattr(usage, "usage", None)
+                if msg_usage is not None:
+                    stream_usage["input_tokens"] = getattr(msg_usage, "input_tokens", 0) or 0
+        elif event_type == "message_delta":
+            usage = getattr(event, "usage", None)
+            if usage is not None:
+                stream_usage["output_tokens"] = getattr(usage, "output_tokens", 0) or 0
         if piece:
             parts.append(piece)
         now = time.monotonic()
@@ -795,6 +836,8 @@ def _run_anthropic_stream(ctx: _APIRunContext) -> str:
             _emit_llm_heartbeat(ctx, "".join(parts), final=False)
             last_emit_at = now
     output = "".join(parts).strip()
+    if stream_usage:
+        _record_api_usage(ctx, stream_usage)
     if output:
         _emit_llm_heartbeat(ctx, output, final=True)
     return output

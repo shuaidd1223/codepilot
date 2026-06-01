@@ -15,6 +15,10 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+from codepilot.core.logger import get_logger
+
+logger = get_logger("config")
+
 from codepilot.core.config_parse import (
     DEFAULT_AGENT_COMMANDS,
     DEFAULT_FALLBACK_CLI_ORDER,
@@ -408,7 +412,12 @@ def _load_toml_dict(path: Path) -> Optional[dict[str, Any]]:
     try:
         with open(path, "rb") as handle:
             data = tomllib.load(handle)
-    except Exception:
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        import logging
+        _logger = logging.getLogger(__name__)
+        _logger.warning("Failed to parse TOML file %s: %s", path, exc)
         return None
     return data if isinstance(data, dict) else None
 
@@ -421,6 +430,8 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
         if isinstance(existing, dict) and isinstance(value, dict):
             merged[key] = _merge_dicts(existing, value)
         else:
+            if isinstance(existing, list) and isinstance(value, list):
+                logger.debug("List value replaced during merge for key '%s'", key)
             merged[key] = deepcopy(value)
     return merged
 
@@ -516,6 +527,11 @@ def _load_config_data(
     """Load one config file + corresponding secrets overlay into a raw dict."""
     data = _load_toml_dict(config_path)
     if data is None:
+        if config_path.is_file():
+            import logging
+            logging.getLogger(__name__).warning(
+                "Config file %s exists but could not be parsed", config_path
+            )
         return None
 
     _warn_on_inline_secrets_data(data, config_path)

@@ -172,7 +172,7 @@ def query_stale_in_progress(
 def query_orphan_log_paths(conn: sqlite3.Connection, project: str) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT * FROM tasks
+        SELECT id, current_log_path FROM tasks
         WHERE project = ?
           AND current_log_path IS NOT NULL
           AND current_log_path != ''

@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+import logging
 import sqlite3
 
 from codepilot.ai_support.cli_families import env_var_for, get_family
@@ -36,6 +37,8 @@ from codepilot.opencode.model_state import (
 )
 from codepilot.opencode.paths import opencode_runtime_config_path, opencode_runtime_db_path
 from codepilot.storage import database as db
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_CHAT_AGENTS = ("claude", "codex", "opencode")
 DEFAULT_CHAT_AGENT = "opencode"
@@ -541,11 +544,11 @@ def _kill_chat_agent_process(process: subprocess.Popen) -> None:
     try:
         process.kill()
     except Exception:
-        return
+        logger.debug("process.kill failed for agent shutdown", exc_info=True)
     try:
         process.wait(timeout=AGENT_SHUTDOWN_TIMEOUT_SECONDS)
     except Exception:
-        return
+        logger.debug("process.wait timed out during agent shutdown", exc_info=True)
 
 
 def _close_chat_agent_stdin(process: subprocess.Popen) -> None:
@@ -555,7 +558,7 @@ def _close_chat_agent_stdin(process: subprocess.Popen) -> None:
     try:
         stdin.close()
     except Exception:
-        return
+        logger.debug("stdin.close failed for chat agent", exc_info=True)
 
 
 def _write_launch_config_files(config_files: dict[str, str], *, cwd: Path) -> None:

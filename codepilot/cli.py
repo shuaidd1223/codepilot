@@ -15,7 +15,7 @@ configure_console_encoding()
 silence_subprocess_windows_if_detached()
 
 _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
-    "init": ("codepilot.commands.config_cmd", "init_config"),
+    "init": ("codepilot.commands.init", "init_"),
     "ai": ("codepilot.commands.ai", "ai"),
     "binary": ("codepilot.commands.binary", "binary"),
     "config": ("codepilot.commands.config_cmd", "config_group"),

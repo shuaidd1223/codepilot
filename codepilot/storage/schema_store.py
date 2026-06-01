@@ -132,25 +132,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS service_states (
-    service     TEXT NOT NULL,
-    scope       TEXT NOT NULL DEFAULT '',
-    pid         INTEGER,
-    status      TEXT NOT NULL DEFAULT 'running',
-    log_path    TEXT,
-    heartbeat_at TEXT,
-    meta        TEXT,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (service, scope)
-);
-
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_task_logs_task_id ON task_logs(task_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
 CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session_id);
-CREATE INDEX IF NOT EXISTS idx_service_states_service ON service_states(service);
 """
 
 
@@ -178,6 +164,7 @@ def _mig_4_task_source(conn: sqlite3.Connection) -> None:
 
 def _mig_5_dedup_key(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "tasks", "dedup_key", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project_dedup ON tasks(project, dedup_key)")
 
 
 def _mig_6_fallback_reason(conn: sqlite3.Connection) -> None:

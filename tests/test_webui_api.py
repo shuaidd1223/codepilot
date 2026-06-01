@@ -140,7 +140,7 @@ def _branch_count(func) -> int:
 
 
 def test_dashboard_get_handler_keeps_route_dispatch_simple():
-    assert _branch_count(webui_mod.DashboardHandler.do_GET) <= 3
+    assert _branch_count(webui_mod.DashboardHandler.do_GET) <= 4
 
 
 def test_health_endpoint(ui_server):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 from rich import box
 from rich.console import Console
@@ -192,6 +194,23 @@ def _resolve_project(ctx: click.Context, param: str, value: str | None) -> str |
         echo(f"[red]错误: 项目 '{value}' 未注册[/red]")
         raise click.Abort()
     return str(proj["name"])
+
+
+def resolve_project_info(project: str | None) -> dict:
+    """解析项目名称为完整项目信息字典（含 name/path），支持自动检测。
+
+    This is the canonical project resolver used across commands.
+    """
+    db.init_db()
+    if project:
+        found = db.get_project(project)
+        if not found:
+            raise click.ClickException(f"项目 '{project}' 未注册。")
+        return found
+    found = db.find_project_by_path(Path.cwd())
+    if not found:
+        raise click.ClickException("当前目录不属于已注册项目；请使用 -p/--project 指定项目。")
+    return found
 
 
 @click.command(context_settings={"allow_interspersed_args": False})
