@@ -41,15 +41,19 @@ def build_launch_plan(
             "text",
         ]
     else:
-        # Interactive TUI. --append-system-prompt silently extends the system prompt
-        # so Claude responds in Chinese without producing a visible turn on launch.
-        command = [
-            *base,
-            "--append-system-prompt",
-            interaction_instructions(language),
-        ]
+        # Interactive TUI.
         if session_id:
-            command.extend(["--resume", session_id])
+            # Resuming an existing session — the system prompt is already
+            # baked into the transcript, so we must NOT append it again.
+            command = [*base, "--resume", session_id]
+        else:
+            # --append-system-prompt silently extends the system prompt
+            # so Claude responds in Chinese without producing a visible turn on launch.
+            command = [
+                *base,
+                "--append-system-prompt",
+                interaction_instructions(language),
+            ]
     return LaunchPlan(
         agent="claude",
         command=command,

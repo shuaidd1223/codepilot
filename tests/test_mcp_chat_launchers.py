@@ -86,7 +86,7 @@ def test_claude_launcher_with_session_resumes_interactive_tui(tmp_path: Path):
     )
 
     assert plan.command[-2:] == ["--resume", "ses-abc"]
-    assert "--append-system-prompt" in plan.command
+    assert "--append-system-prompt" not in plan.command
     assert "-p" not in plan.command
 
 

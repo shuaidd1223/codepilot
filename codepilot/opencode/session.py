@@ -636,7 +636,7 @@ def _sync_project_model_after_headless(project_name: str, project_path: Path) ->
         sync_latest_project_model_selection(
             project_name,
             project_path,
-            db_path=opencode_runtime_db_path(project_name, project_path=project_path),
+            db_path=opencode_runtime_db_path(project_name),
         )
     except Exception:
         return

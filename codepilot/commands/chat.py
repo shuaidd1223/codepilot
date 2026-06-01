@@ -321,7 +321,7 @@ def _detect_session_agent(*, session: str, project: str | None) -> str | None:
 def _opencode_session_exists_for_scope(scope: str, project_path: Path, session_id: str) -> bool:
     if not scope or not session_id:
         return False
-    db_path = opencode_runtime_db_path(scope, project_path=project_path)
+    db_path = opencode_runtime_db_path(scope)
     if not db_path.is_file():
         return False
     directory = str(Path(project_path).resolve())
@@ -346,6 +346,24 @@ def _opencode_session_exists_for_scope(scope: str, project_path: Path, session_i
 
 def _resolve_resume_session_id(launch: _PreparedChatLaunch) -> str:
     if launch.requested_session:
+        # When the user explicitly requested a session, prefer it —
+        # but fall back to the actual latest session id when the two
+        # diverge (e.g. the resume flag was ignored by the agent).
+        if launch.agent == "opencode" and launch.opencode_db_path is not None:
+            latest = load_latest_project_session_id(
+                launch.cwd,
+                db_path=launch.opencode_db_path,
+            )
+            if latest and latest != launch.requested_session:
+                return latest
+        if launch.agent == "claude":
+            latest = latest_claude_session_id(launch.cwd)
+            if latest and latest != launch.requested_session:
+                return latest
+        if launch.agent == "codex":
+            latest = latest_codex_session_id(launch.cwd)
+            if latest and latest != launch.requested_session:
+                return latest
         return launch.requested_session
     if launch.agent == "opencode" and launch.opencode_db_path is not None:
         return load_latest_project_session_id(
@@ -566,7 +584,7 @@ def _prepare_mcp_agent_chat(
     runtime_scope = server_project or cwd.name
     is_opencode = family is not None and family.name == "opencode"
     source_root = _codepilot_source_root()
-    opencode_db = opencode_runtime_db_path(runtime_scope, project_path=cwd) if is_opencode else None
+    opencode_db = opencode_runtime_db_path(runtime_scope) if is_opencode else None
     session_id = str(session or "").strip()
     config_path = (
         opencode_runtime_config_path(runtime_scope, project_path=cwd)
