@@ -172,7 +172,6 @@ def _build_command(
         "-m",
         "PyInstaller",
         "--noconfirm",
-        "--onefile",
         "--name",
         name,
         "--paths",

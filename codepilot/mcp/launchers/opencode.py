@@ -11,7 +11,7 @@ from codepilot.mcp.launchers import (
     MCPServerSpec,
 )
 from codepilot.opencode.config import OpenCodeConfig, default_opencode_config
-from codepilot.opencode.paths import opencode_runtime_config_path
+from codepilot.opencode.paths import opencode_runtime_config_path, opencode_runtime_root
 from codepilot.opencode.profile import build_opencode_profile
 
 
@@ -25,16 +25,23 @@ def build_launch_plan(
     opencode_config: OpenCodeConfig | None = None,
     session: str | None = None,
     language: str = "en",
+    scope: str | None = None,
 ) -> LaunchPlan:
     target_path = Path(config_path or opencode_runtime_config_path())
     effective_config = opencode_config or default_opencode_config()
     if opencode_config is None or not getattr(effective_config, "agent_language", ""):
         effective_config.agent_language = language
+    # *base* is the user-global runtime root for tool-generated files
+    # (tui.json, agents/, instructions/, commands/, plugins/).
+    # *config_path* may be a project-level path for opencode.json only.
+    # XDG data / cache / state also stay in the user-global root.
+    runtime_root = opencode_runtime_root(scope or None)
     profile = build_opencode_profile(
         effective_config,
         mcp_servers=mcp_servers,
-        base_path=target_path.parent,
+        base_path=runtime_root,
         config_path=target_path,
+        data_base_path=runtime_root,
     )
     command = [executable]
     default_agent = str(profile.config.get("default_agent") or "").strip()

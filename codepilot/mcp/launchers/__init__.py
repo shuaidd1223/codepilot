@@ -52,6 +52,7 @@ def build_mcp_launch_plan(
     session: str | None = None,
     opencode_session: str | None = None,  # deprecated alias
     language: str = "en",
+    scope: str | None = None,
 ) -> LaunchPlan:
     """Build a dry launch plan for one supported chat agent family."""
     family = get_family(agent)
@@ -98,6 +99,7 @@ def build_mcp_launch_plan(
         opencode_config=opencode_config,
         session=effective_session,
         language=language,
+        scope=scope,
     )
 
 

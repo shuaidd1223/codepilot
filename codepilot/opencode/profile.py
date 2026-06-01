@@ -32,12 +32,20 @@ def build_opencode_profile(
     mcp_servers: Mapping[str, Any] | Iterable[MCPServerSpec] | None,
     base_path: str | Path | None = None,
     config_path: str | Path | None = None,
+    data_base_path: str | Path | None = None,
 ) -> OpenCodeProfilePlan:
     config = config or default_opencode_config()
+    # *base* is the user-global runtime root where tool-generated files live
+    # (tui.json, agents/, instructions/, commands/, plugins/).  Only
+    # opencode.json may optionally be written to a separate project-level
+    # path so users can see and edit their permission settings — the same
+    # pattern as .claude/settings.json.
     base = Path(base_path) if base_path is not None else opencode_runtime_root()
+    # XDG data / cache / state always live in the user-global runtime root.
+    data_base = Path(data_base_path) if data_base_path is not None else base
     resolved_config_path = Path(config_path) if config_path is not None else base / "opencode.json"
-    if config_path is not None:
-        base = resolved_config_path.parent
+    # tui.json, config/ etc. always stay under *base* — they are CodePilot
+    # tool internals, not project-editable artifacts.
     tui_path = base / "tui.json"
     config_dir = base / "config"
 
@@ -102,9 +110,9 @@ def build_opencode_profile(
             "OPENCODE_CONFIG": str(resolved_config_path),
             "OPENCODE_TUI_CONFIG": str(tui_path),
             "OPENCODE_CONFIG_DIR": str(config_dir),
-            "XDG_DATA_HOME": str(base / "xdg-data"),
-            "XDG_CACHE_HOME": str(base / "xdg-cache"),
-            "XDG_STATE_HOME": str(base / "xdg-state"),
+            "XDG_DATA_HOME": str(data_base / "xdg-data"),
+            "XDG_CACHE_HOME": str(data_base / "xdg-cache"),
+            "XDG_STATE_HOME": str(data_base / "xdg-state"),
             "OPENCODE_DISABLE_TERMINAL_TITLE": "1",
             "CODEPILOT_OPENCODE_BRAND_NAME": config.profile.brand_name,
         },

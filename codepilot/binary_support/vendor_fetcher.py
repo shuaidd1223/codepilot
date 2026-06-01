@@ -387,11 +387,28 @@ def extract_vendor_binary(
     return target_path
 
 
+def _find_bundled_vendor_dir(source_binary: Path) -> Path | None:
+    """Locate the vendor directory next to a onefile or onedir build artifact.
+
+    For onefile ``<dist>/codepilot.exe`` the vendor sits at ``<dist>/bin/vendor``.
+    For onedir  ``<dist>/codepilot/codepilot.exe`` it is one level up:
+    ``<dist>/bin/vendor``.
+    """
+    candidates = [
+        source_binary.parent / "bin" / "vendor",           # onefile or onedir sibling
+        source_binary.parent.parent / "bin" / "vendor",    # onedir (exe is one level deeper)
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def install_bundled_vendor(source_binary: str | Path, *, target_dir: str | Path) -> list[Path]:
     """Copy bundled vendor files adjacent to a built binary into the install bin directory."""
     source = Path(source_binary).expanduser().resolve()
-    source_vendor_dir = source.parent / "bin" / "vendor"
-    if not source_vendor_dir.exists():
+    source_vendor_dir = _find_bundled_vendor_dir(source)
+    if source_vendor_dir is None:
         return []
 
     destination = Path(target_dir).expanduser().resolve() / "vendor"

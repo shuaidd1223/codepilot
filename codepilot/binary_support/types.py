@@ -9,12 +9,13 @@ from pathlib import Path
 
 @dataclass
 class BuildResult:
-    """Result of a native binary build."""
+    """Result of a native binary build (always onedir)."""
 
     binary_path: Path
     dist_dir: Path
     build_dir: Path
     platform_tag: str
+    source_dir: Path
 
 
 @dataclass

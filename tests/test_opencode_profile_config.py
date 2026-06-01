@@ -263,26 +263,30 @@ def test_opencode_profile_enables_mouse_for_permission_dialog_clicks(tmp_path: P
     assert tui_json["mouse"] is True
 
 
-def test_opencode_launcher_injects_profile_paths_and_commands(tmp_path: Path):
+def test_opencode_launcher_injects_profile_paths_and_commands(tmp_path: Path, monkeypatch):
+    data_root = tmp_path / "data-root"
+    monkeypatch.setattr("codepilot.opencode.paths.global_storage_root", lambda: data_root)
     plan = build_mcp_launch_plan(
         "opencode",
         executable="opencode-bin",
         mcp_servers={"codepilot": {"command": "python", "args": ["-m", "codepilot"]}},
         config_path=tmp_path / "opencode.json",
+        scope="demo",
     )
 
     assert plan.command == ["opencode-bin", "--agent", "codepilot"]
+    runtime_base = data_root / "opencode" / "demo"
     assert plan.env == {
         "OPENCODE_CONFIG": str(tmp_path / "opencode.json"),
-        "OPENCODE_TUI_CONFIG": str(tmp_path / "tui.json"),
-        "OPENCODE_CONFIG_DIR": str(tmp_path / "config"),
-        "XDG_DATA_HOME": str(tmp_path / "xdg-data"),
-        "XDG_CACHE_HOME": str(tmp_path / "xdg-cache"),
-        "XDG_STATE_HOME": str(tmp_path / "xdg-state"),
+        "OPENCODE_TUI_CONFIG": str(runtime_base / "tui.json"),
+        "OPENCODE_CONFIG_DIR": str(runtime_base / "config"),
+        "XDG_DATA_HOME": str(runtime_base / "xdg-data"),
+        "XDG_CACHE_HOME": str(runtime_base / "xdg-cache"),
+        "XDG_STATE_HOME": str(runtime_base / "xdg-state"),
         "OPENCODE_DISABLE_TERMINAL_TITLE": "1",
         "CODEPILOT_OPENCODE_BRAND_NAME": "CodePilot",
     }
-    assert str(tmp_path / "config" / "agents" / "codepilot.md") in plan.config_files
+    assert str(runtime_base / "config" / "agents" / "codepilot.md") in plan.config_files
     payload = json.loads(plan.config_files[str(tmp_path / "opencode.json")])
     assert payload["default_agent"] == "codepilot"
     assert "Prefer CodePilot MCP tools" in payload["agent"]["codepilot"]["prompt"]

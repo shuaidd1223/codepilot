@@ -10,7 +10,6 @@ import click
 from codepilot import __version__
 from codepilot.core.console_encoding import configure_console_encoding
 from codepilot.core.runtime import silence_subprocess_windows_if_detached
-from codepilot.storage.database import init_db
 
 configure_console_encoding()
 silence_subprocess_windows_if_detached()
@@ -214,7 +213,8 @@ def main(
     # ── 自安装检测结束 ───────────────────────────────────────────
 
     if not json_mode and ctx.invoked_subcommand != "setup":
-        init_db()
+        from codepilot.storage.database import init_db as _init_db
+        _init_db()
 
     if ctx.invoked_subcommand is None and not ctx.args:
         if chat_session or click.get_text_stream("stdin").isatty():

@@ -183,9 +183,10 @@ def test_binary_build_command_invokes_pyinstaller(tmp_path, monkeypatch):
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
-        binary_path = dist_dir / "codepilot"
-        binary_path.parent.mkdir(parents=True, exist_ok=True)
-        binary_path.write_text("exe", encoding="utf-8")
+        # onedir mode: the exe lives inside a subdirectory
+        _onedir = dist_dir / "codepilot"
+        _onedir.mkdir(parents=True, exist_ok=True)
+        (_onedir / "codepilot").write_text("exe", encoding="utf-8")
 
         class Result:
             returncode = 0
@@ -198,8 +199,10 @@ def test_binary_build_command_invokes_pyinstaller(tmp_path, monkeypatch):
 
     result = binary_mod.build_binary(project_root=tmp_path, output_dir=dist_dir, clean=True)
 
-    assert result.binary_path == (dist_dir / "codepilot").resolve()
-    assert "--onefile" in captured["cmd"]
+    assert result.binary_path == (dist_dir / "codepilot" / "codepilot").resolve()
+    assert result.source_dir == (dist_dir / "codepilot").resolve()
+    # onedir only — no onefile flag
+    assert "--onefile" not in captured["cmd"]
     assert "--collect-all" in captured["cmd"]
     data_args = [captured["cmd"][idx + 1] for idx, item in enumerate(captured["cmd"]) if item == "--add-data"]
     assert any(str(tmp_path / "codepilot" / "web") in item and "codepilot/web" in item for item in data_args)
@@ -307,7 +310,7 @@ def test_create_release_bundle_generates_manifest_checksums_and_archives(tmp_pat
     assert manifest["artifacts"][0]["archive_format"] == "zip"
     assert "install_script" in manifest["artifacts"][0]
     checksums = result.checksum_path.read_text(encoding="utf-8")
-    assert "windows-x86_64/codepilot.exe" in checksums.replace("\\", "/")
+    assert "windows-x86_64/codepilot/codepilot.exe" in checksums.replace("\\", "/")
     assert artifact.archive_path.name in checksums
     assert "发布说明" in result.guide_path.read_text(encoding="utf-8")
     assert "AI 调用手册" in result.ai_guide_path.read_text(encoding="utf-8")
@@ -347,7 +350,7 @@ def test_create_release_bundle_succeeds_without_sidecars(tmp_path):
 
 
 def test_windows_install_script_cleans_legacy_cmd_and_prioritizes_path():
-    script = binary_mod._windows_install_script("codepilot.exe")
+    script = binary_mod._windows_install_script("codepilot", "codepilot.exe")
 
     assert "del /F /Q \"%TARGET_DIR%\\codepilot.cmd\"" in script
     assert "del /F /Q \"%TARGET_DIR%\\codepilot.bat\"" in script
@@ -502,6 +505,7 @@ def test_binary_release_build_current_merges_new_artifact(tmp_path, monkeypatch)
             dist_dir=built_dir.resolve(),
             build_dir=(tmp_path / "build").resolve(),
             platform_tag="linux-x86_64",
+            source_dir=built_dir.resolve(),
         ),
     )
 
@@ -510,8 +514,8 @@ def test_binary_release_build_current_merges_new_artifact(tmp_path, monkeypatch)
 
     assert result.exit_code == 0
     release_dir = tmp_path / "dist" / "release" / "codepilot-2.0.0"
-    assert (release_dir / "windows-x86_64" / "codepilot.exe").exists()
-    assert (release_dir / "linux-x86_64" / "codepilot").exists()
+    assert (release_dir / "windows-x86_64" / "codepilot" / "codepilot.exe").exists()
+    assert (release_dir / "linux-x86_64" / "codepilot" / "codepilot").exists()
 
 
 def test_binary_release_build_current_works_without_existing_artifacts(tmp_path, monkeypatch):
@@ -528,6 +532,7 @@ def test_binary_release_build_current_works_without_existing_artifacts(tmp_path,
             dist_dir=built_dir.resolve(),
             build_dir=(tmp_path / "build").resolve(),
             platform_tag="windows-x86_64",
+            source_dir=built_dir.resolve(),
         ),
     )
 
@@ -536,7 +541,7 @@ def test_binary_release_build_current_works_without_existing_artifacts(tmp_path,
 
     assert result.exit_code == 0
     release_dir = tmp_path / "dist" / "release" / "codepilot-3.0.0"
-    assert (release_dir / "windows-x86_64" / "codepilot.exe").exists()
+    assert (release_dir / "windows-x86_64" / "codepilot" / "codepilot.exe").exists()
 
 
 def test_create_release_bundle_uses_tar_gz_for_linux(tmp_path):
@@ -575,6 +580,7 @@ def test_binary_prepare_command_updates_version_and_verifies_release(tmp_path, m
             dist_dir=built_dir.resolve(),
             build_dir=(tmp_path / "build").resolve(),
             platform_tag="windows-x86_64",
+            source_dir=built_dir.resolve(),
         ),
     )
 

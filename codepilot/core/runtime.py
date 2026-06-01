@@ -14,8 +14,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from codepilot.storage import database as db
 from codepilot.core.text_decode import decode_subprocess_text
+
+
+def _db():
+    """Lazy accessor — avoids loading the full database stack at import time."""
+    from codepilot.storage import database as _database
+    return _database
 
 HEARTBEAT_INTERVAL_SECONDS = 3
 STALE_AFTER_SECONDS = 600
@@ -483,7 +488,7 @@ def update_task_runtime(
     if last_output is not None:
         updates["last_output"] = last_output
     updates["heartbeat_at"] = (heartbeat_at or datetime.now()).isoformat()
-    return db.update_task_if_status(task_id, "in_progress", **updates)
+    return _db().update_task_if_status(task_id, "in_progress", **updates)
 
 
 def clear_task_runtime(task_id: int, **extra_fields) -> dict | None:
@@ -494,7 +499,7 @@ def clear_task_runtime(task_id: int, **extra_fields) -> dict | None:
     running. The pointer is only reset when a brand-new run starts
     (``save_task_runtime``) or when cleanup finds the file missing.
     """
-    return db.update_task(
+    return _db().update_task(
         task_id,
         run_phase=None,
         heartbeat_at=None,
@@ -505,17 +510,17 @@ def clear_task_runtime(task_id: int, **extra_fields) -> dict | None:
 
 def request_task_stop(task_id: int, reason: str = "") -> dict | None:
     """Mark a task for cancellation; the runner will pick this up on the next heartbeat."""
-    return db.update_task(task_id, stop_requested=1, stop_reason=(reason or "已收到停止请求"))
+    return _db().update_task(task_id, stop_requested=1, stop_reason=(reason or "已收到停止请求"))
 
 
 def clear_task_stop(task_id: int) -> dict | None:
     """Clear any pending stop request."""
-    return db.update_task(task_id, stop_requested=0, stop_reason=None)
+    return _db().update_task(task_id, stop_requested=0, stop_reason=None)
 
 
 def get_stop_request(task_id: int) -> tuple[bool, str]:
     """Return whether a task has a pending stop request and its reason."""
-    task = db.get_task(task_id)
+    task = _db().get_task(task_id)
     if not task:
         return False, ""
     return bool(task.get("stop_requested")), (task.get("stop_reason") or "").strip()
@@ -571,7 +576,7 @@ def runtime_summary(task: dict, *, stale_after_seconds: int = STALE_AFTER_SECOND
 
 def list_live_tasks(project: Optional[str] = None) -> list[dict]:
     """Return running tasks whose worker pid is still alive."""
-    tasks = db.list_tasks(project=project, status="in_progress")
+    tasks = _db().list_tasks(project=project, status="in_progress")
     return [task for task in tasks if is_process_alive(task.get("active_pid"))]
 
 
@@ -584,7 +589,7 @@ def reap_stalled_tasks(project: Optional[str] = None, *, stale_after_seconds: in
     """
     now = datetime.now()
     reaped: list[dict] = []
-    for task in db.list_tasks(project=project, status="in_progress"):
+    for task in _db().list_tasks(project=project, status="in_progress"):
         heartbeat_at = task.get("heartbeat_at") or task.get("started_at")
         if not heartbeat_at:
             continue
@@ -612,9 +617,9 @@ def reap_stalled_tasks(project: Optional[str] = None, *, stale_after_seconds: in
             f"任务运行心跳已超过 {stale_after_seconds} 秒，且执行进程不存在。"
             f"{action_text}"
         )
-        updated = db.increment_task_retry(task["id"], message[:4000])
+        updated = _db().increment_task_retry(task["id"], message[:4000])
         if exhausted:
-            updated = db.update_task(
+            updated = _db().update_task(
                 task["id"],
                 completed_at=now.isoformat(),
                 stop_requested=0,

@@ -47,7 +47,7 @@ def binary_build(
     target_dir: Path | None,
     register_path: bool,
 ):
-    """使用 PyInstaller 为当前操作系统构建单文件二进制。"""
+    """使用 PyInstaller 为当前操作系统构建二进制（onedir 目录模式，启动无解压延迟）。"""
     project_root = Path.cwd()
     try:
         bundle_providers = vendor_fetcher.parse_bundle_cli_list(bundle_cli)

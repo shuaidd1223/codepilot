@@ -321,7 +321,7 @@ def _detect_session_agent(*, session: str, project: str | None) -> str | None:
 def _opencode_session_exists_for_scope(scope: str, project_path: Path, session_id: str) -> bool:
     if not scope or not session_id:
         return False
-    db_path = opencode_runtime_db_path(scope)
+    db_path = opencode_runtime_db_path(scope, project_path=project_path)
     if not db_path.is_file():
         return False
     directory = str(Path(project_path).resolve())
@@ -566,10 +566,10 @@ def _prepare_mcp_agent_chat(
     runtime_scope = server_project or cwd.name
     is_opencode = family is not None and family.name == "opencode"
     source_root = _codepilot_source_root()
-    opencode_db = opencode_runtime_db_path(runtime_scope) if is_opencode else None
+    opencode_db = opencode_runtime_db_path(runtime_scope, project_path=cwd) if is_opencode else None
     session_id = str(session or "").strip()
     config_path = (
-        opencode_runtime_config_path(runtime_scope)
+        opencode_runtime_config_path(runtime_scope, project_path=cwd)
         if is_opencode
         else None
     )
@@ -587,6 +587,7 @@ def _prepare_mcp_agent_chat(
         else None,
         session=session_id or None,
         language=str(getattr(getattr(cfg, "automation", None), "agent_language", "en") or "en"),
+        scope=runtime_scope if is_opencode else None,
     )
     if plan.config_files:
         _write_launch_config_files(plan.config_files, cwd=cwd)
