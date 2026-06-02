@@ -7,6 +7,7 @@ keeps running after the launching terminal is closed.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import subprocess
@@ -30,6 +31,8 @@ from codepilot.core.service_launcher import (
     hidden_windows_startupinfo,
 )
 from codepilot.core.text_decode import decode_subprocess_text
+
+logger = logging.getLogger(__name__)
 
 
 STATE_DIR = global_storage_root() / "webui"
@@ -119,7 +122,7 @@ def _read_pid() -> int | None:
         try:
             return int(state["pid"])
         except Exception:
-            pass
+            logger.debug("Failed to parse PID from Web UI service state", exc_info=True)
     return None
 
 
@@ -262,7 +265,7 @@ def _spawn_detached(host: str, port: int, project: str = "") -> subprocess.Popen
         log_fp.write(f"\n--- start {_now_iso()} host={host} port={port} ---\n".encode("utf-8"))
         log_fp.flush()
     except Exception:
-        pass
+        logger.debug("Failed to write log header in _spawn_detached", exc_info=True)
 
     cmd = _foreground_ui_command(host, port, project=project)
 
@@ -337,7 +340,7 @@ def start_cmd(host: str | None, port: int | None, open_browser: bool, start_daem
         try:
             tail = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-1500:]
         except Exception:
-            pass
+            logger.debug("Failed to read Web UI log tail after startup failure", exc_info=True)
         echo(f"[red]Web UI 启动后立即退出（exit={proc.returncode}）[/red]")
         if tail:
             echo(f"[dim]--- 日志尾部 ---\n{tail}[/dim]")
@@ -359,7 +362,7 @@ def start_cmd(host: str | None, port: int | None, open_browser: bool, start_daem
         try:
             webbrowser.open(url)
         except Exception:
-            pass
+            logger.debug("Failed to open browser for Web UI", exc_info=True)
 
 
 def _ensure_daemon_started(project: str = "") -> None:
@@ -427,7 +430,7 @@ def stop_cmd() -> None:
             meta=state_meta,
         )
     except Exception:
-        pass
+        logger.debug("Failed to update Web UI service state during stop", exc_info=True)
 
     failures: list[int] = []
     for pid in targets:

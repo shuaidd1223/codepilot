@@ -167,7 +167,7 @@ def _spawn_detached_daemon(
         log_fp.write(f"\n--- start {_now_iso()} project={project or 'all'} interval={interval} ---\n".encode("utf-8"))
         log_fp.flush()
     except Exception:
-        pass
+        logger.debug("Failed to write daemon log header in _spawn_detached_daemon", exc_info=True)
 
     cmd = codepilot_command(
         "daemon",
@@ -239,7 +239,7 @@ def start_daemon_service(
             try:
                 tail = log_file.read_text(encoding="utf-8", errors="replace")[-1500:]
             except Exception:
-                pass
+                logger.debug("Failed to read daemon log tail after startup failure", exc_info=True)
             raise RuntimeError(f"daemon 启动后立即退出（exit={proc.returncode}）\n{tail}")
         last_status = daemon_service_status(project)
         if last_status["running"]:
@@ -252,7 +252,7 @@ def start_daemon_service(
     try:
         tail = log_file.read_text(encoding="utf-8", errors="replace")[-1500:]
     except Exception:
-        pass
+        logger.debug("Failed to read daemon log tail after startup timeout", exc_info=True)
     raise RuntimeError(f"daemon 启动请求已发出，但 15s 内未进入运行状态。\n{tail}")
 
 
@@ -318,7 +318,7 @@ def _stop_requested(project: str | None = None) -> bool:
     try:
         db._invalidate_service_state_caches()
     except Exception:
-        pass
+        logger.debug("Failed to invalidate service state caches in _stop_requested", exc_info=True)
     state = db.get_service_state("daemon", _service_scope(project))
     if not state:
         return False
@@ -339,7 +339,7 @@ def _tick_heartbeat(project: str | None = None) -> None:
     try:
         db._invalidate_service_state_caches()
     except Exception:
-        pass
+        logger.debug("Failed to invalidate service state caches in _tick_heartbeat", exc_info=True)
     state = db.get_service_state("daemon", _service_scope(project))
     current_status = str((state or {}).get("status") or "").strip().lower()
     status = "stopping" if current_status == "stopping" else "running"

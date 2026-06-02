@@ -7,6 +7,7 @@ isolated from shell selection and plain subprocess helpers.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -26,6 +27,8 @@ from codepilot.core.runtime import (
     update_task_runtime,
 )
 from codepilot.core.text_decode import decode_subprocess_text
+
+logger = logging.getLogger(__name__)
 
 
 class TaskCancelled(RuntimeError):
@@ -413,7 +416,7 @@ class _LiveOutputProcessor:
                     },
                 )
             except Exception:
-                pass
+                logger.debug("Failed to emit log stream event via progress_bus", exc_info=True)
             cursor = end_offset
 
     def _emit_progress_line(self, stripped: str) -> None:
@@ -426,7 +429,7 @@ class _LiveOutputProcessor:
             if styled and self.status_console is not None:
                 self.status_console.print(f"    {styled}")
         except Exception:
-            pass
+            logger.debug("Failed to print styled output to status console", exc_info=True)
         try:
             progress_bus.emit(
                 task_id=self.task_id,
@@ -436,7 +439,7 @@ class _LiveOutputProcessor:
                 extra={"source": "subprocess"},
             )
         except Exception:
-            pass
+            logger.debug("Failed to emit progress line via progress_bus", exc_info=True)
 
     def emit(self, raw: str) -> None:
         if not raw:
@@ -454,7 +457,7 @@ class _LiveOutputProcessor:
             self.handle.write(raw)
             self.handle.flush()
         except Exception:
-            pass
+            logger.debug("Failed to write output to log handle", exc_info=True)
         self._emit_log_stream(raw, stream_start)
 
         stripped = raw.rstrip()
@@ -490,7 +493,7 @@ class _LiveOutputProcessor:
                 },
             )
         except Exception:
-            pass
+            logger.debug("Failed to emit run status via progress_bus", exc_info=True)
 
     def seconds_since_last_output(self) -> float:
         return time.monotonic() - self.last_output_monotonic
@@ -541,7 +544,7 @@ def _pump_process_stdout(
         try:
             os.close(pty_master_fd)
         except Exception:
-            pass
+            logger.debug("Failed to close PTY master fd", exc_info=True)
         return
     assert process.stdout is not None
     for raw in process.stdout:
@@ -708,7 +711,7 @@ def _run_command_live(
             try:
                 os.close(pty_slave_fd)
             except Exception:
-                pass
+                logger.debug("Failed to close PTY slave fd", exc_info=True)
         if input_text is not None and process.stdin:
             process.stdin.write(input_text.encode("utf-8"))
             process.stdin.close()
@@ -759,7 +762,7 @@ def _run_command_live(
                 try:
                     process.stdin.close()
                 except Exception:
-                    pass
+                    logger.debug("Failed to close process stdin", exc_info=True)
             if process.poll() is None:
                 deps.stop_process_tree(process.pid)
             reader.join(timeout=2)
