@@ -10,6 +10,16 @@ Given a requirement, inspect the codebase first so the planner can split tasks b
 - Do not run tests.
 - Do not run long or heavy commands.
 
+[Before you start - MANDATORY memory check]
+1. Read `codepilot note show -p <project> --json` to understand past decisions and patterns.
+2. Read `codepilot memory events -p <project> --json` to see auto-captured observations.
+3. Query `codepilot wiki query -p <project> "<keyword>" --json` if the requirement involves build/test/architecture conventions.
+
+[After inspection - SUGGESTED memory write]
+If your findings contain non-obvious patterns or important context, write key observations to memory:
+  `codepilot note add -p <project> "<key finding from inspection>"`
+This helps the planner and later tasks benefit from your inspection work, but only write if there is genuine value.
+
 [Execution rules]
 1. Start from the most relevant files in project context; read 2-5 key files first.
 2. Produce a structured result covering: current state, relevant files, key findings, risks, suggested approach.

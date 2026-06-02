@@ -1,4 +1,4 @@
-"""Phase execution and orchestration for the built-in executor."""
+﻿"""Phase execution and orchestration for the built-in executor."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from codepilot.core.task_mutation_guard import runner_task_context_env
 from codepilot.commands.reviewer_output import ReviewerVerdict, format_findings_for_builder, parse_reviewer_output
 from codepilot.commands.run_shell import PreflightSkipError
 from codepilot.commands.run_builtin_core import (
+    _collect_project_memory_context,
     ExecutionResult,
     _resolve_dual_phase_agents_for_task,
     _runner_module,
@@ -566,6 +567,7 @@ def _run_builder_round(
         review_round=round_num,
         previous_review_feedback=previous_findings,
         language=_agent_language_for_context(ctx),
+        memory_context=_collect_project_memory_context(ctx.project_path),
     )
     try:
         agent, exit_code, output, started = _run_phase_with_tooling_fallback(
@@ -639,6 +641,7 @@ def _run_reviewer_round(
         previous_findings=previous_findings,
         changed_files=changed_files,
         language=_agent_language_for_context(ctx),
+        memory_context=_collect_project_memory_context(ctx.project_path),
     )
     try:
         agent, exit_code, output, started = _run_phase_with_tooling_fallback(
