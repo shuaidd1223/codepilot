@@ -1,18 +1,30 @@
 [project]
 name = "codepilot"
-version = "0.7.5"
+dynamic = ["version"]
 description = "全局编程工作流自动化 CLI 工具"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "帅呆呆", email = "2264505396@qq.com" }]
 keywords = ["automation", "workflow", "claude", "codex", "ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Utilities",
+]
 
 dependencies = [
     "click>=8.1.0",
     "mcp>=1.27.1",
     "rich>=13.0.0",
-    "pydantic>=2.7.0",
+    "pydantic>=2.7.0,<3.0.0",
     "tomli>=2.0.1; python_version < '3.11'",
     "lark-oapi>=1.4.0",
 ]
@@ -27,8 +39,8 @@ build = [
     "pyinstaller>=6.10.0",
 ]
 ai = [
-    "openai>=1.30.0",
-    "anthropic>=0.40.0",
+    "openai>=1.30.0,<2.0.0",
+    "anthropic>=0.40.0,<1.0.0",
 ]
 
 [project.scripts]
@@ -41,6 +53,9 @@ Repository = "https://gitee.com/shuai_dd/CodePilot"
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.dynamic]
+version = {attr = "codepilot._version.__version__"}
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["codepilot*"]
@@ -50,6 +65,37 @@ include = ["codepilot*"]
 
 [tool.setuptools.package-data]
 "codepilot" = ["templates/*.md", "prompts/*.md", "web/*.html", "web/*.css", "web/*.js", "web/*.png", "web/*.ico", "web/components/*.js", "web/boundaries/*.js", "*.mjs"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "W",   # pycodestyle warnings
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+]
+ignore = ["E501"]  # line too long — handled by formatter
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.coverage.run]
+source = ["codepilot"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = [
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "pragma: no cover",
+]
+show_missing = true
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

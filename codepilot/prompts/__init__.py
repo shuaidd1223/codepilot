@@ -24,12 +24,9 @@ from pathlib import Path
 from typing import Mapping
 
 from codepilot.core.config import normalize_agent_input_language
+from codepilot.errors import PromptNotFoundError
 
 _PROMPTS_DIR = Path(__file__).resolve().parent
-
-
-class PromptNotFoundError(LookupError):
-    """Raised when the requested prompt file doesn't exist."""
 
 
 @lru_cache(maxsize=128)

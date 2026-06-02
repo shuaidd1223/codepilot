@@ -25,11 +25,11 @@ class ProviderError(CodePilotError):
 
 
 class UnsupportedAgentError(CodePilotError, ValueError):
-    """不支持的 Agent 类型。已在 ``codepilot/__init__.py`` 中定义。"""
+    """不支持的 Agent 类型（由 ``mcp.launchers`` 导入使用）。"""
 
 
 class PromptNotFoundError(CodePilotError, LookupError):
-    """找不到请求的 Prompt 模板。已在 ``codepilot/__init__.py`` 中定义。"""
+    """找不到请求的 Prompt 模板（由 ``prompts`` 导入使用）。"""
 
 
 # ── 存储错误 ───────────────────────────────────────────────────────────
@@ -45,13 +45,13 @@ class BuildError(CodePilotError):
 
 
 class BuildFixError(CodePilotError, RuntimeError):
-    """build-fix 闭环失败。已在 ``commands/build_fix.py`` 中定义。"""
+    """build-fix 闭环失败（由 ``commands.build_fix`` 导入使用）。"""
 
 
 # ── 外部集成错误 ───────────────────────────────────────────────────────
 
 class VendorFetcherError(CodePilotError, RuntimeError):
-    """Vendor 二进制下载/校验错误。已在 ``binary_support/vendor_fetcher.py`` 中定义。"""
+    """Vendor 二进制下载/校验错误（由 ``binary_support.vendor_fetcher`` 导入使用）。"""
 
 
 class UnsupportedPlatformError(VendorFetcherError):
@@ -63,41 +63,41 @@ class ChecksumMismatchError(VendorFetcherError):
 
 
 class HookError(CodePilotError):
-    """Webhook / 事件插件执行错误。已在 ``core/hook_registry.py`` / ``core/event_plugins.py`` 中定义。"""
+    """Webhook / 事件插件执行错误（由 ``core.hook_registry`` / ``core.event_plugins`` 导入使用）。"""
 
 
 # ── CLI 执行错误 ───────────────────────────────────────────────────────
 
 class ExecError(CodePilotError, ValueError):
-    """CLI 命令执行失败。已在 ``commands/exec_cmd.py`` 中定义。"""
+    """CLI 命令执行失败（由 ``commands.exec_cmd`` 导入使用）。"""
 
 
 class SelfUpdateError(CodePilotError, ValueError):
-    """self-update 流程错误。已在 ``commands/self_update.py`` 中定义。"""
+    """self-update 流程错误（由 ``commands.self_update`` 导入使用）。"""
 
 
 class SetupError(CodePilotError, ValueError):
-    """项目初始化配置错误。已在 ``commands/setup.py`` 中定义。"""
+    """项目初始化配置错误（由 ``commands.setup`` 导入使用）。"""
 
 
 class WikiError(CodePilotError, ValueError):
-    """Wiki 操作错误。已在 ``commands/wiki.py`` 中定义。"""
+    """Wiki 操作错误（由 ``commands.wiki`` 导入使用）。"""
 
 
 class NoteError(CodePilotError, ValueError):
-    """记事本操作错误。已在 ``commands/note.py`` 中定义。"""
+    """记事本操作错误（由 ``commands.note`` 导入使用）。"""
 
 
 class SkillCatalogError(CodePilotError, ValueError):
-    """Skill 目录加载错误。已在 ``commands/skill_catalog.py`` 中定义。"""
+    """Skill 目录加载错误（由 ``commands.skill_catalog`` 导入使用）。"""
 
 
 class CronExpressionError(CodePilotError, ValueError):
-    """Cron 表达式解析错误。已在 ``scheduled/triggers.py`` 中定义。"""
+    """Cron 表达式解析错误（由 ``scheduled.triggers`` 导入使用）。"""
 
 
 class PreflightSkipError(CodePilotError, RuntimeError):
-    """执行前检查跳过。已在 ``commands/run_shell.py`` 中定义。"""
+    """执行前检查跳过（由 ``commands.run_shell`` 导入使用）。"""
 
 
 # ── MCP 错误 ───────────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ class MCPError(CodePilotError):
 
 
 class CodePilotToolError(MCPError, Exception):
-    """MCP 工具调用失败。已在 ``mcp/protocol.py`` 中定义。"""
+    """MCP 工具调用失败（由 ``mcp.protocol`` 导入使用）。"""
 
 
 # ── Web UI 错误 ────────────────────────────────────────────────────────

@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import sys
+
+from rich.console import Console
+
 from codepilot.core.config import ConfigError as RuntimeConfigError
-from codepilot.errors import CodePilotError, ConfigError as LegacyConfigError, ProviderError
+from codepilot.errors import CodePilotError, ProviderError
+from codepilot.errors import ConfigError as LegacyConfigError
+
+_stderr_console = Console(file=sys.stderr, stderr=True, highlight=False)
 
 
 CONFIG_ERROR_TYPES = (RuntimeConfigError, LegacyConfigError)
@@ -110,6 +117,6 @@ def error_handler(func):
         try:
             return func(*args, **kwargs)
         except CodePilotError as exc:
-            print(format_error(exc, context=func.__name__))
+            _stderr_console.print(format_error(exc, context=func.__name__))
             return None
     return wrapper

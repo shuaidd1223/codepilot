@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from codepilot.ai_support.cli_families import get_family
+from codepilot.errors import UnsupportedAgentError
 
 
 @dataclass(frozen=True)
@@ -34,10 +35,6 @@ class LaunchPlan:
     mcp_config: dict[str, Any]
     config_args: list[str] = field(default_factory=list)
     config_files: dict[str, str] = field(default_factory=dict)
-
-
-class UnsupportedAgentError(ValueError):
-    """Raised when no MCP launcher exists for an agent family."""
 
 
 def build_mcp_launch_plan(

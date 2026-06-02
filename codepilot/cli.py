@@ -74,7 +74,7 @@ _REMOVED_COMMAND_HINTS: dict[str, str] = {
 }
 
 
-def _load_lazy_command(name: str):
+def _load_lazy_command(name: str) -> click.BaseCommand | None:
     spec = _LAZY_COMMANDS.get(name)
     if not spec:
         return None
@@ -86,7 +86,7 @@ def _load_lazy_command(name: str):
 class NaturalLanguageGroup(click.Group):
     """Treat unknown top-level input as a plain-text requirement."""
 
-    def get_command(self, ctx, cmd_name):
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.BaseCommand | None:
         command = super().get_command(ctx, cmd_name)
         if command is not None:
             return command
@@ -98,12 +98,12 @@ class NaturalLanguageGroup(click.Group):
             return super().get_command(ctx, cmd_name)
         return None
 
-    def list_commands(self, ctx):
+    def list_commands(self, ctx: click.Context) -> list[str]:
         static = set(super().list_commands(ctx))
         static.update(_LAZY_COMMANDS.keys())
         return sorted(static)
 
-    def resolve_command(self, ctx, args):
+    def resolve_command(self, ctx: click.Context, args: list[str]) -> tuple[str | None, click.BaseCommand | None, list[str]]:
         if args:
             first = args[0]
             cmd = self.get_command(ctx, first)
@@ -128,8 +128,8 @@ class NaturalLanguageGroup(click.Group):
         return super().resolve_command(ctx, args)
 
 
-def _cn_help_option():
-    def callback(ctx, param, value):
+def _cn_help_option() -> click.Option:
+    def callback(ctx: click.Context, param: click.Parameter, value: bool) -> None:
         if value and not ctx.resilient_parsing:
             click.echo(ctx.get_help(), color=ctx.color)
             ctx.exit()
@@ -174,7 +174,7 @@ def main(
     auto_commit: bool | None,
     max_tasks: int,
     max_retries: int,
-):
+) -> None:
     """CodePilot —— 面向本地工程工作流的纯文本任务规划与执行工具."""
     ctx.ensure_object(dict)
     ctx.obj["json_mode"] = json_mode
@@ -191,15 +191,15 @@ def main(
     # ── 自安装检测 ───────────────────────────────────────────────
     # 当 PyInstaller 打包的 exe 从非安装目录（如下载目录）运行时，
     # 自动完成：复制到安装目录 + 注册 PATH + 创建默认配置。
+    from codepilot.binary_support.paths import default_install_dir, running_binary_path
     from codepilot.binary_support.paths import executable_name as _executable_name
-    from codepilot.binary_support.paths import running_binary_path, default_install_dir
 
     _running = running_binary_path()
     if _running is not None and not os.environ.get("CODEPILOT_PORTABLE"):
         _install_dir = default_install_dir()
         _installed = _install_dir / _executable_name("codepilot")
         if _running.resolve() != _installed.resolve():
-            from codepilot.binary_support.manager import install_binary, ensure_cli_wrappers, ensure_global_config
+            from codepilot.binary_support.manager import ensure_cli_wrappers, ensure_global_config, install_binary
 
             _result = install_binary(binary_path=_running, target_dir=_install_dir, register_path=True)
             ensure_global_config()
