@@ -607,7 +607,7 @@ def _prepare_mcp_agent_chat(
         if is_opencode
         else None,
         session=session_id or None,
-        language=str(getattr(getattr(cfg, "automation", None), "agent_language", "en") or "en"),
+        language=str(getattr(getattr(cfg, "automation", None), "agent_output_language", "zh-CN") or "zh-CN"),
         scope=runtime_scope if is_opencode else None,
     )
     if plan.config_files:

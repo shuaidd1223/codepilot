@@ -8,7 +8,7 @@ from typing import Any
 from codepilot import __version__
 from codepilot.ai_support.agent_commands import _cmd, normalize_command_name
 from codepilot.ai_support.project_metadata import project_metadata
-from codepilot.core.config import normalize_agent_language
+from codepilot.core.config import normalize_agent_input_language
 
 
 def command_manifest(
@@ -22,7 +22,7 @@ def command_manifest(
     command = normalize_command_name(command_name)
     manifest_version = (version or __version__).strip()
     binary = normalize_command_name(binary_name)
-    lang = normalize_agent_language(language)
+    lang = normalize_agent_input_language(language)
     if lang == "en":
         return _english_command_manifest(command=command, version=manifest_version, binary=binary)
     return {

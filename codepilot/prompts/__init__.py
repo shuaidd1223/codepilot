@@ -23,7 +23,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Mapping
 
-from codepilot.core.config import normalize_agent_language
+from codepilot.core.config import normalize_agent_input_language
 
 _PROMPTS_DIR = Path(__file__).resolve().parent
 
@@ -40,7 +40,7 @@ def _read_prompt_file(name: str, language: str = "en") -> str:
     one disk read per prompt per process. Tests that need to re-load after
     editing a file on disk can call :func:`clear_cache`.
     """
-    lang = normalize_agent_language(language)
+    lang = normalize_agent_input_language(language)
     path = _PROMPTS_DIR / f"{name}.{lang}.md"
     if not path.is_file():
         path = _PROMPTS_DIR / f"{name}.md"
@@ -64,7 +64,7 @@ def load_prompt(name: str, /, *, language: str = "en", **kwargs: object) -> str:
     ``format_map`` with a preserving view, so missing keys stay as
     ``{key}`` instead of raising ``KeyError``.
     """
-    template = _read_prompt_file(name, normalize_agent_language(language))
+    template = _read_prompt_file(name, normalize_agent_input_language(language))
     if not kwargs:
         return template
     return template.format_map(_PreservingFormat(kwargs))

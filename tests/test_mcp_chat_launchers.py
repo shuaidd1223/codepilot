@@ -214,7 +214,8 @@ def test_codex_launcher_with_session_resumes_interactive_tui(tmp_path: Path):
     assert "exec" not in plan.command
 
 
-def test_opencode_launcher_uses_config_file_env_injection(tmp_path: Path):
+def test_opencode_launcher_uses_config_file_env_injection(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("codepilot.opencode.paths.global_storage_root", lambda: tmp_path / ".codepilot")
     config_path = tmp_path / "opencode.mcp.json"
 
     plan = build_mcp_launch_plan(
@@ -227,19 +228,20 @@ def test_opencode_launcher_uses_config_file_env_injection(tmp_path: Path):
 
     assert plan.agent == "opencode"
     assert plan.command == ["opencode-bin", "run", "--agent", "codepilot", "Check project health."]
+    runtime_root = tmp_path / ".codepilot" / "opencode" / "default"
     assert plan.env == {
         "OPENCODE_CONFIG": str(config_path),
-        "OPENCODE_TUI_CONFIG": str(tmp_path / "tui.json"),
-        "OPENCODE_CONFIG_DIR": str(tmp_path / "config"),
-        "XDG_DATA_HOME": str(tmp_path / "xdg-data"),
-        "XDG_CACHE_HOME": str(tmp_path / "xdg-cache"),
-        "XDG_STATE_HOME": str(tmp_path / "xdg-state"),
+        "OPENCODE_TUI_CONFIG": str(runtime_root / "tui.json"),
+        "OPENCODE_CONFIG_DIR": str(runtime_root / "config"),
+        "XDG_DATA_HOME": str(runtime_root / "xdg-data"),
+        "XDG_CACHE_HOME": str(runtime_root / "xdg-cache"),
+        "XDG_STATE_HOME": str(runtime_root / "xdg-state"),
         "OPENCODE_DISABLE_TERMINAL_TITLE": "1",
         "CODEPILOT_OPENCODE_BRAND_NAME": "CodePilot",
     }
     assert str(config_path) in plan.config_files
-    assert str(tmp_path / "tui.json") in plan.config_files
-    assert str(tmp_path / "config" / "agents" / "codepilot.md") in plan.config_files
+    assert str(runtime_root / "tui.json") in plan.config_files
+    assert str(runtime_root / "config" / "agents" / "codepilot.md") in plan.config_files
     payload = json.loads(plan.config_files[str(config_path)])
     assert payload["mcp"] == {
         "filesystem": {
@@ -266,7 +268,8 @@ def test_opencode_launcher_without_prompt_starts_interactive_cli(tmp_path: Path)
     assert plan.command == ["opencode-bin", "--agent", "codepilot"]
 
 
-def test_opencode_launcher_with_session_starts_codepilot_profile_session(tmp_path: Path):
+def test_opencode_launcher_with_session_starts_codepilot_profile_session(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("codepilot.opencode.paths.global_storage_root", lambda: tmp_path / ".codepilot")
     config_path = tmp_path / "opencode.mcp.json"
 
     plan = build_mcp_launch_plan(
@@ -277,9 +280,10 @@ def test_opencode_launcher_with_session_starts_codepilot_profile_session(tmp_pat
         opencode_session="ses_123",
     )
 
+    runtime_root = tmp_path / ".codepilot" / "opencode" / "default"
     assert plan.command == ["opencode-bin", "--agent", "codepilot", "-s", "ses_123"]
     assert plan.env["OPENCODE_CONFIG"] == str(config_path)
-    assert plan.env["XDG_DATA_HOME"] == str(tmp_path / "xdg-data")
+    assert plan.env["XDG_DATA_HOME"] == str(runtime_root / "xdg-data")
 
 
 def test_opencode_launcher_run_with_session_uses_json_resume_flag(tmp_path: Path):

@@ -36,6 +36,7 @@ def test_binary_build_bundle_cli_writes_vendor_files_and_manifest(tmp_path, monk
             dist_dir=dist_dir.resolve(),
             build_dir=(tmp_path / "build").resolve(),
             platform_tag="linux-x86_64",
+            source_dir=dist_dir.resolve(),
         ),
     )
     monkeypatch.setattr(vendor_fetcher.platform, "system", lambda: "Linux")

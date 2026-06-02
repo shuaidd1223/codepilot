@@ -67,13 +67,18 @@ def test_skill_list_search_show_enable_disable_json(tmp_path, monkeypatch):
 
 def test_skill_run_rejects_disabled_skill(tmp_path, monkeypatch):
     _init_project(tmp_path, monkeypatch)
+    runner = CliRunner()
 
-    result = CliRunner().invoke(
+    # 先禁用技能
+    disabled = runner.invoke(main, ["skill", "disable", "ralplan", "-p", "project", "--json"])
+    assert disabled.exit_code == 0, disabled.output
+
+    result = runner.invoke(
         main,
         ["skill", "run", "ralplan", "-p", "project", "--input", "add wiki context", "--json"],
     )
 
-    assert result.exit_code == 1
+    assert result.exit_code == 1, result.output
     payload = json.loads(result.output)
     assert payload["ok"] is False
     assert payload["error"]["code"] == "skill_catalog_error"

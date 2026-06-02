@@ -13,7 +13,7 @@ from codepilot.ai_support.agent_support import (
     task_template_schema_json,
     _task_template_markdown,
 )
-from codepilot.core.config import normalize_agent_language
+from codepilot.core.config import normalize_agent_input_language
 
 
 def _language_option(func):
@@ -44,7 +44,7 @@ def ai_manifest(indent: int, version: str | None, command_name: str | None, bina
             version=version,
             command_name=command_name or runtime_command_name(),
             binary_name=binary_name,
-            language=normalize_agent_language(language),
+            language=normalize_agent_input_language(language),
         )
     )
 
@@ -93,7 +93,7 @@ def ai_template(fmt: str, indent: int, command_name: str | None, language: str):
       * --format guide   中文填充指南（Markdown，含示例）
     """
     command = command_name or runtime_command_name()
-    normalized_language = normalize_agent_language(language)
+    normalized_language = normalize_agent_input_language(language)
     fmt_normalized = fmt.lower()
     if fmt_normalized == "json":
         click.echo(task_template_schema_json(indent=indent, command_name=command, language=normalized_language))

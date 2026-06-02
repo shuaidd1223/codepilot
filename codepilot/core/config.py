@@ -24,7 +24,8 @@ from codepilot.core.config_parse import (
     DEFAULT_FALLBACK_CLI_ORDER,
     ConfigError,
     _normalize_optional_agent_name,
-    normalize_agent_language,
+    normalize_agent_input_language,
+    normalize_agent_output_language,
     normalize_preflight_dirty_worktree,
 )
 
@@ -60,7 +61,8 @@ __all__ = [
     "find_project_root",
     "load_config",
     "load_project_config",
-    "normalize_agent_language",
+    "normalize_agent_input_language",
+    "normalize_agent_output_language",
     "normalize_preflight_dirty_worktree",
     "resolve_config_path",
     "resolve_global_config_path",
@@ -187,8 +189,10 @@ class AutomationConfig:
     # 文本模式 CLI 兜底顺序：缺失或不可用时按此列表向后退。
     # 默认 ["claude", "codex", "opencode"]，opencode 作为最终兜底（用已配 API key）。
     fallback_cli_order: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_CLI_ORDER))
-    # 智能体 prompt / 任务内容 / 输出语言偏好。仅影响 agent-facing 内容。
-    agent_language: str = "en"
+    # 智能体输入语言（提示词/技能/模板加载的语言版本）：en 或 zh-CN；默认 en。
+    agent_input_language: str = "en"
+    # 智能体输出语言（AI 输出、任务内容、CLI 消息的语言）：en 或 zh-CN；默认 zh-CN。
+    agent_output_language: str = "zh-CN"
     scheduled_agents: dict[str, ScheduledAgentConfig] = field(default_factory=dict)
     event_agents: dict[str, EventAgentConfig] = field(default_factory=dict)
 
@@ -879,8 +883,10 @@ workflow_auto_max_steps = 1
 workflow_auto_failure_threshold = 1
 # 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。
 fallback_cli_order = ["claude", "codex", "opencode"]
-# 智能体 prompt / 任务内容 / 输出语言偏好：en 或 zh-CN；默认 en。
-agent_language = "en"
+# 智能体输入语言（提示词/技能/模板加载的语言版本）：en 或 zh-CN；默认 en。
+agent_input_language = "en"
+# 智能体输出语言（AI 输出、任务内容、CLI 消息的语言）：en 或 zh-CN；默认 zh-CN。
+agent_output_language = "zh-CN"
 
 [automation.scheduled_agents.task_health]
 enabled = true

@@ -57,3 +57,6 @@
 - 不要把 OpenCode 品牌/TUI/agent/commands 这类工具级定制写到业务项目配置；运行时文件属于用户级 `~/.codepilot/opencode/<项目标识>/`
 - `chat`、Web UI 会话和飞书自由文本统一走 OpenCode + CodePilot MCP；需要结构化产物时显式调用 `plan` 或对应 MCP 工具
 - 外部任务投递必须使用 `codepilot add -f` 并符合 `codepilot ai template --format json` 格式
+- `workflow next` 的 `suggested_command` 仅供展示/审查，绝不自动执行；安全推进只用 `--action <id>` 或 `--auto`
+- 自更新审计 `codepilot self-update --dry-run` 不创建任务、不修改代码，仅产出评估计划
+- MCP 工具开发遵循 `codepilot/mcp/tools/` 下的分类结构（tasks/context/ops/external），新增工具需在对应 `__init__.py` 中注册

@@ -157,11 +157,19 @@ def resolve_dual_phase_agents(
     return builder_agent, reviewer_agent
 
 
-def agent_language_for_config_ref(config_ref: str | Path | dict | None) -> str:
-    """Return the configured agent-facing language for a project/config ref."""
+def agent_input_language_for_config_ref(config_ref: str | Path | dict | None) -> str:
+    """返回项目配置的智能体输入语言（提示词/模板加载版本）。"""
     cfg = load_project_config(config_ref) if config_ref else None
     if cfg and getattr(cfg, "automation", None):
-        return str(getattr(cfg.automation, "agent_language", "en") or "en")
+        return str(getattr(cfg.automation, "agent_input_language", "en") or "en")
+    return "en"
+
+
+def agent_output_language_for_config_ref(config_ref: str | Path | dict | None) -> str:
+    """返回项目配置的智能体输出语言（AI 输出/任务内容语言）。"""
+    cfg = load_project_config(config_ref) if config_ref else None
+    if cfg and getattr(cfg, "automation", None):
+        return str(getattr(cfg.automation, "agent_output_language", "en") or "en")
     return "en"
 
 
@@ -197,7 +205,7 @@ def generate_task_content(
         normalize_agent_name=normalize_agent_name,
         check_provider_availability=check_provider_availability,
         collect_project_context=_collect_project_context,
-        task_prompt_template=_load_prompt("task_single", language=agent_language_for_config_ref(config_ref or project_path)),
+        task_prompt_template=_load_prompt("task_single", language=agent_input_language_for_config_ref(config_ref or project_path)),
         api_provider_keys=set(API_PROVIDERS.keys()),
         cli_provider_keys=set(CLI_PROVIDERS.keys()),
     )
@@ -487,7 +495,7 @@ def _run_opencode_schema_prompt(
 def build_task_markdown_from_plan(task: dict, *, language: str | None = None) -> str:
     """Convert a structured plan item into task markdown using task templates."""
     if language is None:
-        language = agent_language_for_config_ref(Path.cwd())
+        language = agent_output_language_for_config_ref(Path.cwd())
     template_name = "task-template.zh-CN.md" if str(language).lower().startswith("zh") else "task-template.md"
     return _task_planning.build_task_markdown_from_plan(
         task,
@@ -574,7 +582,7 @@ def generate_task_breakdown(
         two_stage=two_stage,
         parse_result=parse_result,
         existing_tasks=existing_tasks,
-        language=agent_language_for_config_ref(config_ref or project_path),
+        language=agent_input_language_for_config_ref(config_ref or project_path),
         normalize_agent_name=normalize_agent_name,
         collect_planner_context=collect_planner_context,
         format_existing_block=format_existing_block,

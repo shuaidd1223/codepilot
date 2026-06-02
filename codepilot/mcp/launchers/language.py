@@ -39,3 +39,26 @@ def with_interaction_instructions(prompt: str, *, language: str = "en") -> str:
 
 def with_chinese_interaction_instructions(prompt: str) -> str:
     return with_interaction_instructions(prompt, language="zh-CN")
+
+
+OUTPUT_LANGUAGE_INSTRUCTIONS: dict[str, str] = {
+    "zh-CN": "\n\n请使用简体中文输出所有自然语言内容。",
+    "en": "",
+}
+
+
+def inject_output_language(prompt: str, *, output_language: str = "en") -> str:
+    """当输入语言 ≠ 输出语言时，在 prompt 末尾注入输出语言指令。
+
+    提示词文件本身不硬编码输出语言——输出语言由 agent_output_language 配置控制，
+    通过此函数在运行时注入。input=en + output=zh-CN 时追加中文输出指令；
+    input=zh-CN + output=en 时追加英文输出指令；相同时不注入。
+    """
+    instruction = OUTPUT_LANGUAGE_INSTRUCTIONS.get(output_language, "")
+    if not instruction:
+        return prompt
+    body = str(prompt or "").strip()
+    # 避免重复注入
+    if instruction.strip() in body:
+        return body
+    return body + instruction

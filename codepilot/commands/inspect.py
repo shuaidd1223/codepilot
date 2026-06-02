@@ -1386,7 +1386,7 @@ def run_inspection(
         project_name=project_name,
         max_new_tasks=max_new_tasks,
         signal_results=signal_results,
-        language=str(getattr(getattr(cfg, "automation", None), "agent_language", "en") or "en"),
+        language=str(getattr(getattr(cfg, "automation", None), "agent_input_language", "en") or "en"),
     )
 
     provider_key = ""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,7 @@ def test_task_worktree_path_uses_project_first_default_base(tmp_path, monkeypatc
     assert worktree_path == resolved_base / "task-7-add-api-endpoint"
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason="git worktree symlinks not supported on Windows")
 def test_git_prepare_and_cleanup_task_worktree(tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()
@@ -105,6 +107,7 @@ def test_git_prepare_and_cleanup_task_worktree(tmp_path):
     assert branch_name not in output
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason="git worktree symlinks not supported on Windows")
 def test_git_prepare_task_worktree_links_common_dependency_dirs(tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()

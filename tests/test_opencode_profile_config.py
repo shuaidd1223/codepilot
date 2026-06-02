@@ -160,7 +160,7 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
         "opencode.json",
         "tui.json",
         "codepilot.md",
-        "codepilot.en.md",
+        "codepilot.zh-CN.md",
     }
 
     opencode_json = json.loads(profile.files[profile.env["OPENCODE_CONFIG"]])
@@ -169,13 +169,13 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
     # instructions 使用绝对路径（OpenCode 源码解析：相对路径走 globUp 从 CWD 向上搜不到 config 目录的文件）
     assert len(opencode_json["instructions"]) == 1
     inst_path = opencode_json["instructions"][0]
-    assert inst_path.endswith("codepilot.en.md")
+    assert inst_path.endswith("codepilot.zh-CN.md")
     assert Path(inst_path).is_absolute()
     assert opencode_json["permission"]["bash"] == "ask"
     assert opencode_json["permission"]["edit"] == "ask"
     assert opencode_json["tools"]["bash"] is True
-    assert "Task Status" in opencode_json["command"]
-    assert opencode_json["command"]["Task Status"]["agent"] == "codepilot"
+    assert "任务状态" in opencode_json["command"]
+    assert opencode_json["command"]["任务状态"]["agent"] == "codepilot"
 
     tui_json = json.loads(profile.files[profile.env["OPENCODE_TUI_CONFIG"]])
     assert tui_json == {
@@ -200,16 +200,16 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
     assert "简体中文" not in agent_doc
 
     instructions_doc = profile.files[
-        str(tmp_path / "tool-runtime" / "opencode" / "config" / "instructions" / "codepilot.en.md")
+        str(tmp_path / "tool-runtime" / "opencode" / "config" / "instructions" / "codepilot.zh-CN.md")
     ]
-    assert "English Interaction Rules" in instructions_doc
+    assert "中文交互规则" in instructions_doc
     # 语言指令全部在 instructions 配置文件中，使用 Markdown 二级标题
-    assert "## General" in instructions_doc
-    assert "## Thinking / Reasoning" in instructions_doc
-    assert "All interactive output must be written in English" in instructions_doc
-    command_doc = profile.files[str(tmp_path / "tool-runtime" / "opencode" / "config" / "commands" / "Task Status.md")]
-    assert "List current CodePilot tasks" in command_doc
-    assert "in English" in command_doc
+    assert "## 总则" in instructions_doc
+    assert "## 思考/推理过程" in instructions_doc
+    assert "所有交互输出必须使用简体中文" in instructions_doc
+    command_doc = profile.files[str(tmp_path / "tool-runtime" / "opencode" / "config" / "commands" / "任务状态.md")]
+    assert "列出当前 CodePilot 任务" in command_doc
+    assert "简体中文" in command_doc
     brand_plugin = profile.files[
         str(tmp_path / "tool-runtime" / "opencode" / "config" / "tui-plugins" / "codepilot-brand.tsx")
     ]
@@ -228,7 +228,7 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
 
 
 def test_opencode_profile_can_generate_chinese_runtime_config(tmp_path: Path):
-    cfg = AgentsConfig.from_dict({"automation": {"agent_language": "zh-CN"}})
+    cfg = AgentsConfig.from_dict({"automation": {"agent_output_language": "zh-CN"}})
     opencode_cfg = build_opencode_config_from_agents_config(cfg)
 
     profile = build_opencode_profile(

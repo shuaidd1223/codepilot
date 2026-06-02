@@ -94,11 +94,14 @@ def test_claude_session_exists_returns_false_for_empty_session_id(tmp_path: Path
 
 
 def test_latest_claude_session_id_skips_subdirectories(tmp_path: Path):
-    root = tmp_path / "projects"
-    project = tmp_path / "myProject"
+    root = tmp_path / "p"
+    project = tmp_path / "proj"
     project.mkdir()
     encoded = encode_claude_project_dir(project)
     target = root / encoded
+    if len(str(target)) > 200:
+        import pytest
+        pytest.skip("Windows path too long for this test")
     target.mkdir(parents=True)
     (target / "abc.jsonl").write_text("{}\n", encoding="utf-8")
     nested = target / "nested.jsonl"

@@ -9,8 +9,9 @@ from codepilot.core.config import AgentsConfig, ConfigError
 def test_config_parse_module_owns_normalizers_and_config_keeps_facade():
     from codepilot.core import config_parse
 
-    assert config_parse.normalize_agent_language("中文") == "zh-CN"
-    assert config_mod.normalize_agent_language is config_parse.normalize_agent_language
+    assert config_parse.normalize_agent_input_language("中文") == "zh-CN"
+    assert config_mod.normalize_agent_input_language is config_parse.normalize_agent_input_language
+    assert config_mod.normalize_agent_output_language is config_parse.normalize_agent_output_language
 
     with pytest.raises(ConfigError) as excinfo:
         config_parse.normalize_preflight_dirty_worktree("archive")

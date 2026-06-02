@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from codepilot.core.config import normalize_agent_language
+from codepilot.core.config import normalize_agent_input_language, normalize_agent_output_language
 from codepilot.mcp.launchers import MCPServerSpec, normalize_mcp_servers
 from codepilot.opencode.config import OpenCodeCommandConfig, OpenCodeConfig, default_opencode_config
 from codepilot.opencode.paths import opencode_runtime_root
@@ -51,7 +51,7 @@ def build_opencode_profile(
 
     agent_name = _agent_name(config)
     commands = _commands(config, agent_name)
-    language = normalize_agent_language(getattr(config, "agent_language", "en"))
+    language = normalize_agent_output_language(getattr(config, "agent_output_language", "zh-CN"))
     # instructions 文件路径解析（OpenCode 源码 packages/opencode/src/session/instruction.ts）：
     # - 相对路径：通过 globUp() 从 CWD（项目根目录）向上搜索，不会到 config 目录下找
     # - 绝对路径：glob(basename, {cwd: dirname}) 直接读取
@@ -129,10 +129,11 @@ def _agent_name(config: OpenCodeConfig) -> str:
 def _agent_payload(config: OpenCodeConfig, agent_name: str) -> dict[str, Any]:
     # 语言与展示规则由 instructions 配置文件维护，
     # agent prompt 只保留功能描述，不重复注入语言指令。
-    language = normalize_agent_language(config.agent_language)
-    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name, language=config.agent_language)
+    output_language = normalize_agent_output_language(config.agent_output_language)
+    input_language = normalize_agent_input_language(config.agent_input_language)
+    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name, language=input_language)
     payload: dict[str, Any] = {
-        "description": config.agent.description or _default_agent_description(config.profile.brand_name, language=language),
+        "description": config.agent.description or _default_agent_description(config.profile.brand_name, language=output_language),
         "prompt": prompt,
     }
     if config.agent.model:
@@ -141,23 +142,24 @@ def _agent_payload(config: OpenCodeConfig, agent_name: str) -> dict[str, Any]:
 
 
 def _agent_markdown(config: OpenCodeConfig, agent_name: str) -> str:
-    language = normalize_agent_language(config.agent_language)
-    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name, language=config.agent_language)
+    output_language = normalize_agent_output_language(config.agent_output_language)
+    input_language = normalize_agent_input_language(config.agent_input_language)
+    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name, language=input_language)
     return (
         f"# {agent_name}\n\n"
-        f"{config.agent.description or _default_agent_description(config.profile.brand_name, language=language)}\n\n"
+        f"{config.agent.description or _default_agent_description(config.profile.brand_name, language=output_language)}\n\n"
         f"{prompt}\n"
     )
 
 
 def _default_agent_description(brand_name: str, *, language: str = "en") -> str:
     brand = str(brand_name or "CodePilot").strip() or "CodePilot"
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_output_language(language) == "en":
         return f"{brand} project workflow agent"
     return f"{brand} 项目工作流智能体"
 
 def _default_agent_prompt(brand_name: str, *, language: str = "en") -> str:
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_output_language(language) == "en":
         return (
             f"You are {brand_name}, a project workflow agent running inside OpenCode. "
             "Prefer CodePilot MCP tools for ALL operations. As a workflow agent, you MUST be proactive:\n\n"
@@ -190,7 +192,7 @@ def _runtime_instructions_content(brand_name: str, *, language: str = "en") -> s
     每次模型调用时发送，不受 agent prompt 工程方式的影响。
     """
     brand = str(brand_name or "CodePilot").strip() or "CodePilot"
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_output_language(language) == "en":
         return (
             "# Language and Display Rules\n"
             "\n"
@@ -248,22 +250,23 @@ def _runtime_instructions_content(brand_name: str, *, language: str = "en") -> s
 
 
 def _runtime_instructions_markdown(brand_name: str, *, language: str = "en") -> str:
-    title = "中文交互规则" if normalize_agent_language(language) == "zh-CN" else "English Interaction Rules"
+    title = "中文交互规则" if normalize_agent_output_language(language) == "zh-CN" else "English Interaction Rules"
     return f"# {brand_name or 'CodePilot'} {title}\n\n{_runtime_instructions_content(brand_name, language=language)}\n"
 
 
 def _commands(config: OpenCodeConfig, agent_name: str) -> dict[str, dict[str, str]]:
-    commands = _default_commands(agent_name, language=config.agent_language)
+    output_language = normalize_agent_output_language(config.agent_output_language)
+    commands = _default_commands(agent_name, language=output_language)
     for name, raw in config.commands.items():
         command_name = str(name).strip()
         if not command_name:
             continue
-        commands[command_name] = _command_payload(raw, agent_name, language=config.agent_language)
+        commands[command_name] = _command_payload(raw, agent_name, language=output_language)
     return commands
 
 
 def _command_payload(raw: OpenCodeCommandConfig, default_agent: str, *, language: str = "en") -> dict[str, str]:
-    english = normalize_agent_language(language) == "en"
+    english = normalize_agent_output_language(language) == "en"
     payload = {
         "description": raw.description or ("CodePilot workflow command" if english else "CodePilot 工作流命令"),
         "template": _with_chinese_command_instruction(
@@ -299,7 +302,7 @@ def _with_english_command_instruction(template: str) -> str:
 
 
 def _default_commands(agent_name: str, *, language: str = "en") -> dict[str, dict[str, str]]:
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_output_language(language) == "en":
         return {
             "Task Status": {
                 "description": "View the current CodePilot task status.",

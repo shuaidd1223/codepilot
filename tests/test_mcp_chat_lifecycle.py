@@ -239,7 +239,7 @@ def test_chat_uses_tool_level_opencode_profile_not_project_opencode_config(
     rendered_config = "\n".join(value for item in writes for value in item.values())
     assert "ProjectBrand" not in rendered_config
     assert "project-agent" not in rendered_config
-    opencode_json_path = str(Path.home() / ".codepilot" / "opencode" / "demo" / "opencode.json")
+    opencode_json_path = str(tmp_path / ".codepilot" / "opencode.json")
     payload = json.loads(writes[0][opencode_json_path])
     assert payload["default_agent"] == "codepilot"
     assert not (tmp_path / ".codepilot" / "opencode").exists()
@@ -275,7 +275,7 @@ def test_chat_opencode_launch_writes_project_permission_mode(
     launch = chat_cmd._prepare_mcp_agent_chat(agent="opencode", project=None, prompt="")
 
     assert launch.command == ["opencode-bin", "--agent", "codepilot"]
-    opencode_json_path = str(Path.home() / ".codepilot" / "opencode" / "demo" / "opencode.json")
+    opencode_json_path = str(tmp_path / ".codepilot" / "opencode.json")
     payload = json.loads(writes[0][opencode_json_path])
     assert payload["permission"] == "allow"
 
@@ -351,7 +351,7 @@ def test_chat_opencode_launch_writes_deepseek_custom_provider_config(
 
     chat_cmd._prepare_mcp_agent_chat(agent="opencode", project=None, prompt="")
 
-    opencode_json_path = str(Path.home() / ".codepilot" / "opencode" / "demo" / "opencode.json")
+    opencode_json_path = str(tmp_path / ".codepilot" / "opencode.json")
     payload = json.loads(writes[0][opencode_json_path])
     assert payload["model"] == "deepseek/deepseek-v4-pro"
     assert payload["small_model"] == "deepseek/deepseek-v4-flash"
@@ -397,7 +397,7 @@ def test_chat_opencode_launch_writes_configured_openai_model(
 
     chat_cmd._prepare_mcp_agent_chat(agent="opencode", project=None, prompt="")
 
-    opencode_json_path = str(Path.home() / ".codepilot" / "opencode" / "demo" / "opencode.json")
+    opencode_json_path = str(tmp_path / ".codepilot" / "opencode.json")
     payload = json.loads(writes[0][opencode_json_path])
     assert payload["model"] == "openai/gpt-5.4"
     assert payload["agent"]["codepilot"]["model"] == "openai/gpt-5.4"
@@ -446,7 +446,7 @@ def test_chat_opencode_launch_uses_project_model_selection(
 
     chat_cmd._prepare_mcp_agent_chat(agent="opencode", project=None, prompt="")
 
-    opencode_json_path = str(Path.home() / ".codepilot" / "opencode" / "demo" / "opencode.json")
+    opencode_json_path = str(tmp_path / ".codepilot" / "opencode.json")
     payload = json.loads(writes[0][opencode_json_path])
     assert payload["model"] == "deepseek/deepseek-v4-pro"
     assert payload["agent"]["codepilot"]["model"] == "deepseek/deepseek-v4-pro"
@@ -480,7 +480,7 @@ def test_chat_opencode_session_resume_uses_codepilot_command_and_isolated_env(
     )
 
     assert launch.command == ["opencode-bin", "--agent", "codepilot", "-s", "ses_123"]
-    assert launch.env["OPENCODE_CONFIG"] == str(Path.home() / ".codepilot" / "opencode" / "demo" / "opencode.json")
+    assert launch.env["OPENCODE_CONFIG"] == str(tmp_path / ".codepilot" / "opencode.json")
     assert launch.env["XDG_DATA_HOME"] == str(Path.home() / ".codepilot" / "opencode" / "demo" / "xdg-data")
     assert launch.opencode_db_path == (
         Path.home() / ".codepilot" / "opencode" / "demo" / "xdg-data" / "opencode" / "opencode.db"

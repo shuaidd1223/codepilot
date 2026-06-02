@@ -173,7 +173,7 @@ def fake_project(tmp_path, monkeypatch):
     proj_root.mkdir()
     (proj_root / "README.md").write_text("# x", encoding="utf-8")
     (proj_root / "AGENTS.toml").write_text(
-        '[project]\nname = "demo"\n\n[automation]\nagent_language = "zh-CN"\n',
+        '[project]\nname = "demo"\n\n[automation]\nagent_input_language = "zh-CN"\nagent_output_language = "zh-CN"\n',
         encoding="utf-8",
     )
 

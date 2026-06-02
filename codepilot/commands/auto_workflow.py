@@ -215,14 +215,14 @@ def _resolve_planning_mode(project_info: dict) -> bool:
     return bool(not cfg or getattr(cfg.automation, "two_stage_planning", True))
 
 
-def _agent_language_for_project(project_path: str) -> str:
+def _agent_output_language_for_project(project_path: str) -> str:
     cfg = load_project_config(project_path)
     if cfg and getattr(cfg, "automation", None):
         cfg_path_text = getattr(cfg, "config_file_path", "") or ""
         cfg_path = Path(cfg_path_text) if cfg_path_text else None
         global_path = find_global_config()
         if cfg_path and not (global_path and cfg_path.resolve() == global_path.resolve()):
-            return str(getattr(cfg.automation, "agent_language", "en") or "en")
+            return str(getattr(cfg.automation, "agent_output_language", "en") or "en")
 
     cwd_cfg = load_project_config(Path.cwd())
     if cwd_cfg and getattr(cwd_cfg, "automation", None):
@@ -230,10 +230,10 @@ def _agent_language_for_project(project_path: str) -> str:
         cwd_cfg_path = Path(cwd_cfg_path_text) if cwd_cfg_path_text else None
         global_path = find_global_config()
         if cwd_cfg_path and not (global_path and cwd_cfg_path.resolve() == global_path.resolve()):
-            return str(getattr(cwd_cfg.automation, "agent_language", "en") or "en")
+            return str(getattr(cwd_cfg.automation, "agent_output_language", "en") or "en")
 
     if cfg and getattr(cfg, "automation", None):
-        return str(getattr(cfg.automation, "agent_language", "en") or "en")
+        return str(getattr(cfg.automation, "agent_output_language", "en") or "en")
     return "en"
 
 
@@ -295,7 +295,7 @@ def _create_tasks_from_breakdown(
     task_source: str = "user",
     work_item: dict | None = None,
 ) -> list[dict]:
-    agent_language = _agent_language_for_project(project_path)
+    agent_language = _agent_output_language_for_project(project_path)
     return _planning_flow.create_tasks_from_breakdown(
         breakdown=breakdown,
         project_name=project_name,

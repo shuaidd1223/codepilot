@@ -53,10 +53,10 @@ include = ["codepilot*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-# 默认走 xdist 并行 + loadfile 分发：同文件留同一 worker（避免共享 fixture / db
+# 默认走 xdist 并行 + loadscope 分发：同模块留同一 worker（避免共享 fixture / db
 # 的隔离问题），文件之间并行。把全量回归从 ~7min 压到 ~3.5min；叠加
 # `pytest -m "not slow"` 后日常开发 ~60-90s。
-addopts = "-p pytest_mcp_chat_glob -n auto --dist loadfile"
+addopts = "-p pytest_mcp_chat_glob -n auto --dist loadscope"
 markers = [
     "slow: 单测耗时 > 10s 的重型用例（git worktree / full pipeline / self iteration）。日常用 `pytest -m 'not slow'` 跳过。",
     "serial: 必须串行的用例（持有全局锁、共享 daemon、抢端口等）。xdist 分组到同一 worker。",

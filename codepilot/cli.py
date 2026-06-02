@@ -41,6 +41,7 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
     "providers": ("codepilot.commands.providers", "providers"),
     "project": ("codepilot.commands.project", "project_group"),
     "cleanup": ("codepilot.commands.cleanup", "cleanup"),
+    "setup": ("codepilot.commands.setup", "setup"),
     "doctor": ("codepilot.commands.doctor", "doctor"),
     "event": ("codepilot.commands.event", "event_group"),
     "hook": ("codepilot.commands.hook", "hook_group"),
@@ -56,7 +57,6 @@ _LAZY_COMMANDS: dict[str, tuple[str, str]] = {
 }
 
 _REMOVED_COMMAND_HINTS: dict[str, str] = {
-    "setup": "codepilot doctor --fix (一键修复所有配置和环境问题)",
     "release": "codepilot binary <subcommand>",
     "show": "codepilot task show <task_id>",
     "done": "codepilot task done <task_id>",

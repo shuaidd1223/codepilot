@@ -107,7 +107,8 @@ def build_opencode_config_from_agents_config(
         return result
 
     if getattr(cfg, "automation", None):
-        result.agent_language = str(getattr(cfg.automation, "agent_language", "en") or "en")
+        result.agent_input_language = str(getattr(cfg.automation, "agent_input_language", "en") or "en")
+        result.agent_output_language = str(getattr(cfg.automation, "agent_output_language", "zh-CN") or "zh-CN")
 
     _apply_project_permission_config(result, cfg)
 

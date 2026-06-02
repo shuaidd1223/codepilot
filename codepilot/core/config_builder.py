@@ -18,7 +18,8 @@ from codepilot.core.config_parse import (
     _parse_optional_string_list,
     _parse_positive_int,
     _required_config_text,
-    normalize_agent_language,
+    normalize_agent_input_language,
+    normalize_agent_output_language,
     normalize_preflight_dirty_worktree,
 )
 
@@ -105,7 +106,8 @@ def build_agents_config_from_dict(
     opencode = data.get("opencode", {})
     commands_map = _parse_agent_commands(agents.get("commands"))
     fallback_cli_order = _parse_fallback_cli_order(automation.get("fallback_cli_order"))
-    agent_language = normalize_agent_language(automation.get("agent_language"))
+    agent_input_language = normalize_agent_input_language(automation.get("agent_input_language"))
+    agent_output_language = normalize_agent_output_language(automation.get("agent_output_language"))
     scheduled_agents = _parse_scheduled_agents(automation.get("scheduled_agents"))
     event_agents = _parse_event_agents(automation.get("event_agents"))
     opencode_permission = _parse_opencode_permission(opencode)
@@ -194,7 +196,8 @@ def build_agents_config_from_dict(
                 default=1,
             ),
             fallback_cli_order=fallback_cli_order,
-            agent_language=agent_language,
+            agent_input_language=agent_input_language,
+            agent_output_language=agent_output_language,
             scheduled_agents=scheduled_agents,
             event_agents=event_agents,
         ),

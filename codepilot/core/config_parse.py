@@ -100,20 +100,35 @@ def _parse_optional_string_list(raw: object, path: str) -> tuple[str, ...] | Non
     return tuple(str(item).strip() for item in raw if str(item or "").strip())
 
 
-def normalize_agent_language(raw: object = None) -> str:
-    """Normalize the project-level agent prompt/output language."""
+def _normalize_language(raw: object, field_path: str, *, default: str = "en") -> str:
+    """Shared normalization for agent language fields."""
     text = str(raw or "").strip()
     if not text:
-        return "en"
+        return default
     lowered = text.lower().replace("_", "-")
     if lowered in {"en", "en-us", "english"}:
         return "en"
     if lowered in {"zh", "zh-cn", "zh-hans", "chinese", "cn"} or text in {"中文", "简体中文"}:
         return "zh-CN"
     raise ConfigError(
-        "automation.agent_language 只支持 en 或 zh-CN；"
+        f"{field_path} 只支持 en 或 zh-CN；"
         "可用别名包括 en-US/english、zh/zh-CN/中文。"
     )
+
+
+def normalize_agent_input_language(raw: object = None) -> str:
+    """标准化智能体输入语言（提示词/技能/模板加载的语言版本）。默认 en。"""
+    return _normalize_language(raw, "automation.agent_input_language", default="en")
+
+
+def normalize_agent_output_language(raw: object = None) -> str:
+    """标准化智能体输出语言（AI 输出、任务内容、CLI 消息的语言）。默认 zh-CN。"""
+    return _normalize_language(raw, "automation.agent_output_language", default="zh-CN")
+
+
+def normalize_agent_language(raw: object = None) -> str:
+    """[已废弃] 请使用 normalize_agent_input_language / normalize_agent_output_language。"""
+    return _normalize_language(raw, "automation.agent_language")
 
 
 def normalize_preflight_dirty_worktree(raw: object = None) -> str:

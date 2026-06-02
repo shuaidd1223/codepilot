@@ -137,7 +137,7 @@ def test_run_opencode_message_uses_project_agent_language_for_headless_channels(
     runtime_root = _isolate_opencode_runtime(tmp_path, monkeypatch)
     project_path = register_project(tmp_path, monkeypatch)
     (project_path / "AGENTS.toml").write_text(
-        '[project]\nname = "demo"\n\n[automation]\nagent_language = "zh-CN"\n',
+        '[project]\nname = "demo"\n\n[automation]\nagent_output_language = "zh-CN"\n',
         encoding="utf-8",
     )
     calls = []

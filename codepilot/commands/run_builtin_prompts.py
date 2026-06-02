@@ -134,13 +134,13 @@ def _build_builtin_prompt(
     lines.append("# STEP 1 - MANDATORY: Read project memory before anything else")
     lines.append("codepilot note show -p <project> --json")
     lines.append("codepilot memory events -p <project> --json")
-    lines.append("codepilot wiki query -p <project> "<keyword>" --json")
+    lines.append('codepilot wiki query -p <project> "<keyword>" --json')
     lines.append("")
     lines.append("# STEP 2 - If memory is insufficient, gather evidence")
-    lines.append("codepilot explore -p <project> --prompt "<question>" --json")
+    lines.append('codepilot explore -p <project> --prompt "<question>" --json')
     lines.append("")
     lines.append("# STEP 3 - If multi-file or high-risk, plan first")
-    lines.append("codepilot plan -p <project> "<sub-goal>" --json")
+    lines.append('codepilot plan -p <project> "<sub-goal>" --json')
     lines.append("codepilot workflow status -p <project> --json")
     lines.append("")
     lines.append("# STEP 4 - SUGGESTED: Write findings if valuable")
@@ -171,6 +171,7 @@ def _build_review_prompt(
     previous_findings: str = "",
     changed_files: list[str] | None = None,
     language: str = "en",
+    memory_context: str = "",
 ) -> str:
     """Compose the Reviewer prompt with acceptance-criteria-driven checklist."""
     chinese = _wants_chinese(language)
@@ -184,6 +185,11 @@ def _build_review_prompt(
         if chinese
         else [f"Review the uncommitted changes in this repository for task #{task['id']} `{task['title']}`."]
     )
+
+    if memory_context:
+        lines.append("")
+        lines.append("【项目记忆上下文（自动注入，优先使用）】" if chinese else "[Project Memory Context: auto-injected, use this first]")
+        lines.append(memory_context)
 
     if changed_files:
         lines.append("")

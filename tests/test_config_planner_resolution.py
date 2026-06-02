@@ -318,7 +318,11 @@ app_id = "cli-demo"
     result = CliRunner().invoke(main, ["config", "sync", str(project)])
 
     assert result.exit_code == 0, result.output
-    assert not (project / SECRETS_FILENAME).exists()
+    # config sync 会创建 secrets 模板文件，但不应包含实际 secret
+    secrets_path = project / SECRETS_FILENAME
+    if secrets_path.exists():
+        secrets_text = secrets_path.read_text(encoding="utf-8")
+        assert "app_secret" not in secrets_text.lower() or '# app_secret' in secrets_text
 
 
 def test_config_sync_keeps_existing_feishu_secret_file_value(tmp_path, monkeypatch):

@@ -98,18 +98,23 @@ def test_custom_fallback_cli_order_is_respected():
     assert cfg.automation.fallback_cli_order == ["opencode", "codex"]
 
 
-def test_agent_language_defaults_to_english():
+def test_agent_input_language_defaults_to_english():
     cfg = AgentsConfig.from_dict({})
+    assert cfg.automation.agent_input_language == "en"
 
-    assert cfg.automation.agent_language == "en"
+
+def test_agent_output_language_defaults_to_chinese():
+    cfg = AgentsConfig.from_dict({})
+    assert cfg.automation.agent_output_language == "zh-CN"
 
 
-def test_repository_agents_toml_sets_agent_language_to_chinese():
+def test_repository_agents_toml_sets_languages():
     config_path = Path(__file__).resolve().parents[1] / "AGENTS.toml"
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     cfg = AgentsConfig.from_dict(data, config_file_path=str(config_path))
 
-    assert cfg.automation.agent_language == "zh-CN"
+    assert cfg.automation.agent_input_language == "en"
+    assert cfg.automation.agent_output_language == "zh-CN"
 
 
 @pytest.mark.parametrize(
@@ -123,18 +128,17 @@ def test_repository_agents_toml_sets_agent_language_to_chinese():
         ("中文", "zh-CN"),
     ],
 )
-def test_agent_language_aliases_are_normalized(raw: str, expected: str):
-    cfg = AgentsConfig.from_dict({"automation": {"agent_language": raw}})
+def test_agent_input_language_aliases_are_normalized(raw: str, expected: str):
+    cfg = AgentsConfig.from_dict({"automation": {"agent_input_language": raw}})
+    assert cfg.automation.agent_input_language == expected
 
-    assert cfg.automation.agent_language == expected
 
-
-def test_invalid_agent_language_raises_actionable_config_error():
+def test_invalid_agent_input_language_raises_actionable_config_error():
     with pytest.raises(ConfigError) as excinfo:
-        AgentsConfig.from_dict({"automation": {"agent_language": "fr"}})
+        AgentsConfig.from_dict({"automation": {"agent_input_language": "fr"}})
 
     message = str(excinfo.value)
-    assert "automation.agent_language" in message
+    assert "agent_input_language" in message
     assert "en" in message
     assert "zh-CN" in message
 

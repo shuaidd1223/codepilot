@@ -29,8 +29,10 @@ def build_launch_plan(
 ) -> LaunchPlan:
     target_path = Path(config_path or opencode_runtime_config_path())
     effective_config = opencode_config or default_opencode_config()
-    if opencode_config is None or not getattr(effective_config, "agent_language", ""):
-        effective_config.agent_language = language
+    if opencode_config is None or not getattr(effective_config, "agent_output_language", ""):
+        effective_config.agent_output_language = language
+    if not getattr(effective_config, "agent_input_language", ""):
+        effective_config.agent_input_language = "en"
     # *base* is the user-global runtime root for tool-generated files
     # (tui.json, agents/, instructions/, commands/, plugins/).
     # *config_path* may be a project-level path for opencode.json only.

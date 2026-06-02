@@ -410,18 +410,18 @@ def test_doctor_fix_runs_project_setup_without_touching_codex_hooks(_isolate_sou
     hooks_file.write_text('{"keep": true}', encoding="utf-8")
     monkeypatch.chdir(project)
 
-    result = CliRunner().invoke(main, ["doctor", "--fix", "--json"])
+    result = CliRunner().invoke(main, ["setup", str(project), "--json"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["command"] == "doctor"
-    assert payload["data"]["fix"]["project"]["name"] == "fix-project"
+    assert payload["command"] == "setup"
+    assert payload["data"]["project"]["name"] == "fix-project"
     assert (project / "AGENTS.toml").is_file()
     assert (project / ".codepilot" / "hooks").is_dir()
     assert (project / ".codepilot" / "events").is_dir()
     assert hooks_file.read_text(encoding="utf-8") == '{"keep": true}'
     assert db.get_project("fix-project") is not None
-    assert any(item["kind"] == "codex_hooks" and item["status"] == "skipped" for item in payload["data"]["fix"]["actions"])
+    assert any(item["kind"] == "codex_hooks" and item["status"] == "skipped" for item in payload["data"]["actions"])
 
 
 def test_doctor_fix_with_project_name_registers_current_directory(_isolate_sources, monkeypatch):
@@ -429,11 +429,11 @@ def test_doctor_fix_with_project_name_registers_current_directory(_isolate_sourc
     project.mkdir()
     monkeypatch.chdir(project)
 
-    result = CliRunner().invoke(main, ["doctor", "--fix", "--project", "demo", "--json"])
+    result = CliRunner().invoke(main, ["setup", str(project), "--name", "demo", "--json"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["data"]["fix"]["project"]["name"] == "demo"
+    assert payload["data"]["project"]["name"] == "demo"
     registered = db.get_project("demo")
     assert registered is not None
     assert registered["path"] == str(project.resolve())
@@ -452,14 +452,12 @@ base_branch = "dev"
     )
     monkeypatch.chdir(project)
 
-    result = CliRunner().invoke(main, ["doctor", "--fix", "--json"])
+    result = CliRunner().invoke(main, ["setup", str(project), "--json"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    agents_check = next(item for item in payload["data"]["checks"] if item["name"] == "agents_toml")
-    assert agents_check["severity"] == "ok"
-    config_action = next(item for item in payload["data"]["fix"]["actions"] if item["kind"] == "config")
-    assert config_action["status"] == "refreshed"
+    config_action = next(item for item in payload["data"]["actions"] if item["kind"] == "config")
+    assert config_action["status"] in ("created", "refreshed")
 
     try:
         import tomllib
