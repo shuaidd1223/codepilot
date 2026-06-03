@@ -54,7 +54,6 @@ def initialize_project(path: Path, project_name: str | None = None, *, no_config
         name=requested_name,
         path=project_path,
         base_branch="dev",
-        default_mode="dual",
         config_file=config_path,
     )
     if not no_config:
@@ -94,7 +93,6 @@ def init_(
         click.echo(f"  名称:   {project['name']}")
         click.echo(f"  路径:   {project['path']}")
         click.echo(f"  分支:   {project.get('base_branch') or '-'}")
-        click.echo(f"  模式:   {project.get('default_mode') or '-'}")
         click.echo(f"  配置:   {project.get('config_file') or '-'}")
         stats = db_module.get_task_stats(project["name"])
         click.echo(

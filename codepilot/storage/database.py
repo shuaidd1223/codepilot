@@ -210,7 +210,6 @@ def register_project(
     name: str,
     path: str,
     base_branch: str = "dev",
-    default_mode: str = "dual",
     worktree_base: Optional[str] = None,
     config_file: Optional[str] = None,
 ) -> dict:
@@ -221,7 +220,6 @@ def register_project(
             name=name,
             path=path,
             base_branch=base_branch,
-            default_mode=default_mode,
             worktree_base=worktree_base,
             config_file=config_file,
         )
@@ -1020,8 +1018,8 @@ def rename_project(name: str, new_name: str) -> dict:
         conn.execute(
             """
             INSERT INTO projects
-                (name, path, base_branch, default_mode, worktree_base, config_file, created_at)
-            SELECT ?, ?, base_branch, default_mode, worktree_base, config_file, created_at
+                (name, path, base_branch, worktree_base, config_file, created_at)
+            SELECT ?, ?, base_branch, worktree_base, config_file, created_at
               FROM projects
              WHERE name = ?
             """,

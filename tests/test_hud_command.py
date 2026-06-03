@@ -14,7 +14,7 @@ def _seed_project(tmp_path, monkeypatch):
     init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "demo"
     project_path.mkdir()
-    db.register_project("demo", str(project_path), default_mode="dual")
+    db.register_project("demo", str(project_path))
 
     running = db.create_task(
         "demo",

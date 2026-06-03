@@ -97,28 +97,6 @@ def _provider_context(project_info: dict) -> str:
     return str(resolve_project_config_reference(project_info) or project_info["path"])
 
 
-def _has_explicit_automation_task_agent(project_info: dict, cfg=None) -> bool:
-    config_ref = project_info.get("config_file")
-    if not config_ref:
-        return bool(
-            cfg
-            and getattr(getattr(cfg, "automation", None), "task_agent", "")
-            and getattr(cfg.automation, "task_agent", "") != "dual"
-        )
-    try:
-        try:
-            import tomllib
-        except ImportError:
-            import tomli as tomllib  # type: ignore[no-redef]
-
-        with open(config_ref, "rb") as handle:
-            data = tomllib.load(handle)
-    except Exception:
-        return False
-    automation = data.get("automation", {}) if isinstance(data, dict) else {}
-    return isinstance(automation, dict) and "task_agent" in automation
-
-
 def _should_execute(project_info: dict, execute: Optional[bool]) -> bool:
     if execute is not None:
         return execute
@@ -158,14 +136,9 @@ def _resolve_task_agent(project_info: dict, agent: Optional[str], executor: str)
     cfg = shell._project_config(project_info)
     default_agent = (
         cfg.automation.task_agent
-        if cfg
-        and cfg.automation
-        and getattr(cfg.automation, "task_agent", "")
-        and shell._has_explicit_automation_task_agent(project_info, cfg)
-        else cfg.project.default_mode
-        if cfg and cfg.project and cfg.project.default_mode
-        else project_info.get("default_mode") or "dual"
-    )
+        if cfg and cfg.automation and getattr(cfg.automation, "task_agent", "")
+        else "dual"
+    ).strip() or "dual"
     raw_agent = (agent or default_agent).strip()
     normalized = _normalize_agent_name(raw_agent)
 

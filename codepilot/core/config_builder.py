@@ -140,7 +140,6 @@ def build_agents_config_from_dict(
         project=ProjectConfig(
             name=proj.get("name", ""),
             base_branch=proj.get("base_branch", "dev"),
-            default_mode=proj.get("default_mode", "dual"),
             worktree_base=proj.get("worktree_base"),
         ),
         shell=ShellConfig(
@@ -217,7 +216,6 @@ def build_agents_config_from_dict(
         # 兼容字段
         project_name=proj.get("name", ""),
         base_branch=proj.get("base_branch", "dev"),
-        default_mode=proj.get("default_mode", "dual"),
         worktree_base=proj.get("worktree_base"),
         planner=_normalize_optional_agent_name(agents.get("planner")),
         builder=_normalize_optional_agent_name(agents.get("builder")),

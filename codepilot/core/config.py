@@ -103,7 +103,6 @@ class ProjectConfig:
     """[project] 项目配置."""
     name: str = ""
     base_branch: str = "dev"
-    default_mode: str = "dual"
     worktree_base: Optional[str] = None
 
 
@@ -244,7 +243,6 @@ class AgentsConfig:
     # 兼容旧格式的别名
     project_name: str = ""
     base_branch: str = "dev"
-    default_mode: str = "dual"
     worktree_base: Optional[str] = None
     planner: Optional[str] = None
     builder: Optional[str] = None
@@ -789,8 +787,6 @@ DEFAULT_TEMPLATE = """\
 name = "{name}"
 # Git 主分支
 base_branch = "dev"
-# 兼容字段：默认任务智能体；自动规划执行优先使用 [automation].task_agent
-default_mode = "dual"
 # Worktree 隔离目录，空值则自动推导到 ~/.codepilot/data/<project>/worktrees/
 worktree_base = ""
 
@@ -1026,7 +1022,6 @@ LEGACY_TEMPLATE = """\
 [project]
 name = "{name}"
 base_branch = "dev"
-default_mode = "dual"
 worktree_base = ""
 
 [agents.commands]

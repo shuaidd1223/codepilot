@@ -115,7 +115,7 @@ def create_webhook_task(payload: dict[str, Any]) -> dict:
         project=project,
         title=title,
         content=str(content or ""),
-        agent=str(payload.get("agent") or project_info.get("default_mode") or "dual").strip() or "dual",
+        agent=str(payload.get("agent") or "dual").strip() or "dual",
         priority=_normalize_priority(payload.get("priority")),
         depends_on=payload.get("depends_on") or payload.get("depends"),
         project_path=project_info["path"],

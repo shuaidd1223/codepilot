@@ -50,16 +50,14 @@ def _resolve_agent_info(ctx, value) -> tuple[str, str | None, str | None]:
         value = "dual"
 
     project_path = None
-    default_mode = "dual"
     if ctx is not None and getattr(ctx, "params", None):
         project_name = ctx.params.get("project")
         project_info = db.get_project(project_name) if project_name else None
         if project_info:
             project_path = resolve_project_config_reference(project_info)
-            default_mode = project_info.get("default_mode") or "dual"
 
     agent, fallback_reason = resolve_agent_with_fallback(
-        value, project_path=project_path, default_mode=default_mode,
+        value, project_path=project_path, default_mode="dual",
     )
 
     # If fallback also failed, raise a clear error.

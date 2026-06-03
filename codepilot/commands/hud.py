@@ -142,7 +142,6 @@ def collect_hud_snapshot(
             {
                 "name": proj["name"],
                 "path": proj["path"],
-                "default_mode": proj.get("default_mode") or "",
                 "stats": stats,
                 "mode": _project_mode(stats),
                 "active_tasks": [

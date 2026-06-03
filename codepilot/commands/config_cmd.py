@@ -339,7 +339,6 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
         "project": {
             "name": _string(project.get("name"), project_name),
             "base_branch": _string(project.get("base_branch"), "dev"),
-            "default_mode": _string(project.get("default_mode"), "dual"),
             "worktree_base": _string(project.get("worktree_base"), ""),
         },
         "shell": {
@@ -513,7 +512,6 @@ SECTION_COMMENTS: dict[str, list[str]] = {
 KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("project", "name"): ["项目名称，默认取 AGENTS.toml 所在目录名。"],
     ("project", "base_branch"): ["Git 主分支/基准分支。"],
-    ("project", "default_mode"): ["兼容字段：默认任务智能体；自动规划执行优先使用 [automation].task_agent。"],
     ("project", "worktree_base"): ["worktree 隔离目录；留空时自动推导到 ~/.codepilot/data/<project>/worktrees/。"],
     ("shell", "preferred"): ["auto / powershell / pwsh / powershell7 / bash / zsh / sh。"],
     ("shell", "powershell_path"): ["自定义 PowerShell 可执行文件路径；留空表示自动查找。"],
@@ -965,15 +963,12 @@ def init_config(global_mode: bool, path: Path | None, non_interactive: bool) -> 
     if not non_interactive:
         project_name = click.prompt("项目名称", default=project_name, show_default=True)
         base_branch = click.prompt("Git 主分支", default="main", show_default=True)
-        default_mode = click.prompt("默认任务智能体", default="codex", show_default=True)
     else:
         base_branch = "main"
-        default_mode = "codex"
 
     data["project"] = {
         "name": project_name,
         "base_branch": base_branch,
-        "default_mode": default_mode,
     }
 
     # 2. 检测 CLI 工具

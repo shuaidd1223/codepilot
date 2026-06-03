@@ -293,7 +293,6 @@ def _setup_registration(root: Path, project_name: str, *, dry_run: bool) -> tupl
         project_name,
         str(root),
         base_branch="dev",
-        default_mode="dual",
         config_file=str(config_path.resolve()),
     )
     return registered, _action("project", root, root, "registered", "已注册项目数据库记录。")

@@ -43,7 +43,6 @@ def _build_temporary_session(path: Path) -> dict:
         "name": TEMP_SESSION_NAME,
         "path": str(resolved),
         "base_branch": "",
-        "default_mode": "dual",
         "worktree_base": None,
         "config_file": None,
         "is_temporary": True,
@@ -73,14 +72,12 @@ def _register_project_from_config(
     project_root: Path,
     config_path: Path,
     base_branch: str,
-    default_mode: str,
     worktree_base: Optional[str],
 ) -> dict:
     return db.register_project(
         name=name,
         path=str(project_root),
         base_branch=base_branch,
-        default_mode=default_mode,
         worktree_base=worktree_base,
         config_file=str(config_path),
     )
@@ -102,7 +99,6 @@ def _resolve_with_existing_config_project(
         project_root=project_root,
         config_path=config_path,
         base_branch=(cfg.base_branch if cfg else matched.get("base_branch", "dev")),
-        default_mode=(cfg.default_mode if cfg else matched.get("default_mode", "dual")),
         worktree_base=(cfg.worktree_base if cfg else matched.get("worktree_base")),
     )
 
@@ -122,7 +118,6 @@ def _resolve_with_new_config_project(
             project_root=project_root,
             config_path=config_path,
             base_branch=(cfg.base_branch if cfg else "dev"),
-            default_mode=(cfg.default_mode if cfg else "dual"),
             worktree_base=(cfg.worktree_base if cfg else None),
         )
     if policy.allow_temporary and _is_temporary_workspace(current_dir):
@@ -247,7 +242,6 @@ def _resolve_from_workspace_strategy(
             name=current_dir.name,
             path=str(current_dir),
             base_branch="main",
-            default_mode="dual",
             config_file=None,
         )
 

@@ -85,7 +85,6 @@ class Project(BaseModel):
     name: str
     path: str
     base_branch: str = "dev"
-    default_mode: AgentMode = AgentMode.DUAL
     worktree_base: Optional[str] = None
     config_file: Optional[str] = None
     created_at: Optional[str] = None
