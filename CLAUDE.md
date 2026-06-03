@@ -9,6 +9,14 @@
 - 只修改任务范围内的文件。若必须偏离范围，在最终说明里解释原因和风险。
 - 不要运行破坏性 git 命令，不要回滚用户已有改动。
 
+## Shell Syntax
+
+- 本环境 `Bash` 工具底层是 bash，**不是 PowerShell**。不要使用 PowerShell 特有语法：
+  - `@'...'@` here-string → 用 `-m "line1" -m "line2"` 或 `$'line1\n\nline2'` 代替
+  - `Select-Object`、`Where-Object`、`Get-ChildItem` 等 cmdlet 不可用
+  - 路径用正斜杠 `/` 或 `E:/path` 格式，不用反斜杠
+- 文件操作（读、写、搜索、查找）优先用专用工具（Read、Write、Edit、Glob、Grep），不用 Bash/PowerShell
+
 ## TDD Workflow
 
 1. Red：先补或调整一个能暴露目标行为的测试，并确认它在旧实现下会失败；如果无法实际运行失败态，说明原因。
