@@ -1,0 +1,8 @@
+# CodePilot core runtime dependencies
+# Generated from pyproject.toml [project] dependencies
+click>=8.1.0
+mcp>=1.27.1
+rich>=13.0.0
+pydantic>=2.7.0,<3.0.0
+tomli>=2.0.1; python_version < "3.11"
+lark-oapi>=1.4.0

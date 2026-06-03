@@ -68,7 +68,7 @@ def _daemon_default_ui_port() -> int:
             if 0 < value <= 65535:
                 return value
         except ValueError:
-            pass
+            logger.debug("Invalid CODEPILOT_WEBUI_PORT value, falling back to default UI port", exc_info=True)
     return DAEMON_DEFAULT_DEV_UI_PORT if _is_dev_mode() else DAEMON_DEFAULT_UI_PORT
 
 
