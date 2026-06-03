@@ -391,8 +391,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' https://unpkg.com;"
-            " style-src 'self' 'unsafe-inline' https://unpkg.com",
+            "default-src 'self'; script-src 'self' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net;"
+            " style-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net",
         )
         super().end_headers()
 
