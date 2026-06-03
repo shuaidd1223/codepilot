@@ -9,7 +9,6 @@ from codepilot.commands import chat as chat_cmd
 def test_chat_entrypoint_uses_mcp_agent_without_local_intent_classifier(monkeypatch):
     launched: dict[str, object] = {}
 
-    monkeypatch.setattr(chat_cmd, "_should_block_windows_codex_chat", lambda _agent: False)
     monkeypatch.setattr(chat_cmd, "_resolve_chat_agent", lambda agent, project: agent or "opencode")
     monkeypatch.setattr(
         chat_cmd,

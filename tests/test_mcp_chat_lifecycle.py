@@ -96,7 +96,7 @@ def test_windows_codex_interactive_launch_uses_argument_vector(
     assert "shell" not in events[0]["kwargs"]
 
 
-def test_windows_codex_launch_temporarily_disables_vt_input(
+def test_windows_codex_snapshots_and_restores_console_modes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -131,7 +131,9 @@ def test_windows_codex_launch_temporarily_disables_vt_input(
 
     assert chat_cmd._launch_mcp_agent_chat(agent="codex") == 0
 
-    assert mode_writes == [0x0004, 0x0204]
+    # No preemptive flag changes — only restorations after codex exits.
+    # Input handle restore + output handle restore.
+    assert mode_writes == [0x0204, 0x0204]
 
 
 def test_chat_uses_detected_current_project_for_mcp_server(
@@ -579,7 +581,10 @@ def test_chat_resets_terminal_without_clearing_exit_history(
     assert exit_code == 0
     rendered = "".join(writes)
     assert "\x1b[?1006l" in rendered
+    assert "\x1b[?1003l" in rendered
     assert "\x1b[?25h" in rendered
+    assert "\x1b[?1049l" in rendered       # exit alternate screen
+    assert "\x1b[?2004l" in rendered       # disable bracketed paste
     assert "\x1b[2J\x1b[H" not in rendered
 
 
