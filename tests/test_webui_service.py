@@ -148,6 +148,61 @@ def test_webui_start_hint_uses_codepilot_dev_when_dev_home_is_active(tmp_path, m
     assert "停止: codepilot-dev ui stop" in result.output
 
 
+def test_webui_start_dev_defaults_to_port_8767_without_env_var(tmp_path, monkeypatch):
+    """codepilot-dev mode should use default port 8767 without explicit env var."""
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / ".codepilot-dev"))
+    # 不设置 CODEPILOT_WEBUI_PORT，验证 _default_port() 自动使用 8767
+    monkeypatch.setattr(
+        svc,
+        "ensure_service_running_if_enabled",
+        lambda project_ref=None: {"enabled": False, "running": False, "started": False},
+    )
+
+    class _FakeProc:
+        pid = 5678
+        returncode = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(svc, "_spawn_detached", lambda host, port, project="": _FakeProc())
+    monkeypatch.setattr(svc.time, "sleep", lambda _: None)
+
+    result = CliRunner().invoke(svc.webui, ["start", "--no-open", "--no-daemon"])
+
+    assert result.exit_code == 0, result.output
+    assert "http://127.0.0.1:8767/" in result.output
+    assert "停止: codepilot-dev ui stop" in result.output
+
+
+def test_webui_default_port_is_8766_in_installed_mode(tmp_path, monkeypatch):
+    """Installed codepilot mode should use default port 8766."""
+    _isolate_state(tmp_path, monkeypatch)
+    # 不设置 CODEPILOT_HOME 和 CODEPILOT_WEBUI_PORT，验证默认端口为 8766
+    monkeypatch.setattr(
+        svc,
+        "ensure_service_running_if_enabled",
+        lambda project_ref=None: {"enabled": False, "running": False, "started": False},
+    )
+
+    class _FakeProc:
+        pid = 5678
+        returncode = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(svc, "_spawn_detached", lambda host, port, project="": _FakeProc())
+    monkeypatch.setattr(svc.time, "sleep", lambda _: None)
+
+    result = CliRunner().invoke(svc.webui, ["start", "--no-open", "--no-daemon"])
+
+    assert result.exit_code == 0, result.output
+    assert "http://127.0.0.1:8766/" in result.output
+    assert "停止: codepilot ui stop" in result.output
+
+
 def test_webui_start_passes_project_config_to_feishu_autostart(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
     project_path = tmp_path / "project"

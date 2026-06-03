@@ -7,7 +7,6 @@ keeps running after the launching terminal is closed.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import platform
 import subprocess
@@ -18,9 +17,9 @@ from datetime import datetime
 
 import click
 
-from codepilot.storage import database as db
 from codepilot.commands.daemon import request_daemon_service_start
 from codepilot.commands.feishu import ensure_service_running_if_enabled
+from codepilot.core.logger import get_logger
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import global_storage_root
 from codepilot.core.runtime import is_process_alive, stop_process_tree
@@ -31,8 +30,9 @@ from codepilot.core.service_launcher import (
     hidden_windows_startupinfo,
 )
 from codepilot.core.text_decode import decode_subprocess_text
+from codepilot.storage import database as db
 
-logger = logging.getLogger(__name__)
+logger = get_logger('webui')
 
 
 STATE_DIR = global_storage_root() / "webui"
@@ -40,6 +40,7 @@ LOG_FILE = STATE_DIR / "webui.log"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
+DEFAULT_DEV_PORT = 8767
 WEBUI_HOST_ENV = "CODEPILOT_WEBUI_HOST"
 WEBUI_PORT_ENV = "CODEPILOT_WEBUI_PORT"
 
@@ -83,7 +84,7 @@ def _default_host() -> str:
 
 
 def _default_port() -> int:
-    return _env_port() or DEFAULT_PORT
+    return _env_port() or (DEFAULT_DEV_PORT if _command_name_hint() == "codepilot-dev" else DEFAULT_PORT)
 
 
 def _resolve_start_host_port(host: str | None, port: int | None) -> tuple[str, int]:

@@ -7,7 +7,6 @@ isolated from shell selection and plain subprocess helpers.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import shlex
@@ -19,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from codepilot.core.logger import get_logger
 from codepilot.core.runtime import (
     HEARTBEAT_INTERVAL_SECONDS,
     get_stop_request,
@@ -28,7 +28,7 @@ from codepilot.core.runtime import (
 )
 from codepilot.core.text_decode import decode_subprocess_text
 
-logger = logging.getLogger(__name__)
+logger = get_logger('run_live_runner')
 
 
 class TaskCancelled(RuntimeError):

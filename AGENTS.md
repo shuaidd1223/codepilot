@@ -46,6 +46,9 @@
 - 源码开发入口：`codepilot-dev`。所有在本仓库验证当前源码改动的智能体必须优先使用它，例如 `codepilot-dev ui start/status/restart/stop`、`codepilot-dev status -p codepilot-dev`。
 - 正式安装入口：`codepilot`。仅在明确验证已安装版本、冻结二进制或发布包行为时使用；不要用它验证当前工作区源码改动。
 - 入口隔离：`codepilot-dev` 默认使用 `~/.codepilot-dev` 和 Web UI 端口 `8767`；`codepilot` 默认使用 `~/.codepilot` 和 Web UI 端口 `8766`。不要混用两者的状态、日志或端口。
+  - 端口解析优先级：1) 显式 `--port` 参数 → 2) `CODEPILOT_WEBUI_PORT` 环境变量 → 3) 根据 `CODEPILOT_HOME` 或 `sys.argv[0]` 自动选择（`.codepilot-dev` → 8767，否则 → 8766）。
+  - 实现位置：`codepilot/commands/webui_service.py`（`_default_port()`）和 `codepilot/commands/daemon.py`（`_daemon_default_ui_port()`）。
+  - 相关测试：`tests/test_webui_service.py` 中的 `test_webui_start_dev_defaults_to_port_8767_without_env_var` 和 `test_webui_default_port_is_8766_in_installed_mode`。
 - Python 包 CLI 入口：`codepilot`（通过 pyproject.toml 定义）；仓库内命令行验证仍使用上面的 `codepilot-dev` wrapper。
 - MCP 工具通过 `codepilot.mcp` 包提供
 - OpenCode 交互入口：源码验证用 `codepilot-dev chat -p codepilot-dev -a opencode`，由 CodePilot 注入隔离配置、MCP、模型和权限
