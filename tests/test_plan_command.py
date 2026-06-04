@@ -193,6 +193,59 @@ def test_plan_from_inspect_context_uses_preview_candidates(tmp_path, monkeypatch
     assert "signal 4: codepilot/commands/auto_workflow.py F401; cleanup.py F541" in plan_text
 
 
+def test_plan_from_empty_inspect_context_falls_back_to_generic_candidates(tmp_path, monkeypatch):
+    """当 inspect 返回 0 候选（无可执行巡检候选）时，plan 应回退到泛化候选且不创建 backlog。"""
+    project = _register_demo(tmp_path, monkeypatch)
+    context_dir = Path(project["path"]) / ".codepilot" / "context"
+    context_dir.mkdir(parents=True)
+    context_path = context_dir / "inspect-empty.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "artifact_type": "inspect",
+                "summary": "无可执行巡检候选",
+                "created_preview": [],
+                "report_only": [],
+                "quality_summary": {
+                    "actionable_candidates": 0,
+                    "raw_candidates": 0,
+                    "kept_candidates": 0,
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = db.get_task_stats("demo")["total"]
+
+    result = write_plan_artifact(
+        project,
+        "根据 CodePilot 巡检上下文推进：无可执行巡检候选。先生成可审查计划，不导入 backlog。",
+        source="inspect",
+        source_path=str(context_path),
+        use_wiki=False,
+    )
+
+    assert result["source"] == "inspect"
+    assert result["source_path"] == str(context_path)
+    assert result["summary"] == "无可执行巡检候选"
+    assert len(result["task_candidates"]) >= 1
+    assert result["task_candidates"][0]["acceptance_criteria"]
+    assert db.get_task_stats("demo")["total"] == before
+
+    plan_text = Path(result["plan_path"]).read_text(encoding="utf-8")
+    assert "无可执行巡检候选" in plan_text
+    assert "## 任务候选" in plan_text
+    assert "## 验证矩阵" in plan_text
+
+    # 验证 task_batch 可导入且不在 context_path 范围内
+    context = json.loads(Path(result["context_path"]).read_text(encoding="utf-8"))
+    assert context["task_batch_path"] == result["task_batch_path"]
+    assert "next_actions" in context
+    assert any(action["id"] == "import_tasks" for action in context["next_actions"])
+
+
 def test_plan_marks_workflow_state_complete(tmp_path, monkeypatch):
     project = _register_demo(tmp_path, monkeypatch)
 
@@ -311,13 +364,14 @@ def test_plan_no_backlog_boundary_is_documented_for_agents():
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / "AI_MANIFEST.json").read_text(encoding="utf-8"))
     doc = (root / "docs" / "04-AI与Agent调用手册.zh-CN.md").read_text(encoding="utf-8")
+
+    # --- plan command boundary ---
     plan_command = next(cmd for cmd in manifest["commands"] if cmd["name"] == "plan")
     plan_output = next(
         item
         for item in manifest["structured_outputs"]
         if item["command"] == "codepilot plan -p <project-name> <requirement> --json"
     )
-
     assert "reviewable plan artifact" in plan_output["purpose"]
     assert "should not enter backlog" in plan_command["when_to_use"]
     assert "`plan` 的文本输入会生成可审查计划 artifact" in doc
@@ -325,3 +379,17 @@ def test_plan_no_backlog_boundary_is_documented_for_agents():
     assert "不创建 backlog、不启动执行器" in doc
     assert "`task_batch_path` 指向可导入的 tasks JSON" in doc
     assert "显式调用 `codepilot workflow next -p <项目名> --action import_tasks --json`" in doc
+
+    # --- inspect command boundary ---
+    inspect_command = next(cmd for cmd in manifest["commands"] if cmd["name"] == "inspect")
+    assert "does not create backlog" in inspect_command["when_to_use"]
+    inspect_output = next(
+        item
+        for item in manifest["structured_outputs"]
+        if item["command"] == "codepilot inspect -p <project-name> --once --dry-run --write-workflow --json"
+    )
+    assert "read-only" in inspect_output["purpose"]
+
+    # --- doc: inspect empty-candidate (无可执行巡检候选) boundary ---
+    assert "无可执行巡检候选" in doc
+    assert "不会直接创建 backlog 或启动执行器" in doc
