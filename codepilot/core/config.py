@@ -178,13 +178,14 @@ class AutomationConfig:
     # 子进程 (codex / claude / opencode CLI) 连续多少秒没有新输出就认为卡死并
     # kill，0 表示关闭该保护。默认关闭以避免误杀慢任务；运维 daemon 可以按需开启。
     agent_silence_timeout_seconds: int = 0
-    # workflow next --auto 的保守自动推进策略。默认只执行现有低风险动作：
-    # 忽略已被负反馈降权的 report-only 巡检项，以及为 inspect context 生成可审查 plan。
-    # 不自动创建 backlog 任务、不自动导入 plan 任务。
-    workflow_auto_create_inspect_tasks: bool = False
-    workflow_auto_import_plan_tasks: bool = False
-    workflow_auto_max_steps: int = 1
-    workflow_auto_failure_threshold: int = 1
+    # 在 chat 中自动接受 AI 分类器判定为任务/需求的输入，无需 ! 或 # 前缀。
+    chat_auto_accept_intent: bool = False
+    # workflow next --auto 的自动推进策略。开启后允许自动创建/导入 backlog 任务，
+    # 并在多步链中连续推进。推荐在内置智能体 (OpenCode/Claude/Codex) 项目中开启。
+    workflow_auto_create_inspect_tasks: bool = True
+    workflow_auto_import_plan_tasks: bool = True
+    workflow_auto_max_steps: int = 3
+    workflow_auto_failure_threshold: int = 3
     # 文本模式 CLI 兜底顺序：缺失或不可用时按此列表向后退。
     # 默认 ["claude", "codex", "opencode"]，opencode 作为最终兜底（用已配 API key）。
     fallback_cli_order: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_CLI_ORDER))
@@ -872,11 +873,13 @@ two_stage_planning = true
 max_review_rounds = 2
 # 子进程连续多少秒没有新输出就认为卡死并终止；0 表示关闭
 agent_silence_timeout_seconds = 0
-# workflow next --auto 自动推进策略；默认只执行低风险 plan/ignore，不创建或导入任务
-workflow_auto_create_inspect_tasks = false
-workflow_auto_import_plan_tasks = false
-workflow_auto_max_steps = 1
-workflow_auto_failure_threshold = 1
+# 在 chat 中自动接受 AI 分类器判定为任务/需求的输入，无需 ! 或 # 前缀。
+chat_auto_accept_intent = false
+# workflow next --auto 自动推进策略；开启后允许自动创建/导入任务并多步推进。
+workflow_auto_create_inspect_tasks = true
+workflow_auto_import_plan_tasks = true
+workflow_auto_max_steps = 3
+workflow_auto_failure_threshold = 3
 # 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。
 fallback_cli_order = ["claude", "codex", "opencode"]
 # 智能体输入语言（提示词/技能/模板加载的语言版本）：en 或 zh-CN；默认 en。
@@ -1043,10 +1046,11 @@ confirm_before_execute = false
 auto_commit = true
 max_tasks = 5
 max_retries = 3
-workflow_auto_create_inspect_tasks = false
-workflow_auto_import_plan_tasks = false
-workflow_auto_max_steps = 1
-workflow_auto_failure_threshold = 1
+chat_auto_accept_intent = false
+workflow_auto_create_inspect_tasks = true
+workflow_auto_import_plan_tasks = true
+workflow_auto_max_steps = 3
+workflow_auto_failure_threshold = 3
 
 [notifications]
 webhook_url = ""

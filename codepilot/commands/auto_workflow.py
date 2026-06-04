@@ -78,7 +78,50 @@ def resolve_project_for_prompt(
     allow_temporary: bool = False,
     require_registered: bool = False,
 ) -> dict:
-    """Resolve project via the dedicated project-resolution module."""
+    """为 AI 驱动的提示词入口（auto、go、chat 等命令）解析项目上下文。
+
+    执行逐级下降的解析策略：
+
+    1. **显式项目名称** — 如果提供了 ``project``，则按名称在数据库中查找。
+       找到则立即返回；否则抛出 ``click.ClickException``。
+    2. **基于配置的发现** — 从 ``cwd`` 向上搜索 ``AGENTS.toml``。
+       如果找到，加载配置（交互终端中损坏的配置会触发自动修复提示）。
+       若项目路径已注册则同步元数据；未注册时根据标志决定自动注册、
+       临时会话或报错。
+    3. **工作区回退** — 如果没有 ``AGENTS.toml`` 存在：
+       尝试按路径查找已注册项目；若启用 ``auto_register`` 且是 git 仓库
+       则自动注册；若 ``allow_temporary`` 且路径在 home/temp 下则返回
+       ``"公共临时会话"``；否则抛出 ``click.ClickException`` 并提示注册方式。
+
+    Args:
+        project: 按名称在数据库中解析的显式项目名。为 None 时应用自动发现。
+        cwd: 当前工作目录，默认 ``Path.cwd()``。
+        auto_register: 若为 True（默认），在存在 AGENTS.toml 或 .git 仓库时
+            自动将未注册项目插入数据库。
+        allow_temporary: 若为 True，当路径位于用户主目录或系统临时目录下时
+            返回临时项目会话，而不是抛出异常。
+        require_registered: 若为 True，要求解析到的项目必须存在于数据库中。
+            覆盖 auto_register 和 allow_temporary，失败时抛出异常。
+
+    Returns:
+        dict: 包含以下键：
+        - ``name`` (str) — 项目注册名称，临时会话为 ``"公共临时会话"``。
+        - ``path`` (str) — 绝对项目根路径。
+        - ``base_branch`` (str) — 默认分支（如 ``"dev"``、``"main"``）。
+        - ``worktree_base`` (str | None) — worktree 基础路径。
+        - ``config_file`` (str | None) — AGENTS.toml 路径。
+        - ``created_at`` (str) — 仅数据库项目有的创建时间戳。
+        - ``is_temporary`` (bool) — 仅临时会话，值为 True。
+
+    Raises:
+        click.ClickException: 解析项目失败时（显式查找不到、配置错误未修复、
+            工作区未被识别等）。
+
+    标志交互：
+        ``require_registered`` 优先级最高 — 开启后绝不会自动注册或创建临时会话。
+        ``auto_register`` 默认开启。``allow_temporary`` 仅在 ``auto_register``
+        和 ``require_registered`` 均为 False 时才启用临时回退。
+    """
     return _project_resolution.resolve_project_for_prompt(
         project=project,
         cwd=cwd,
@@ -357,6 +400,63 @@ def _run_requirement_backlog(
     )
 
 
+def _try_auto_advance_workflow(*, project_name: str, quiet: bool) -> dict:
+    """Best-effort: after execution completes, advance the workflow pipeline.
+
+    Calls ``workflow next --auto`` so that inspect plans can create/import tasks
+    and the pipeline keeps moving without manual intervention.
+
+    Returns a dict with 'action' and 'reason' keys, or empty dict on skip.
+    """
+    try:
+        from codepilot.core.output import echo
+        from codepilot.commands.workflow import execute_workflow_auto_next_action
+
+        if not quiet:
+            echo("[dim]自动推进 workflow pipeline...[/dim]")
+        result = execute_workflow_auto_next_action(project_name, mode=None, allow_high_risk=False)
+        action = result.get("action", {})
+        action_id = action.get("id", "") or result.get("selected_reason", "")
+        if action_id and not quiet:
+            echo(f"[dim]workflow auto: {action_id}[/dim]")
+        return result
+    except Exception:
+        if not quiet:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.debug("workflow auto-advance skipped", exc_info=True)
+        return {}
+
+
+def _try_start_daemon(*, project_name: str, quiet: bool) -> bool:
+    """Best-effort: ensure the daemon is running after pipeline execution.
+
+    If the daemon is already running, this is a no-op.  Otherwise attempts
+    to start it via the entrypoint so it picks up future backlog tasks
+    automatically.
+    """
+    try:
+        from codepilot.commands.daemon import daemon_service_status, start_daemon_service
+
+        status = daemon_service_status(project_name)
+        if status.get("running"):
+            return True
+        if not quiet:
+            from codepilot.core.output import echo
+
+            echo("[dim]daemon 未运行，正在后台启动...[/dim]")
+        start_daemon_service(project=project_name, interval=60, max_concurrent=1)
+        return True
+    except Exception:
+        if not quiet:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.debug("daemon auto-start skipped", exc_info=True)
+        return False
+
+
 @dataclass(frozen=True)
 class _RequirementWorkflowRuntime:
     title: str
@@ -538,6 +638,16 @@ def _execute_requirement_plain_phase(
         f"\n[dim]Workflow 完成: processed={stats['processed']} done={stats['done']} "
         f"failed={stats['failed']} requeued={stats['requeued']}[/dim]"
     )
+
+    # 执行完成后自动推进 workflow pipeline（如创建巡检任务、导入计划任务）
+    _try_auto_advance_workflow(
+        project_name=runtime.project_name,
+        quiet=quiet,
+    )
+
+    # 确保 daemon 在后台运行，以便后续任务被自动消费
+    _try_start_daemon(project_name=runtime.project_name, quiet=quiet)
+
     return payload
 
 

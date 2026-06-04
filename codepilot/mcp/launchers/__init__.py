@@ -35,6 +35,7 @@ class LaunchPlan:
     mcp_config: dict[str, Any]
     config_args: list[str] = field(default_factory=list)
     config_files: dict[str, str] = field(default_factory=dict)
+    appended_system_prompt: str = ""
 
 
 def build_mcp_launch_plan(

@@ -178,21 +178,22 @@ def build_agents_config_from_dict(
             two_stage_planning=automation.get("two_stage_planning", True),
             max_review_rounds=automation.get("max_review_rounds", 2),
             agent_silence_timeout_seconds=automation.get("agent_silence_timeout_seconds", 0),
+            chat_auto_accept_intent=automation.get("chat_auto_accept_intent", False),
             workflow_auto_create_inspect_tasks=bool(
-                automation.get("workflow_auto_create_inspect_tasks", False)
+                automation.get("workflow_auto_create_inspect_tasks", True)
             ),
             workflow_auto_import_plan_tasks=bool(
-                automation.get("workflow_auto_import_plan_tasks", False)
+                automation.get("workflow_auto_import_plan_tasks", True)
             ),
             workflow_auto_max_steps=_parse_positive_int(
                 automation.get("workflow_auto_max_steps"),
                 "automation.workflow_auto_max_steps",
-                default=1,
+                default=3,
             ),
             workflow_auto_failure_threshold=_parse_positive_int(
                 automation.get("workflow_auto_failure_threshold"),
                 "automation.workflow_auto_failure_threshold",
-                default=1,
+                default=3,
             ),
             fallback_cli_order=fallback_cli_order,
             agent_input_language=agent_input_language,

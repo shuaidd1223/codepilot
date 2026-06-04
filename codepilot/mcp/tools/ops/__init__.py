@@ -127,6 +127,7 @@ from codepilot.mcp.tools.ops import build_fix as build_fix_module  # noqa: E402,
 from codepilot.mcp.tools.ops import daemon_status as daemon_status_module  # noqa: E402,F401
 from codepilot.mcp.tools.ops import doctor as doctor_module  # noqa: E402,F401
 from codepilot.mcp.tools.ops import exec as exec_module  # noqa: E402,F401
+from codepilot.mcp.tools.ops import pipeline as pipeline_module  # noqa: E402,F401
 from codepilot.mcp.tools.ops import run_once as run_once_module  # noqa: E402,F401
 
 
@@ -137,5 +138,6 @@ __all__ = [
     "daemon_status_module",
     "doctor_module",
     "exec_module",
+    "pipeline_module",
     "run_once_module",
 ]

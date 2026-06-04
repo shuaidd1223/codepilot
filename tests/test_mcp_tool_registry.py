@@ -27,6 +27,7 @@ DEFAULT_MCP_TOOL_NAMES = {
     "inspect_workflow",
     "list_tasks",
     "note_add",
+    "pipeline",
     "run_once",
     "show_task",
     "stop_task",
@@ -67,7 +68,7 @@ def test_register_tool_builds_schema_from_annotations():
     }
 
 
-def test_default_mcp_registry_loads_25_tools_without_duplicates():
+def test_default_mcp_registry_loads_26_tools_without_duplicates():
     from codepilot.mcp.tool_registry import default_registry
     from codepilot.mcp.tools import load_default_tools
 

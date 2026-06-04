@@ -1095,6 +1095,7 @@ def test_workflow_next_auto_chains_plan_and_import_until_configured_step_limit(t
 name = "demo"
 
 [automation]
+workflow_auto_create_inspect_tasks = false
 workflow_auto_import_plan_tasks = true
 workflow_auto_max_steps = 2
 """.strip(),
