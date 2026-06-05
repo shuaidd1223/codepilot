@@ -71,10 +71,29 @@ def test_claude_launcher_without_prompt_starts_interactive_tui(tmp_path: Path):
         plan.config_args[1],
         "--strict-mcp-config",
         "--dangerously-skip-permissions",
+        "--plugin-dir",
+        plan.command[6],
         "--append-system-prompt",
         ENGLISH_INTERACTION_INSTRUCTIONS,
     ]
     assert "-p" not in plan.command
+
+
+def test_claude_launcher_registers_task_slash_command_plugin(tmp_path: Path):
+    plan = build_mcp_launch_plan(
+        "claude",
+        executable="claude-bin",
+        mcp_servers=_server(tmp_path),
+    )
+
+    plugin_index = plan.command.index("--plugin-dir") + 1
+    plugin_dir = Path(plan.command[plugin_index])
+    assert plugin_dir.name == "claude-codepilot"
+    assert str(plugin_dir / "commands" / "task.md") in plan.config_files
+    command_doc = plan.config_files[str(plugin_dir / "commands" / "task.md")]
+    assert "CodePilot TASK MODE" in command_doc
+    assert "codepilot_pipeline(requirement=$ARGUMENTS)" in command_doc
+    assert "Do NOT read, write, edit, patch, or inspect repository files directly" in command_doc
 
 
 def test_claude_launcher_with_session_resumes_interactive_tui(tmp_path: Path):
@@ -85,6 +104,7 @@ def test_claude_launcher_with_session_resumes_interactive_tui(tmp_path: Path):
         session="ses-abc",
     )
 
+    assert "--plugin-dir" in plan.command
     assert plan.command[-2:] == ["--resume", "ses-abc"]
     assert "--append-system-prompt" not in plan.command
     assert "-p" not in plan.command
@@ -137,8 +157,9 @@ def test_codex_launcher_without_prompt_starts_interactive_tui(tmp_path: Path, mo
     )
 
     assert plan.agent == "codex"
+    assert plan.command[1:3] == ["--profile", "codepilot"]
     # Same -c overrides as headless mode...
-    assert plan.command[1:7] == [
+    assert plan.command[3:9] == [
         "-c",
         "mcp_servers.filesystem.command='node'",
         "-c",
@@ -149,6 +170,44 @@ def test_codex_launcher_without_prompt_starts_interactive_tui(tmp_path: Path, mo
     # ...but no `exec` subcommand and no positional prompt.
     assert "exec" not in plan.command
     assert plan.command[0] == "codex-bin"
+
+
+def test_codex_launcher_registers_task_slash_command_plugin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(shutil, "which", lambda value: None)
+    monkeypatch.setenv("CODEPILOT_HOME", str(tmp_path / ".codepilot"))
+    codex_home = tmp_path / ".codex"
+
+    plan = build_mcp_launch_plan(
+        "codex",
+        executable="codex-bin",
+        mcp_servers=_server(tmp_path),
+        env={"CODEX_HOME": str(codex_home)},
+    )
+
+    assert plan.command[1:3] == ["--profile", "codepilot"]
+    profile_path = codex_home / "codepilot.config.toml"
+    assert str(profile_path) in plan.config_files
+    profile = plan.config_files[str(profile_path)]
+    assert "[marketplaces.codepilot]" in profile
+    assert '[plugins."codepilot@codepilot"]' in profile
+    assert "enabled = true" in profile
+
+    plugin_root = tmp_path / ".codepilot" / "codex" / "marketplace" / "plugins" / "codepilot"
+    cache_root = codex_home / "plugins" / "cache" / "codepilot" / "codepilot"
+    command_paths = [
+        Path(path)
+        for path in plan.config_files
+        if Path(path).name == "task.md"
+    ]
+    assert plugin_root / "commands" / "task.md" in command_paths
+    assert any(path.parent.parent.parent == cache_root for path in command_paths)
+    task_doc = plan.config_files[str(plugin_root / "commands" / "task.md")]
+    assert "# /task" in task_doc
+    assert "codepilot_pipeline(requirement=$ARGUMENTS)" in task_doc
+    assert "Do NOT read, write, edit, patch, or inspect repository files directly" in task_doc
 
 
 def test_codex_launcher_bypasses_npm_cmd_wrapper_for_interactive_tui(
@@ -172,6 +231,7 @@ def test_codex_launcher_bypasses_npm_cmd_wrapper_for_interactive_tui(
     )
 
     assert plan.command[:2] == [str(node_exe), str(codex_js)]
+    assert plan.command[2:4] == ["--profile", "codepilot"]
     assert "-c" in plan.command
     assert "exec" not in plan.command
 
@@ -198,6 +258,7 @@ def test_codex_launcher_prefers_native_windows_exe_for_interactive_tui(
     )
 
     assert plan.command[0] == str(native_exe)
+    assert plan.command[1:3] == ["--profile", "codepilot"]
     assert "codex.js" not in plan.command
     assert "exec" not in plan.command
 
@@ -210,6 +271,7 @@ def test_codex_launcher_with_session_resumes_interactive_tui(tmp_path: Path):
         session="ses-xyz",
     )
 
+    assert "--profile" in plan.command
     assert plan.command[-2:] == ["resume", "ses-xyz"]
     assert "exec" not in plan.command
 

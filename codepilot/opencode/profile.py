@@ -279,12 +279,39 @@ def _runtime_instructions_markdown(brand_name: str, *, language: str = "en") -> 
 def _commands(config: OpenCodeConfig, agent_name: str) -> dict[str, dict[str, str]]:
     output_language = normalize_agent_output_language(config.agent_output_language)
     commands = _default_commands(agent_name, language=output_language)
+    commands.setdefault("task", _task_mode_command_payload(agent_name))
     for name, raw in config.commands.items():
         command_name = str(name).strip()
         if not command_name:
             continue
         commands[command_name] = _command_payload(raw, agent_name, language=output_language)
     return commands
+
+
+def _task_mode_command_payload(agent_name: str) -> dict[str, str]:
+    return {
+        "description": "CodePilot task mode: run a requirement through the MCP pipeline.",
+        "template": _task_mode_command_template(),
+        "agent": agent_name,
+    }
+
+
+def _task_mode_command_template() -> str:
+    return (
+        "CodePilot TASK MODE\n\n"
+        "The user invoked `/task` with this requirement:\n"
+        "$ARGUMENTS\n\n"
+        "Hard constraints:\n"
+        "- Use ONLY CodePilot MCP tools for this request.\n"
+        "- Do NOT read, write, edit, patch, or inspect repository files directly.\n"
+        "- Do NOT run shell commands or implement code yourself.\n"
+        "- First call codepilot_pipeline(requirement=$ARGUMENTS).\n"
+        "- If codepilot_pipeline cannot complete, use only CodePilot MCP fallback tools such as "
+        "codepilot_run_once, codepilot_workflow_next(auto=true), codepilot_workflow_status, "
+        "codepilot_daemon_status, codepilot_create_task, and codepilot_generate_breakdown.\n"
+        "- Monitor tool results and report task ids, failures, manual follow-up commands, "
+        "and validation results returned by the tools."
+    )
 
 
 def _command_payload(raw: OpenCodeCommandConfig, default_agent: str, *, language: str = "en") -> dict[str, str]:

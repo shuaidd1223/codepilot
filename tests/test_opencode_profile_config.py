@@ -134,6 +134,25 @@ def test_opencode_project_permission_supports_granular_custom_rules(tmp_path: Pa
     }
 
 
+def test_opencode_profile_registers_task_slash_command(tmp_path: Path):
+    profile = build_opencode_profile(
+        None,
+        mcp_servers={},
+        base_path=tmp_path / "tool-runtime" / "opencode",
+    )
+
+    payload = json.loads(profile.files[profile.env["OPENCODE_CONFIG"]])
+    assert "task" in payload["command"]
+    assert payload["command"]["task"]["agent"] == "codepilot"
+    assert "CodePilot task mode" in payload["command"]["task"]["description"]
+
+    task_command_doc = profile.files[str(tmp_path / "tool-runtime" / "opencode" / "config" / "commands" / "task.md")]
+    assert "CodePilot TASK MODE" in task_command_doc
+    assert "codepilot_pipeline(requirement=$ARGUMENTS)" in task_command_doc
+    assert "Do NOT read, write, edit, patch, or inspect repository files directly" in task_command_doc
+    assert "$ARGUMENTS" in task_command_doc
+
+
 def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
     profile = build_opencode_profile(
         None,
