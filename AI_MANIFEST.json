@@ -1,6 +1,6 @@
 {
   "name": "CodePilot",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "author": {
     "name": "帅呆呆",
     "email": "2264505396@qq.com"
@@ -304,7 +304,7 @@
       "name": "inspect",
       "syntax": "codepilot inspect -p <project-name> [--once|--status|--stop|--dry-run|--write-workflow|--json]",
       "purpose": "Inspect project signals, preview candidates, optionally write workflow context, or create candidate tasks.",
-      "when_to_use": "Use to discover technical debt, failed-task patterns, and improvement candidates.",
+      "when_to_use": "Use to discover technical debt, failed-task patterns, and improvement candidates; the default --dry-run path does not create backlog tasks.",
       "examples": [
         "codepilot inspect -p <project-name> --once",
         "codepilot inspect -p <project-name> --once --dry-run --write-workflow --json"

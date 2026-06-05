@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,9 @@ from codepilot.commands.reviewer_output import parse_reviewer_output
 from codepilot.commands.trace import collect_trace_events
 from codepilot.core.memory import append_memory_event, read_memory_events
 from codepilot.core.workflow_state import (
+    SECRET_ASSIGNMENT_RE as _SECRET_ASSIGNMENT_RE,
+    BEARER_RE as _BEARER_RE,
+    SK_RE as _SK_RE,
     append_task_timeline_event,
     get_agent_session,
     read_task_execution_artifacts,
@@ -22,13 +24,6 @@ from codepilot.storage import database as db
 
 
 SUPERVISOR_ALLOWED_ACTIONS = frozenset({"mark_blocked", "request_clarification", "retry_with_hint"})
-_SECRET_ASSIGNMENT_RE = re.compile(
-    r"\b([A-Z0-9_.-]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API[_-]?KEY|APP[_-]?SECRET|PRIVATE[_-]?KEY)[A-Z0-9_.-]*)"
-    r"\s*([:=])\s*(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
-    re.IGNORECASE,
-)
-_BEARER_RE = re.compile(r"\b(Bearer\s+)[A-Za-z0-9._~+/\-]+=*", re.IGNORECASE)
-_SK_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{6,}\b")
 
 
 def _compact(value: Any, *, limit: int = 500) -> str:
@@ -481,6 +476,8 @@ def build_supervisor_analysis(
     tasks = db.list_tasks(project=project_name)
     if task_id is not None:
         tasks = [task for task in tasks if int(task.get("id") or 0) == int(task_id)]
+    else:
+        tasks = tasks[:500]
     tasks = sorted(tasks, key=lambda item: int(item.get("id") or 0))
     artifacts = [_task_artifact_summary(project_path, task) for task in tasks]
     artifacts_by_task = {int(item["task_id"]): item for item in artifacts}
@@ -515,6 +512,7 @@ def build_supervisor_analysis(
             risks.append(record)
 
     suggestions.sort(key=lambda item: ({"high": 0, "medium": 1, "low": 2}.get(str(item.get("severity")), 9), int(item.get("task_id") or 0), str(item.get("action") or "")))
+    suggestions_by_id = {s["id"]: s for s in suggestions}
     workflow_state = _latest_workflow_state(project_path)
     agent_session = get_agent_session(project_path)
     return {
@@ -549,6 +547,7 @@ def build_supervisor_analysis(
             "blockers": blockers,
         },
         "suggestions": suggestions,
+        "suggestions_by_id": suggestions_by_id,
         "allowlist": sorted(SUPERVISOR_ALLOWED_ACTIONS),
         "loop_control": {
             "threshold": max(loop_threshold, 1),
@@ -559,9 +558,10 @@ def build_supervisor_analysis(
 
 def _find_suggestion(payload: dict[str, Any], suggestion_id: str) -> dict[str, Any]:
     wanted = str(suggestion_id or "").strip()
-    for suggestion in payload.get("suggestions") or []:
-        if str(suggestion.get("id") or "") == wanted:
-            return dict(suggestion)
+    mapping = payload.get("suggestions_by_id") or {}
+    suggestion = mapping.get(wanted)
+    if suggestion is not None:
+        return dict(suggestion)
     raise ValueError(f"未找到 supervisor suggestion：{wanted}")
 
 

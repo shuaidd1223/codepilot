@@ -1,4 +1,4 @@
-"""Shared helpers for the built-in executor."""
+﻿"""Shared helpers for the built-in executor."""
 
 from __future__ import annotations
 
@@ -464,3 +464,52 @@ def _collect_project_conventions_snippet(project_path: Path, *, max_chars: int =
         )
     except Exception:
         return ""
+
+
+
+def _collect_project_memory_context(project_path: Path, *, max_chars: int = 2000) -> str:
+    """Automatically read project memory and return a compact context block.
+
+    Reads notepad.md and autocapture.md from the project's .codepilot directory.
+    Returns a short markdown block suitable for injection into the builder prompt.
+    Silently returns empty string on any error -- memory reading is best-effort.
+    """
+    if not project_path or not project_path.is_dir():
+        return ""
+
+    blocks = []
+    total = 0
+
+    # 1) Read working notes (notepad.md)
+    notepad = project_path / ".codepilot" / "notepad.md"
+    if notepad.is_file():
+        try:
+            text = notepad.read_text(encoding="utf-8", errors="replace").strip()
+            if text:
+                if len(text) > 800:
+                    text = text[:800].rstrip() + "\n...(truncated)"
+                block = "## Project Notes (notepad.md)\n" + text
+                blocks.append(block)
+                total += len(block)
+        except Exception:
+            pass
+
+    # 2) Read memory autocapture
+    autocapture = project_path / ".codepilot" / "memory" / "autocapture.md"
+    if autocapture.is_file():
+        try:
+            text = autocapture.read_text(encoding="utf-8", errors="replace").strip()
+            if text:
+                if len(text) > 1000:
+                    text = text[:1000].rstrip() + "\n...(truncated)"
+                block = "## Auto Memory (autocapture.md)\n" + text
+                projected = total + len(block) + 4
+                if projected <= max_chars:
+                    blocks.append(block)
+                    total += len(block)
+        except Exception:
+            pass
+
+    if not blocks:
+        return ""
+    return "\n\n".join(blocks)

@@ -22,6 +22,7 @@ CP.AppStateBoundary = CP.AppStateBoundary || (() => {
       taskDetailError: '',
       sessionDetail: null,
       sessionMessages: [],
+      sessionMessagesLoading: false,
       sessionRuns: {},
       activeProjectSessionId: null,
 

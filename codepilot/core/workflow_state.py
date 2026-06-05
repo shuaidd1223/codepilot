@@ -6,8 +6,10 @@ import json
 import os
 import re
 import tempfile
+import time
 import uuid
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,9 +39,54 @@ _TIMELINE_SECRET_ASSIGNMENT_RE = re.compile(
 _TIMELINE_BEARER_RE = re.compile(r"\b(Bearer\s+)[A-Za-z0-9._~+/\-]+=*", re.IGNORECASE)
 _TIMELINE_SK_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{6,}\b")
 
+# Tracks project paths where .git/info/exclude has already been patched
+# to reduce redundant I/O on hot paths (append_task_timeline_event, etc.).
+_git_exclude_ensured: set[Path] = set()
+
+# Public aliases for sharing across modules (supervisor, etc.)
+SECRET_ASSIGNMENT_RE = _TIMELINE_SECRET_ASSIGNMENT_RE
+BEARER_RE = _TIMELINE_BEARER_RE
+SK_RE = _TIMELINE_SK_RE
+
+
+@contextmanager
+def _file_lock(lock_path: Path, timeout: float = 10.0):
+    """Cross-platform exclusive file lock using a lockfile."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+            break
+        except FileExistsError:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"Could not acquire lock: {lock_path}")
+            time.sleep(0.01)
+    try:
+        yield
+    finally:
+        try:
+            os.unlink(str(lock_path))
+        except FileNotFoundError:
+            pass
+
+
+@contextmanager
+def _locked_file(path, mode="r+"):
+    """Open path, acquire a file lock via lockfile, yield the file object, then unlock."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text("{}\n", encoding="utf-8")
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with _file_lock(lock_path):
+        with open(path, mode, encoding="utf-8") as fp:
+            yield fp
+
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def workflow_dirs(project_path: str | Path) -> dict[str, Path]:
@@ -78,6 +125,8 @@ def _git_info_dir(project_root: Path) -> Path | None:
 def _ensure_codepilot_git_excluded(project_path: str | Path) -> None:
     """Keep project-local CodePilot artifacts out of user worktree status."""
     project_root = Path(project_path).expanduser().resolve()
+    if project_root in _git_exclude_ensured:
+        return
     info_dir = _git_info_dir(project_root)
     if info_dir is None:
         return
@@ -87,9 +136,11 @@ def _ensure_codepilot_git_excluded(project_path: str | Path) -> None:
         text = exclude_path.read_text(encoding="utf-8", errors="replace") if exclude_path.exists() else ""
         entries = {line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")}
         if ".codepilot/" in entries or ".codepilot" in entries or "/.codepilot/" in entries:
+            _git_exclude_ensured.add(project_root)
             return
         separator = "" if not text or text.endswith(("\n", "\r")) else "\n"
         exclude_path.write_text(f"{text}{separator}.codepilot/\n", encoding="utf-8")
+        _git_exclude_ensured.add(project_root)
     except OSError:
         return
 
@@ -263,7 +314,6 @@ def append_task_timeline_event(
 
     _ensure_codepilot_git_excluded(project_path)
     path = task_execution_artifact_path(project_path, task_id)
-    current = _read_json(path) or {}
     now = _now_iso()
     record = {
         "time": _compact_timeline_text(time or now, limit=80),
@@ -273,21 +323,32 @@ def append_task_timeline_event(
         "message": _safe_timeline_text(message, limit=500),
         "artifact_path": _safe_timeline_text(artifact_path, limit=500),
     }
-    timeline = _coerce_task_timeline(current.get("timeline"))
-    timeline.append(record)
-    payload: dict[str, Any] = {
-        "task_id": int(task_id),
-        "status": str(current.get("status") or ""),
-        "source": str(current.get("source") or ""),
-        "executor": str(current.get("executor") or ""),
-        "created_at": str(current.get("created_at") or now),
-        "updated_at": now,
-        "artifact_path": str(path),
-        "artifacts": _coerce_execution_artifacts(current.get("artifacts")),
-        "metadata": dict(current.get("metadata") or {}) if isinstance(current.get("metadata"), dict) else {},
-        "timeline": timeline,
-    }
-    _atomic_write_json(path, payload)
+    with _locked_file(path) as fp:
+        try:
+            current = json.load(fp)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            current = {}
+        if not isinstance(current, dict):
+            current = {}
+        timeline = _coerce_task_timeline(current.get("timeline"))
+        timeline.append(record)
+        payload: dict[str, Any] = {
+            "task_id": int(task_id),
+            "status": str(current.get("status") or ""),
+            "source": str(current.get("source") or ""),
+            "executor": str(current.get("executor") or ""),
+            "created_at": str(current.get("created_at") or now),
+            "updated_at": now,
+            "artifact_path": str(path),
+            "artifacts": _coerce_execution_artifacts(current.get("artifacts")),
+            "metadata": dict(current.get("metadata") or {}) if isinstance(current.get("metadata"), dict) else {},
+            "timeline": timeline,
+        }
+        fp.seek(0)
+        fp.truncate()
+        json.dump(payload, fp, ensure_ascii=False, indent=2, sort_keys=True)
+        fp.write("\n")
+        fp.flush()
     return record
 
 
@@ -358,29 +419,39 @@ def write_task_execution_artifacts(
     """
     _ensure_codepilot_git_excluded(project_path)
     path = task_execution_artifact_path(project_path, task_id)
-    current = _read_json(path) or {}
     now = _now_iso()
-    merged_artifacts = _coerce_execution_artifacts(current.get("artifacts"))
-    merged_artifacts.update(_coerce_execution_artifacts(artifacts or {}))
-    merged_metadata = dict(current.get("metadata") or {}) if isinstance(current.get("metadata"), dict) else {}
-    if metadata:
-        merged_metadata.update(dict(metadata))
-    timeline = _coerce_task_timeline(current.get("timeline"))
+    with _locked_file(path) as fp:
+        try:
+            current = json.load(fp)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            current = {}
+        if not isinstance(current, dict):
+            current = {}
+        merged_artifacts = _coerce_execution_artifacts(current.get("artifacts"))
+        merged_artifacts.update(_coerce_execution_artifacts(artifacts or {}))
+        merged_metadata = dict(current.get("metadata") or {}) if isinstance(current.get("metadata"), dict) else {}
+        if metadata:
+            merged_metadata.update(dict(metadata))
+        timeline = _coerce_task_timeline(current.get("timeline"))
 
-    clean_task_id = int(task_id)
-    payload: dict[str, Any] = {
-        "task_id": clean_task_id,
-        "status": str(status or current.get("status") or ""),
-        "source": str(source or current.get("source") or ""),
-        "executor": str(executor or current.get("executor") or ""),
-        "created_at": str(current.get("created_at") or now),
-        "updated_at": now,
-        "artifact_path": str(path),
-        "artifacts": merged_artifacts,
-        "metadata": merged_metadata,
-        "timeline": timeline,
-    }
-    _atomic_write_json(path, payload)
+        clean_task_id = int(task_id)
+        payload: dict[str, Any] = {
+            "task_id": clean_task_id,
+            "status": str(status or current.get("status") or ""),
+            "source": str(source or current.get("source") or ""),
+            "executor": str(executor or current.get("executor") or ""),
+            "created_at": str(current.get("created_at") or now),
+            "updated_at": now,
+            "artifact_path": str(path),
+            "artifacts": merged_artifacts,
+            "metadata": merged_metadata,
+            "timeline": timeline,
+        }
+        fp.seek(0)
+        fp.truncate()
+        json.dump(payload, fp, ensure_ascii=False, indent=2, sort_keys=True)
+        fp.write("\n")
+        fp.flush()
     try:
         _append_artifact_timeline_events(project_path, clean_task_id, _coerce_execution_artifacts(artifacts or {}), path)
     except Exception:

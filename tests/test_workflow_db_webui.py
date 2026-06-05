@@ -475,7 +475,7 @@ def test_webui_create_task_action_creates_task_for_project(tmp_path, monkeypatch
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
 
     compliant_content = (
         "# 从 Web UI 新建任务\n\n"
@@ -506,7 +506,7 @@ def test_webui_create_task_action_creates_task_for_project(tmp_path, monkeypatch
     # create_task_action strips trailing whitespace before saving.
     assert task["content"] == compliant_content.strip()
     assert task["priority"] == "P1"
-    assert task["agent"] == "codex"
+    assert task["agent"] == "dual"
     assert task["max_retries"] == 4
 
 
@@ -554,7 +554,7 @@ def test_webui_submit_requirement_action_records_job_and_tasks(tmp_path, monkeyp
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
 
     def fake_run_requirement_workflow(**kwargs):
         assert kwargs["execute"] is False
@@ -602,7 +602,7 @@ def test_requirement_job_context_validates_persisted_request(tmp_path, monkeypat
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
 
     with webui_mod._UI_LOCK:
         webui_mod._UI_JOBS.clear()
@@ -652,7 +652,7 @@ def test_webui_requirement_jobs_survive_ui_state_reset(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
 
     def fake_run_requirement_workflow(**kwargs):
         task = db.create_task(
@@ -695,7 +695,7 @@ def test_webui_marks_persisted_active_jobs_stale_after_restart(tmp_path, monkeyp
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
 
     db.upsert_service_state(
         "webui_job",
@@ -737,7 +737,7 @@ def test_webui_keeps_live_independent_requirement_job_after_restart(tmp_path, mo
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
     monkeypatch.setattr("codepilot.webapp.action_state.is_process_alive", lambda pid: int(pid or 0) == 2468)
 
     db.upsert_service_state(
@@ -780,7 +780,7 @@ def test_webui_requirement_job_cancel_and_retry_actions(tmp_path, monkeypatch):
     _init_test_db(tmp_path, monkeypatch)
     project_path = tmp_path / "project"
     project_path.mkdir()
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
 
     with webui_mod._UI_LOCK:
         webui_mod._UI_JOBS.clear()

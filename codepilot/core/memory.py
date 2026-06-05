@@ -11,9 +11,38 @@ import hashlib
 import json
 import os
 import re
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+@contextmanager
+def _file_lock(lock_path: Path, timeout: float = 10.0):
+    """Cross-platform file lock using a lockfile (mkdir/exclusive-create).
+
+    Safer than ``msvcrt.locking`` / ``fcntl.flock`` because it does not depend
+    on OS-specific byte-range semantics and works with any file open mode.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+            break
+        except FileExistsError:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"Could not acquire lock: {lock_path}")
+            time.sleep(0.01)
+    try:
+        yield
+    finally:
+        try:
+            os.unlink(str(lock_path))
+        except FileNotFoundError:
+            pass
 
 
 MEMORY_EVENTS_PATH = Path(".codepilot") / "memory" / "events.jsonl"
@@ -83,8 +112,10 @@ def _candidate_id(seed: dict[str, Any]) -> str:
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with os.fdopen(os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600), "a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with _file_lock(lock_path):
+        with os.fdopen(os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600), "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def _write_jsonl(path: Path, payloads: list[dict[str, Any]]) -> None:
@@ -348,20 +379,25 @@ def _write_autocapture(project_info: dict[str, Any], candidates: list[dict[str, 
 
 def _auto_capture_candidate(project_info: dict[str, Any], event: dict[str, Any]) -> dict[str, Any] | None:
     candidate = _candidate_from_event(event)
-    candidates = read_memory_candidates(project_info, limit=0)
     _reject_secret_like(candidate)
-    for index, item in enumerate(candidates):
-        if item.get("candidate_id") != candidate["candidate_id"]:
-            continue
-        merged = _merge_candidate(item, candidate)
-        _reject_secret_like(merged)
-        candidates[index] = merged
-        _write_jsonl(memory_candidates_path(project_info), candidates)
-        _write_autocapture(project_info, candidates)
-        return merged
     path = memory_candidates_path(project_info)
-    _append_jsonl(path, candidate)
-    candidates.append(candidate)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with _file_lock(lock_path):
+        candidates = read_memory_candidates(project_info, limit=0)
+        for index, item in enumerate(candidates):
+            if item.get("candidate_id") != candidate["candidate_id"]:
+                continue
+            merged = _merge_candidate(item, candidate)
+            _reject_secret_like(merged)
+            candidates[index] = merged
+            _write_jsonl(path, candidates)
+            _write_autocapture(project_info, candidates)
+            return merged
+        # New candidate: append without re-acquiring the lock
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600), "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(candidate, ensure_ascii=False, sort_keys=True) + "\n")
+        candidates.append(candidate)
     _write_autocapture(project_info, candidates)
     return candidate
 

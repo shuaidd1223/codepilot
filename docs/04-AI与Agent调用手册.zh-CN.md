@@ -102,6 +102,8 @@ codepilot build-fix -p <项目名> --task-id <task_id> --json
 
 `inspect --write-workflow` 只支持 `--once --dry-run`，会把巡检结果写入项目本地 workflow context，并生成 `create_inspect_tasks``promote_inspect_report_<candidate_id>``ignore_inspect_report_<candidate_id>``delete_inspect_report_<candidate_id>``archive_inspect_report_<candidate_id>``plan_from_inspect` 等安全 `next_actions`；不会直接创建 backlog 或启动执行器。
 
+当巡检结果没有可执行候选时（无可执行巡检候选），`plan_from_inspect` 仍可生成可审查计划 artifact，回退到泛化候选任务。同样不会直接创建 backlog 或启动执行器，候选任务需要人工审查后通过 `workflow next` 显式导入。
+
 ### 2.6 Web UI飞书和 Webhook
 
 ```bash

@@ -25,6 +25,7 @@ DEFAULT_MCP_TOOL_NAMES = {
     "inspect_workflow",
     "list_tasks",
     "note_add",
+    "pipeline",
     "run_once",
     "show_task",
     "stop_task",
@@ -182,7 +183,7 @@ def test_mcp_serve_list_tools_outputs_default_registry_tools(tmp_path, monkeypat
     )
 
     assert result.exit_code == 0, result.output
-    assert "25 MCP tools" in result.output
+    assert "26 MCP tools" in result.output
     for name in DEFAULT_MCP_TOOL_NAMES:
         assert f"- {name}" in result.output
 

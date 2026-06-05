@@ -5,4 +5,4 @@ Repository: https://gitee.com/shuai_dd/workflow
 License: MIT
 """
 
-__version__ = "0.7.5"
+from codepilot._version import __version__ as __version__  # noqa: F401

@@ -9,6 +9,7 @@ import json
 import os
 import time
 import urllib.request
+import logging
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,6 +22,9 @@ from codepilot.core.config import load_config
 
 
 _MAX_WEBHOOK_BODY_BYTES = 1024 * 1024
+
+_webhook_token: str = os.environ.get("CODEPILOT_WEBHOOK_TOKEN", "")
+_token_warning_shown: bool = False
 
 
 def _truthy_env(name: str) -> bool:
@@ -111,7 +115,7 @@ def create_webhook_task(payload: dict[str, Any]) -> dict:
         project=project,
         title=title,
         content=str(content or ""),
-        agent=str(payload.get("agent") or project_info.get("default_mode") or "dual").strip() or "dual",
+        agent=str(payload.get("agent") or "dual").strip() or "dual",
         priority=_normalize_priority(payload.get("priority")),
         depends_on=payload.get("depends_on") or payload.get("depends"),
         project_path=project_info["path"],
@@ -169,6 +173,16 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if path != "/tasks":
             self._send_json({"error": "未找到接口。"}, status=HTTPStatus.NOT_FOUND)
             return
+        if _webhook_token:
+            token = self.headers.get("X-Webhook-Token", "")
+            if token != _webhook_token:
+                self._send_json({"error": "未授权。"}, status=HTTPStatus.UNAUTHORIZED)
+                return
+        else:
+            global _token_warning_shown
+            if not _token_warning_shown:
+                _token_warning_shown = True
+                logging.warning("CODEPILOT_WEBHOOK_TOKEN 未设置，POST /tasks 无需鉴权，生产环境请配置。")
         try:
             payload = self._read_json_body()
             self._send_json(create_webhook_task(payload), status=HTTPStatus.CREATED)

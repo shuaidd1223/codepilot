@@ -21,7 +21,7 @@ UTC = timezone.utc
 
 
 def _wrapped(prompt: str) -> str:
-    return f"Please respond in English.\n\nTask:\n{prompt}"
+    return f"请使用简体中文输出。\n\n任务：\n{prompt}"
 
 
 @dataclass

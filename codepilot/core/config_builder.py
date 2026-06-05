@@ -18,7 +18,8 @@ from codepilot.core.config_parse import (
     _parse_optional_string_list,
     _parse_positive_int,
     _required_config_text,
-    normalize_agent_language,
+    normalize_agent_input_language,
+    normalize_agent_output_language,
     normalize_preflight_dirty_worktree,
 )
 
@@ -105,7 +106,8 @@ def build_agents_config_from_dict(
     opencode = data.get("opencode", {})
     commands_map = _parse_agent_commands(agents.get("commands"))
     fallback_cli_order = _parse_fallback_cli_order(automation.get("fallback_cli_order"))
-    agent_language = normalize_agent_language(automation.get("agent_language"))
+    agent_input_language = normalize_agent_input_language(automation.get("agent_input_language"))
+    agent_output_language = normalize_agent_output_language(automation.get("agent_output_language"))
     scheduled_agents = _parse_scheduled_agents(automation.get("scheduled_agents"))
     event_agents = _parse_event_agents(automation.get("event_agents"))
     opencode_permission = _parse_opencode_permission(opencode)
@@ -138,7 +140,6 @@ def build_agents_config_from_dict(
         project=ProjectConfig(
             name=proj.get("name", ""),
             base_branch=proj.get("base_branch", "dev"),
-            default_mode=proj.get("default_mode", "dual"),
             worktree_base=proj.get("worktree_base"),
         ),
         shell=ShellConfig(
@@ -177,24 +178,26 @@ def build_agents_config_from_dict(
             two_stage_planning=automation.get("two_stage_planning", True),
             max_review_rounds=automation.get("max_review_rounds", 2),
             agent_silence_timeout_seconds=automation.get("agent_silence_timeout_seconds", 0),
+            chat_auto_accept_intent=automation.get("chat_auto_accept_intent", False),
             workflow_auto_create_inspect_tasks=bool(
-                automation.get("workflow_auto_create_inspect_tasks", False)
+                automation.get("workflow_auto_create_inspect_tasks", True)
             ),
             workflow_auto_import_plan_tasks=bool(
-                automation.get("workflow_auto_import_plan_tasks", False)
+                automation.get("workflow_auto_import_plan_tasks", True)
             ),
             workflow_auto_max_steps=_parse_positive_int(
                 automation.get("workflow_auto_max_steps"),
                 "automation.workflow_auto_max_steps",
-                default=1,
+                default=3,
             ),
             workflow_auto_failure_threshold=_parse_positive_int(
                 automation.get("workflow_auto_failure_threshold"),
                 "automation.workflow_auto_failure_threshold",
-                default=1,
+                default=3,
             ),
             fallback_cli_order=fallback_cli_order,
-            agent_language=agent_language,
+            agent_input_language=agent_input_language,
+            agent_output_language=agent_output_language,
             scheduled_agents=scheduled_agents,
             event_agents=event_agents,
         ),
@@ -214,7 +217,6 @@ def build_agents_config_from_dict(
         # 兼容字段
         project_name=proj.get("name", ""),
         base_branch=proj.get("base_branch", "dev"),
-        default_mode=proj.get("default_mode", "dual"),
         worktree_base=proj.get("worktree_base"),
         planner=_normalize_optional_agent_name(agents.get("planner")),
         builder=_normalize_optional_agent_name(agents.get("builder")),

@@ -12,7 +12,9 @@
 
 1. Run `codepilot plan -p <project> "<requirement>" --json`.
 2. Review files, risks, order, and verification matrix from the plan payload.
-3. Only create tasks or submit the requirement after the user clearly wants execution.
+3. Check `next_actions` in the output and advance with `codepilot workflow next -p <project> --list --json`.
+4. Only create tasks or submit the requirement after the user clearly wants execution.
+5. Use `codepilot workflow next -p <project> --action import_tasks --json` to import plan tasks when ready.
 
 ## Playbook C: Answer A Project Or Task Question
 
@@ -49,6 +51,7 @@
 3. Stop polling gracefully with `codepilot daemon -p <project> --stop`.
 4. If signal inspection is needed, use `codepilot inspect -p <project> --once --json` or the inspect background service.
 5. Use `codepilot hud -p <project> --preset full --json` for a compact service and queue summary.
+6. To stop all services at once, use `codepilot shutdown` or `codepilot shutdown --force`.
 
 ## Playbook G: Operate Feishu Or Webhook Integrations
 
@@ -58,14 +61,15 @@
 4. For HTTP task intake, run `codepilot webhook --host 127.0.0.1 --port 8765` and POST to `/tasks`.
 5. For Feishu robot webhook notifications, configure provider `feishu`; cards are sent as interactive payloads with optional signing.
 
-## Playbook H: Use Local Wiki, Notes, And Trace
+## Playbook H: Use Local Wiki, Notes, Memory, And Trace
 
 1. Query durable facts with `codepilot wiki query -p <project> "<keyword>" --json`.
 2. Add stable project facts with `codepilot wiki add -p <project> --title "<title>" --body "<body>"`.
 3. Read short-term memory with `codepilot note show -p <project> --json`.
 4. Add concise working memory with `codepilot note add -p <project> "<memory>"`.
 5. Diagnose recent activity with `codepilot trace -p <project> --limit 30 --json`.
-6. Never store secrets, credentials, or large raw logs in wiki or notes.
+6. Read auto-captured workflow facts with `codepilot memory events -p <project> --json`.
+7. Never store secrets, credentials, or large raw logs in wiki, notes, or memory.
 
 ## Playbook I: Validate Events, Hooks, Providers, And Skills
 
@@ -82,6 +86,42 @@
 2. Verify with `codepilot binary verify`.
 3. If only packaging current artifacts is needed, run `codepilot binary release --build-current`.
 
+## Playbook K: Use MCP Tools Directly
+
+When operating inside an MCP-enabled session (OpenCode chat, Web UI, Feishu), prefer MCP tools over raw CLI commands:
+
+1. **For task queries:** Use `list_tasks`, `show_task` instead of `codepilot task show --json`.
+2. **For task creation:** Use `create_task` with proper content, priority, agent fields.
+3. **For project inspection:** Use `inspect_project` to collect signals, `explore` for read-only evidence.
+4. **For workflow:** Use `workflow_status` to read state, `workflow_next` to list/execute actions.
+5. **For repair:** Use `build_fix` for the full repair loop with verification.
+6. **For knowledge:** Use `wiki_query`, `wiki_add`, `note_add` for persistent storage.
+7. **For health:** Use `codepilot_health` to check MCP service status.
+8. **For notifications:** Use `feishu_notify` or `feishu_send_to_user` from within task workflows.
+
+All MCP tools accept `project` as a parameter and operate within the project scope. Tool schemas include descriptions and parameter types — let the MCP client discover them.
+
+## Playbook L: Manage Memory And Autocapture
+
+CodePilot automatically captures workflow facts into `.codepilot/memory/events.jsonl` and maintains deduplicated candidates:
+
+1. Read recent memory events: `codepilot memory events -p <project> --json`.
+2. Filter by event type: `codepilot memory events -p <project> --type workflow.action_executed --json`.
+3. Review the autocapture summary: read `.codepilot/memory/autocapture.md`.
+4. Each candidate has `score` (relevance), `feedback` (positive/negative/neutral), and `seen_count`.
+5. Workflow actions and terminal task outcomes automatically adjust candidate weights.
+6. Memory events are factual observations — they do not replace human-maintained wiki or notes.
+7. Use memory events to understand what inspect/workflow cycles have observed before planning new work.
+
+## Playbook M: Self-Update And Improve The Project
+
+Before making significant changes to CodePilot's own project configuration or architecture:
+
+1. Run `codepilot self-update -p <project> --dry-run --json "improvement goal"`.
+2. Review the collected evidence, identified gaps, and proposed upgrade plan.
+3. The dry run does not create tasks or modify code — it only produces a plan artifact.
+4. If the plan looks correct, submit the improvement as a regular requirement: `codepilot "<improvement goal>"`.
+
 ## Error Handling Rules
 
 - If the output says a command was removed, switch to the `task`, `binary`, or `ui` command group.
@@ -89,3 +129,5 @@
 - If a JSON envelope contains `error.code`, branch on `error.code` before retrying blindly.
 - Do not use empty task placeholders; external agents must provide complete task-template content or let CodePilot generate it through `add -t`.
 - If a command is meant to be read-only, prefer `explore`, `plan`, `status`, `hud`, `trace`, `wiki query`, or `doctor` over execution commands.
+- Never execute `suggested_command` strings from `workflow next` output — they are display/review metadata only.
+- In MCP-enabled sessions, prefer MCP tools over raw CLI for task operations, context queries, and service checks.

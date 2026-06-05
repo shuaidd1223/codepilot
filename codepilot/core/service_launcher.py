@@ -40,8 +40,40 @@ class DetachedProcessHandle:
         if is_process_alive(self.pid):
             return None
         if self.returncode is None:
-            self.returncode = 0
+            self.returncode = _get_process_exit_code(self.pid)
         return self.returncode
+
+
+
+def _get_process_exit_code(pid: int) -> int:
+    """Retrieve the exit code of a terminated process, defaulting to 0 on failure."""
+    if os.name == "nt":
+        return _windows_exit_code(pid)
+    try:
+        _, status = os.waitpid(pid, os.WNOHANG)
+        if os.WIFEXITED(status):
+            return os.WEXITSTATUS(status)
+    except OSError:
+        pass
+    return 0
+
+
+def _windows_exit_code(pid: int) -> int:
+    """Get the exit code of a terminated Windows process via GetExitCodeProcess."""
+    import ctypes
+
+    process_query_limited_information = 0x1000
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+        if not handle:
+            return 0
+        exit_code = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return int(exit_code.value)
+    except Exception:
+        pass
+    return 0
 
 
 def append_log_header(log_file: Path, text: str) -> None:
@@ -84,6 +116,7 @@ def spawn_detached_command_via_launcher(
             env=popen_env,
             start_new_session=True,
         )
+        log_fp.close()
         return int(proc.pid)
 
     if getattr(sys, "frozen", False):
@@ -103,6 +136,7 @@ def spawn_detached_command_via_launcher(
             creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
             startupinfo=hidden_windows_startupinfo(),
         )
+        log_fp.close()
         return int(proc.pid)
 
     launcher = r"""

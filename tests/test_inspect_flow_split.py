@@ -65,7 +65,7 @@ def _patch_cli_inspect_fixture(monkeypatch, project_path: Path) -> None:
                 priority="P3",
                 auto_execute=False,
             ),
-            automation=SimpleNamespace(agent_language="zh-CN"),
+            automation=SimpleNamespace(agent_input_language="zh-CN", agent_output_language="zh-CN"),
         ),
     )
     monkeypatch.setattr(inspect_cmd, "resolve_planner", lambda _cfg, _kind, explicit=None: explicit or "codex")
@@ -482,7 +482,7 @@ def test_run_inspection_quality_summary_tracks_decision_chain_and_reason_counts(
     monkeypatch.setattr(
         inspect_cmd,
         "load_project_config",
-        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_language="zh-CN")),
+        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_input_language="zh-CN", agent_output_language="zh-CN")),
     )
     monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **_kwargs: [])
 
@@ -607,7 +607,7 @@ def test_run_inspection_llm_error_includes_quality_summary(tmp_path, monkeypatch
     monkeypatch.setattr(
         inspect_cmd,
         "load_project_config",
-        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_language="zh-CN")),
+        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_input_language="zh-CN", agent_output_language="zh-CN")),
     )
 
     def _raise_llm_error(*_args, **_kwargs):
@@ -734,7 +734,7 @@ def test_run_inspection_reports_weak_candidates_without_materializing_and_keeps_
     monkeypatch.setattr(
         inspect_cmd,
         "load_project_config",
-        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_language="zh-CN")),
+        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_input_language="zh-CN", agent_output_language="zh-CN")),
     )
     monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda _project_name: set())
     monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **_kwargs: [])
@@ -850,7 +850,7 @@ def test_run_inspection_promotes_positive_memory_feedback_from_report_only(tmp_p
     monkeypatch.setattr(
         inspect_cmd,
         "load_project_config",
-        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_language="zh-CN")),
+        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_input_language="zh-CN", agent_output_language="zh-CN")),
     )
     monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda _project_name: set())
     monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **_kwargs: [])
@@ -913,7 +913,7 @@ def test_run_inspection_demotes_negative_memory_feedback_to_report_only(tmp_path
     monkeypatch.setattr(
         inspect_cmd,
         "load_project_config",
-        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_language="zh-CN")),
+        lambda *_args, **_kwargs: SimpleNamespace(automation=SimpleNamespace(agent_input_language="zh-CN", agent_output_language="zh-CN")),
     )
     monkeypatch.setattr(inspect_cmd.db, "existing_dedup_keys", lambda _project_name: set())
     monkeypatch.setattr(inspect_cmd.db, "list_tasks", lambda **_kwargs: [])
@@ -1235,7 +1235,7 @@ def test_inspect_json_mode_outputs_only_contract_stdout(tmp_path, monkeypatch):
             priority="P3",
             auto_execute=False,
         ),
-        automation=SimpleNamespace(agent_language="en"),
+        automation=SimpleNamespace(agent_input_language="en", agent_output_language="en"),
     )
     monkeypatch.setattr(inspect_cmd, "load_project_config", lambda *_args, **_kwargs: cfg)
     monkeypatch.setattr(inspect_cmd, "resolve_planner", lambda *_args, **_kwargs: "codex")

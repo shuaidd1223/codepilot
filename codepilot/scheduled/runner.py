@@ -60,9 +60,9 @@ def _build_command(agent: str, prompt: str, commands: dict[str, str] | None) -> 
     return family.name, [cmd, *args], int(provider.timeout or 180)
 
 
-def _configured_agent_language(config: AgentsConfig | None) -> str:
+def _configured_agent_output_language(config: AgentsConfig | None) -> str:
     if config is not None and getattr(config, "automation", None):
-        return str(getattr(config.automation, "agent_language", "en") or "en")
+        return str(getattr(config.automation, "agent_output_language", "en") or "en")
     return "en"
 
 
@@ -196,7 +196,7 @@ def run_agent_job(
 
     prompt = _wrap_agent_prompt(
         str(job.get("prompt") or ""),
-        language=_configured_agent_language(config),
+        language=_configured_agent_output_language(config),
     )
     agent, command, default_timeout = _build_command(str(job.get("agent") or ""), prompt, commands)
     timeout = int(timeout_seconds or default_timeout)

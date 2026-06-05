@@ -12,7 +12,6 @@ def upsert_project_by_path(
     name: str,
     path: str,
     base_branch: str,
-    default_mode: str,
     worktree_base: Optional[str],
     config_file: Optional[str],
 ) -> str:
@@ -27,22 +26,21 @@ def upsert_project_by_path(
             """
             UPDATE projects
                SET base_branch = ?,
-                   default_mode = ?,
                    worktree_base = ?,
                    config_file = ?
              WHERE path = ?
             """,
-            (base_branch, default_mode, worktree_base, config_file, path),
+            (base_branch, worktree_base, config_file, path),
         )
         return effective_name
 
     conn.execute(
         """
         INSERT INTO projects
-            (name, path, base_branch, default_mode, worktree_base, config_file)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (name, path, base_branch, worktree_base, config_file)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (name, path, base_branch, default_mode, worktree_base, config_file),
+        (name, path, base_branch, worktree_base, config_file),
     )
     return name
 

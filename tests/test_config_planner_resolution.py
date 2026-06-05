@@ -44,7 +44,6 @@ def test_config_empty_dict_uses_declared_defaults():
     assert "[classifier]" not in DEFAULT_TEMPLATE
     assert cfg.project.name == ""
     assert cfg.project.base_branch == "dev"
-    assert cfg.project.default_mode == "dual"
     assert cfg.project.worktree_base is None
 
     assert cfg.shell.preferred == "auto"
@@ -177,7 +176,7 @@ extra = "drop"
     parsed = tomllib.loads(synced)
     assert parsed["project"]["name"] == "demo"
     assert parsed["project"]["base_branch"] == "main"
-    assert parsed["project"]["default_mode"] == "dual"
+    assert "default_mode" not in parsed["project"]
     assert parsed["shell"]["preferred"] == "pwsh"
     assert parsed["agents"]["commands"]["codex"] == "codex-custom"
     assert parsed["agents"]["planner"] == "claude"
@@ -318,7 +317,11 @@ app_id = "cli-demo"
     result = CliRunner().invoke(main, ["config", "sync", str(project)])
 
     assert result.exit_code == 0, result.output
-    assert not (project / SECRETS_FILENAME).exists()
+    # config sync 会创建 secrets 模板文件，但不应包含实际 secret
+    secrets_path = project / SECRETS_FILENAME
+    if secrets_path.exists():
+        secrets_text = secrets_path.read_text(encoding="utf-8")
+        assert "app_secret" not in secrets_text.lower() or '# app_secret' in secrets_text
 
 
 def test_config_sync_keeps_existing_feishu_secret_file_value(tmp_path, monkeypatch):

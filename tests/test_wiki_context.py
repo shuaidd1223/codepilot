@@ -15,7 +15,7 @@ def _init_project(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setenv("CODEPILOT_DB_PATH", str(tmp_path / "tasks.db"))
     project = tmp_path / "project"
     project.mkdir()
-    result = CliRunner().invoke(main, ["setup", str(project), "--json"])
+    result = CliRunner().invoke(main, ["init", str(project)])
     assert result.exit_code == 0, result.output
     return project
 

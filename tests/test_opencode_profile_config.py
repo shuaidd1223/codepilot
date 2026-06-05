@@ -134,6 +134,25 @@ def test_opencode_project_permission_supports_granular_custom_rules(tmp_path: Pa
     }
 
 
+def test_opencode_profile_registers_task_slash_command(tmp_path: Path):
+    profile = build_opencode_profile(
+        None,
+        mcp_servers={},
+        base_path=tmp_path / "tool-runtime" / "opencode",
+    )
+
+    payload = json.loads(profile.files[profile.env["OPENCODE_CONFIG"]])
+    assert "task" in payload["command"]
+    assert payload["command"]["task"]["agent"] == "codepilot"
+    assert "CodePilot task mode" in payload["command"]["task"]["description"]
+
+    task_command_doc = profile.files[str(tmp_path / "tool-runtime" / "opencode" / "config" / "commands" / "task.md")]
+    assert "CodePilot TASK MODE" in task_command_doc
+    assert "codepilot_pipeline(requirement=$ARGUMENTS)" in task_command_doc
+    assert "Do NOT read, write, edit, patch, or inspect repository files directly" in task_command_doc
+    assert "$ARGUMENTS" in task_command_doc
+
+
 def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
     profile = build_opencode_profile(
         None,
@@ -160,7 +179,7 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
         "opencode.json",
         "tui.json",
         "codepilot.md",
-        "codepilot.en.md",
+        "codepilot.zh-CN.md",
     }
 
     opencode_json = json.loads(profile.files[profile.env["OPENCODE_CONFIG"]])
@@ -169,13 +188,13 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
     # instructions 使用绝对路径（OpenCode 源码解析：相对路径走 globUp 从 CWD 向上搜不到 config 目录的文件）
     assert len(opencode_json["instructions"]) == 1
     inst_path = opencode_json["instructions"][0]
-    assert inst_path.endswith("codepilot.en.md")
+    assert inst_path.endswith("codepilot.zh-CN.md")
     assert Path(inst_path).is_absolute()
     assert opencode_json["permission"]["bash"] == "ask"
     assert opencode_json["permission"]["edit"] == "ask"
     assert opencode_json["tools"]["bash"] is True
-    assert "Task Status" in opencode_json["command"]
-    assert opencode_json["command"]["Task Status"]["agent"] == "codepilot"
+    assert "任务状态" in opencode_json["command"]
+    assert opencode_json["command"]["任务状态"]["agent"] == "codepilot"
 
     tui_json = json.loads(profile.files[profile.env["OPENCODE_TUI_CONFIG"]])
     assert tui_json == {
@@ -200,16 +219,16 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
     assert "简体中文" not in agent_doc
 
     instructions_doc = profile.files[
-        str(tmp_path / "tool-runtime" / "opencode" / "config" / "instructions" / "codepilot.en.md")
+        str(tmp_path / "tool-runtime" / "opencode" / "config" / "instructions" / "codepilot.zh-CN.md")
     ]
-    assert "English Interaction Rules" in instructions_doc
+    assert "中文交互规则" in instructions_doc
     # 语言指令全部在 instructions 配置文件中，使用 Markdown 二级标题
-    assert "## General" in instructions_doc
-    assert "## Thinking / Reasoning" in instructions_doc
-    assert "All interactive output must be written in English" in instructions_doc
-    command_doc = profile.files[str(tmp_path / "tool-runtime" / "opencode" / "config" / "commands" / "Task Status.md")]
-    assert "List current CodePilot tasks" in command_doc
-    assert "in English" in command_doc
+    assert "## 总则" in instructions_doc
+    assert "## 思考/推理过程" in instructions_doc
+    assert "所有交互输出必须使用简体中文" in instructions_doc
+    command_doc = profile.files[str(tmp_path / "tool-runtime" / "opencode" / "config" / "commands" / "任务状态.md")]
+    assert "列出当前 CodePilot 任务" in command_doc
+    assert "简体中文" in command_doc
     brand_plugin = profile.files[
         str(tmp_path / "tool-runtime" / "opencode" / "config" / "tui-plugins" / "codepilot-brand.tsx")
     ]
@@ -228,7 +247,7 @@ def test_opencode_profile_generates_runtime_config_files(tmp_path: Path):
 
 
 def test_opencode_profile_can_generate_chinese_runtime_config(tmp_path: Path):
-    cfg = AgentsConfig.from_dict({"automation": {"agent_language": "zh-CN"}})
+    cfg = AgentsConfig.from_dict({"automation": {"agent_output_language": "zh-CN"}})
     opencode_cfg = build_opencode_config_from_agents_config(cfg)
 
     profile = build_opencode_profile(
@@ -263,26 +282,30 @@ def test_opencode_profile_enables_mouse_for_permission_dialog_clicks(tmp_path: P
     assert tui_json["mouse"] is True
 
 
-def test_opencode_launcher_injects_profile_paths_and_commands(tmp_path: Path):
+def test_opencode_launcher_injects_profile_paths_and_commands(tmp_path: Path, monkeypatch):
+    data_root = tmp_path / "data-root"
+    monkeypatch.setattr("codepilot.opencode.paths.global_storage_root", lambda: data_root)
     plan = build_mcp_launch_plan(
         "opencode",
         executable="opencode-bin",
         mcp_servers={"codepilot": {"command": "python", "args": ["-m", "codepilot"]}},
         config_path=tmp_path / "opencode.json",
+        scope="demo",
     )
 
     assert plan.command == ["opencode-bin", "--agent", "codepilot"]
+    runtime_base = data_root / "opencode" / "demo"
     assert plan.env == {
         "OPENCODE_CONFIG": str(tmp_path / "opencode.json"),
-        "OPENCODE_TUI_CONFIG": str(tmp_path / "tui.json"),
-        "OPENCODE_CONFIG_DIR": str(tmp_path / "config"),
-        "XDG_DATA_HOME": str(tmp_path / "xdg-data"),
-        "XDG_CACHE_HOME": str(tmp_path / "xdg-cache"),
-        "XDG_STATE_HOME": str(tmp_path / "xdg-state"),
+        "OPENCODE_TUI_CONFIG": str(runtime_base / "tui.json"),
+        "OPENCODE_CONFIG_DIR": str(runtime_base / "config"),
+        "XDG_DATA_HOME": str(runtime_base / "xdg-data"),
+        "XDG_CACHE_HOME": str(runtime_base / "xdg-cache"),
+        "XDG_STATE_HOME": str(runtime_base / "xdg-state"),
         "OPENCODE_DISABLE_TERMINAL_TITLE": "1",
         "CODEPILOT_OPENCODE_BRAND_NAME": "CodePilot",
     }
-    assert str(tmp_path / "config" / "agents" / "codepilot.md") in plan.config_files
+    assert str(runtime_base / "config" / "agents" / "codepilot.md") in plan.config_files
     payload = json.loads(plan.config_files[str(tmp_path / "opencode.json")])
     assert payload["default_agent"] == "codepilot"
     assert "Prefer CodePilot MCP tools" in payload["agent"]["codepilot"]["prompt"]

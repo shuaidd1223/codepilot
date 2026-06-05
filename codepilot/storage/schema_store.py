@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS projects (
     name            TEXT PRIMARY KEY,
     path            TEXT NOT NULL UNIQUE,
     base_branch     TEXT NOT NULL DEFAULT 'dev',
-    default_mode    TEXT NOT NULL DEFAULT 'dual',
     worktree_base   TEXT,
     config_file     TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
@@ -132,25 +131,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS service_states (
-    service     TEXT NOT NULL,
-    scope       TEXT NOT NULL DEFAULT '',
-    pid         INTEGER,
-    status      TEXT NOT NULL DEFAULT 'running',
-    log_path    TEXT,
-    heartbeat_at TEXT,
-    meta        TEXT,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (service, scope)
-);
-
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_task_logs_task_id ON task_logs(task_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
 CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session_id);
-CREATE INDEX IF NOT EXISTS idx_service_states_service ON service_states(service);
 """
 
 
@@ -178,6 +163,7 @@ def _mig_4_task_source(conn: sqlite3.Connection) -> None:
 
 def _mig_5_dedup_key(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "tasks", "dedup_key", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project_dedup ON tasks(project, dedup_key)")
 
 
 def _mig_6_fallback_reason(conn: sqlite3.Connection) -> None:
@@ -192,6 +178,11 @@ def _mig_8_session_message_metadata(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "session_messages", "metadata", "TEXT")
 
 
+def _mig_9_drop_default_mode(conn: sqlite3.Connection) -> None:
+    if _has_column(conn, "projects", "default_mode"):
+        conn.execute("ALTER TABLE projects DROP COLUMN default_mode")
+
+
 _MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (1, "tasks: retry_count / max_retries", _mig_1_retry_fields),
     (2, "tasks: run_phase / heartbeat / active_pid / log_path / last_output", _mig_2_runtime_fields),
@@ -201,6 +192,7 @@ _MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (6, "tasks: fallback_reason", _mig_6_fallback_reason),
     (7, "service_states: daemon/inspect/webui runtime state", _mig_7_service_states),
     (8, "session_messages: metadata for structured clarification", _mig_8_session_message_metadata),
+    (9, "projects: drop default_mode (replaced by automation.task_agent)", _mig_9_drop_default_mode),
 ]
 
 SCHEMA_VERSION = max(version for version, _, _ in _MIGRATIONS)

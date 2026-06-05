@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from codepilot.core.config import normalize_agent_language
+from codepilot.core.config import normalize_agent_input_language, normalize_agent_output_language
 from codepilot.mcp.launchers import MCPServerSpec, normalize_mcp_servers
 from codepilot.opencode.config import OpenCodeCommandConfig, OpenCodeConfig, default_opencode_config
 from codepilot.opencode.paths import opencode_runtime_root
@@ -32,18 +32,26 @@ def build_opencode_profile(
     mcp_servers: Mapping[str, Any] | Iterable[MCPServerSpec] | None,
     base_path: str | Path | None = None,
     config_path: str | Path | None = None,
+    data_base_path: str | Path | None = None,
 ) -> OpenCodeProfilePlan:
     config = config or default_opencode_config()
+    # *base* is the user-global runtime root where tool-generated files live
+    # (tui.json, agents/, instructions/, commands/, plugins/).  Only
+    # opencode.json may optionally be written to a separate project-level
+    # path so users can see and edit their permission settings — the same
+    # pattern as .claude/settings.json.
     base = Path(base_path) if base_path is not None else opencode_runtime_root()
+    # XDG data / cache / state always live in the user-global runtime root.
+    data_base = Path(data_base_path) if data_base_path is not None else base
     resolved_config_path = Path(config_path) if config_path is not None else base / "opencode.json"
-    if config_path is not None:
-        base = resolved_config_path.parent
+    # tui.json, config/ etc. always stay under *base* — they are CodePilot
+    # tool internals, not project-editable artifacts.
     tui_path = base / "tui.json"
     config_dir = base / "config"
 
     agent_name = _agent_name(config)
     commands = _commands(config, agent_name)
-    language = normalize_agent_language(getattr(config, "agent_language", "en"))
+    language = normalize_agent_output_language(getattr(config, "agent_output_language", "zh-CN"))
     # instructions 文件路径解析（OpenCode 源码 packages/opencode/src/session/instruction.ts）：
     # - 相对路径：通过 globUp() 从 CWD（项目根目录）向上搜索，不会到 config 目录下找
     # - 绝对路径：glob(basename, {cwd: dirname}) 直接读取
@@ -102,9 +110,9 @@ def build_opencode_profile(
             "OPENCODE_CONFIG": str(resolved_config_path),
             "OPENCODE_TUI_CONFIG": str(tui_path),
             "OPENCODE_CONFIG_DIR": str(config_dir),
-            "XDG_DATA_HOME": str(base / "xdg-data"),
-            "XDG_CACHE_HOME": str(base / "xdg-cache"),
-            "XDG_STATE_HOME": str(base / "xdg-state"),
+            "XDG_DATA_HOME": str(data_base / "xdg-data"),
+            "XDG_CACHE_HOME": str(data_base / "xdg-cache"),
+            "XDG_STATE_HOME": str(data_base / "xdg-state"),
             "OPENCODE_DISABLE_TERMINAL_TITLE": "1",
             "CODEPILOT_OPENCODE_BRAND_NAME": config.profile.brand_name,
         },
@@ -121,10 +129,11 @@ def _agent_name(config: OpenCodeConfig) -> str:
 def _agent_payload(config: OpenCodeConfig, agent_name: str) -> dict[str, Any]:
     # 语言与展示规则由 instructions 配置文件维护，
     # agent prompt 只保留功能描述，不重复注入语言指令。
-    language = normalize_agent_language(config.agent_language)
-    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name, language=config.agent_language)
+    output_language = normalize_agent_output_language(config.agent_output_language)
+    input_language = normalize_agent_input_language(config.agent_input_language)
+    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name, language=input_language)
     payload: dict[str, Any] = {
-        "description": config.agent.description or _default_agent_description(config.profile.brand_name, language=language),
+        "description": config.agent.description or _default_agent_description(config.profile.brand_name, language=output_language),
         "prompt": prompt,
     }
     if config.agent.model:
@@ -133,33 +142,67 @@ def _agent_payload(config: OpenCodeConfig, agent_name: str) -> dict[str, Any]:
 
 
 def _agent_markdown(config: OpenCodeConfig, agent_name: str) -> str:
-    language = normalize_agent_language(config.agent_language)
-    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name, language=config.agent_language)
+    output_language = normalize_agent_output_language(config.agent_output_language)
+    input_language = normalize_agent_input_language(config.agent_input_language)
+    prompt = config.agent.prompt or _default_agent_prompt(config.profile.brand_name, language=input_language)
     return (
         f"# {agent_name}\n\n"
-        f"{config.agent.description or _default_agent_description(config.profile.brand_name, language=language)}\n\n"
+        f"{config.agent.description or _default_agent_description(config.profile.brand_name, language=output_language)}\n\n"
         f"{prompt}\n"
     )
 
 
 def _default_agent_description(brand_name: str, *, language: str = "en") -> str:
     brand = str(brand_name or "CodePilot").strip() or "CodePilot"
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_output_language(language) == "en":
         return f"{brand} project workflow agent"
     return f"{brand} 项目工作流智能体"
 
-
 def _default_agent_prompt(brand_name: str, *, language: str = "en") -> str:
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_output_language(language) == "en":
         return (
             f"You are {brand_name}, a project workflow agent running inside OpenCode. "
-            "Prefer CodePilot MCP tools for task status, task creation, project inspection, failed-task repair loops, Hook triggers, "
-            "and controlled workflow operations. Use raw shell commands cautiously only when MCP capabilities do not cover the need."
+            "Prefer CodePilot MCP tools for ALL operations. As a workflow agent, you MUST be proactive:\n\n"
+            "1. BEFORE implementing any task, you MUST read:\n"
+            "   - memory_events and note_show to understand past decisions and known pitfalls\n"
+            "   - wiki_query when build/test/architecture conventions are involved\n"
+            "2. BEFORE splitting tasks, check workflow_status to understand the current project state\n"
+            "3. PREFERRED: For any requirement/task from the user, use the codepilot_pipeline tool:\n"
+            "   - Pass the full requirement text as the 'requirement' parameter\n"
+            "   - The pipeline handles plan -> execute -> workflow advance in one call\n"
+            "   - This is the ONE-CALL way to get work done. Always prefer it.\n"
+            "4. When pipeline is not suitable (e.g. you only need to execute, not plan), use:\n"
+            "   - run_once to execute tasks from the backlog\n"
+            "   - workflow_next with auto=true to advance the workflow\n"
+            "5. AFTER completing tasks, write key findings to note_add or wiki_add for future tasks\n"
+            "6. Use raw shell commands ONLY when MCP tools cannot cover the need\n"
+            "7. When the user activates /task mode: you are in TOOL-ONLY mode. Do NOT read/write/edit files directly. "
+            "Use ONLY CodePilot MCP tools: pipeline, run_once, workflow_next, workflow_status, create_task, generate_breakdown. "
+            "Read memory_events and note_show, then call pipeline(requirement=...) to execute. "
+            "Monitor execution results and report back. Do NOT implement code yourself.\n"
+            "8. Check daemon_status periodically — if daemon is NOT running, drain the backlog yourself with run_once."
         )
     return (
         f"你是 {brand_name}，运行在 OpenCode 内的项目工作流智能体。"
-        "优先使用 CodePilot MCP 工具查看任务状态、创建任务、巡检项目、执行失败修复闭环、触发 Hook "
-        "以及完成受控工作流操作；只有在 MCP 能力无法覆盖时，才谨慎使用原始 shell 命令。"
+        "作为工作流智能体，你必须主动使用以下工具，不要等待用户提醒：\n\n"
+        "1. 优先使用 CodePilot MCP 工具完成所有操作。以下是必须主动读取的记忆：\n"
+        "   - memory_events 和 note_show：在实现任何任务之前必须查询，了解过去决策和已知陷阱\n"
+        "   - wiki_query：涉及构建/测试/架构时必须查询\n"
+        "2. 任务拆分前，先查看 workflow_status 了解当前项目状态和待办事项\n"
+        "3. 首选方式：收到用户的任何需求/任务时，直接调用 codepilot_pipeline 工具：\n"
+        "   - 将完整需求文本作为 requirement 参数传入\n"
+        "   - 该工具一键完成 规划→执行→工作流推进 全流程\n"
+        "   - 这是最高效的工作方式，始终优先使用\n"
+        "4. 当 pipeline 不适用时（如只需执行不需规划），使用：\n"
+        "   - run_once 从 backlog 中执行任务\n"
+        "   - workflow_next（auto=true）推进工作流\n"
+        "5. 完成任务后，必须将关键发现写入 note_add 或 wiki_add，以便后续任务受益\n"
+        "6. 只有在 MCP 工具完全无法覆盖需求时，才谨慎使用 shell 命令\n"
+        "7. 当用户激活 /task 模式时：你处于纯工具模式。不要直接读写/编辑文件。"
+        "只使用 CodePilot MCP 工具：pipeline、run_once、workflow_next、workflow_status、create_task、generate_breakdown。"
+        "先读取 memory_events 和 note_show，然后调用 pipeline(requirement=...) 执行。"
+        "你的角色是监听执行过程和结果并汇报，不要自己动手写代码。\n"
+        "8. 定期检查 daemon_status——如果 daemon 未运行，手动使用 run_once 清空 backlog。不要等待用户提醒你执行任务。"
     )
 
 
@@ -171,7 +214,7 @@ def _runtime_instructions_content(brand_name: str, *, language: str = "en") -> s
     每次模型调用时发送，不受 agent prompt 工程方式的影响。
     """
     brand = str(brand_name or "CodePilot").strip() or "CodePilot"
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_output_language(language) == "en":
         return (
             "# Language and Display Rules\n"
             "\n"
@@ -229,22 +272,50 @@ def _runtime_instructions_content(brand_name: str, *, language: str = "en") -> s
 
 
 def _runtime_instructions_markdown(brand_name: str, *, language: str = "en") -> str:
-    title = "中文交互规则" if normalize_agent_language(language) == "zh-CN" else "English Interaction Rules"
+    title = "中文交互规则" if normalize_agent_output_language(language) == "zh-CN" else "English Interaction Rules"
     return f"# {brand_name or 'CodePilot'} {title}\n\n{_runtime_instructions_content(brand_name, language=language)}\n"
 
 
 def _commands(config: OpenCodeConfig, agent_name: str) -> dict[str, dict[str, str]]:
-    commands = _default_commands(agent_name, language=config.agent_language)
+    output_language = normalize_agent_output_language(config.agent_output_language)
+    commands = _default_commands(agent_name, language=output_language)
+    commands.setdefault("task", _task_mode_command_payload(agent_name))
     for name, raw in config.commands.items():
         command_name = str(name).strip()
         if not command_name:
             continue
-        commands[command_name] = _command_payload(raw, agent_name, language=config.agent_language)
+        commands[command_name] = _command_payload(raw, agent_name, language=output_language)
     return commands
 
 
+def _task_mode_command_payload(agent_name: str) -> dict[str, str]:
+    return {
+        "description": "CodePilot task mode: run a requirement through the MCP pipeline.",
+        "template": _task_mode_command_template(),
+        "agent": agent_name,
+    }
+
+
+def _task_mode_command_template() -> str:
+    return (
+        "CodePilot TASK MODE\n\n"
+        "The user invoked `/task` with this requirement:\n"
+        "$ARGUMENTS\n\n"
+        "Hard constraints:\n"
+        "- Use ONLY CodePilot MCP tools for this request.\n"
+        "- Do NOT read, write, edit, patch, or inspect repository files directly.\n"
+        "- Do NOT run shell commands or implement code yourself.\n"
+        "- First call codepilot_pipeline(requirement=$ARGUMENTS).\n"
+        "- If codepilot_pipeline cannot complete, use only CodePilot MCP fallback tools such as "
+        "codepilot_run_once, codepilot_workflow_next(auto=true), codepilot_workflow_status, "
+        "codepilot_daemon_status, codepilot_create_task, and codepilot_generate_breakdown.\n"
+        "- Monitor tool results and report task ids, failures, manual follow-up commands, "
+        "and validation results returned by the tools."
+    )
+
+
 def _command_payload(raw: OpenCodeCommandConfig, default_agent: str, *, language: str = "en") -> dict[str, str]:
-    english = normalize_agent_language(language) == "en"
+    english = normalize_agent_output_language(language) == "en"
     payload = {
         "description": raw.description or ("CodePilot workflow command" if english else "CodePilot 工作流命令"),
         "template": _with_chinese_command_instruction(
@@ -280,7 +351,7 @@ def _with_english_command_instruction(template: str) -> str:
 
 
 def _default_commands(agent_name: str, *, language: str = "en") -> dict[str, dict[str, str]]:
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_output_language(language) == "en":
         return {
             "Task Status": {
                 "description": "View the current CodePilot task status.",

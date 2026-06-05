@@ -36,6 +36,7 @@ EXPECTED_DEFAULT_MCP_TOOLS = {
     "inspect_workflow",
     "list_tasks",
     "note_add",
+    "pipeline",
     "run_once",
     "show_task",
     "stop_task",
@@ -76,7 +77,7 @@ def test_default_list_tools_exposes_exact_25_tool_contracts_without_unintended_d
     tools = server.list_tools()
     names = {tool["name"] for tool in tools}
 
-    assert len(tools) == 25
+    assert len(tools) == 26
     assert names == EXPECTED_DEFAULT_MCP_TOOLS
     assert PHASE_4B_TOOL_NAMES <= names
     _assert_no_chat_or_scheduled_agent_tools(names)
@@ -90,6 +91,6 @@ def test_mcp_list_tools_cli_prints_the_same_exact_25_tool_names():
     lines = result.output.strip().splitlines()
     listed_names = {line.removeprefix("- ") for line in lines[1:]}
 
-    assert lines[0] == "25 MCP tools registered:"
+    assert lines[0] == "26 MCP tools registered:"
     assert listed_names == EXPECTED_DEFAULT_MCP_TOOLS
     _assert_no_chat_or_scheduled_agent_tools(listed_names)

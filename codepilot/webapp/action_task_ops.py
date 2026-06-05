@@ -50,7 +50,7 @@ def create_project_action(path: str, *, name: str = "", no_config: bool = False)
             project["name"],
             str(resolved_path),
             base_branch=str(project.get("base_branch") or "dev"),
-            default_mode=str(project.get("default_mode") or "dual"),
+            default_mode="dual",
             worktree_base=project.get("worktree_base"),
             config_file=config_file,
         )
@@ -533,16 +533,15 @@ def create_task_action(
             f"未知的添加模式 '{mode}'，只支持 full / ai_complete / requirement。"
         )
 
-    resolved_agent = (agent or project_info.get("default_mode") or "dual").lower()
+    resolved_agent = (agent or "dual").lower()
     if resolved_agent == "auto":
-        resolved_agent = project_info.get("default_mode") or "dual"
+        resolved_agent = "dual"
 
     from codepilot.ai_support.service import resolve_agent_with_fallback, generate_task_content
-    default_mode = project_info.get("default_mode") or "dual"
     resolved_agent, fallback_reason = resolve_agent_with_fallback(
         resolved_agent,
         project_path=project_info["path"],
-        default_mode=default_mode,
+        default_mode="dual",
     )
 
     if normalized_mode == "ai_complete":

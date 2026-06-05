@@ -70,11 +70,13 @@ def test_run_opencode_message_starts_new_json_session(tmp_path: Path, monkeypatc
     assert calls[0]["command"][-1] == "看一下当前状态"
     assert calls[0]["timeout"] > 0
     assert calls[0]["cwd"] == str(project_path.resolve())
-    assert Path(calls[0]["env"]["OPENCODE_CONFIG"]).is_relative_to(runtime_root)
+    project_config_root = project_path / ".codepilot"
+    assert Path(calls[0]["env"]["OPENCODE_CONFIG"]) == project_config_root / "opencode.json"
+    # XDG data / cache / state stay in the user-global runtime root
     assert Path(calls[0]["env"]["XDG_DATA_HOME"]).is_relative_to(runtime_root)
     assert Path(calls[0]["env"]["XDG_CACHE_HOME"]).is_relative_to(runtime_root)
     assert Path(calls[0]["env"]["XDG_STATE_HOME"]).is_relative_to(runtime_root)
-    assert not (project_path / ".codepilot" / "opencode").exists()
+    assert (project_config_root / "opencode.json").exists()
 
     state = db.get_service_state("opencode_chat", "feishu:chat-a:demo")
     assert state and state["meta"]["opencode_session_id"] == "ses_123"
@@ -119,8 +121,7 @@ def test_run_opencode_message_normalizes_project_alias_for_mcp_and_session_scope
     assert result["ok"] is True
     assert result["project"] == "codepilot-dev"
     config_path = Path(calls[0]["env"]["OPENCODE_CONFIG"])
-    assert config_path.is_relative_to(runtime_root)
-    assert not (project_path / ".codepilot" / "opencode").exists()
+    assert config_path.is_relative_to(project_path / ".codepilot")
     opencode_config = json.loads(config_path.read_text(encoding="utf-8"))
     mcp_command = opencode_config["mcp"]["codepilot"]["command"]
     assert mcp_command[mcp_command.index("--project") + 1] == "codepilot-dev"
@@ -136,7 +137,7 @@ def test_run_opencode_message_uses_project_agent_language_for_headless_channels(
     runtime_root = _isolate_opencode_runtime(tmp_path, monkeypatch)
     project_path = register_project(tmp_path, monkeypatch)
     (project_path / "AGENTS.toml").write_text(
-        '[project]\nname = "demo"\n\n[automation]\nagent_language = "zh-CN"\n',
+        '[project]\nname = "demo"\n\n[automation]\nagent_output_language = "zh-CN"\n',
         encoding="utf-8",
     )
     calls = []
@@ -159,7 +160,7 @@ def test_run_opencode_message_uses_project_agent_language_for_headless_channels(
 
     assert result["ok"] is True
     config_path = Path(calls[0]["env"]["OPENCODE_CONFIG"])
-    assert config_path.is_relative_to(runtime_root)
+    assert config_path.is_relative_to(project_path / ".codepilot")
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     assert payload["instructions"][0].endswith("codepilot.zh-CN.md")
     assert "任务状态" in payload["command"]
@@ -167,7 +168,7 @@ def test_run_opencode_message_uses_project_agent_language_for_headless_channels(
 
 def test_run_opencode_message_uses_binary_mcp_command_when_frozen(tmp_path: Path, monkeypatch):
     runtime_root = _isolate_opencode_runtime(tmp_path, monkeypatch)
-    register_project(tmp_path, monkeypatch)
+    project_path = register_project(tmp_path, monkeypatch)
     monkeypatch.setattr("codepilot.opencode.session.sys.frozen", True, raising=False)
     monkeypatch.setattr("codepilot.opencode.session.sys.executable", r"C:\Tools\CodePilot\codepilot.exe")
     calls = []
@@ -191,7 +192,7 @@ def test_run_opencode_message_uses_binary_mcp_command_when_frozen(tmp_path: Path
     assert result["ok"] is True
     assert calls
     config_path = Path(calls[0]["env"]["OPENCODE_CONFIG"])
-    assert config_path.is_relative_to(runtime_root)
+    assert config_path.is_relative_to(project_path / ".codepilot")
     opencode_config = json.loads(config_path.read_text(encoding="utf-8"))
     mcp_command = opencode_config["mcp"]["codepilot"]["command"]
     assert mcp_command[:3] == [r"C:\Tools\CodePilot\codepilot.exe", "mcp", "serve"]
@@ -230,8 +231,7 @@ def test_run_opencode_message_uses_tool_level_profile_not_project_opencode_confi
     assert result["ok"] is True
     assert calls[0]["command"][calls[0]["command"].index("--agent") + 1] == "codepilot"
     config_path = Path(calls[0]["env"]["OPENCODE_CONFIG"])
-    assert config_path.is_relative_to(runtime_root)
-    assert not (project_path / ".codepilot" / "opencode").exists()
+    assert config_path.is_relative_to(project_path / ".codepilot")
     opencode_config = json.loads(config_path.read_text(encoding="utf-8"))
     assert opencode_config["default_agent"] == "codepilot"
     assert "ProjectBrand" not in config_path.read_text(encoding="utf-8")

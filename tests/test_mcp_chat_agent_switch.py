@@ -151,7 +151,8 @@ def test_agent_switch_fresh_restart_reinjects_mcp_config(
     assert "codepilot" in claude_command[config_arg_index]
     assert len(writes) == 1
     runtime_dir = Path.home() / ".codepilot" / "opencode" / tmp_path.name
-    assert str(runtime_dir / "opencode.json") in writes[0]["files"]
+    # opencode.json now lives in project .codepilot/ for project-scoped config
+    project_config_path = writes[0]["cwd"] if isinstance(writes[0].get("cwd"), Path) else tmp_path
+    assert str(Path(project_config_path) / ".codepilot" / "opencode.json") in writes[0]["files"]
     assert str(runtime_dir / "tui.json") in writes[0]["files"]
     assert str(runtime_dir / "config" / "agents" / "codepilot.md") in writes[0]["files"]
-    assert not (tmp_path / ".codepilot" / "opencode").exists()

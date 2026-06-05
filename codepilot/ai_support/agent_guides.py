@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from codepilot.ai_support.agent_commands import _cmd, normalize_command_name
 from codepilot.ai_support.project_metadata import project_metadata_markdown
-from codepilot.core.config import normalize_agent_language
+from codepilot.core.config import normalize_agent_input_language
 
 def ai_guide_markdown(*, command_name: str = "codepilot", language: str = "en") -> str:
     """Return an AI-oriented Markdown guide."""
     command = normalize_command_name(command_name)
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_input_language(language) == "en":
         return f"""# CodePilot AI Usage Guide
 
 Language: [简体中文](AI_USAGE.zh-CN.md) | English
@@ -553,7 +553,7 @@ retry 123
 def ai_prompt_text(*, command_name: str = "codepilot", language: str = "en") -> str:
     """Return a compact prompt for another AI to operate CodePilot safely."""
     command = normalize_command_name(command_name)
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_input_language(language) == "en":
         return (
             "You are calling CodePilot, a local engineering workflow CLI. Prefer non-interactive commands. "
             f"Submit requirements directly with `{command} \"requirement text\"`. "

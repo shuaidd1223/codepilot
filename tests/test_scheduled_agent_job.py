@@ -129,7 +129,7 @@ def test_run_agent_job_injects_family_runtime_env_from_config(tmp_path: Path, mo
 
 def test_run_agent_job_can_wrap_prompt_for_chinese_agent_language(tmp_path: Path):
     calls: list[dict[str, Any]] = []
-    cfg = AgentsConfig.from_dict({"automation": {"agent_language": "zh-CN"}})
+    cfg = AgentsConfig.from_dict({"automation": {"agent_output_language": "zh-CN"}})
 
     run_agent_job(
         _job("codex"),

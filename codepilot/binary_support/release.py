@@ -119,15 +119,17 @@ def _release_summary_text(name: str, version: str, artifacts: list[ReleaseArtifa
     return "\n".join(lines) + "\n"
 
 
-def _windows_install_script(binary_name: str) -> str:
-    command_name = Path(binary_name).stem
+def _windows_install_script(app_dir_name: str, exe_name: str) -> str:
+    """Generate a Windows install script that mirrors the onedir tree into
+    ``%LOCALAPPDATA%\\Programs\\CodePilot\\bin`` and registers PATH."""
+    command_name = Path(exe_name).stem
     return (
         "@echo off\n"
         "setlocal\n"
         "set SCRIPT_DIR=%~dp0\n"
         "set TARGET_DIR=%LOCALAPPDATA%\\Programs\\CodePilot\\bin\n"
         "if not exist \"%TARGET_DIR%\" mkdir \"%TARGET_DIR%\"\n"
-        f"copy /Y \"%SCRIPT_DIR%{binary_name}\" \"%TARGET_DIR%\\{binary_name}\" >nul\n"
+        f"xcopy /E /I /Y \"%SCRIPT_DIR%{app_dir_name}\" \"%TARGET_DIR%\" >nul\n"
         f"if exist \"%TARGET_DIR%\\{command_name}.cmd\" del /F /Q \"%TARGET_DIR%\\{command_name}.cmd\" >nul 2>nul\n"
         f"if exist \"%TARGET_DIR%\\{command_name}.bat\" del /F /Q \"%TARGET_DIR%\\{command_name}.bat\" >nul 2>nul\n"
         "powershell -NoProfile -Command \"$dir=$env:LOCALAPPDATA + '\\Programs\\CodePilot\\bin';"
@@ -154,15 +156,17 @@ def _windows_install_script(binary_name: str) -> str:
     )
 
 
-def _posix_install_script(binary_name: str) -> str:
+def _posix_install_script(app_dir_name: str, exe_name: str) -> str:
+    """Generate a POSIX install script that mirrors the onedir tree into
+    ``~/.local/bin`` and registers PATH."""
     return (
         "#!/usr/bin/env sh\n"
         "set -eu\n"
         'SCRIPT_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"\n'
         'TARGET_DIR="${HOME}/.local/bin"\n'
         'mkdir -p "${TARGET_DIR}"\n'
-        f'cp "{binary_name}" "${{TARGET_DIR}}/{binary_name}"\n'
-        f'chmod +x "${{TARGET_DIR}}/{binary_name}"\n'
+        f'cp -r "${{SCRIPT_DIR}}/{app_dir_name}/"* "${{TARGET_DIR}}/"\n'
+        f'chmod +x "${{TARGET_DIR}}/{exe_name}"\n'
         'PROFILE=""\n'
         'if [ -n "${SHELL:-}" ] && [ "$(basename "${SHELL}")" = "zsh" ]; then PROFILE="${HOME}/.zprofile"; fi\n'
         'if [ -z "${PROFILE}" ] && [ -f "${HOME}/.bash_profile" ]; then PROFILE="${HOME}/.bash_profile"; fi\n'
@@ -186,8 +190,10 @@ def _release_script_name(platform_tag: str) -> str:
     return "install-codepilot.cmd" if platform_tag.lower().startswith("windows") else "install-codepilot.sh"
 
 
-def _release_script_text(platform_tag: str, binary_name: str) -> str:
-    return _windows_install_script(binary_name) if platform_tag.lower().startswith("windows") else _posix_install_script(binary_name)
+def _release_script_text(platform_tag: str, app_dir_name: str, exe_name: str) -> str:
+    if platform_tag.lower().startswith("windows"):
+        return _windows_install_script(app_dir_name, exe_name)
+    return _posix_install_script(app_dir_name, exe_name)
 
 
 def _archive_name(name: str, version: str, platform_tag: str) -> tuple[str, str]:
@@ -205,12 +211,25 @@ def _archive_root_folder(archive_path: Path, archive_format: str) -> str:
     raise RuntimeError(f"不支持的压缩格式：{archive_format}")
 
 
+def _add_tree_to_zip(bundle: ZipFile, tree_root: Path, arc_prefix: str) -> None:
+    for file_path in _iter_tree_files(tree_root):
+        relative = str(file_path.relative_to(tree_root)).replace("\\", "/")
+        bundle.write(file_path, arcname=f"{arc_prefix}/{relative}")
+
+
+def _add_tree_to_tar(bundle: tarfile.TarFile, tree_root: Path, arc_prefix: str) -> None:
+    for file_path in _iter_tree_files(tree_root):
+        relative = str(file_path.relative_to(tree_root)).replace("\\", "/")
+        bundle.add(file_path, arcname=f"{arc_prefix}/{relative}")
+
+
 def _write_release_archive(
     archive_path: Path,
     *,
     archive_format: str,
     folder_name: str,
-    staged_path: Path,
+    app_dir: Path,
+    app_dir_name: str,
     script_path: Path,
     guide_path: Path,
     ai_guide_path: Path,
@@ -219,10 +238,10 @@ def _write_release_archive(
     web_dir: Path | None = None,
     feishu_dir: Path | None = None,
 ) -> None:
-    """Create the platform archive with binary, installer, and Chinese guide."""
+    """Create the platform archive with the onedir tree, installer, and guides."""
     if archive_format == "zip":
         with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as bundle:
-            bundle.write(staged_path, arcname=f"{folder_name}/{staged_path.name}")
+            _add_tree_to_zip(bundle, app_dir, f"{folder_name}/{app_dir_name}")
             bundle.write(script_path, arcname=f"{folder_name}/{script_path.name}")
             bundle.write(guide_path, arcname=f"{folder_name}/README.zh-CN.md")
             bundle.write(ai_guide_path, arcname=f"{folder_name}/AI_USAGE.zh-CN.md")
@@ -240,7 +259,7 @@ def _write_release_archive(
 
     if archive_format == "tar.gz":
         with tarfile.open(archive_path, "w:gz") as bundle:
-            bundle.add(staged_path, arcname=f"{folder_name}/{staged_path.name}")
+            _add_tree_to_tar(bundle, app_dir, f"{folder_name}/{app_dir_name}")
             bundle.add(script_path, arcname=f"{folder_name}/{script_path.name}")
             bundle.add(guide_path, arcname=f"{folder_name}/README.zh-CN.md")
             bundle.add(ai_guide_path, arcname=f"{folder_name}/AI_USAGE.zh-CN.md")
@@ -269,9 +288,34 @@ def _iter_tree_files(root: Path | None) -> list[Path]:
     return sorted(path for path in root.rglob("*") if path.is_file())
 
 
+def _is_real_onedir(exe_path: Path) -> bool:
+    """Return True if *exe_path* lives inside a real PyInstaller onedir tree."""
+    parent = exe_path.parent
+    if not parent.is_dir():
+        return False
+    files = [p for p in parent.iterdir() if p.is_file()]
+    return len(files) >= 5
+
+
+def _find_dist_vendor(source_path: Path) -> Path | None:
+    """Locate ``bin/vendor`` next to the onedir build in the dist directory.
+
+    For onedir ``<dist>/<name>/<name>.exe`` the vendor lives at
+    ``<dist>/bin/vendor``.
+    """
+    candidates = [
+        source_path.parent / "bin" / "vendor",           # sibling
+        source_path.parent.parent / "bin" / "vendor",    # onedir: exe is one level deeper
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _stage_vendor_bundle(source_path: Path, artifact_dir: Path) -> Path | None:
-    source_vendor_dir = source_path.parent / "bin" / "vendor"
-    if not source_vendor_dir.exists():
+    source_vendor_dir = _find_dist_vendor(source_path)
+    if source_vendor_dir is None:
         return None
 
     staged_vendor_dir = artifact_dir / "bin" / "vendor"
@@ -436,9 +480,30 @@ def create_release_bundle(
 
         artifact_dir = release_dir / platform_tag
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        staged_name = source_path.name
-        staged_path = artifact_dir / staged_name
-        shutil.copy2(source_path, staged_path)
+
+        # Detect onedir vs standalone file.
+        if source_path.is_dir():
+            app_dir = source_path
+            exe_name_ = source_path.name
+        elif _is_real_onedir(source_path):
+            app_dir = source_path.parent
+            exe_name_ = source_path.name
+        else:
+            # Standalone file — create a minimal onedir directory for it.
+            app_dir = artifact_dir / name
+            app_dir.mkdir(parents=True, exist_ok=True)
+            exe_name_ = source_path.name
+            shutil.copy2(source_path, app_dir / exe_name_)
+
+        app_dir_name = app_dir.name
+        staged_app_dir = artifact_dir / app_dir_name
+        if staged_app_dir.resolve() != app_dir.resolve():
+            if staged_app_dir.exists():
+                shutil.rmtree(staged_app_dir)
+            shutil.copytree(app_dir, staged_app_dir)
+        else:
+            staged_app_dir = app_dir  # already in place (standalone mode)
+
         vendor_dir = _stage_vendor_bundle(source_path, artifact_dir)
         web_dir = _stage_web_assets(source_path, artifact_dir)
         if web_dir is None and _project_requires_web_assets(project_root):
@@ -450,9 +515,20 @@ def create_release_bundle(
         feishu_dir = _stage_feishu_runtime(source_path, artifact_dir)
         if feishu_dir is None and _project_requires_feishu_runtime(project_root):
             raise RuntimeError("二进制产物缺少飞书运行时目录，不能生成不完整发布包。")
+
+        # Build the platform-specific exe name for the install script.
+        if platform_tag.lower().startswith("windows"):
+            plat_exe_name = f"{exe_name_}.exe" if not exe_name_.endswith(".exe") else exe_name_
+        else:
+            plat_exe_name = exe_name_.removesuffix(".exe") if exe_name_.endswith(".exe") else exe_name_
+
         script_name = _release_script_name(platform_tag)
         script_path = artifact_dir / script_name
-        script_path.write_text(_release_script_text(platform_tag, staged_name), encoding="utf-8", newline="\n")
+        script_path.write_text(
+            _release_script_text(platform_tag, app_dir_name, plat_exe_name),
+            encoding="utf-8",
+            newline="\n",
+        )
         if not platform_tag.lower().startswith("windows"):
             script_path.chmod(script_path.stat().st_mode | 0o755)
 
@@ -463,7 +539,8 @@ def create_release_bundle(
             archive_path,
             archive_format=archive_format,
             folder_name=folder_name,
-            staged_path=staged_path,
+            app_dir=staged_app_dir,
+            app_dir_name=app_dir_name,
             script_path=script_path,
             guide_path=guide_path,
             ai_guide_path=ai_guide_path,
@@ -473,13 +550,14 @@ def create_release_bundle(
             feishu_dir=feishu_dir,
         )
 
-        binary_sha = _sha256_file(staged_path)
+        staged_exe = staged_app_dir / plat_exe_name
+        binary_sha = _sha256_file(staged_exe)
         archive_sha = _sha256_file(archive_path)
         packaged.append(
             ReleaseArtifact(
                 platform_tag=platform_tag,
                 source_path=source_path,
-                staged_path=staged_path,
+                staged_path=staged_exe,
                 archive_path=archive_path,
                 archive_format=archive_format,
                 binary_sha256=binary_sha,
@@ -490,7 +568,7 @@ def create_release_bundle(
             {
                 "platform": platform_tag,
                 "source_path": str(source_path),
-                "staged_path": str(staged_path),
+                "staged_path": str(staged_exe),
                 "archive_path": str(archive_path),
                 "archive_format": archive_format,
                 "install_script": str(script_path),
@@ -628,13 +706,18 @@ def _verify_archive_members(
         return
 
     folder_name = _archive_root_folder(archive, archive_format)
-    expected_members = {
-        f"{folder_name}/{staged.name}",
-        f"{folder_name}/{install_script.name}",
-        f"{folder_name}/README.zh-CN.md",
-        f"{folder_name}/AI_USAGE.zh-CN.md",
-        f"{folder_name}/AI_MANIFEST.json",
-    }
+    # staged is the exe inside the onedir directory; the archive contains
+    # the whole onedir tree under ``folder_name/<app_dir_name>/``.
+    app_dir = staged.parent
+    app_dir_name = app_dir.name
+    expected_members: set[str] = set()
+    for app_file in _iter_tree_files(app_dir):
+        relative = str(app_file.relative_to(app_dir)).replace("\\", "/")
+        expected_members.add(f"{folder_name}/{app_dir_name}/{relative}")
+    expected_members.add(f"{folder_name}/{install_script.name}")
+    expected_members.add(f"{folder_name}/README.zh-CN.md")
+    expected_members.add(f"{folder_name}/AI_USAGE.zh-CN.md")
+    expected_members.add(f"{folder_name}/AI_MANIFEST.json")
     for web_file in _iter_tree_files(web_dir):
         relative = str(web_file.relative_to(web_dir)).replace("\\", "/")
         expected_members.add(f"{folder_name}/web/{relative}")

@@ -197,12 +197,34 @@ def cleanup(
         else:
             echo(f"[red]错误：项目 '{safe(project)}' 不存在。[/red]")
         ctx.exit(1)
-        return
 
     # Run three cleanup passes.
-    stale_results = _mark_stale_tasks(project, stale_minutes, dry_run=dry_run)
-    orphan_results = _clear_orphan_log_paths(project, dry_run=dry_run)
-    purge_results, freed_bytes = _purge_old_logs(project, retention_days, dry_run=dry_run)
+    try:
+        stale_results = _mark_stale_tasks(project, stale_minutes, dry_run=dry_run)
+    except Exception as exc:
+        if json_mode:
+            click.echo(json.dumps({"error": f"标记失效任务失败: {exc}"}, ensure_ascii=False))
+        else:
+            echo(f"[red]标记失效任务失败: {exc}[/red]")
+        ctx.exit(1)
+
+    try:
+        orphan_results = _clear_orphan_log_paths(project, dry_run=dry_run)
+    except Exception as exc:
+        if json_mode:
+            click.echo(json.dumps({"error": f"清理孤立日志路径失败: {exc}"}, ensure_ascii=False))
+        else:
+            echo(f"[red]清理孤立日志路径失败: {exc}[/red]")
+        ctx.exit(1)
+
+    try:
+        purge_results, freed_bytes = _purge_old_logs(project, retention_days, dry_run=dry_run)
+    except Exception as exc:
+        if json_mode:
+            click.echo(json.dumps({"error": f"清理过期日志失败: {exc}"}, ensure_ascii=False))
+        else:
+            echo(f"[red]清理过期日志失败: {exc}[/red]")
+        ctx.exit(1)
 
     # ── JSON output ─────────────────────────────────────────────────────────
     if json_mode:

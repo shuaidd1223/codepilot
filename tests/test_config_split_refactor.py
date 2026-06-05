@@ -9,8 +9,9 @@ from codepilot.core.config import AgentsConfig, ConfigError
 def test_config_parse_module_owns_normalizers_and_config_keeps_facade():
     from codepilot.core import config_parse
 
-    assert config_parse.normalize_agent_language("中文") == "zh-CN"
-    assert config_mod.normalize_agent_language is config_parse.normalize_agent_language
+    assert config_parse.normalize_agent_input_language("中文") == "zh-CN"
+    assert config_mod.normalize_agent_input_language is config_parse.normalize_agent_input_language
+    assert config_mod.normalize_agent_output_language is config_parse.normalize_agent_output_language
 
     with pytest.raises(ConfigError) as excinfo:
         config_parse.normalize_preflight_dirty_worktree("archive")
@@ -55,10 +56,10 @@ def test_config_builder_module_preserves_agents_config_from_dict_contract():
 def test_config_builder_parses_workflow_auto_policy_defaults_and_overrides():
     default_cfg = AgentsConfig.from_dict({"project": {"name": "demo"}})
 
-    assert default_cfg.automation.workflow_auto_create_inspect_tasks is False
-    assert default_cfg.automation.workflow_auto_import_plan_tasks is False
-    assert default_cfg.automation.workflow_auto_max_steps == 1
-    assert default_cfg.automation.workflow_auto_failure_threshold == 1
+    assert default_cfg.automation.workflow_auto_create_inspect_tasks is True
+    assert default_cfg.automation.workflow_auto_import_plan_tasks is True
+    assert default_cfg.automation.workflow_auto_max_steps == 3
+    assert default_cfg.automation.workflow_auto_failure_threshold == 3
 
     overridden = AgentsConfig.from_dict(
         {

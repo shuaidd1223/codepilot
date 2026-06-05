@@ -5,18 +5,17 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 import click
 
-import threading
-from concurrent.futures import ThreadPoolExecutor
-
-from codepilot.storage import database as db
 from codepilot.commands.feishu import ensure_service_running_if_enabled
 from codepilot.commands.run import run_backlog
+from codepilot.core.logger import get_logger
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import _slugify_project_name, global_storage_root
 from codepilot.core.runtime import codepilot_command, is_process_alive, reap_stalled_tasks
@@ -26,9 +25,14 @@ from codepilot.core.service_launcher import (
     DETACHED_PROCESS,
     append_log_header,
     hidden_windows_startupinfo,
+)
+from codepilot.core.service_launcher import (
     spawn_detached_command_via_launcher as _spawn_detached_command_via_launcher,
 )
 from codepilot.core.text_decode import decode_subprocess_text
+from codepilot.storage import database as db
+
+logger = get_logger('daemon')
 
 
 def _resolve_project(ctx, param, value):
@@ -44,6 +48,28 @@ def _resolve_project(ctx, param, value):
 
 DAEMON_STATE_DIR = global_storage_root() / "daemon"
 DEFAULT_DAEMON_STALE_AFTER_SECONDS = 120
+DAEMON_DEFAULT_UI_PORT = 8766
+DAEMON_DEFAULT_DEV_UI_PORT = 8767
+
+
+def _is_dev_mode() -> bool:
+    """检测当前是否以 codepilot-dev 模式运行。"""
+    argv0 = os.path.splitext(os.path.basename(str(sys.argv[0] or "")))[0].lower()
+    home_name = os.path.basename(os.path.normpath(os.environ.get("CODEPILOT_HOME", ""))).lower()
+    return argv0 == "codepilot-dev" or home_name == ".codepilot-dev"
+
+
+def _daemon_default_ui_port() -> int:
+    """返回 daemon 应使用的默认 Web UI 端口。"""
+    raw = str(os.environ.get("CODEPILOT_WEBUI_PORT", "")).strip()
+    if raw:
+        try:
+            value = int(raw)
+            if 0 < value <= 65535:
+                return value
+        except ValueError:
+            logger.debug("Invalid CODEPILOT_WEBUI_PORT value, falling back to default UI port", exc_info=True)
+    return DAEMON_DEFAULT_DEV_UI_PORT if _is_dev_mode() else DAEMON_DEFAULT_UI_PORT
 
 
 def _service_dir(project: str | None) -> Path:
@@ -164,7 +190,7 @@ def _spawn_detached_daemon(
         log_fp.write(f"\n--- start {_now_iso()} project={project or 'all'} interval={interval} ---\n".encode("utf-8"))
         log_fp.flush()
     except Exception:
-        pass
+        logger.debug("Failed to write daemon log header in _spawn_detached_daemon", exc_info=True)
 
     cmd = codepilot_command(
         "daemon",
@@ -236,7 +262,7 @@ def start_daemon_service(
             try:
                 tail = log_file.read_text(encoding="utf-8", errors="replace")[-1500:]
             except Exception:
-                pass
+                logger.debug("Failed to read daemon log tail after startup failure", exc_info=True)
             raise RuntimeError(f"daemon 启动后立即退出（exit={proc.returncode}）\n{tail}")
         last_status = daemon_service_status(project)
         if last_status["running"]:
@@ -249,7 +275,7 @@ def start_daemon_service(
     try:
         tail = log_file.read_text(encoding="utf-8", errors="replace")[-1500:]
     except Exception:
-        pass
+        logger.debug("Failed to read daemon log tail after startup timeout", exc_info=True)
     raise RuntimeError(f"daemon 启动请求已发出，但 15s 内未进入运行状态。\n{tail}")
 
 
@@ -315,7 +341,7 @@ def _stop_requested(project: str | None = None) -> bool:
     try:
         db._invalidate_service_state_caches()
     except Exception:
-        pass
+        logger.debug("Failed to invalidate service state caches in _stop_requested", exc_info=True)
     state = db.get_service_state("daemon", _service_scope(project))
     if not state:
         return False
@@ -336,7 +362,7 @@ def _tick_heartbeat(project: str | None = None) -> None:
     try:
         db._invalidate_service_state_caches()
     except Exception:
-        pass
+        logger.debug("Failed to invalidate service state caches in _tick_heartbeat", exc_info=True)
     state = db.get_service_state("daemon", _service_scope(project))
     current_status = str((state or {}).get("status") or "").strip().lower()
     status = "stopping" if current_status == "stopping" else "running"
@@ -349,7 +375,7 @@ def _tick_heartbeat(project: str | None = None) -> None:
             status=status,
         )
     except Exception:
-        pass
+        logger.debug("touch_service_state failed for daemon heartbeat", exc_info=True)
 
 
 def _start_heartbeat_thread(project: str | None = None, *, interval_seconds: int = 10) -> threading.Event:
@@ -370,20 +396,21 @@ def _start_heartbeat_thread(project: str | None = None, *, interval_seconds: int
     return stop
 
 
-def _ensure_ui_service_process(port: int = 8766, *, project: str | None = None) -> bool:
+def _ensure_ui_service_process(port: int | None = None, *, project: str | None = None) -> bool:
     """Ensure Web UI runs in a **separate process** from daemon.
 
     Historically foreground daemon started Web UI as an in-process thread.
     That coupled lifecycles and made isolation harder. We now shell out to
     `codepilot ui start --no-daemon` so UI and workflow stay decoupled.
     """
+    resolved_port = int(port) if port is not None else _daemon_default_ui_port()
     cmd = codepilot_command(
         "ui",
         "start",
         "--no-open",
         "--no-daemon",
         "--port",
-        str(int(port)),
+        str(resolved_port),
     )
     if project:
         cmd.extend(["--project", project])
@@ -461,7 +488,7 @@ def _release_lock(project: str | None = None) -> None:
 )
 @click.option("--auto-commit/--no-auto-commit", default=True, help="内置执行器成功后自动提交当前任务")
 @click.option("--ui/--no-ui", "enable_ui", default=True, help="前台模式下同时确保 Web UI 独立进程运行（默认开启）")
-@click.option("--ui-port", type=int, default=8766, help="Web UI 端口")
+@click.option("--ui-port", type=int, default=None, help="Web UI 端口，默认根据 codepilot/codepilot-dev 自动选择")
 @click.option("--foreground", is_flag=True, help="以前台模式运行（用于调试）")
 @click.option("--status", "show_status", is_flag=True, help="查看后台 daemon 状态")
 @click.option("--stop", "stop_service", is_flag=True, help="停止后台 daemon")
@@ -474,13 +501,14 @@ def daemon(
     executor: str,
     auto_commit: bool,
     enable_ui: bool,
-    ui_port: int,
+    ui_port: int | None,
     foreground: bool,
     show_status: bool,
     stop_service: bool,
 ):
     """后台启动 daemon，持续轮询 backlog 并执行任务."""
     db.init_db()
+    resolved_ui_port = ui_port if ui_port is not None else _daemon_default_ui_port()
     if show_status:
         if not project:
             raise click.ClickException("查看 daemon 状态必须指定 --project。")
@@ -538,7 +566,7 @@ def daemon(
 
     try:
         if enable_ui:
-            _ensure_ui_service_process(ui_port, project=project)
+            _ensure_ui_service_process(resolved_ui_port, project=project)
         _ensure_feishu_service(project)
         _run_loop(project, interval, verbose, shell, executor, auto_commit, max_concurrent)
     except KeyboardInterrupt:
@@ -661,7 +689,7 @@ def _run_loop(
                     results = [_drain(name) for name in targets]
 
                 if verbose:
-                    for name, result in zip(targets, results):
+                    for name, result in zip(targets, results, strict=False):
                         echo(
                             f"[dim]{name}: processed={result['processed']} "
                             f"done={result['done']} failed={result['failed']} "

@@ -1,4 +1,4 @@
-"""Prompt construction helpers for the built-in executor."""
+﻿"""Prompt construction helpers for the built-in executor."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 from codepilot.prompts import load_prompt as _load_prompt
 from codepilot.commands.reviewer_output import ReviewerVerdict, parse_reviewer_output
 from codepilot.commands.run_builtin_core import (
+    _collect_project_memory_context,
     _bullet_lines,
     _collect_project_conventions_snippet,
     _extract_task_sections,
@@ -25,6 +26,7 @@ def _build_builtin_prompt(
     review_round: int = 1,
     previous_review_feedback: str = "",
     language: str = "en",
+    memory_context: str = "",
 ) -> str:
     """Compose the Builder prompt."""
     chinese = _wants_chinese(language)
@@ -117,6 +119,42 @@ def _build_builtin_prompt(
         lines.append(conventions)
         lines.append("")
 
+        # --- Workflow toolkit: mandatory quick reference ---
+
+    if memory_context:
+        lines.append("【项目记忆上下文（自动注入，优先使用）】" if chinese else "[Project Memory Context: auto-injected, use this first]")
+        lines.append(memory_context)
+        lines.append("")
+    lines.append("")
+    lines.append("[Workflow Toolkit - MANDATORY STEPS]")
+    lines.append("")
+    lines.append("BEFORE writing code, you MUST execute these in order:")
+    lines.append("")
+    lines.append("```bash")
+    lines.append("# STEP 1 - MANDATORY: Read project memory before anything else")
+    lines.append("codepilot note show -p <project> --json")
+    lines.append("codepilot memory events -p <project> --json")
+    lines.append('codepilot wiki query -p <project> "<keyword>" --json')
+    lines.append("")
+    lines.append("# STEP 2 - If memory is insufficient, gather evidence")
+    lines.append('codepilot explore -p <project> --prompt "<question>" --json')
+    lines.append("")
+    lines.append("# STEP 3 - If multi-file or high-risk, plan first")
+    lines.append('codepilot plan -p <project> "<sub-goal>" --json')
+    lines.append("codepilot workflow status -p <project> --json")
+    lines.append("")
+    lines.append("# STEP 4 - SUGGESTED: Write findings if valuable")
+    lines.append("codepilot note add -p <project> \"<key finding>\"")
+    lines.append("codepilot wiki add -p <project> --title \"<title>\" --body \"<body>\"")
+    lines.append("")
+    lines.append("# Task operations / repair:")
+    lines.append("codepilot task find <keyword> -p <project> --json")
+    lines.append("codepilot task stop|retry <task_id>")
+    lines.append("codepilot build-fix -p <project> --task-id <task_id> --json")
+    lines.append("```")
+    lines.append("")
+    lines.append("[HARD RULES: Step 1 (memory read) and Step 4 (memory write) is suggested. Skipping step 1 will cause review failure; step 4 is optional. Do NOT use codepilot add or codepilot go to create sub-tasks unless the task body explicitly requires it.]")
+    lines.append("")
     if review_round > 1 and previous_review_feedback:
         lines.append("【上一轮 reviewer 的阻塞意见（必须处理）】" if chinese else "[Previous Reviewer Blocking Findings: must be fixed]")
         lines.append(previous_review_feedback.strip())
@@ -133,6 +171,7 @@ def _build_review_prompt(
     previous_findings: str = "",
     changed_files: list[str] | None = None,
     language: str = "en",
+    memory_context: str = "",
 ) -> str:
     """Compose the Reviewer prompt with acceptance-criteria-driven checklist."""
     chinese = _wants_chinese(language)
@@ -146,6 +185,11 @@ def _build_review_prompt(
         if chinese
         else [f"Review the uncommitted changes in this repository for task #{task['id']} `{task['title']}`."]
     )
+
+    if memory_context:
+        lines.append("")
+        lines.append("【项目记忆上下文（自动注入，优先使用）】" if chinese else "[Project Memory Context: auto-injected, use this first]")
+        lines.append(memory_context)
 
     if changed_files:
         lines.append("")

@@ -1,4 +1,4 @@
-"""Phase execution and orchestration for the built-in executor."""
+﻿"""Phase execution and orchestration for the built-in executor."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from codepilot.core.task_mutation_guard import runner_task_context_env
 from codepilot.commands.reviewer_output import ReviewerVerdict, format_findings_for_builder, parse_reviewer_output
 from codepilot.commands.run_shell import PreflightSkipError
 from codepilot.commands.run_builtin_core import (
+    _collect_project_memory_context,
     ExecutionResult,
     _resolve_dual_phase_agents_for_task,
     _runner_module,
@@ -180,9 +181,14 @@ class _ExecutorContext:
     silence_timeout: int = 0
 
 
-def _agent_language_for_context(ctx: _ExecutorContext) -> str:
+def _agent_input_language_for_context(ctx: _ExecutorContext) -> str:
     cfg = load_project_config(ctx.config_ref or ctx.project_path) or AgentsConfig.from_dict({})
-    return str(getattr(cfg.automation, "agent_language", "en") or "en")
+    return str(getattr(cfg.automation, "agent_input_language", "en") or "en")
+
+
+def _agent_output_language_for_context(ctx: _ExecutorContext) -> str:
+    cfg = load_project_config(ctx.config_ref or ctx.project_path) or AgentsConfig.from_dict({})
+    return str(getattr(cfg.automation, "agent_output_language", "en") or "en")
 
 
 def _dirty_worktree_policy_for_project(project: dict, project_path: Path) -> str:
@@ -565,7 +571,8 @@ def _run_builder_round(
         project_path=ctx.project_path,
         review_round=round_num,
         previous_review_feedback=previous_findings,
-        language=_agent_language_for_context(ctx),
+        language=_agent_input_language_for_context(ctx),
+        memory_context=_collect_project_memory_context(ctx.project_path),
     )
     try:
         agent, exit_code, output, started = _run_phase_with_tooling_fallback(
@@ -638,7 +645,8 @@ def _run_reviewer_round(
         review_round=round_num,
         previous_findings=previous_findings,
         changed_files=changed_files,
-        language=_agent_language_for_context(ctx),
+        language=_agent_input_language_for_context(ctx),
+        memory_context=_collect_project_memory_context(ctx.project_path),
     )
     try:
         agent, exit_code, output, started = _run_phase_with_tooling_fallback(

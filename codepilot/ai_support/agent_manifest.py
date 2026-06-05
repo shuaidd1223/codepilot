@@ -8,7 +8,7 @@ from typing import Any
 from codepilot import __version__
 from codepilot.ai_support.agent_commands import _cmd, normalize_command_name
 from codepilot.ai_support.project_metadata import project_metadata
-from codepilot.core.config import normalize_agent_language
+from codepilot.core.config import normalize_agent_input_language
 
 
 def command_manifest(
@@ -22,7 +22,7 @@ def command_manifest(
     command = normalize_command_name(command_name)
     manifest_version = (version or __version__).strip()
     binary = normalize_command_name(binary_name)
-    lang = normalize_agent_language(language)
+    lang = normalize_agent_input_language(language)
     if lang == "en":
         return _english_command_manifest(command=command, version=manifest_version, binary=binary)
     return {
@@ -722,7 +722,7 @@ def _english_command_manifest(*, command: str, version: str, binary: str) -> dic
             {"name": "run", "syntax": _cmd(command, f"run -p {project} [--executor builtin|dispatch]"), "purpose": "Execute backlog tasks.", "when_to_use": "Use when tasks already exist and should run now.", "examples": [_cmd(command, f"run -p {project} --executor builtin --no-auto-commit")]},
             {"name": "build_fix", "syntax": _cmd(command, f"build-fix -p {project} [--task-id <id>] [--verify-command <cmd>] [--json]"), "purpose": "Collect failure context, retry repair, run validation, and produce a verdict.", "when_to_use": "Use when failed tasks need a complete repair loop.", "examples": [_cmd(command, f'build-fix -p {project} --task-id 7 --verify-command "pytest tests/test_x.py -q" --json')]},
             {"name": "doctor", "syntax": _cmd(command, f"doctor [--project {project}] [--services] [--fix] [--json]"), "purpose": "Check environment, configuration, CLI tools, API keys, database, and services.", "when_to_use": "Use for environment or setup troubleshooting.", "examples": [_cmd(command, "doctor --json"), _cmd(command, "doctor --fix --json")]},
-            {"name": "inspect", "syntax": _cmd(command, f"inspect -p {project} [--once|--status|--stop|--dry-run|--write-workflow|--json]"), "purpose": "Inspect project signals, preview candidates, optionally write workflow context, or create candidate tasks.", "when_to_use": "Use to discover technical debt, failed-task patterns, and improvement candidates.", "examples": [_cmd(command, f"inspect -p {project} --once"), _cmd(command, f"inspect -p {project} --once --dry-run --write-workflow --json")]},
+            {"name": "inspect", "syntax": _cmd(command, f"inspect -p {project} [--once|--status|--stop|--dry-run|--write-workflow|--json]"), "purpose": "Inspect project signals, preview candidates, optionally write workflow context, or create candidate tasks.", "when_to_use": "Use to discover technical debt, failed-task patterns, and improvement candidates; the default --dry-run path does not create backlog tasks.", "examples": [_cmd(command, f"inspect -p {project} --once"), _cmd(command, f"inspect -p {project} --once --dry-run --write-workflow --json")]},
             {"name": "explore", "syntax": _cmd(command, f"explore --prompt <question> [-p {project}] [--use-wiki|--no-wiki] [--json]"), "purpose": "Read-only exploration of files, Git, task logs, wiki, and inspect signals.", "when_to_use": "Use when planning needs local evidence but should not modify anything.", "examples": [_cmd(command, 'explore --prompt "find task template" --json')]},
             {"name": "plan", "syntax": _cmd(command, f"plan [-p {project}] <requirement> [--from-spec <path>] [--use-wiki|--no-wiki] [--json]"), "purpose": "Generate a reviewable plan artifact with scope, risks, verification matrix, and task candidates.", "when_to_use": "Use when requirements are ready for plan review but should not enter backlog.", "examples": [_cmd(command, f'plan -p {project} "Add explore" --json')]},
             {"name": "workflow_auto_policy", "syntax": _cmd(command, f"workflow auto-policy -p {project} --json"), "purpose": "Return the resolved auto-advance policy: allow_create_inspect_tasks, allow_import_plan_tasks, max_steps, failure_threshold.", "when_to_use": "Use before --auto to check whether inspect task creation or plan task import is allowed by project configuration.", "examples": [_cmd(command, f"workflow auto-policy -p {project} --json")]},

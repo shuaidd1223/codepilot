@@ -5,29 +5,25 @@ from __future__ import annotations
 import click
 
 from codepilot.commands.json_contract import emit_json_payload, resolve_json_mode
-from codepilot.commands.status import _resolve_project
+from codepilot.commands.status import _resolve_project, resolve_project_info
 from codepilot.core import skill_catalog
 from codepilot.core.output import echo, safe
 from codepilot.storage import database as db
 
 
-def _resolve_skill_project(project: str | None) -> tuple[str, str]:
-    """Return (project_name, project_path) with auto-detection fallback."""
+def _resolve_skill_project(project: str | None) -> dict:
+    """Return project info dict with auto-detection fallback."""
+    try:
+        return resolve_project_info(project)
+    except click.ClickException:
+        pass
     db.init_db()
-    if project:
-        record = db.get_project(project)
-        if not record:
-            raise skill_catalog.SkillCatalogError(f"项目 {project} 未注册")
-        return str(record["name"]), str(record["path"])
-    from pathlib import Path
-
-    found = db.find_project_by_path(Path.cwd())
-    if found:
-        return str(found["name"]), str(found["path"])
     projects = db.list_projects()
     if len(projects) == 1:
-        return str(projects[0]["name"]), str(projects[0]["path"])
-    raise skill_catalog.SkillCatalogError("当前目录不属于已注册项目；请使用 -p/--project 指定项目。")
+        return dict(projects[0])
+    raise skill_catalog.SkillCatalogError(
+        "当前目录不属于已注册项目；请使用 -p/--project 指定项目。"
+    )
 
 
 def _emit_error(ctx: click.Context, json_mode: bool, command: str, exc: Exception) -> None:
@@ -50,7 +46,9 @@ def list_cmd(ctx: click.Context, project: str | None, json_mode: bool) -> None:
     """列出本地技能。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        name, root = _resolve_skill_project(project)
+        info = _resolve_skill_project(project)
+        name = info["name"]
+        root = info["path"]
         skills = skill_catalog.list_skills(root)
     except skill_catalog.SkillCatalogError as exc:
         _emit_error(ctx, json_mode, "skill list", exc)
@@ -72,7 +70,9 @@ def search_cmd(ctx: click.Context, query: str, project: str | None, json_mode: b
     """搜索本地技能。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        name, root = _resolve_skill_project(project)
+        info = _resolve_skill_project(project)
+        name = info["name"]
+        root = info["path"]
         skills = skill_catalog.search_skills(root, query)
     except skill_catalog.SkillCatalogError as exc:
         _emit_error(ctx, json_mode, "skill search", exc)
@@ -93,7 +93,9 @@ def show_cmd(ctx: click.Context, name: str, project: str | None, json_mode: bool
     """查看单个技能。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        resolved_name, root = _resolve_skill_project(project)
+        info = _resolve_skill_project(project)
+        resolved_name = info["name"]
+        root = info["path"]
         skill = skill_catalog.get_skill(root, name)
     except skill_catalog.SkillCatalogError as exc:
         _emit_error(ctx, json_mode, "skill show", exc)
@@ -108,7 +110,9 @@ def show_cmd(ctx: click.Context, name: str, project: str | None, json_mode: bool
 def _toggle(ctx: click.Context, *, project: str | None, name: str, enabled: bool, json_mode: bool, command: str) -> None:
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        resolved_name, root = _resolve_skill_project(project)
+        info = _resolve_skill_project(project)
+        resolved_name = info["name"]
+        root = info["path"]
         skill = skill_catalog.set_skill_enabled(root, name, enabled)
     except skill_catalog.SkillCatalogError as exc:
         _emit_error(ctx, json_mode, command, exc)
@@ -175,7 +179,9 @@ def run_cmd(ctx: click.Context, name: str, project: str | None, input_text: str,
     """运行启用的项目本地技能，复用现有 CodePilot 能力。"""
     json_mode = resolve_json_mode(ctx, json_mode)
     try:
-        resolved_name, root = _resolve_skill_project(project)
+        info = _resolve_skill_project(project)
+        resolved_name = info["name"]
+        root = info["path"]
         skill = skill_catalog.get_skill(root, name)
         provider = str(provider or "codex").lower()
         if provider not in skill.get("supported_providers", []):

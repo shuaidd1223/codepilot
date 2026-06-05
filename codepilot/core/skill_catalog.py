@@ -1,4 +1,4 @@
-"""Project-local skill catalog helpers."""
+﻿"""Project-local skill catalog helpers."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def default_skills() -> list[dict[str, Any]]:
         {
             "name": "ralplan",
             "kind": "builtin",
-            "enabled": False,
+            "enabled": True,
             "description": "规划技能：把已澄清需求转成可执行任务、验收标准和验证命令。",
             "tags": ["workflow", "plan"],
             "commands": ["plan"],
@@ -34,7 +34,7 @@ def default_skills() -> list[dict[str, Any]]:
         {
             "name": "ralph",
             "kind": "builtin",
-            "enabled": False,
+            "enabled": True,
             "description": "执行技能：按任务模板驱动 builder/reviewer 闭环执行。",
             "tags": ["workflow", "run", "review"],
             "commands": ["run", "go"],
@@ -45,7 +45,7 @@ def default_skills() -> list[dict[str, Any]]:
         {
             "name": "build-fix",
             "kind": "builtin",
-            "enabled": False,
+            "enabled": True,
             "description": "质量闭环技能：收集失败任务、触发重试修复并运行验证命令。",
             "tags": ["quality", "retry", "verification"],
             "commands": ["build-fix"],
@@ -56,7 +56,7 @@ def default_skills() -> list[dict[str, Any]]:
         {
             "name": "wiki",
             "kind": "builtin",
-            "enabled": False,
+            "enabled": True,
             "description": "项目记忆技能：查询或显式沉淀当前项目 wiki 内容。",
             "tags": ["memory", "wiki", "context"],
             "commands": ["wiki"],

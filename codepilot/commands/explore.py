@@ -560,7 +560,6 @@ def explore(
         if json_mode:
             emit_json_payload("explore", ok=False, data=result, error=(result.get("limitations") or ["探索失败"])[-1], error_code="project_required")
             ctx.exit(1)
-            return
         _print_human_result(result)
         return
 

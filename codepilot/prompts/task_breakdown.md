@@ -20,7 +20,7 @@ Each task object must include all required fields in schema:
 - `depends_on_indices`
 - `risk_level` — one of `low` / `medium` / `high`. Use `high` when the task touches auth, database migrations, core directory structure, or has cross-module regression risk. Use `low` only for additive, isolated changes.
 - `scope_budget` — short English descriptor of the expected blast radius (e.g. `1 file / ~30 LOC`, `2 modules / tests only`, `single command`). Keep it tight — no prose.
-- `evidence` — citation of WHERE this task comes from: a line from the recon findings, a specific file path in the repo, a commit hash, or the id/title of an existing backlog task you are extending. One short sentence, may be Chinese or English. Empty string means the task is fabricated; downstream will flag it.
+- `evidence` — citation of WHERE this task comes from: a line from the recon findings, a specific file path in the repo, a commit hash, or the id/title of an existing backlog task you are extending. One short sentence. Empty string means the task is fabricated; downstream will flag it.
 
 [Output requirements]
 - Output strict JSON only, no Markdown.
@@ -32,8 +32,8 @@ Each task object must include all required fields in schema:
 - If splitting is needed, split by independent deliverables up to {max_tasks} tasks.
 
 [Language requirements]
-- Prompt language is English (this instruction set).
-- Natural-language fields in JSON output must be Chinese:
+- Prompt language is English.
+- Natural-language fields in JSON output must be English:
   - `summary`
   - task `title`
   - task `goal`
@@ -51,25 +51,25 @@ Each task object must include all required fields in schema:
 [Example 1: simple requirement -> one task]
 User requirement: "Add --json output format to /status command"
   {{
-    "summary": "为 status 命令增加 JSON 输出选项",
+    "summary": "Add JSON output support to the status command.",
     "complexity": "simple",
     "should_split": false,
     "tasks": [{{
-      "title": "给 status 命令增加 --json 参数",
+      "title": "Add --json option to the status command",
       "priority": "P2",
-      "goal": "让 `codepilot status -p foo --json` 返回合法 JSON，便于外部系统消费。",
+      "goal": "Make `codepilot status -p foo --json` return valid JSON so external systems can consume project status.",
       "acceptance_criteria": [
-        "`codepilot status -p demo --json` 的输出可被 JSON 解析",
-        "`pytest -q tests/test_status.py::test_json_output` 通过"
+        "`codepilot status -p demo --json` output can be parsed as JSON",
+        "`pytest -q tests/test_status.py::test_json_output` passes"
       ],
-      "builder_notes": ["在 status 命令增加 `--json` 分支并保持原输出兼容。"],
-      "reviewer_notes": ["重点核对 JSON 输出分支和对应测试是否覆盖。"],
+      "builder_notes": ["Add a `--json` branch to the status command while keeping the existing human-readable output compatible."],
+      "reviewer_notes": ["Verify the JSON output branch and its focused test coverage."],
       "files": ["codepilot/commands/status.py", "tests/test_status.py"],
-      "notes": ["不涉及 webui 改动。"],
+      "notes": ["No Web UI changes are included."],
       "depends_on_indices": [],
       "risk_level": "low",
       "scope_budget": "1 command + 1 test file / ~40 LOC",
-      "evidence": "recon findings: 当前 codepilot/commands/status.py 没有 --json 分支；用户需求中点名 status 命令"
+      "evidence": "recon findings: codepilot/commands/status.py currently has no --json branch; the user specifically named the status command."
     }}]
   }}
 

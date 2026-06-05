@@ -58,6 +58,7 @@ from codepilot.webapp.action_task_ops import (
     delete_project_action,
     delete_task_action,
 )
+from codepilot.core.web_events import publish_task_state_event
 from codepilot.webapp.display_sort import sort_tasks_for_display
 from codepilot.webapp.task_payloads import _compose_log_text, _task_payload, task_detail_payload
 
@@ -72,7 +73,7 @@ def build_pending_confirm_card(pending: dict[str, Any], *, prefix: str = "") -> 
     expires_at = str(pending.get("expires_at") or "").strip() or "-"
     detail_lines = pending.get("details") if isinstance(pending.get("details"), list) else []
     blocks: list[str | dict[str, Any]] = [
-        *_section_note("请二次确认", "敏感操作不会立即执行，必须在当前飞书会话中再次确认。"),
+        *_section_note("请二次确认", "敏感操作不会立即执行，必须在当前飞书会话中再次确认。请在 2 分钟内完成确认，超时自动作废。"),
         _field_block(
             [
                 _field(f"**操作**\n`{str(pending.get('summary') or '').strip() or '-'}`"),
@@ -135,6 +136,8 @@ def _execute_pending_confirm(pending: dict[str, Any], *, prefix: str = "") -> di
             raise RuntimeError("确认上下文损坏：缺少任务 ID。")
         task_id = _parse_task_id(str(task_ids[0]))
         delete_task_action(task_id)
+        try: publish_task_state_event(project=str(pending.get("project_name") or ""), task={"id": task_id}, event="deleted", level="warning", message=f"????????? #{task_id}")
+        except Exception: pass
         return _reply_card(
             _card(
                 f"任务已删除 · #{task_id}",
@@ -153,12 +156,21 @@ def _execute_pending_confirm(pending: dict[str, Any], *, prefix: str = "") -> di
     if action == "delete_task_batch":
         task_ids = pending.get("task_ids") if isinstance(pending.get("task_ids"), list) else []
         normalized = [_parse_task_id(str(item)) for item in task_ids]
-        return _reply_card(build_batch_task_action_card("delete", batch_task_action(normalized, "delete"), prefix=prefix))
+        result = batch_task_action(normalized, "delete")
+        try:
+            for item in (result.get("succeeded") or []):
+                tid = (item.get("task") or {}).get("id")
+                if tid: publish_task_state_event(project=str(pending.get("project_name") or ""), task={"id": tid}, event="deleted", level="warning", message=f"????????? #{tid}")
+        except Exception: pass
+        return _reply_card(build_batch_task_action_card("delete", result, prefix=prefix))
     if action == "delete_project":
         project_name = str(pending.get("project_name") or "").strip()
         if not project_name:
             raise RuntimeError("确认上下文损坏：缺少项目名。")
-        return _reply_card(build_project_deleted_card(delete_project_action(project_name), prefix=prefix))
+        result = delete_project_action(project_name)
+        try: publish_task_state_event(project=project_name, task={}, event="project_deleted", level="warning", message=f"????????? {project_name}")
+        except Exception: pass
+        return _reply_card(build_project_deleted_card(result, prefix=prefix))
     raise RuntimeError(f"未支持的确认动作：{action or '-'}。")
 
 

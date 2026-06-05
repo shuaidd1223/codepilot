@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+import logging
 import sqlite3
 
 from codepilot.ai_support.cli_families import env_var_for, get_family
@@ -36,6 +37,8 @@ from codepilot.opencode.model_state import (
 )
 from codepilot.opencode.paths import opencode_runtime_config_path, opencode_runtime_db_path
 from codepilot.storage import database as db
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_CHAT_AGENTS = ("claude", "codex", "opencode")
 DEFAULT_CHAT_AGENT = "opencode"
@@ -236,8 +239,6 @@ def _set_terminal_title(title: str) -> None:
 
 
 def _reset_terminal_after_tui() -> None:
-    if not bool(getattr(sys.stdout, "isatty", lambda: False)()):
-        return
     # Defensive cleanup for TUIs that leave mouse/focus reporting enabled.
     sequence = "".join(
         (
@@ -248,15 +249,20 @@ def _reset_terminal_after_tui() -> None:
             "\x1b[?1006l",  # SGR mouse
             "\x1b[?1015l",  # urxvt mouse
             "\x1b[?1004l",  # focus events
-            "\x1b[?25h",  # show cursor
-            "\x1b[0m",  # reset style
+            "\x1b[?2004l",  # bracketed paste
+            "\x1b[?1049l",  # alternate screen buffer
+            "\x1b[?25h",    # show cursor
+            "\x1b[0m",      # reset style
         )
     )
-    try:
-        sys.stdout.write(sequence)
-        sys.stdout.flush()
-    except Exception:
-        return
+    for stream in (sys.stdout, sys.stderr):
+        if not bool(getattr(stream, "isatty", lambda: False)()):
+            continue
+        try:
+            stream.write(sequence)
+            stream.flush()
+        except Exception:
+            continue
 
 
 def _clear_terminal_screen_for_codepilot() -> None:
@@ -346,6 +352,24 @@ def _opencode_session_exists_for_scope(scope: str, project_path: Path, session_i
 
 def _resolve_resume_session_id(launch: _PreparedChatLaunch) -> str:
     if launch.requested_session:
+        # When the user explicitly requested a session, prefer it —
+        # but fall back to the actual latest session id when the two
+        # diverge (e.g. the resume flag was ignored by the agent).
+        if launch.agent == "opencode" and launch.opencode_db_path is not None:
+            latest = load_latest_project_session_id(
+                launch.cwd,
+                db_path=launch.opencode_db_path,
+            )
+            if latest and latest != launch.requested_session:
+                return latest
+        if launch.agent == "claude":
+            latest = latest_claude_session_id(launch.cwd)
+            if latest and latest != launch.requested_session:
+                return latest
+        if launch.agent == "codex":
+            latest = latest_codex_session_id(launch.cwd)
+            if latest and latest != launch.requested_session:
+                return latest
         return launch.requested_session
     if launch.agent == "opencode" and launch.opencode_db_path is not None:
         return load_latest_project_session_id(
@@ -410,26 +434,6 @@ def _codepilot_resume_panel(command: str, *, session_id: str = "") -> str:
 def _stderr_is_tty() -> bool:
     return bool(getattr(sys.stderr, "isatty", lambda: False)())
 
-
-def _should_block_windows_codex_chat(agent: str) -> bool:
-    if os.name != "nt" or agent != "codex":
-        return False
-    if _env_flag_enabled("CODEPILOT_ALLOW_WINDOWS_CODEX_TUI"):
-        return False
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return False
-    return True
-
-
-def _windows_codex_chat_block_message() -> str:
-    return "\n".join(
-        [
-            "Windows 下 Codex CLI 交互 TUI 当前不稳定，已阻止启动。",
-            "已知上游问题：方向键会显示为 [A/[B/[D，Enter、Backspace、Ctrl+C 可能失效。",
-            "建议改用：codepilot chat -a opencode",
-            "如需强行尝试：$env:CODEPILOT_ALLOW_WINDOWS_CODEX_TUI='1'; codepilot chat -a codex",
-        ]
-    )
 
 
 def _env_flag_enabled(name: str) -> bool:
@@ -523,11 +527,11 @@ def _kill_chat_agent_process(process: subprocess.Popen) -> None:
     try:
         process.kill()
     except Exception:
-        return
+        logger.debug("process.kill failed for agent shutdown", exc_info=True)
     try:
         process.wait(timeout=AGENT_SHUTDOWN_TIMEOUT_SECONDS)
     except Exception:
-        return
+        logger.debug("process.wait timed out during agent shutdown", exc_info=True)
 
 
 def _close_chat_agent_stdin(process: subprocess.Popen) -> None:
@@ -537,7 +541,7 @@ def _close_chat_agent_stdin(process: subprocess.Popen) -> None:
     try:
         stdin.close()
     except Exception:
-        return
+        logger.debug("stdin.close failed for chat agent", exc_info=True)
 
 
 def _write_launch_config_files(config_files: dict[str, str], *, cwd: Path) -> None:
@@ -569,7 +573,7 @@ def _prepare_mcp_agent_chat(
     opencode_db = opencode_runtime_db_path(runtime_scope) if is_opencode else None
     session_id = str(session or "").strip()
     config_path = (
-        opencode_runtime_config_path(runtime_scope)
+        opencode_runtime_config_path(runtime_scope, project_path=cwd)
         if is_opencode
         else None
     )
@@ -586,7 +590,8 @@ def _prepare_mcp_agent_chat(
         if is_opencode
         else None,
         session=session_id or None,
-        language=str(getattr(getattr(cfg, "automation", None), "agent_language", "en") or "en"),
+        language=str(getattr(getattr(cfg, "automation", None), "agent_output_language", "zh-CN") or "zh-CN"),
+        scope=runtime_scope if is_opencode else None,
     )
     if plan.config_files:
         _write_launch_config_files(plan.config_files, cwd=cwd)
@@ -649,6 +654,22 @@ def _run_interactive_tui_process(launch: _PreparedChatLaunch) -> subprocess.Comp
 
 @contextmanager
 def _windows_codex_console_input_mode(launch: _PreparedChatLaunch):
+    """Snapshot and restore console modes around codex on Windows.
+
+    Codex may reconfigure the console (e.g. enable raw-mouse mode, disable
+    quick-edit, or adjust VT-processing flags) during its TUI session.
+    We save both input and output modes beforehand and restore them after
+    codex exits so the terminal is left in a usable state regardless of
+    how codex terminates.
+
+    .. note::
+
+       We intentionally do **not** preemptively disable any console flag
+       (e.g. ``ENABLE_VIRTUAL_TERMINAL_INPUT``).  Doing so prevents the
+       terminal from delivering VT-style mouse reports to codex, yet the
+       terminal *is* in mouse-reporting mode — the user can neither scroll
+       nor select text while codex is running.
+    """
     if os.name != "nt" or launch.agent != "codex":
         yield
         return
@@ -656,21 +677,34 @@ def _windows_codex_console_input_mode(launch: _PreparedChatLaunch):
         import ctypes
 
         kernel32 = ctypes.windll.kernel32
-        handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
-        mode = ctypes.c_uint32()
-        if handle in (0, -1) or not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-            yield
-            return
-        original = int(mode.value)
-        adjusted = original & ~0x0200  # ENABLE_VIRTUAL_TERMINAL_INPUT
-        if adjusted != original:
-            kernel32.SetConsoleMode(handle, adjusted)
+
+        # -- input handle snapshot -------------------------------------------
+        in_handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        in_mode = ctypes.c_uint32()
+        in_original: int | None = None
+
+        if in_handle not in (0, -1) and kernel32.GetConsoleMode(in_handle, ctypes.byref(in_mode)):
+            in_original = int(in_mode.value)
+
+        # -- output handle snapshot ------------------------------------------
+        out_handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        out_mode = ctypes.c_uint32()
+        out_original: int | None = None
+
+        if out_handle not in (0, -1) and kernel32.GetConsoleMode(out_handle, ctypes.byref(out_mode)):
+            out_original = int(out_mode.value)
+
         try:
             yield
         finally:
-            if adjusted != original:
+            if in_original is not None:
                 try:
-                    kernel32.SetConsoleMode(handle, original)
+                    kernel32.SetConsoleMode(in_handle, in_original)
+                except Exception:
+                    pass
+            if out_original is not None:
+                try:
+                    kernel32.SetConsoleMode(out_handle, out_original)
                 except Exception:
                     pass
     except Exception:
@@ -845,8 +879,6 @@ def chat(
         if detected:
             agent = detected
     resolved_agent = _resolve_chat_agent(agent, project)
-    if _should_block_windows_codex_chat(resolved_agent):
-        raise click.ClickException(_windows_codex_chat_block_message())
     try:
         input_stream = _chat_scripted_input_stream(session)
         launch_kwargs = {

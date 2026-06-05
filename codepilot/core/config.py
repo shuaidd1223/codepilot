@@ -15,12 +15,17 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+from codepilot.core.logger import get_logger
+
+logger = get_logger("config")
+
 from codepilot.core.config_parse import (
     DEFAULT_AGENT_COMMANDS,
     DEFAULT_FALLBACK_CLI_ORDER,
     ConfigError,
     _normalize_optional_agent_name,
-    normalize_agent_language,
+    normalize_agent_input_language,
+    normalize_agent_output_language,
     normalize_preflight_dirty_worktree,
 )
 
@@ -56,7 +61,8 @@ __all__ = [
     "find_project_root",
     "load_config",
     "load_project_config",
-    "normalize_agent_language",
+    "normalize_agent_input_language",
+    "normalize_agent_output_language",
     "normalize_preflight_dirty_worktree",
     "resolve_config_path",
     "resolve_global_config_path",
@@ -97,7 +103,6 @@ class ProjectConfig:
     """[project] 项目配置."""
     name: str = ""
     base_branch: str = "dev"
-    default_mode: str = "dual"
     worktree_base: Optional[str] = None
 
 
@@ -173,18 +178,21 @@ class AutomationConfig:
     # 子进程 (codex / claude / opencode CLI) 连续多少秒没有新输出就认为卡死并
     # kill，0 表示关闭该保护。默认关闭以避免误杀慢任务；运维 daemon 可以按需开启。
     agent_silence_timeout_seconds: int = 0
-    # workflow next --auto 的保守自动推进策略。默认只执行现有低风险动作：
-    # 忽略已被负反馈降权的 report-only 巡检项，以及为 inspect context 生成可审查 plan。
-    # 不自动创建 backlog 任务、不自动导入 plan 任务。
-    workflow_auto_create_inspect_tasks: bool = False
-    workflow_auto_import_plan_tasks: bool = False
-    workflow_auto_max_steps: int = 1
-    workflow_auto_failure_threshold: int = 1
+    # 在 chat 中自动接受 AI 分类器判定为任务/需求的输入，无需 ! 或 # 前缀。
+    chat_auto_accept_intent: bool = False
+    # workflow next --auto 的自动推进策略。开启后允许自动创建/导入 backlog 任务，
+    # 并在多步链中连续推进。推荐在内置智能体 (OpenCode/Claude/Codex) 项目中开启。
+    workflow_auto_create_inspect_tasks: bool = True
+    workflow_auto_import_plan_tasks: bool = True
+    workflow_auto_max_steps: int = 3
+    workflow_auto_failure_threshold: int = 3
     # 文本模式 CLI 兜底顺序：缺失或不可用时按此列表向后退。
     # 默认 ["claude", "codex", "opencode"]，opencode 作为最终兜底（用已配 API key）。
     fallback_cli_order: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_CLI_ORDER))
-    # 智能体 prompt / 任务内容 / 输出语言偏好。仅影响 agent-facing 内容。
-    agent_language: str = "en"
+    # 智能体输入语言（提示词/技能/模板加载的语言版本）：en 或 zh-CN；默认 en。
+    agent_input_language: str = "en"
+    # 智能体输出语言（AI 输出、任务内容、CLI 消息的语言）：en 或 zh-CN；默认 zh-CN。
+    agent_output_language: str = "zh-CN"
     scheduled_agents: dict[str, ScheduledAgentConfig] = field(default_factory=dict)
     event_agents: dict[str, EventAgentConfig] = field(default_factory=dict)
 
@@ -236,7 +244,6 @@ class AgentsConfig:
     # 兼容旧格式的别名
     project_name: str = ""
     base_branch: str = "dev"
-    default_mode: str = "dual"
     worktree_base: Optional[str] = None
     planner: Optional[str] = None
     builder: Optional[str] = None
@@ -408,7 +415,12 @@ def _load_toml_dict(path: Path) -> Optional[dict[str, Any]]:
     try:
         with open(path, "rb") as handle:
             data = tomllib.load(handle)
-    except Exception:
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        import logging
+        _logger = logging.getLogger(__name__)
+        _logger.warning("Failed to parse TOML file %s: %s", path, exc)
         return None
     return data if isinstance(data, dict) else None
 
@@ -421,6 +433,8 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
         if isinstance(existing, dict) and isinstance(value, dict):
             merged[key] = _merge_dicts(existing, value)
         else:
+            if isinstance(existing, list) and isinstance(value, list):
+                logger.debug("List value replaced during merge for key '%s'", key)
             merged[key] = deepcopy(value)
     return merged
 
@@ -516,6 +530,11 @@ def _load_config_data(
     """Load one config file + corresponding secrets overlay into a raw dict."""
     data = _load_toml_dict(config_path)
     if data is None:
+        if config_path.is_file():
+            import logging
+            logging.getLogger(__name__).warning(
+                "Config file %s exists but could not be parsed", config_path
+            )
         return None
 
     _warn_on_inline_secrets_data(data, config_path)
@@ -769,8 +788,6 @@ DEFAULT_TEMPLATE = """\
 name = "{name}"
 # Git 主分支
 base_branch = "dev"
-# 兼容字段：默认任务智能体；自动规划执行优先使用 [automation].task_agent
-default_mode = "dual"
 # Worktree 隔离目录，空值则自动推导到 ~/.codepilot/data/<project>/worktrees/
 worktree_base = ""
 
@@ -856,15 +873,19 @@ two_stage_planning = true
 max_review_rounds = 2
 # 子进程连续多少秒没有新输出就认为卡死并终止；0 表示关闭
 agent_silence_timeout_seconds = 0
-# workflow next --auto 自动推进策略；默认只执行低风险 plan/ignore，不创建或导入任务
-workflow_auto_create_inspect_tasks = false
-workflow_auto_import_plan_tasks = false
-workflow_auto_max_steps = 1
-workflow_auto_failure_threshold = 1
+# 在 chat 中自动接受 AI 分类器判定为任务/需求的输入，无需 ! 或 # 前缀。
+chat_auto_accept_intent = false
+# workflow next --auto 自动推进策略；开启后允许自动创建/导入任务并多步推进。
+workflow_auto_create_inspect_tasks = true
+workflow_auto_import_plan_tasks = true
+workflow_auto_max_steps = 3
+workflow_auto_failure_threshold = 3
 # 文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。
 fallback_cli_order = ["claude", "codex", "opencode"]
-# 智能体 prompt / 任务内容 / 输出语言偏好：en 或 zh-CN；默认 en。
-agent_language = "en"
+# 智能体输入语言（提示词/技能/模板加载的语言版本）：en 或 zh-CN；默认 en。
+agent_input_language = "en"
+# 智能体输出语言（AI 输出、任务内容、CLI 消息的语言）：en 或 zh-CN；默认 zh-CN。
+agent_output_language = "zh-CN"
 
 [automation.scheduled_agents.task_health]
 enabled = true
@@ -1004,7 +1025,6 @@ LEGACY_TEMPLATE = """\
 [project]
 name = "{name}"
 base_branch = "dev"
-default_mode = "dual"
 worktree_base = ""
 
 [agents.commands]
@@ -1026,10 +1046,11 @@ confirm_before_execute = false
 auto_commit = true
 max_tasks = 5
 max_retries = 3
-workflow_auto_create_inspect_tasks = false
-workflow_auto_import_plan_tasks = false
-workflow_auto_max_steps = 1
-workflow_auto_failure_threshold = 1
+chat_auto_accept_intent = false
+workflow_auto_create_inspect_tasks = true
+workflow_auto_import_plan_tasks = true
+workflow_auto_max_steps = 3
+workflow_auto_failure_threshold = 3
 
 [notifications]
 webhook_url = ""

@@ -104,7 +104,7 @@ def test_run_requirement_workflow_routes_breakdown_through_parser(tmp_path, monk
     project_path = tmp_path / "project"
     project_path.mkdir()
 
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
     project = db.get_project("demo")
     captured = {}
 
@@ -178,7 +178,7 @@ def test_run_requirement_workflow_supports_legacy_breakdown_stub_without_parse_f
     project_path = tmp_path / "project"
     project_path.mkdir()
 
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
     project = db.get_project("demo")
     captured = {}
 
@@ -231,7 +231,7 @@ def test_run_requirement_workflow_wraps_parser_error_in_click_exception(tmp_path
     project_path = tmp_path / "project"
     project_path.mkdir()
 
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
     project = db.get_project("demo")
 
     monkeypatch.setattr(
@@ -450,7 +450,7 @@ def test_run_requirement_workflow_falls_back_to_single_codex_task(tmp_path, monk
     project_path = tmp_path / "project"
     project_path.mkdir()
 
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
     project = db.get_project("demo")
 
     monkeypatch.setattr(
@@ -471,7 +471,7 @@ def test_run_requirement_workflow_falls_back_to_single_codex_task(tmp_path, monk
     assert payload["complexity"] == "simple"
     assert payload["should_split"] is False
     assert len(payload["tasks"]) == 1
-    assert payload["tasks"][0]["agent"] == "codex"
+    assert payload["tasks"][0]["agent"] == "dual"
 
 
 def test_run_requirement_workflow_retries_claude_then_falls_back_to_codex(tmp_path, monkeypatch):
@@ -479,7 +479,7 @@ def test_run_requirement_workflow_retries_claude_then_falls_back_to_codex(tmp_pa
     project_path = tmp_path / "project"
     project_path.mkdir()
 
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
     project = db.get_project("demo")
 
     monkeypatch.setattr(auto_cmd, "check_provider_availability", lambda *args, **kwargs: (True, "ok"))
@@ -522,7 +522,7 @@ def test_run_requirement_workflow_retries_claude_then_falls_back_to_codex(tmp_pa
 
     assert planner_calls == ["claude", "claude", "codex"]
     assert len(payload["tasks"]) == 1
-    assert payload["tasks"][0]["agent"] == "codex"
+    assert payload["tasks"][0]["agent"] == "dual"
 
 
 def test_run_requirement_workflow_uses_registered_config_file_for_provider_resolution(tmp_path, monkeypatch):
@@ -536,12 +536,13 @@ def test_run_requirement_workflow_uses_registered_config_file_for_provider_resol
         """
 [project]
 name = "demo"
-default_mode = "codex"
+[automation]
+task_agent = "codex"
 """.strip(),
         encoding="utf-8",
     )
 
-    db.register_project("demo", str(project_path), default_mode="codex", config_file=str(config_file))
+    db.register_project("demo", str(project_path), config_file=str(config_file))
     project = db.get_project("demo")
     captured = {}
 
@@ -589,7 +590,7 @@ def test_run_requirement_workflow_does_not_fallback_on_non_timeout_codex_error(t
     project_path = tmp_path / "project"
     project_path.mkdir()
 
-    db.register_project("demo", str(project_path), default_mode="codex")
+    db.register_project("demo", str(project_path))
     project = db.get_project("demo")
 
     monkeypatch.setattr(

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from codepilot.ai_support.agent_commands import _cmd, normalize_command_name
-from codepilot.core.config import normalize_agent_language
+from codepilot.core.config import normalize_agent_input_language
 from codepilot.core.task_template import required_task_template_headings
 
 TASK_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "task-template.md"
@@ -16,14 +16,14 @@ TASK_TEMPLATE_ZH_PATH = Path(__file__).resolve().parent.parent / "templates" / "
 
 def _task_template_markdown(*, language: str = "en") -> str:
     """Load the canonical task-template.md content."""
-    path = TASK_TEMPLATE_ZH_PATH if normalize_agent_language(language) == "zh-CN" else TASK_TEMPLATE_PATH
+    path = TASK_TEMPLATE_ZH_PATH if normalize_agent_input_language(language) == "zh-CN" else TASK_TEMPLATE_PATH
     return path.read_text(encoding="utf-8", errors="replace")
 
 
 def _task_template_example_content(*, language: str = "en") -> str:
     """Render an import-ready example from the canonical task template."""
 
-    if normalize_agent_language(language) == "en":
+    if normalize_agent_input_language(language) == "en":
         replacements = {
             "title": "Stream builder subprocess logs to the Web UI",
             "agent": "dual",
@@ -132,7 +132,7 @@ def task_template_schema(*, command_name: str = "codepilot", language: str = "en
     content to CodePilot via `add -f tasks.json`.
     """
     command = normalize_command_name(command_name)
-    lang = normalize_agent_language(language)
+    lang = normalize_agent_input_language(language)
     placeholders = [
         {"name": "title", "required": True, "type": "string",
          "description": "任务标题。动宾结构，能准确表达本任务交付物，不要用『优化』『完善』等泛词。",
@@ -354,7 +354,7 @@ def task_template_schema_json(
 def task_template_guide_markdown(*, command_name: str = "codepilot", language: str = "en") -> str:
     """Return a Chinese-language filling guide aimed at external AI planners."""
     command = normalize_command_name(command_name)
-    lang = normalize_agent_language(language)
+    lang = normalize_agent_input_language(language)
     schema = task_template_schema(command_name=command, language=lang)
     yes = "Yes" if lang == "en" else "是"
     no = "No" if lang == "en" else "否"

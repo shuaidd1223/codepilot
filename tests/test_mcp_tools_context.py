@@ -248,7 +248,7 @@ def test_workflow_context_tools_expose_status_next_and_inspect_run(tmp_path, mon
                         "auto_execute": False,
                     },
                 )(),
-                "automation": type("Automation", (), {"agent_language": "zh-CN"})(),
+                "automation": type("Automation", (), {"agent_input_language": "zh-CN", "agent_output_language": "zh-CN"})(),
             },
         )(),
     )

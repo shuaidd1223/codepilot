@@ -1,7 +1,59 @@
 interface:
   display_name: "CodePilot Workflow"
-  short_description: "Operate CodePilot requirements, plans, tasks, services, integrations, and releases."
-  default_prompt: "Use $codepilot-workflow for CodePilot status, planning, task operations, services, and releases."
+  short_description: "Operate CodePilot requirements, plans, tasks, services, integrations, MCP tools, and releases for local engineering workflow orchestration."
+  default_prompt: "Use $codepilot-workflow for CodePilot project status, planning, task operations, MCP tool access, service management, and binary releases. Prefer non-interactive commands with --json output. Use MCP tools directly when in an MCP-enabled session."
 
 policy:
   allow_implicit_invocation: true
+
+tools:
+  - name: codepilot_health
+    description: "Check CodePilot MCP service health and version."
+  - name: list_tasks
+    description: "List CodePilot tasks by project, status, and limit."
+  - name: show_task
+    description: "Read full task metadata, content, errors, and logs."
+  - name: create_task
+    description: "Create a new CodePilot task with content, priority, and agent."
+  - name: edit_task
+    description: "Edit task fields: title, priority, status, agent, dependencies."
+  - name: stop_task
+    description: "Request stop of a running CodePilot task."
+  - name: archive_task
+    description: "Archive a completed CodePilot task."
+  - name: validate_task_template
+    description: "Validate task content against task-template.md schema."
+  - name: generate_breakdown
+    description: "Generate structured task breakdown from a requirement."
+  - name: explore
+    description: "Read-only evidence collection from files, git, wiki, and tasks."
+  - name: inspect_project
+    description: "Collect inspection signals without creating tasks."
+  - name: wiki_query
+    description: "Search local project wiki for durable knowledge."
+  - name: wiki_add
+    description: "Add a page to the local project wiki."
+  - name: note_add
+    description: "Append a record to project persistent working memory."
+  - name: hook_trigger
+    description: "Trigger a project-local hook test event."
+  - name: workflow_status
+    description: "Read workflow state, agent session, and artifact paths."
+  - name: workflow_next
+    description: "List or safely execute workflow next_actions through the allowlist."
+  - name: build_fix
+    description: "Run the failed-task repair loop with validation and verdict."
+  - name: daemon_status
+    description: "Check daemon service health for a project."
+  - name: doctor
+    description: "Environment, config, CLI tools, and database health check."
+  - name: exec
+    description: "Run allowlisted CLI operations in project context."
+  - name: run_once
+    description: "Consume one backlog task for a project."
+  - name: feishu_notify
+    description: "Send task event notification via Feishu bot API."
+  - name: feishu_send_to_user
+    description: "Send a private card message to a Feishu user."
+  - name: webhook_invoke
+    description: "Call a configured project webhook."

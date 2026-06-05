@@ -17,9 +17,9 @@ from datetime import datetime
 
 import click
 
-from codepilot.storage import database as db
 from codepilot.commands.daemon import request_daemon_service_start
 from codepilot.commands.feishu import ensure_service_running_if_enabled
+from codepilot.core.logger import get_logger
 from codepilot.core.output import echo, safe
 from codepilot.core.paths import global_storage_root
 from codepilot.core.runtime import is_process_alive, stop_process_tree
@@ -30,6 +30,9 @@ from codepilot.core.service_launcher import (
     hidden_windows_startupinfo,
 )
 from codepilot.core.text_decode import decode_subprocess_text
+from codepilot.storage import database as db
+
+logger = get_logger('webui')
 
 
 STATE_DIR = global_storage_root() / "webui"
@@ -37,6 +40,7 @@ LOG_FILE = STATE_DIR / "webui.log"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
+DEFAULT_DEV_PORT = 8767
 WEBUI_HOST_ENV = "CODEPILOT_WEBUI_HOST"
 WEBUI_PORT_ENV = "CODEPILOT_WEBUI_PORT"
 
@@ -80,7 +84,7 @@ def _default_host() -> str:
 
 
 def _default_port() -> int:
-    return _env_port() or DEFAULT_PORT
+    return _env_port() or (DEFAULT_DEV_PORT if _command_name_hint() == "codepilot-dev" else DEFAULT_PORT)
 
 
 def _resolve_start_host_port(host: str | None, port: int | None) -> tuple[str, int]:
@@ -119,7 +123,7 @@ def _read_pid() -> int | None:
         try:
             return int(state["pid"])
         except Exception:
-            pass
+            logger.debug("Failed to parse PID from Web UI service state", exc_info=True)
     return None
 
 
@@ -262,7 +266,7 @@ def _spawn_detached(host: str, port: int, project: str = "") -> subprocess.Popen
         log_fp.write(f"\n--- start {_now_iso()} host={host} port={port} ---\n".encode("utf-8"))
         log_fp.flush()
     except Exception:
-        pass
+        logger.debug("Failed to write log header in _spawn_detached", exc_info=True)
 
     cmd = _foreground_ui_command(host, port, project=project)
 
@@ -337,7 +341,7 @@ def start_cmd(host: str | None, port: int | None, open_browser: bool, start_daem
         try:
             tail = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-1500:]
         except Exception:
-            pass
+            logger.debug("Failed to read Web UI log tail after startup failure", exc_info=True)
         echo(f"[red]Web UI 启动后立即退出（exit={proc.returncode}）[/red]")
         if tail:
             echo(f"[dim]--- 日志尾部 ---\n{tail}[/dim]")
@@ -359,7 +363,7 @@ def start_cmd(host: str | None, port: int | None, open_browser: bool, start_daem
         try:
             webbrowser.open(url)
         except Exception:
-            pass
+            logger.debug("Failed to open browser for Web UI", exc_info=True)
 
 
 def _ensure_daemon_started(project: str = "") -> None:
@@ -427,7 +431,7 @@ def stop_cmd() -> None:
             meta=state_meta,
         )
     except Exception:
-        pass
+        logger.debug("Failed to update Web UI service state during stop", exc_info=True)
 
     failures: list[int] = []
     for pid in targets:

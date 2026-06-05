@@ -46,6 +46,9 @@
 - 源码开发入口：`codepilot-dev`。所有在本仓库验证当前源码改动的智能体必须优先使用它，例如 `codepilot-dev ui start/status/restart/stop`、`codepilot-dev status -p codepilot-dev`。
 - 正式安装入口：`codepilot`。仅在明确验证已安装版本、冻结二进制或发布包行为时使用；不要用它验证当前工作区源码改动。
 - 入口隔离：`codepilot-dev` 默认使用 `~/.codepilot-dev` 和 Web UI 端口 `8767`；`codepilot` 默认使用 `~/.codepilot` 和 Web UI 端口 `8766`。不要混用两者的状态、日志或端口。
+  - 端口解析优先级：1) 显式 `--port` 参数 → 2) `CODEPILOT_WEBUI_PORT` 环境变量 → 3) 根据 `CODEPILOT_HOME` 或 `sys.argv[0]` 自动选择（`.codepilot-dev` → 8767，否则 → 8766）。
+  - 实现位置：`codepilot/commands/webui_service.py`（`_default_port()`）和 `codepilot/commands/daemon.py`（`_daemon_default_ui_port()`）。
+  - 相关测试：`tests/test_webui_service.py` 中的 `test_webui_start_dev_defaults_to_port_8767_without_env_var` 和 `test_webui_default_port_is_8766_in_installed_mode`。
 - Python 包 CLI 入口：`codepilot`（通过 pyproject.toml 定义）；仓库内命令行验证仍使用上面的 `codepilot-dev` wrapper。
 - MCP 工具通过 `codepilot.mcp` 包提供
 - OpenCode 交互入口：源码验证用 `codepilot-dev chat -p codepilot-dev -a opencode`，由 CodePilot 注入隔离配置、MCP、模型和权限
@@ -57,3 +60,6 @@
 - 不要把 OpenCode 品牌/TUI/agent/commands 这类工具级定制写到业务项目配置；运行时文件属于用户级 `~/.codepilot/opencode/<项目标识>/`
 - `chat`、Web UI 会话和飞书自由文本统一走 OpenCode + CodePilot MCP；需要结构化产物时显式调用 `plan` 或对应 MCP 工具
 - 外部任务投递必须使用 `codepilot add -f` 并符合 `codepilot ai template --format json` 格式
+- `workflow next` 的 `suggested_command` 仅供展示/审查，绝不自动执行；安全推进只用 `--action <id>` 或 `--auto`
+- 自更新审计 `codepilot self-update --dry-run` 不创建任务、不修改代码，仅产出评估计划
+- MCP 工具开发遵循 `codepilot/mcp/tools/` 下的分类结构（tasks/context/ops/external），新增工具需在对应 `__init__.py` 中注册

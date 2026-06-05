@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import pkgutil
+import logging
 import re
 import sys
 import threading
@@ -33,7 +34,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from typing import Callable
-from urllib.parse import ParseResult, parse_qs, unquote, urlparse
+from urllib.parse import ParseResult, parse_qs, quote, unquote, urlparse
 
 from codepilot.storage import database as db
 # Re-exported so tests that monkeypatch ``webui_mod.run_requirement_workflow``
@@ -120,6 +121,9 @@ _UI_JOBS: dict[int, dict] = {}
 _UI_EVENTS: list[dict] = []
 _UI_STARTED_AT = _now_iso()
 
+# ── Authentication ──────────────────────────────────────────────────────────
+_CODEPILOT_WEB_TOKEN: str | None = os.environ.get("CODEPILOT_WEB_TOKEN") or None
+
 
 # ── Static web assets ────────────────────────────────────────────────────────
 _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -200,6 +204,11 @@ _CONTENT_TYPES = {
 # ── File upload / search helpers ──────────────────────────────────────────────
 
 _CODEPILOT_DATA = Path.home() / ".codepilot" / "data"
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+_BLOCKLIST_EXTENSIONS = frozenset({
+    ".exe", ".dll", ".sh", ".bat", ".ps1",
+    ".py", ".js", ".vbs", ".scr", ".msi",
+})
 
 
 def _append_file_refs_to_text(text: str, file_refs: list[dict]) -> str:
@@ -355,7 +364,7 @@ def _save_uploaded_file(project_name: str, filename: str, data: bytes) -> dict:
         "name": safe_name,
         "path": str(dest.relative_to(Path(project_name).parent) if dest.parent == upload_dir.parent else dest),
         "size": len(data),
-        "url": f"/api/files/{project_name}/{dest.name}",
+        "url": f"/api/files/{quote(project_name)}/{quote(dest.name)}",
     }
 
 
@@ -366,11 +375,26 @@ class RateLimitError(RuntimeError):
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "CodePilotUI/0.2"
 
+    # ── SSE connection limit ──────────────────────────────────────────
+    MAX_SSE_CONNECTIONS: int = 20
+    _sse_connection_count: int = 0
+    _sse_count_lock = threading.Lock()
+
     def handle(self) -> None:
         try:
             super().handle()
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
             return
+
+    def end_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net;"
+            " style-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net",
+        )
+        super().end_headers()
 
     def _send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -379,6 +403,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _sanitize_error(self, exc: Exception) -> str:
+        """Return a safe error message; log the full exception internally.
+
+        Business-logic errors (RuntimeError, ValueError raised intentionally
+        by actions) pass through unchanged.  Unexpected / internal errors are
+        replaced with a generic message so that implementation details never
+        leak to clients.
+        """
+        logging.exception("Web UI error: %s", exc)
+        # Intentional application-level errors — safe to return verbatim
+        if isinstance(exc, (RuntimeError, ValueError)):
+            return str(exc)
+        return "服务器内部错误，请稍后重试。"
 
     def _send_bytes(self, body: bytes, content_type: str, status: int = HTTPStatus.OK) -> None:
         self.send_response(status)
@@ -408,6 +446,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length") or "0")
+        if length > self.MAX_BODY_BYTES:
+            raise ValueError(
+                f"请求体过大: {length} 字节超过限制 {self.MAX_BODY_BYTES} 字节"
+            )
         raw = self.rfile.read(length) if length > 0 else b"{}"
         if not raw:
             return {}
@@ -415,6 +457,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError as exc:
             raise RuntimeError("请求体不是合法 JSON。") from exc
+
+    # ── Auth check ────────────────────────────────────────────────────────
+    _auth_warned: bool = False
+
+    def _check_auth(self) -> bool:
+        """验证请求是否携带有效的 Bearer token。
+
+        Returns True 时：
+        - 未配置 CODEPILOT_WEB_TOKEN（向后兼容模式），首次调用会记录一次警告。
+        - 请求包含与配置 token 匹配的 ``Authorization: Bearer <token>`` 头。
+
+        Returns False 时（已配置 token 但请求未通过验证），返回 401 JSON 响应。
+        """
+        token = _CODEPILOT_WEB_TOKEN
+        if token is None:
+            if not type(self)._auth_warned:
+                type(self)._auth_warned = True
+                import logging
+                logging.getLogger(__name__).warning(
+                    "CODEPILOT_WEB_TOKEN is not set -- Web UI is unauthenticated. "
+                    "Set the CODEPILOT_WEB_TOKEN environment variable to enable "
+                    "token-based authentication."
+                )
+            return True
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer ") and auth[len("Bearer "):] == token:
+            return True
+        self._send_json({"error": "Unauthorized"}, status=401)
+        return False
 
     # ── per-client rate limiter for /internal/events ──────────────────────
     # Every call records a timestamp; if a client exceeds the burst limit
@@ -425,6 +496,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     _rate_max_requests: int = 200  # per window per client
     _rate_buckets: dict[str, list[float]] = defaultdict(list)
     _rate_lock = threading.Lock()
+
+    MAX_BODY_BYTES: int = 10 * 1024 * 1024  # 10 MB limit for request body read via _read_json_body
 
     @classmethod
     def _check_rate_limit(cls, remote_host: str) -> bool:
@@ -695,7 +768,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _handle_get_event_stream(self, _parsed: ParseResult) -> None:
         # Server-sent events: push live progress to the dashboard so the
         # user sees builder/reviewer output in real time instead of polling.
-        self._stream_progress_events()
+        with type(self)._sse_count_lock:
+            if type(self)._sse_connection_count >= type(self).MAX_SSE_CONNECTIONS:
+                self._send_json(
+                    {"error": "Too many SSE connections, limit reached"},
+                    status=503,
+                )
+                return
+            type(self)._sse_connection_count += 1
+        try:
+            self._stream_progress_events()
+        finally:
+            with type(self)._sse_count_lock:
+                type(self)._sse_connection_count -= 1
 
     def _handle_get_projects(self, _parsed: ParseResult) -> None:
         self._send_json(dashboard_payload())
@@ -717,7 +802,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             self._send_json(list_sessions_action(proj, query=query, limit=limit))
         except RuntimeError as exc:
-            self._send_json({"error": str(exc)}, status=400)
+            self._send_json({"error": self._sanitize_error(exc)}, status=400)
 
     def _dispatch_get_asset(self, path: str) -> bool:
         if path == "/":
@@ -768,7 +853,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             self._send_json(project_workflow_payload(unquote(match.group(1))))
         except RuntimeError as exc:
-            self._send_json({"error": str(exc)}, status=404)
+            self._send_json({"error": self._sanitize_error(exc)}, status=404)
         return True
 
     def _dispatch_get_task_detail(self, path: str) -> bool:
@@ -778,7 +863,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             self._send_json(task_detail_payload(int(match.group(1))))
         except RuntimeError as exc:
-            self._send_json({"error": str(exc)}, status=404)
+            self._send_json({"error": self._sanitize_error(exc)}, status=404)
         return True
 
     def _dispatch_get_task_log(self, path: str, parsed: ParseResult) -> bool:
@@ -793,7 +878,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             )
         except RuntimeError as exc:
-            self._send_json({"error": str(exc)}, status=404)
+            self._send_json({"error": self._sanitize_error(exc)}, status=404)
         return True
 
     def _dispatch_get_task_phase_log(self, path: str, parsed: ParseResult) -> bool:
@@ -809,7 +894,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             )
         except RuntimeError as exc:
-            self._send_json({"error": str(exc)}, status=404)
+            self._send_json({"error": self._sanitize_error(exc)}, status=404)
         return True
 
     def _dispatch_get_session_detail(self, path: str) -> bool:
@@ -819,7 +904,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             self._send_json(get_session_action(int(match.group(1))))
         except RuntimeError as exc:
-            self._send_json({"error": str(exc)}, status=404)
+            self._send_json({"error": self._sanitize_error(exc)}, status=404)
         return True
 
     def _dispatch_get_file_search(self, path: str, parsed: ParseResult) -> bool:
@@ -880,7 +965,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return self._dispatch_get_pattern(path, parsed)
 
     def do_GET(self) -> None:  # noqa: N802
-        if self._dispatch_get(urlparse(self.path)):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if not (
+            path in {"/", "/favicon.ico", "/api/events/stream"}
+            or path.startswith("/static/")
+        ):
+            if not self._check_auth():
+                return
+        if self._dispatch_get(parsed):
             return
         self._send_json({"error": "未找到页面。"}, status=404)
 
@@ -974,6 +1067,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             data = base64.b64decode(data_b64)
         except Exception as exc:
             raise RuntimeError(f"base64 解码失败：{exc}") from exc
+
+        # 文件大小校验
+        if len(data) > _MAX_UPLOAD_BYTES:
+            max_mb = _MAX_UPLOAD_BYTES // (1024 * 1024)
+            raise RuntimeError(
+                f"上传文件过大（{len(data)} 字节），最大允许 {max_mb} MB。"
+            )
+
+        # 文件扩展名校验
+        ext = Path(filename).suffix.lower()
+        if ext in _BLOCKLIST_EXTENSIONS:
+            raise RuntimeError(
+                f"不允许上传 {ext} 类型的文件。"
+            )
+
         return _save_uploaded_file(project, filename, data)
 
     def _dispatch_post_exact(self, path: str, get_body: Callable[[], dict]) -> dict | None:
@@ -1128,6 +1236,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return self._dispatch_post_pattern(path, get_body)
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._check_auth():
+            return
         path = urlparse(self.path).path
         body_cache: dict | None = None
 
@@ -1145,13 +1255,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(payload)
             return
         except RateLimitError as exc:
-            self._send_json({"error": str(exc)}, status=429)
+            self._send_json({"error": self._sanitize_error(exc)}, status=429)
             return
         except (RuntimeError, ValueError) as exc:
-            self._send_json({"error": str(exc)}, status=400)
+            self._send_json({"error": self._sanitize_error(exc)}, status=400)
             return
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if not self._check_auth():
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         try:
@@ -1164,7 +1276,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(delete_session_action(int(match.group(1))))
                 return
         except RuntimeError as exc:
-            self._send_json({"error": str(exc)}, status=400)
+            self._send_json({"error": self._sanitize_error(exc)}, status=400)
             return
         self._send_json({"error": "未找到接口。"}, status=404)
 

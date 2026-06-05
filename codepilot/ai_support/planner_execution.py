@@ -17,6 +17,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from codepilot.core.logger import get_logger
+
+logger = get_logger('planner_execution')
+
 
 def _emit_progress(message: str, get_progress_callback: Callable[[], Callable[[str], None] | None]) -> None:
     callback = get_progress_callback()
@@ -25,7 +29,7 @@ def _emit_progress(message: str, get_progress_callback: Callable[[], Callable[[s
     try:
         callback(message)
     except Exception:
-        pass
+        logger.debug("Failed to emit progress via callback in _emit_progress", exc_info=True)
 
 
 def _format_waiting_progress(provider_name: str, *, elapsed: float, idle: float, timeout: int) -> str:
@@ -45,7 +49,7 @@ def kill_process_tree(pid: int) -> None:
                 timeout=10,
             )
         except Exception:
-            pass
+            logger.debug("Failed to kill process tree on Windows via taskkill", exc_info=True)
     else:
         import signal
 
@@ -55,7 +59,7 @@ def kill_process_tree(pid: int) -> None:
             try:
                 os.kill(pid, signal.SIGKILL)
             except Exception:
-                pass
+                logger.debug("Failed to kill process on Unix via os.kill", exc_info=True)
 
 
 def planner_process_group_kwargs() -> dict[str, Any]:
@@ -74,11 +78,11 @@ def terminate_planner_process(process: Any, *, kill_process_tree_fn: Callable[[i
         try:
             kill_process_tree_fn(int(pid))
         except Exception:
-            pass
+            logger.debug("Failed to kill process tree in terminate_planner_process", exc_info=True)
     try:
         process.wait(timeout=5)
     except Exception:
-        pass
+        logger.debug("Failed to wait for planner process termination", exc_info=True)
 
 
 @dataclass(frozen=True)
@@ -128,7 +132,7 @@ def _emit_stdout_chunk(message: str, callback: Callable[[str], None] | None) -> 
     try:
         callback(message)
     except Exception:
-        pass
+        logger.debug("Failed to emit stdout chunk via callback in _emit_stdout_chunk", exc_info=True)
 
 
 def _run_planner_subprocess(

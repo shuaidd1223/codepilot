@@ -4424,3 +4424,24 @@ textarea {
     max-height: none;
   }
 }
+
+/* Code copy button */
+.code-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.markdown pre:hover .code-copy-btn { opacity: 1; }
+.code-copy-btn:hover { background: hsl(var(--accent)); color: hsl(var(--foreground)); }

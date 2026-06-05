@@ -283,10 +283,10 @@ def build_event(
     payload: dict[str, Any],
     event_id_prefix: str = "evt",
 ) -> dict[str, Any]:
-    now = datetime.now(timezone.utc).replace(microsecond=0)
+    now = datetime.now(timezone.utc)
     return {
         "schema_version": SCHEMA_VERSION,
-        "id": f"{event_id_prefix}-{now.strftime('%Y%m%d%H%M%S')}",
+        "id": f"{event_id_prefix}-{now.strftime('%Y%m%d%H%M%S')}-{now.microsecond:06d}",
         "type": _validate_event_type(event_type),
         "source": str(source or "codepilot"),
         "project": str(project_name or ""),

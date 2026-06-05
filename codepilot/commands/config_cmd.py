@@ -339,7 +339,6 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
         "project": {
             "name": _string(project.get("name"), project_name),
             "base_branch": _string(project.get("base_branch"), "dev"),
-            "default_mode": _string(project.get("default_mode"), "dual"),
             "worktree_base": _string(project.get("worktree_base"), ""),
         },
         "shell": {
@@ -424,7 +423,8 @@ def _canonical_config(data: dict[str, Any], *, project_name: str) -> dict[str, A
                 max_value=20,
             ),
             "fallback_cli_order": _fallback_cli_order(automation.get("fallback_cli_order")),
-            "agent_language": config_mod.normalize_agent_language(automation.get("agent_language")),
+            "agent_input_language": config_mod.normalize_agent_input_language(automation.get("agent_input_language") or ""),
+            "agent_output_language": config_mod.normalize_agent_output_language(automation.get("agent_output_language") or ""),
         },
         "inspect": {
             "enabled": _bool(inspect.get("enabled"), False),
@@ -512,7 +512,6 @@ SECTION_COMMENTS: dict[str, list[str]] = {
 KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
     ("project", "name"): ["项目名称，默认取 AGENTS.toml 所在目录名。"],
     ("project", "base_branch"): ["Git 主分支/基准分支。"],
-    ("project", "default_mode"): ["兼容字段：默认任务智能体；自动规划执行优先使用 [automation].task_agent。"],
     ("project", "worktree_base"): ["worktree 隔离目录；留空时自动推导到 ~/.codepilot/data/<project>/worktrees/。"],
     ("shell", "preferred"): ["auto / powershell / pwsh / powershell7 / bash / zsh / sh。"],
     ("shell", "powershell_path"): ["自定义 PowerShell 可执行文件路径；留空表示自动查找。"],
@@ -550,7 +549,8 @@ KEY_COMMENTS: dict[tuple[str, str], list[str]] = {
         "单次 workflow next --auto 失败达到多少次后熔断；默认 1。"
     ],
     ("automation", "fallback_cli_order"): ["文本模式 CLI 兜底顺序；前面项不可用时按顺序退到下一个。"],
-    ("automation", "agent_language"): ["智能体 prompt / 任务内容 / 输出语言偏好：en 或 zh-CN；默认 en。"],
+    ("automation", "agent_input_language"): ["智能体输入语言（提示词/技能/模板加载版本）：en 或 zh-CN；默认 en。"],
+    ("automation", "agent_output_language"): ["智能体输出语言（AI 输出、任务内容、CLI 消息语言）：en 或 zh-CN；默认 zh-CN。"],
     ("inspect", "enabled"): ["是否启用 daemon 定时巡检。"],
     ("inspect", "interval_seconds"): ["巡检间隔秒数。"],
     ("inspect", "max_new_tasks_per_round"): ["每轮巡检最多新增候选任务数。"],
@@ -832,11 +832,12 @@ def _raw_config_errors(data: dict[str, Any]) -> list[str]:
             config_mod.normalize_preflight_dirty_worktree(automation.get("preflight_dirty_worktree"))
         except config_mod.ConfigError as exc:
             errors.append(str(exc))
-    if "agent_language" in automation:
-        try:
-            config_mod.normalize_agent_language(automation.get("agent_language"))
-        except config_mod.ConfigError as exc:
-            errors.append(str(exc))
+    for lang_field in ("agent_input_language", "agent_output_language"):
+        if lang_field in automation:
+            try:
+                getattr(config_mod, f"normalize_{lang_field}")(automation.get(lang_field))
+            except config_mod.ConfigError as exc:
+                errors.append(str(exc))
     for key in ("workflow_auto_max_steps", "workflow_auto_failure_threshold"):
         if key not in automation:
             continue
@@ -962,15 +963,12 @@ def init_config(global_mode: bool, path: Path | None, non_interactive: bool) -> 
     if not non_interactive:
         project_name = click.prompt("项目名称", default=project_name, show_default=True)
         base_branch = click.prompt("Git 主分支", default="main", show_default=True)
-        default_mode = click.prompt("默认任务智能体", default="codex", show_default=True)
     else:
         base_branch = "main"
-        default_mode = "codex"
 
     data["project"] = {
         "name": project_name,
         "base_branch": base_branch,
-        "default_mode": default_mode,
     }
 
     # 2. 检测 CLI 工具
@@ -1055,7 +1053,8 @@ def init_config(global_mode: bool, path: Path | None, non_interactive: bool) -> 
     data["automation"] = {
         "task_agent": task_agent,
         "task_workspace": task_workspace,
-        "agent_language": "en",
+        "agent_input_language": "en",
+        "agent_output_language": "zh-CN",
         "auto_execute": auto_execute,
         "auto_commit": True,
         "max_tasks": 5,
@@ -1208,7 +1207,8 @@ def validate_config(path: Path | None, global_mode: bool, fix: bool) -> None:
             errors.append(message)
         safe_data = dict(data)
         safe_automation = dict(safe_data.get("automation") or {})
-        safe_automation.pop("agent_language", None)
+        safe_automation.pop("agent_input_language", None)
+        safe_automation.pop("agent_output_language", None)
         safe_data["automation"] = safe_automation
         canonical = _canonical_config(safe_data, project_name=config_path.parent.name)
 

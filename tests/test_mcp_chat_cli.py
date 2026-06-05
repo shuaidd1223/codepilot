@@ -54,27 +54,10 @@ def test_chat_agent_short_option_selects_agent(tmp_path: Path, monkeypatch):
     assert calls == [{"agent": "codex", "project": None, "prompt": ""}]
 
 
-def test_chat_blocks_windows_codex_interactive_tui_by_default(tmp_path: Path, monkeypatch):
+def test_chat_allows_codex_on_windows(tmp_path: Path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     calls = _capture_agent_launch(monkeypatch)
     monkeypatch.setattr("codepilot.commands.chat.os.name", "nt")
-    monkeypatch.delenv("CODEPILOT_ALLOW_WINDOWS_CODEX_TUI", raising=False)
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-
-    result = CliRunner().invoke(main, ["chat", "-a", "codex"])
-
-    assert result.exit_code != 0
-    assert calls == []
-    assert "Windows 下 Codex CLI 交互 TUI 当前不稳定" in result.output
-    assert "codepilot chat -a opencode" in result.output
-
-
-def test_chat_allows_windows_codex_interactive_tui_when_explicitly_requested(tmp_path: Path, monkeypatch):
-    _isolate(tmp_path, monkeypatch)
-    calls = _capture_agent_launch(monkeypatch)
-    monkeypatch.setattr("codepilot.commands.chat.os.name", "nt")
-    monkeypatch.setenv("CODEPILOT_ALLOW_WINDOWS_CODEX_TUI", "1")
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
     result = CliRunner().invoke(main, ["chat", "-a", "codex"])
 
@@ -112,7 +95,7 @@ def test_chat_prepare_uses_project_agent_language_for_opencode_profile(tmp_path:
     monkeypatch.setattr("codepilot.opencode.paths.global_storage_root", lambda: runtime_root)
     db.register_project("demo", str(project_path))
     (project_path / "AGENTS.toml").write_text(
-        '[project]\nname = "demo"\n\n[automation]\nagent_language = "zh-CN"\n',
+        '[project]\nname = "demo"\n\n[automation]\nagent_input_language = "zh-CN"\nagent_output_language = "zh-CN"\n',
         encoding="utf-8",
     )
 
@@ -123,7 +106,8 @@ def test_chat_prepare_uses_project_agent_language_for_opencode_profile(tmp_path:
     launch = chat_cmd._prepare_mcp_agent_chat(agent="opencode", project=None, prompt="")
 
     config_path = Path(launch.env["OPENCODE_CONFIG"])
-    assert config_path.is_relative_to(runtime_root)
+    # opencode.json now lives in project .codepilot/ for project-scoped config
+    assert config_path.name == "opencode.json"
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     assert payload["instructions"][0].endswith("codepilot.zh-CN.md")
     assert "任务状态" in payload["command"]
